@@ -55,11 +55,15 @@ ALTER TABLE public.session_workspaces ENABLE ROW LEVEL SECURITY;
 
 -- Drop prior policies to avoid conflicts
 DROP POLICY IF EXISTS "Session participants and admin can view workspaces" ON public.session_workspaces;
+DROP POLICY IF EXISTS "Seeker view published or completed, mentor view own, admin view" ON public.session_workspaces;
+DROP POLICY IF EXISTS "Mentors can create own workspace, admin operational access" ON public.session_workspaces;
 DROP POLICY IF EXISTS "Mentors and admin can create workspaces" ON public.session_workspaces;
+DROP POLICY IF EXISTS "Mentors can update own workspace, admin operational access" ON public.session_workspaces;
 DROP POLICY IF EXISTS "Mentors and admin can update workspaces" ON public.session_workspaces;
 DROP POLICY IF EXISTS "Seekers can view published completed workspaces" ON public.session_workspaces;
 DROP POLICY IF EXISTS "Mentors can manage own workspaces" ON public.session_workspaces;
 DROP POLICY IF EXISTS "Admin operational access to all workspaces" ON public.session_workspaces;
+DROP POLICY IF EXISTS "Admin operational delete access" ON public.session_workspaces;
 
 -- ------------------------------------------------------------------------------
 -- RLS POLICY: SELECT

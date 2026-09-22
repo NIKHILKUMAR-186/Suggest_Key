@@ -46,9 +46,10 @@ export const AdminNotificationsPage: React.FC = () => {
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [broadcastSuccess, setBroadcastSuccess] = useState(false);
 
-  const adminId = user?.id || 'usr-8800';
+  const adminId = user?.id;
 
   const loadNotifs = async () => {
+    if (!adminId) return;
     setLoading(true);
     try {
       const data = await fetchUserNotifications(adminId, {
@@ -69,6 +70,7 @@ export const AdminNotificationsPage: React.FC = () => {
   }, [adminId, statusFilter, typeFilter]);
 
   const handleMarkRead = async (id: string) => {
+    if (!adminId) return;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
     );
@@ -77,6 +79,7 @@ export const AdminNotificationsPage: React.FC = () => {
   };
 
   const handleMarkAllRead = async () => {
+    if (!adminId) return;
     setNotifications((prev) =>
       prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))
     );
@@ -91,12 +94,7 @@ export const AdminNotificationsPage: React.FC = () => {
     setIsBroadcasting(true);
     try {
       // Dispatch real broadcast notifications to seekers and mentors
-      const targetUserIds =
-        broadcastTarget === 'seekers'
-          ? ['usr-8801']
-          : broadcastTarget === 'mentors'
-          ? ['usr-8802']
-          : ['usr-8801', 'usr-8802', 'usr-8800'];
+      const targetUserIds = adminId ? [adminId] : [];
 
       for (const targetId of targetUserIds) {
         await dispatchNotification({
@@ -187,11 +185,13 @@ export const AdminNotificationsPage: React.FC = () => {
       </div>
 
       {/* Simulator bar for testing all 4 Admin events */}
-      <NotificationSimulator
-        userId={adminId}
-        role="admin"
-        onEventDispatched={loadNotifs}
-      />
+      {adminId && (
+        <NotificationSimulator
+          userId={adminId}
+          role="admin"
+          onEventDispatched={loadNotifs}
+        />
+      )}
 
       {/* Filter Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">

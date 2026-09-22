@@ -26,14 +26,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Compute effective user ID based on role
-  const effectiveUserId = user?.id || (
-    activeRole === 'admin'
-      ? 'usr-8800'
-      : activeRole === 'mentor'
-      ? 'usr-8802'
-      : 'usr-8801'
-  );
+  // Compute effective user ID from auth context
+  const effectiveUserId = user?.id;
 
   const refreshNotifications = useCallback(async () => {
     if (!effectiveUserId) return;
@@ -56,7 +50,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   }, [refreshNotifications]);
 
   const markAsRead = async (id: string) => {
-    // Optimistic local update
+    if (!effectiveUserId) return;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
     );
@@ -64,6 +58,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   };
 
   const markAllAsRead = async () => {
+    if (!effectiveUserId) return;
     // Optimistic local update
     setNotifications((prev) =>
       prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))

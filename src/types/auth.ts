@@ -37,7 +37,6 @@ export interface AuthContextType {
     requestedRole?: UserRole
   ) => Promise<{ error: Error | null; user?: User | null }>;
   signOut: () => Promise<void>;
-  switchActiveRole: (role: UserRole) => boolean;
   hasRole: (role: UserRole) => boolean;
   clearError: () => void;
 }

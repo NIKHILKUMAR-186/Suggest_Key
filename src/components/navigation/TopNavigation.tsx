@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, X, KeyRound, ArrowRightLeft, LogOut, LogIn, ChevronDown, Check } from 'lucide-react';
+import { Menu, X, LogOut, LogIn, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
@@ -10,14 +10,12 @@ import type { UserRole } from '@/src/types/navigation';
 import { Button } from '@/src/components/ui/Button';
 
 export const TopNavigation: React.FC = () => {
-  const { currentPath, currentRole, navigate, switchRole } = useNavigation();
-  const { user, profile, roles, isAuthenticated, signOut, switchActiveRole } = useAuth();
+  const { currentPath, currentRole, navigate } = useNavigation();
+  const { user, profile, roles, isAuthenticated, signOut } = useAuth();
   const { unreadCount } = useNotifications();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [roleSwitcherOpen, setRoleSwitcherOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
 
-  const roleSwitcherRef = useRef<HTMLDivElement>(null);
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
   const baseConfig = ROLE_NAVIGATION[currentRole] || ROLE_NAVIGATION.seeker;
@@ -34,9 +32,6 @@ export const TopNavigation: React.FC = () => {
   // Close dropdowns on outside click or Escape key
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (roleSwitcherRef.current && !roleSwitcherRef.current.contains(e.target as Node)) {
-        setRoleSwitcherOpen(false);
-      }
       if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
         setUserDropdownOpen(false);
       }
@@ -44,7 +39,6 @@ export const TopNavigation: React.FC = () => {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setRoleSwitcherOpen(false);
         setUserDropdownOpen(false);
         setMobileMenuOpen(false);
       }
@@ -75,13 +69,6 @@ export const TopNavigation: React.FC = () => {
     setMobileMenuOpen(false);
   };
 
-  const handleRoleChange = (role: UserRole) => {
-    switchActiveRole(role);
-    switchRole(role);
-    setRoleSwitcherOpen(false);
-    setMobileMenuOpen(false);
-  };
-
   const handleSignOut = async () => {
     await signOut();
     navigate('/auth/login');
@@ -99,7 +86,7 @@ export const TopNavigation: React.FC = () => {
             className="flex items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 rounded-lg p-1 transition-transform active:scale-[0.98] cursor-pointer"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-950 text-white font-bold text-base shadow-xs ring-1 ring-zinc-800">
-              <KeyRound className="h-5 w-5 text-amber-400" />
+              <span className="text-xs font-bold">SK</span>
             </div>
             <div>
               <span className="text-base font-bold tracking-tight text-zinc-950 block leading-tight font-display">
@@ -150,69 +137,8 @@ export const TopNavigation: React.FC = () => {
           </nav>
         </div>
 
-        {/* Right Section: Auth & Role Status */}
+        {/* Right Section: User Profile or Sign In */}
         <div className="hidden md:flex items-center gap-3">
-          {/* Role Shell Switcher (for multi-role users or testing) */}
-          <div className="relative" ref={roleSwitcherRef}>
-            <button
-              onClick={() => setRoleSwitcherOpen(!roleSwitcherOpen)}
-              aria-expanded={roleSwitcherOpen}
-              aria-haspopup="menu"
-              className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-zinc-700 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
-              title="Role Shell Switcher"
-            >
-              <ArrowRightLeft className="h-3.5 w-3.5 text-zinc-500" />
-              <span>
-                Role: <strong className="capitalize text-zinc-950">{currentRole}</strong>
-              </span>
-              <ChevronDown className={cn('h-3.5 w-3.5 text-zinc-400 transition-transform duration-150', roleSwitcherOpen && 'rotate-180')} />
-            </button>
-
-            <AnimatePresence>
-              {roleSwitcherOpen && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95, y: 4 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95, y: 4 }}
-                  transition={{ duration: 0.15, ease: 'easeOut' }}
-                  className="absolute right-0 mt-2 w-52 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
-                  role="menu"
-                >
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                    Switch Active Role
-                  </div>
-                  {(['seeker', 'mentor', 'admin'] as UserRole[]).map((r) => {
-                    const isAssigned = roles.includes(r) || roles.includes('admin');
-                    return (
-                      <button
-                        key={r}
-                        onClick={() => handleRoleChange(r)}
-                        disabled={!isAssigned}
-                        role="menuitem"
-                        className={cn(
-                          'w-full text-left px-2.5 py-2 text-xs rounded-lg transition-colors capitalize flex items-center justify-between',
-                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950',
-                          !isAssigned
-                            ? 'opacity-40 cursor-not-allowed text-zinc-400'
-                            : currentRole === r
-                            ? 'bg-zinc-100 font-semibold text-zinc-950 cursor-pointer'
-                            : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-950 cursor-pointer'
-                        )}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className={cn('h-2 w-2 rounded-full', currentRole === r ? 'bg-emerald-600' : 'bg-zinc-300')} />
-                          {r} View
-                        </span>
-                        {currentRole === r && <Check className="h-3.5 w-3.5 text-emerald-600" />}
-                      </button>
-                    );
-                  })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* User Profile or Sign In */}
           {isAuthenticated ? (
             <div className="relative" ref={userDropdownRef}>
               <button
@@ -395,35 +321,6 @@ export const TopNavigation: React.FC = () => {
                 })}
               </nav>
 
-              {/* Mobile Role Switcher */}
-              <div className="pt-3 border-t border-zinc-200 space-y-2">
-                <span className="text-xs font-bold text-zinc-500 uppercase tracking-wider block">
-                  Switch Active Role Shell
-                </span>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['seeker', 'mentor', 'admin'] as UserRole[]).map((r) => {
-                    const isAssigned = roles.includes(r) || roles.includes('admin');
-                    return (
-                      <button
-                        key={r}
-                        onClick={() => handleRoleChange(r)}
-                        disabled={!isAssigned}
-                        className={cn(
-                          'py-2 px-2 text-xs rounded-lg font-semibold capitalize border transition-all text-center min-h-[40px] flex items-center justify-center',
-                          !isAssigned
-                            ? 'opacity-30 border-zinc-200 text-zinc-400 cursor-not-allowed'
-                            : currentRole === r
-                            ? 'border-zinc-950 bg-zinc-950 text-white shadow-2xs'
-                            : 'border-zinc-200 bg-zinc-50 text-zinc-700 hover:bg-zinc-100'
-                        )}
-                      >
-                        {r}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {/* Mobile Sign Out / Sign In */}
               <div className="pt-3 border-t border-zinc-200 space-y-2">
                 {isAuthenticated ? (
@@ -457,4 +354,3 @@ export const TopNavigation: React.FC = () => {
     </header>
   );
 };
-

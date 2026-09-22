@@ -4,11 +4,8 @@ import {
   X,
   KeyRound,
   Shield,
-  ArrowRightLeft,
   ChevronRight,
   LogOut,
-  UserCheck,
-  Check,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigation } from '@/src/context/NavigationContext';
@@ -16,15 +13,13 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
 import { ROLE_NAVIGATION } from '@/src/config/navigation';
 import { cn } from '@/src/lib/utils';
-import type { UserRole } from '@/src/types/navigation';
 import { Button } from '@/src/components/ui/Button';
 
 export const AdminSidebar: React.FC = () => {
-  const { currentPath, currentRole, navigate, switchRole } = useNavigation();
-  const { user, profile, signOut, switchActiveRole } = useAuth();
+  const { currentPath, navigate } = useNavigation();
+  const { user, profile, signOut } = useAuth();
   const { unreadCount } = useNotifications();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [roleSwitcherOpen, setRoleSwitcherOpen] = useState(false);
 
   const baseConfig = ROLE_NAVIGATION.admin;
   const config = {
@@ -42,7 +37,6 @@ export const AdminSidebar: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setMobileSidebarOpen(false);
-        setRoleSwitcherOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -148,7 +142,7 @@ export const AdminSidebar: React.FC = () => {
         </div>
       </div>
 
-      {/* Admin User Profile, Role Switcher & Sign Out */}
+      {/* Admin User Profile & Sign Out */}
       <div className="pt-4 border-t border-zinc-200 space-y-3">
         {/* User Card */}
         <div className="rounded-xl bg-white border border-zinc-200 p-2.5 flex items-center gap-2.5 shadow-2xs">
@@ -166,66 +160,6 @@ export const AdminSidebar: React.FC = () => {
           <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[9px] font-bold uppercase tracking-wider">
             Admin
           </span>
-        </div>
-
-        {/* Role Shell Switcher */}
-        <div className="relative">
-          <button
-            onClick={() => setRoleSwitcherOpen(!roleSwitcherOpen)}
-            aria-expanded={roleSwitcherOpen}
-            aria-haspopup="menu"
-            className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 bg-zinc-50 hover:bg-zinc-100 border border-zinc-200 rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 min-h-[40px]"
-          >
-            <span className="flex items-center gap-2">
-              <ArrowRightLeft className="h-3.5 w-3.5 text-zinc-500" />
-              <span>
-                View Shell: <strong className="capitalize text-zinc-950">{currentRole}</strong>
-              </span>
-            </span>
-            <span className="text-[10px] text-zinc-400 font-medium">Switch</span>
-          </button>
-
-          <AnimatePresence>
-            {roleSwitcherOpen && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="absolute bottom-full left-0 mb-2 w-full rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl z-50"
-                role="menu"
-              >
-                <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                  Switch Role Shell
-                </div>
-                {(['seeker', 'mentor', 'admin'] as UserRole[]).map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => {
-                      switchActiveRole(r);
-                      switchRole(r);
-                      setRoleSwitcherOpen(false);
-                      setMobileSidebarOpen(false);
-                    }}
-                    role="menuitem"
-                    className={cn(
-                      'w-full text-left px-2.5 py-2 text-xs rounded-lg transition-colors capitalize flex items-center justify-between cursor-pointer',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950',
-                      currentRole === r
-                        ? 'bg-zinc-100 font-semibold text-zinc-950'
-                        : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-950'
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className={cn('h-2 w-2 rounded-full', currentRole === r ? 'bg-rose-600' : 'bg-zinc-300')} />
-                      <span>{r} Shell</span>
-                    </span>
-                    {currentRole === r && <Check className="h-3.5 w-3.5 text-rose-600" />}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
 
         {/* Sign Out Button */}
@@ -297,4 +231,3 @@ export const AdminSidebar: React.FC = () => {
     </>
   );
 };
-

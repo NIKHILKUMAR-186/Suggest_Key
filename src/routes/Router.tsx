@@ -7,6 +7,12 @@ import { ProtectedRoute } from '@/src/components/auth/ProtectedRoute';
 import { LoginPage } from '@/src/pages/auth/LoginPage';
 import { SignUpPage } from '@/src/pages/auth/SignUpPage';
 import { UnauthorizedPage } from '@/src/pages/auth/UnauthorizedPage';
+import { ForgotPasswordPage } from '@/src/pages/auth/ForgotPasswordPage';
+import { ResetPasswordPage } from '@/src/pages/auth/ResetPasswordPage';
+import { VerifyPage } from '@/src/pages/auth/VerifyPage';
+
+// Landing Page
+import { LandingPage } from '@/src/pages/public/LandingPage';
 
 // Seeker Pages
 import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
@@ -47,18 +53,32 @@ export const Router: React.FC = () => {
   const { activeRole, isAuthenticated } = useAuth();
   const pathname = currentPath.split('?')[0];
 
-  // 1. Dedicated Authentication Routes
+  // 1. Public Landing Page (always accessible)
+  if (pathname === '/') {
+    return <LandingPage />;
+  }
+
+  // 2. Dedicated Authentication Routes (always accessible)
   if (pathname === '/auth/login' || pathname === '/login') {
     return <LoginPage />;
   }
   if (pathname === '/auth/signup' || pathname === '/signup') {
     return <SignUpPage />;
   }
+  if (pathname === '/auth/forgot-password') {
+    return <ForgotPasswordPage />;
+  }
+  if (pathname === '/auth/reset-password') {
+    return <ResetPasswordPage />;
+  }
+  if (pathname === '/auth/verify') {
+    return <VerifyPage />;
+  }
   if (pathname === '/auth/unauthorized' || pathname === '/403') {
     return <UnauthorizedPage />;
   }
 
-  // 2. Admin Routes (Strictly Protected: 'admin' role required)
+  // 3. Admin Routes (Strictly Protected: 'admin' role required)
   if (pathname.startsWith('/admin')) {
     return (
       <ProtectedRoute allowedRoles={['admin']}>
@@ -77,7 +97,7 @@ export const Router: React.FC = () => {
     );
   }
 
-  // 3. Mentor Routes (Strictly Protected: 'mentor' or 'admin' role required)
+  // 4. Mentor Routes (Strictly Protected: 'mentor' or 'admin' role required)
   if (pathname.startsWith('/mentor')) {
     return (
       <ProtectedRoute allowedRoles={['mentor', 'admin']}>
@@ -96,9 +116,9 @@ export const Router: React.FC = () => {
     );
   }
 
-  // 4. Seeker Routes
+  // 5. Seeker Routes
   // Some seeker views are public (discovery, mentor profiles)
-  // Action-oriented views require authentication (bookings, payment, live session)
+  // Action-oriented views require authentication
   if (pathname.startsWith('/seeker') || pathname === '/') {
     if (pathname === '/seeker/mentors') return <SeekerMentorListPage />;
     if (pathname === '/seeker/mentor-detail') return <SeekerMentorDetailPage />;
@@ -154,6 +174,7 @@ export const Router: React.FC = () => {
     }
 
     // Role-aware root redirect if user is authenticated and lands on root '/'
+    // This should not be reached since '/' is handled above, but kept for safety
     if (pathname === '/' && isAuthenticated) {
       if (activeRole === 'admin') return <AdminDashboardPage />;
       if (activeRole === 'mentor') return <MentorHomePage />;
@@ -163,5 +184,6 @@ export const Router: React.FC = () => {
     return <SeekerHomePage />;
   }
 
-  return <SeekerHomePage />;
+  // Default: redirect to landing page
+  return <LandingPage />;
 };

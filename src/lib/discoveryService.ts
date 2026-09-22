@@ -12,8 +12,9 @@ import {
 } from '@/src/types/database';
 import { generateMentorSlots } from '@/src/lib/slotEngine';
 
-// Seeded real Supabase fallback entities (strictly adhering to Postgres Phase 4/5 Schema)
-// Used when external Supabase environment variables are pending user configuration in AI Studio
+// ponytail: FALLBACK_SEGMENTS/FALLBACK_MENTORS are dev-only preview data.
+// Production must use real Supabase data; this fallback is only used when
+// isSupabaseConfigured() is false and the app is running in local preview mode.
 const FALLBACK_SEGMENTS: Segment[] = [
   {
     id: 'seg-rel-01',

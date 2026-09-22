@@ -20,23 +20,6 @@ export interface NotificationDispatchPayload {
 }
 
 /**
- * Normalizes user ID to match database IDs (e.g., usr-8801 <-> 88888888-8888-8888-8888-888888888881)
- */
-export function normalizeUserIds(userId: string): string[] {
-  const map: Record<string, string[]> = {
-    'usr-8801': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-    '88888888-8888-8888-8888-888888888881': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-    'usr-8802': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-    '11111111-1111-1111-1111-111111111111': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-    'usr-mentor-rahul': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-    'usr-8800': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-    '88888888-8888-8888-8888-888888888880': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-    'admin': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-  };
-  return map[userId] || [userId];
-}
-
-/**
  * Fetches real in-app notifications from API / Supabase database.
  */
 export async function fetchUserNotifications(
@@ -64,11 +47,10 @@ export async function fetchUserNotifications(
   // Fallback to Supabase direct query if client configured
   if (isSupabaseConfigured() && supabase) {
     try {
-      const ids = normalizeUserIds(userId);
       let query = supabase
         .from('notifications')
         .select('*')
-        .in('user_id', ids)
+        .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
       if (filter?.status === 'unread') {
@@ -154,11 +136,10 @@ export async function markAllNotificationsAsRead(userId: string): Promise<number
 
   if (isSupabaseConfigured() && supabase) {
     try {
-      const ids = normalizeUserIds(userId);
       const { data, error } = await supabase
         .from('notifications')
         .update({ is_read: true, read_at: new Date().toISOString() })
-        .in('user_id', ids)
+        .eq('user_id', userId)
         .eq('is_read', false)
         .select('id');
       if (!error && data) {

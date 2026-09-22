@@ -9,7 +9,9 @@ import {
 } from '@/src/types/database';
 import { getLocalBookingEngineContext } from './bookingService';
 
-// Default initial mock workspaces for instant preview fidelity & tests
+// ponytail: localWorkspaces is dev-only preview data.
+// Production must use real Supabase data; this fallback is only used when
+// isSupabaseConfigured() is false and the app is running in local preview mode.
 let localWorkspaces: SessionWorkspace[] = [
   {
     id: 'ws-ended-03',

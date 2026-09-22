@@ -30,7 +30,7 @@ import { SessionWorkspace, NextStepItem } from '@/src/types/database';
 export const SeekerWorkspacePage: React.FC = () => {
   const { currentPath, navigate } = useNavigation();
   const { user } = useAuth();
-  const seekerId = user?.id || 'usr-8801';
+  const seekerId = user?.id;
 
   // Read bookingId from URL query param
   const queryBookingId = new URLSearchParams(window.location.search || '').get('bookingId') || '';
@@ -51,6 +51,7 @@ export const SeekerWorkspacePage: React.FC = () => {
   useEffect(() => {
     let mounted = true;
     const loadBookings = async () => {
+      if (!seekerId) return;
       try {
         const bookings = await fetchSeekerBookings(seekerId);
         if (!mounted) return;
@@ -85,7 +86,7 @@ export const SeekerWorkspacePage: React.FC = () => {
 
   // 2. Fetch workspace for chosen booking
   const loadWorkspace = async (bookingId: string) => {
-    if (!bookingId) return;
+    if (!bookingId || !seekerId) return;
 
     setLoading(true);
     setError(null);

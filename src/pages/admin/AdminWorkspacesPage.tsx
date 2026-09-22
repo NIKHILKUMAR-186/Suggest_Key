@@ -31,7 +31,7 @@ import { SessionWorkspace } from '@/src/types/database';
 
 export const AdminWorkspacesPage: React.FC = () => {
   const { user } = useAuth();
-  const adminId = user?.id || 'usr-8800';
+  const adminId = user?.id;
 
   const [workspaces, setWorkspaces] = useState<SessionWorkspace[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -73,7 +73,7 @@ export const AdminWorkspacesPage: React.FC = () => {
   };
 
   const handleAdminSaveNotes = async () => {
-    if (!selectedWorkspace) return;
+    if (!selectedWorkspace || !adminId) return;
 
     setSavingEdit(true);
     setModalFeedback(null);

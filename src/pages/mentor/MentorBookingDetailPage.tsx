@@ -59,9 +59,10 @@ export const MentorBookingDetailPage: React.FC = () => {
   const [feedbackSuccess, setFeedbackSuccess] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
-  const mentorId = user?.id || 'usr-8802';
+  const mentorId = user?.id;
 
   const loadBooking = async (idToLoad: string) => {
+    if (!mentorId) return;
     setLoading(true);
     setFeedbackError(null);
     try {
@@ -119,6 +120,7 @@ export const MentorBookingDetailPage: React.FC = () => {
     setFeedbackSuccess(null);
 
     try {
+      if (!mentorId) return;
       const result = await confirmMentorBooking(booking.id, mentorId, meetingUrl.trim());
 
       if (result.success && result.booking) {

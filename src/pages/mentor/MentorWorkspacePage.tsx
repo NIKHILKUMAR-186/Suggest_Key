@@ -41,7 +41,7 @@ import {
 export const MentorWorkspacePage: React.FC = () => {
   const { currentPath, navigate } = useNavigation();
   const { user } = useAuth();
-  const mentorId = user?.id || 'usr-8802';
+  const mentorId = user?.id;
 
   // Read bookingId from query parameter if present
   const queryBookingId = new URLSearchParams(window.location.search || '').get('bookingId') || '';
@@ -79,6 +79,7 @@ export const MentorWorkspacePage: React.FC = () => {
   useEffect(() => {
     let mounted = true;
     const loadBookings = async () => {
+      if (!mentorId) return;
       try {
         const bookings = await fetchMentorBookings(mentorId);
         if (mounted) {
@@ -212,7 +213,7 @@ export const MentorWorkspacePage: React.FC = () => {
 
   // Handler: Save workspace (Draft or Publish)
   const handleSave = async (publish: boolean) => {
-    if (!selectedBookingId) {
+    if (!selectedBookingId || !mentorId) {
       setFeedbackError('Please select a session booking first.');
       return;
     }

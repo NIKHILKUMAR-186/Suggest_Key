@@ -34,9 +34,10 @@ export const MentorNotificationsPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'read'>('all');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
 
-  const mentorId = user?.id || 'usr-8802';
+  const mentorId = user?.id;
 
   const loadNotifs = async () => {
+    if (!mentorId) return;
     setLoading(true);
     try {
       const data = await fetchUserNotifications(mentorId, {
@@ -57,6 +58,7 @@ export const MentorNotificationsPage: React.FC = () => {
   }, [mentorId, statusFilter, typeFilter]);
 
   const handleMarkRead = async (id: string) => {
+    if (!mentorId) return;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
     );
@@ -65,6 +67,7 @@ export const MentorNotificationsPage: React.FC = () => {
   };
 
   const handleMarkAllRead = async () => {
+    if (!mentorId) return;
     setNotifications((prev) =>
       prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))
     );
@@ -123,11 +126,13 @@ export const MentorNotificationsPage: React.FC = () => {
       </div>
 
       {/* Simulator bar for testing all 8 Mentor events */}
-      <NotificationSimulator
-        userId={mentorId}
-        role="mentor"
-        onEventDispatched={loadNotifs}
-      />
+      {mentorId && (
+        <NotificationSimulator
+          userId={mentorId}
+          role="mentor"
+          onEventDispatched={loadNotifs}
+        />
+      )}
 
       {/* Filter Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">

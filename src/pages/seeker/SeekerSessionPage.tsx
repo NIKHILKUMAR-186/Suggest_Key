@@ -86,7 +86,7 @@ export const SeekerSessionPage: React.FC = () => {
   const [secondsUntilStart, setSecondsUntilStart] = useState<number>(0);
   const [secondsUntilEnd, setSecondsUntilEnd] = useState<number>(0);
 
-  const userId = user?.id || 'usr-8801';
+  const userId = user?.id;
 
   // Compute effective simulation timestamp if offset is applied
   const getEffectiveTime = useCallback((): Date | undefined => {
@@ -97,6 +97,7 @@ export const SeekerSessionPage: React.FC = () => {
   // Load authoritative session access state from server
   const loadSessionAccess = useCallback(
     async (bId: string) => {
+      if (!userId) return;
       setLoading(true);
       setServerError(null);
       try {
@@ -154,6 +155,7 @@ export const SeekerSessionPage: React.FC = () => {
 
   // Handle authoritative join session action
   const handleJoinSession = async () => {
+    if (!userId) return;
     setJoining(true);
     setServerError(null);
     setActionNotice(null);

@@ -14,9 +14,10 @@ export const MentorBookingsPage: React.FC = () => {
   const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const mentorId = user?.id || 'usr-8802';
+  const mentorId = user?.id;
 
   const loadData = async () => {
+    if (!mentorId) return;
     setLoading(true);
     try {
       const data = await fetchMentorBookings(mentorId);

@@ -5,67 +5,6 @@ import { supabase, isSupabaseConfigured, fetchUserProfile, fetchUserRoles, upser
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Demo test personas for local preview / unconfigured environment
-const DEMO_USERS: Record<string, { user: User; profile: Profile; roles: UserRole[] }> = {
-  'seeker@suggestkey.com': {
-    user: {
-      id: 'usr-8801',
-      app_metadata: {},
-      user_metadata: { full_name: 'Aman Kumar' },
-      aud: 'authenticated',
-      created_at: '2026-01-10T00:00:00Z',
-      email: 'suggestkey1505@gmail.com',
-    } as unknown as User,
-    profile: {
-      id: 'usr-8801',
-      email: 'suggestkey1505@gmail.com',
-      full_name: 'Aman Kumar',
-      timezone: 'Asia/Kolkata',
-      created_at: '2026-01-10T00:00:00Z',
-      updated_at: '2026-01-10T00:00:00Z',
-    },
-    roles: ['seeker'],
-  },
-  'mentor@suggestkey.com': {
-    user: {
-      id: 'usr-8802',
-      app_metadata: {},
-      user_metadata: { full_name: 'Rahul Sharma' },
-      aud: 'authenticated',
-      created_at: '2026-01-12T00:00:00Z',
-      email: 'mentor.rahul@suggestkey.com',
-    } as unknown as User,
-    profile: {
-      id: 'usr-8802',
-      email: 'mentor.rahul@suggestkey.com',
-      full_name: 'Rahul Sharma',
-      timezone: 'Asia/Kolkata',
-      created_at: '2026-01-12T00:00:00Z',
-      updated_at: '2026-01-12T00:00:00Z',
-    },
-    roles: ['mentor', 'seeker'],
-  },
-  'admin@suggestkey.com': {
-    user: {
-      id: 'usr-8800',
-      app_metadata: {},
-      user_metadata: { full_name: 'Platform Administrator' },
-      aud: 'authenticated',
-      created_at: '2026-01-01T00:00:00Z',
-      email: 'admin@suggestkey.com',
-    } as unknown as User,
-    profile: {
-      id: 'usr-8800',
-      email: 'admin@suggestkey.com',
-      full_name: 'Platform Administrator',
-      timezone: 'UTC',
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-    },
-    roles: ['admin', 'seeker'],
-  },
-};
-
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -75,13 +14,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [isConfigured] = useState<boolean>(isSupabaseConfigured());
-
-  // Helper to determine primary role
-  const determinePrimaryRole = (userRoles: UserRole[]): UserRole => {
-    if (userRoles.includes('admin')) return 'admin';
-    if (userRoles.includes('mentor')) return 'mentor';
-    return 'seeker';
-  };
 
   // Sync Supabase user profile and roles
   const loadUserData = useCallback(async (supabaseUser: User) => {
@@ -114,8 +46,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           : [(supabaseUser.user_metadata?.requested_role as UserRole) || 'seeker'];
       setRoles(effectiveRoles);
 
-      // 3. Set Active Role
-      const primary = determinePrimaryRole(effectiveRoles);
+      // 3. Set Active Role (from database, never frontend-assigned)
+      const primary: UserRole = effectiveRoles.includes('admin')
+        ? 'admin'
+        : effectiveRoles.includes('mentor')
+          ? 'mentor'
+          : 'seeker';
       setActiveRole(primary);
     } catch (err: any) {
       console.error('Error loading Supabase user data:', err);
@@ -170,21 +106,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           subscription.unsubscribe();
         };
       } else {
-        // Fallback: Check local storage for simulated active user
+        // Fallback: Check local storage for simulated active user (DEV ONLY)
         try {
           const savedDemoKey = localStorage.getItem('suggestkey_demo_auth_user');
-          if (savedDemoKey && DEMO_USERS[savedDemoKey]) {
-            const demo = DEMO_USERS[savedDemoKey];
-            setUser(demo.user);
-            setProfile(demo.profile);
-            setRoles(demo.roles);
-            setActiveRole(determinePrimaryRole(demo.roles));
-          } else {
-            // Default to demo seeker logged in for seamless preview review
-            const defaultDemo = DEMO_USERS['seeker@suggestkey.com'];
-            setUser(defaultDemo.user);
-            setProfile(defaultDemo.profile);
-            setRoles(defaultDemo.roles);
+          if (savedDemoKey) {
+            const demo = { id: savedDemoKey, email: savedDemoKey, full_name: savedDemoKey, timezone: 'Asia/Kolkata', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+            setUser(demo as unknown as User);
+            setProfile(demo as Profile);
+            setRoles(['seeker']);
             setActiveRole('seeker');
           }
         } catch {
@@ -203,7 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [isConfigured, loadUserData]);
 
   // Sign In with email & password
-  const signInWithPassword = async (email: string, password: string) => {
+  const signInWithPassword = async (email: string, password: string): Promise<{ error: Error | null }> => {
     setError(null);
     setIsLoading(true);
 
@@ -226,30 +155,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setIsLoading(false);
       return { error: null };
-    } else {
-      // Fallback demo auth
-      const cleanEmail = email.trim().toLowerCase();
-      let matched = DEMO_USERS[cleanEmail];
-
-      if (!matched) {
-        if (cleanEmail.includes('admin')) matched = DEMO_USERS['admin@suggestkey.com'];
-        else if (cleanEmail.includes('mentor')) matched = DEMO_USERS['mentor@suggestkey.com'];
-        else matched = DEMO_USERS['seeker@suggestkey.com'];
-      }
-
-      setUser(matched.user);
-      setProfile(matched.profile);
-      setRoles(matched.roles);
-      const targetRole = determinePrimaryRole(matched.roles);
-      setActiveRole(targetRole);
-
-      try {
-        localStorage.setItem('suggestkey_demo_auth_user', cleanEmail in DEMO_USERS ? cleanEmail : 'seeker@suggestkey.com');
-      } catch {}
-
-      setIsLoading(false);
-      return { error: null };
     }
+    return { error: null };
   };
 
   // Sign Up with email, password, full name, and requested role
@@ -258,7 +165,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string,
     fullName: string,
     requestedRole: UserRole = 'seeker'
-  ) => {
+  ): Promise<{ error: Error | null; user?: User | null }> => {
     setError(null);
     setIsLoading(true);
 
@@ -288,41 +195,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setIsLoading(false);
       return { error: null, user: data.user };
-    } else {
-      // Fallback demo signup
-      const newUserId = `usr-${Date.now().toString().slice(-4)}`;
-      const newUser: User = {
-        id: newUserId,
-        email,
-        app_metadata: {},
-        user_metadata: { full_name: fullName },
-        aud: 'authenticated',
-        created_at: new Date().toISOString(),
-      } as unknown as User;
-
-      const newProfile: Profile = {
-        id: newUserId,
-        email,
-        full_name: fullName,
-        timezone: 'Asia/Kolkata',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      const newRoles: UserRole[] = [requestedRole];
-
-      setUser(newUser);
-      setProfile(newProfile);
-      setRoles(newRoles);
-      setActiveRole(requestedRole);
-
-      try {
-        localStorage.setItem('suggestkey_demo_auth_user', email);
-      } catch {}
-
-      setIsLoading(false);
-      return { error: null, user: newUser };
     }
+    return { error: null };
   };
 
   // Sign Out
@@ -330,10 +204,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(true);
     if (isConfigured) {
       await supabase.auth.signOut();
-    } else {
-      try {
-        localStorage.removeItem('suggestkey_demo_auth_user');
-      } catch {}
     }
     setUser(null);
     setSession(null);
@@ -347,16 +217,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const hasRole = useCallback((role: UserRole): boolean => {
     return roles.includes(role);
   }, [roles]);
-
-  // Switch active role within granted roles
-  const switchActiveRole = (targetRole: UserRole): boolean => {
-    if (!hasRole(targetRole) && !roles.includes('admin')) {
-      setError(`Cannot switch to ${targetRole}: Role authorization not granted.`);
-      return false;
-    }
-    setActiveRole(targetRole);
-    return true;
-  };
 
   const clearError = () => setError(null);
 
@@ -375,7 +235,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signInWithPassword,
         signUp,
         signOut,
-        switchActiveRole,
         hasRole,
         clearError,
       }}

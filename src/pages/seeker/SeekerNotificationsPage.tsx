@@ -35,9 +35,10 @@ export const SeekerNotificationsPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'read'>('all');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
 
-  const seekerId = user?.id || 'usr-8801';
+  const seekerId = user?.id;
 
   const loadNotifs = async () => {
+    if (!seekerId) return;
     setLoading(true);
     try {
       const data = await fetchUserNotifications(seekerId, {
@@ -58,6 +59,7 @@ export const SeekerNotificationsPage: React.FC = () => {
   }, [seekerId, statusFilter, typeFilter]);
 
   const handleMarkRead = async (id: string) => {
+    if (!seekerId) return;
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
     );
@@ -66,6 +68,7 @@ export const SeekerNotificationsPage: React.FC = () => {
   };
 
   const handleMarkAllRead = async () => {
+    if (!seekerId) return;
     setNotifications((prev) =>
       prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))
     );
@@ -124,11 +127,13 @@ export const SeekerNotificationsPage: React.FC = () => {
       </div>
 
       {/* Simulator bar for testing all 11 Seeker events */}
-      <NotificationSimulator
-        userId={seekerId}
-        role="seeker"
-        onEventDispatched={loadNotifs}
-      />
+      {seekerId && (
+        <NotificationSimulator
+          userId={seekerId}
+          role="seeker"
+          onEventDispatched={loadNotifs}
+        />
+      )}
 
       {/* Filter Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">

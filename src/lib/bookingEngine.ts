@@ -12,6 +12,7 @@ import {
 } from '@/src/types/database';
 import { Profile, UserRole } from '@/src/types/auth';
 import { parseZonedDateTime, isSlotConflicting } from './slotEngine';
+import { APP_CONFIG, HOLDOUT_MINUTES, SESSION_ACCESS_WINDOW_MINUTES } from '@/src/config/app';
 
 export type { Notification };
 
@@ -387,7 +388,7 @@ export async function executeAtomicBookingWithHold(
         success: false,
         error: {
           code: 'SLOT_HELD_BY_OTHER',
-          message: 'The requested slot is currently held by another seeker (15-minute hold active).',
+          message: `The requested slot is currently held by another seeker (${HOLDOUT_MINUTES}-minute hold active).`,
         },
       };
     }
@@ -395,7 +396,7 @@ export async function executeAtomicBookingWithHold(
     // ------------------------------------------------------------------------
     // ATOMIC TRANSACTION: CREATE 15-MINUTE HOLD & PAYMENT_PENDING BOOKING
     // ------------------------------------------------------------------------
-    const holdExpiresAt = new Date(currentUtcTime.getTime() + 15 * 60 * 1000).toISOString();
+    const holdExpiresAt = new Date(currentUtcTime.getTime() + APP_CONFIG.HOLD_DURATION_MS).toISOString();
     const holdId = 'hold-' + Math.random().toString(36).substring(2, 11);
 
     const newHold: SlotHold = {
@@ -547,7 +548,7 @@ export function calculateMeetingLinkDeadline(
   nowUtc: Date = new Date()
 ): MeetingLinkDeadlineInfo {
   const sessionStartMs = new Date(startTimeUtc).getTime();
-  const deadlineMs = sessionStartMs - 2 * 60 * 60 * 1000;
+  const deadlineMs = sessionStartMs - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
   const nowMs = nowUtc.getTime();
 
   const isOverdue = nowMs > deadlineMs;
@@ -610,10 +611,7 @@ export async function confirmSessionByMentor(
   }
 
   // 2. Ownership check: mentor must own the booking
-  const isOwner =
-    booking.mentor_id === input.mentorId ||
-    (booking.mentor_id === 'usr-mentor-rahul' && input.mentorId === 'usr-8802') ||
-    (booking.mentor_id === 'usr-8802' && input.mentorId === 'usr-mentor-rahul');
+  const isOwner = booking.mentor_id === input.mentorId;
 
   if (!isOwner) {
     return {
@@ -868,12 +866,9 @@ export function validateSessionAccess(
 
   // 2. Authorize user: caller must be seeker, mentor, or mentor alias
   const isSeeker = booking.seeker_id === input.userId;
-  const isMentor =
-    booking.mentor_id === input.userId ||
-    (booking.mentor_id === 'usr-mentor-rahul' && input.userId === 'usr-8802') ||
-    (booking.mentor_id === 'usr-8802' && input.userId === 'usr-mentor-rahul');
+  const isMentor = booking.mentor_id === input.userId;
   const userRole = db.userRoles.find((r) => r.user_id === input.userId)?.role;
-  const isAdmin = userRole === 'admin' || input.userId === 'usr-8800';
+  const isAdmin = userRole === 'admin';
 
   if (!isSeeker && !isMentor && !isAdmin) {
     return {
@@ -987,7 +982,7 @@ export function validateSessionAccess(
   // 4. Compute authoritative time windows
   const startMs = new Date(booking.start_time).getTime();
   const endMs = new Date(booking.end_time).getTime();
-  const t5Ms = startMs - 5 * 60 * 1000; // T - 5 minutes
+    const t5Ms = startMs - APP_CONFIG.SESSION_ACCESS_WINDOW_MS;
 
   const secondsUntilT5 = Math.max(0, Math.ceil((t5Ms - nowMs) / 1000));
   const secondsUntilStart = Math.max(0, Math.ceil((startMs - nowMs) / 1000));

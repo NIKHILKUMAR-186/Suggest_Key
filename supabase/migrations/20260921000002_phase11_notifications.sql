@@ -67,6 +67,8 @@ CREATE POLICY "Users can update own or admin update notifications"
   WITH CHECK (user_id = auth.uid() OR public.is_admin());
 
 -- Policy: Users or system can insert notifications
+DROP POLICY IF EXISTS "Allow authenticated users and admin to insert notifications" ON public.notifications;
+
 CREATE POLICY "Allow authenticated users and admin to insert notifications"
   ON public.notifications FOR INSERT
   WITH CHECK (auth.uid() IS NOT NULL OR public.is_admin());
@@ -110,6 +112,24 @@ END;
 $$;
 
 -- ==============================================================================
+-- 3b. ENSURE SEED PROFILES EXIST (self-contained; safe if Phase 5 already ran)
+-- Only inserts when the matching auth.users row exists, so the FK to auth.users
+-- (profiles.id -> auth.users.id) is always satisfied.
+-- ==============================================================================
+DO $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name, timezone)
+  SELECT id, email, full_name, timezone
+  FROM (VALUES
+    ('88888888-8888-8888-8888-888888888881'::uuid, 'seeker.aman@suggestkey.com', 'Aman Kumar', 'Asia/Kolkata'),
+    ('11111111-1111-1111-1111-111111111111'::uuid, 'mentor.rahul@suggestkey.com', 'Rahul Sharma', 'Asia/Kolkata'),
+    ('88888888-8888-8888-8888-888888888880'::uuid, 'admin.operations@suggestkey.com', 'Admin Operations', 'Asia/Kolkata')
+  ) AS v(id, email, full_name, timezone)
+  WHERE EXISTS (SELECT 1 FROM auth.users u WHERE u.id = v.id)
+  ON CONFLICT (id) DO NOTHING;
+END $$;
+
+-- ==============================================================================
 -- 4. REAL DATABASE SEED NOTIFICATIONS
 -- Matches all required events across Seeker, Mentor, and Admin roles
 -- ==============================================================================
@@ -147,10 +167,13 @@ WHERE id IN (
 -- ------------------------------------------------------------------------------
 -- A. SEEKER NOTIFICATIONS (Aman Kumar: usr-8801 / 88888888-8888-8888-8888-888888888881)
 -- ------------------------------------------------------------------------------
-INSERT INTO public.notifications (
-  id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
-)
-VALUES
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = '88888888-8888-8888-8888-888888888881') THEN
+    INSERT INTO public.notifications (
+      id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
+    )
+    VALUES
   -- 1. booking created
   (
     'e0000001-0000-0000-0000-000000000001',
@@ -305,14 +328,19 @@ VALUES
     FALSE,
     NOW() - INTERVAL '1 hour'
   );
+  END IF;
+END $$;
 
 -- ------------------------------------------------------------------------------
 -- B. MENTOR NOTIFICATIONS (Rahul Sharma: usr-8802 / 11111111-1111-1111-1111-111111111111)
 -- ------------------------------------------------------------------------------
-INSERT INTO public.notifications (
-  id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
-)
-VALUES
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = '11111111-1111-1111-1111-111111111111') THEN
+    INSERT INTO public.notifications (
+      id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
+    )
+    VALUES
   -- 1. payment approved
   (
     'e0000002-0000-0000-0000-000000000001',
@@ -425,14 +453,19 @@ VALUES
     FALSE,
     NOW() - INTERVAL '90 minutes'
   );
+  END IF;
+END $$;
 
 -- ------------------------------------------------------------------------------
 -- C. ADMIN NOTIFICATIONS (Admin Ops: usr-8800 / 88888888-8888-8888-8888-888888888880)
 -- ------------------------------------------------------------------------------
-INSERT INTO public.notifications (
-  id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
-)
-VALUES
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.profiles WHERE id = '88888888-8888-8888-8888-888888888880') THEN
+    INSERT INTO public.notifications (
+      id, user_id, title, message, type, event_type, entity_type, entity_id, link, is_read, created_at
+    )
+    VALUES
   -- 1. payment proof submitted
   (
     'e0000003-0000-0000-0000-000000000001',
@@ -489,3 +522,5 @@ VALUES
     FALSE,
     NOW() - INTERVAL '10 minutes'
   );
+  END IF;
+END $$;

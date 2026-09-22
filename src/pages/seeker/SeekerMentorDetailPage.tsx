@@ -85,11 +85,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
 
   const handleReserveSlot = async () => {
     if (!selectedSlot || !mentorData) return;
+    const seekerId = user?.id;
+    if (!seekerId) return;
 
     setIsReserving(true);
     setBookingConflictError(null);
-
-    const seekerId = user?.id || 'usr-8801';
 
     try {
       const result = await createBookingWithHold({

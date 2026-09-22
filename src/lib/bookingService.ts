@@ -916,7 +916,7 @@ export async function fetchMentorBookings(
   }
 
   const db = getLocalBookingEngineContext();
-  const mentorIds = [mentorId, mentorId === 'usr-8802' ? 'usr-mentor-rahul' : 'usr-8802'];
+  const mentorIds = [mentorId];
 
   let matched = db.bookings.filter((b) => mentorIds.includes(b.mentor_id));
   if (statusFilter && statusFilter !== 'ALL') {
@@ -933,7 +933,7 @@ export async function fetchMentorBookings(
  */
 export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBookingRecord[]> {
   const db = getLocalBookingEngineContext();
-  const seekerIds = [seekerId, 'usr-8801', 'usr-seeker-demo'];
+  const seekerIds = [seekerId];
   const matched = db.bookings.filter((b) => seekerIds.includes(b.seeker_id));
   matched.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
   return matched.map((b) => enrichBooking(b, db));
@@ -1037,7 +1037,7 @@ export async function fetchUserNotifications(userId: string): Promise<Notificati
   }
 
   const db = getLocalBookingEngineContext();
-  const userIds = [userId, userId === 'usr-8802' ? 'usr-mentor-rahul' : 'usr-8802'];
+  const userIds = [userId];
   return (db.notifications || [])
     .filter((n) => userIds.includes(n.user_id))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());

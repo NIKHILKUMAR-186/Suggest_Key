@@ -270,17 +270,7 @@ async function startServer() {
       const db = getLocalBookingEngineContext();
       
       // Normalize user aliases
-      const userAliasMap: Record<string, string[]> = {
-        'usr-8801': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-        '88888888-8888-8888-8888-888888888881': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-        'usr-8802': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-        '11111111-1111-1111-1111-111111111111': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-        'usr-mentor-rahul': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-        'usr-8800': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-        '88888888-8888-8888-8888-888888888880': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-        'admin': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-      };
-      const userIds = userAliasMap[userId] || [userId];
+      const userIds = [userId];
 
       let list = (db.notifications || []).filter((n) => userIds.includes(n.user_id));
 
@@ -384,12 +374,7 @@ async function startServer() {
       const db = getLocalBookingEngineContext();
       if (!db.notifications) db.notifications = [];
 
-      const userAliasMap: Record<string, string[]> = {
-        'usr-8801': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-        'usr-8802': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-        'usr-8800': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-      };
-      const userIds = userAliasMap[userId] || [userId];
+      const userIds = [userId];
 
       let updatedCount = 0;
       const nowIso = new Date().toISOString();
