@@ -1,25 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import {
   Bell,
-  CheckCircle2,
-  Clock,
-  CreditCard,
-  Video,
-  FileText,
   Check,
   Loader2,
   CheckCheck,
-  Filter,
-  RefreshCw,
 } from 'lucide-react';
+import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
-import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
 import { NotificationCard } from '@/src/components/notifications/NotificationCard';
-import { NotificationSimulator } from '@/src/components/notifications/NotificationSimulator';
 import {
   fetchUserNotifications,
   markNotificationAsRead,
@@ -61,7 +53,9 @@ export const SeekerNotificationsPage: React.FC = () => {
   const handleMarkRead = async (id: string) => {
     if (!seekerId) return;
     setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
+      prev.map((n) =>
+        n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n
+      )
     );
     await markNotificationAsRead(id, seekerId);
     await refreshContext();
@@ -79,12 +73,17 @@ export const SeekerNotificationsPage: React.FC = () => {
   const unreadCount = notifications.filter((n) => !n.is_read).length;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.23, 1, 0.31, 1] }}
+      className="max-w-4xl mx-auto space-y-6"
+    >
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200/80 pb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl font-display">
               Notifications
             </h1>
             {unreadCount > 0 && (
@@ -93,12 +92,13 @@ export const SeekerNotificationsPage: React.FC = () => {
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-xs text-zinc-500">
-            Authoritative in-app alerts for your bookings, payment verifications, session rooms, and mentor workspace notes.
+          <p className="mt-1 text-sm text-zinc-500">
+            Authoritative in-app alerts for your bookings, payment verifications, session rooms,
+            and mentor workspace notes.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-center">
+        <div className="flex items-center gap-2">
           {unreadCount > 0 && (
             <Button
               id="mark-all-read-btn"
@@ -111,7 +111,6 @@ export const SeekerNotificationsPage: React.FC = () => {
               <span>Mark all as read</span>
             </Button>
           )}
-
           <Button
             id="refresh-notifs-btn"
             onClick={loadNotifs}
@@ -120,33 +119,33 @@ export const SeekerNotificationsPage: React.FC = () => {
             className="text-xs gap-1.5 h-8"
             disabled={loading}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            {loading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
             <span>Refresh</span>
           </Button>
         </div>
       </div>
 
-      {/* Simulator bar for testing all 11 Seeker events */}
-      {seekerId && (
-        <NotificationSimulator
-          userId={seekerId}
-          role="seeker"
-          onEventDispatched={loadNotifs}
-        />
-      )}
-
       {/* Filter Tabs */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">
-        <div className="flex items-center gap-1 overflow-x-auto">
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.05 }}
+        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200"
+      >
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           {(['all', 'unread', 'read'] as const).map((st) => (
             <button
               key={st}
               id={`filter-status-${st}`}
               onClick={() => setStatusFilter(st)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg capitalize transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                 statusFilter === st
-                  ? 'bg-white text-zinc-950 shadow-xs border border-zinc-200/80 font-semibold'
-                  : 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100'
+                  ? 'bg-white text-zinc-950 shadow-xs border border-zinc-200 font-semibold'
+                  : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
               }`}
             >
               {st} {st === 'unread' && unreadCount > 0 && `(${unreadCount})`}
@@ -154,16 +153,16 @@ export const SeekerNotificationsPage: React.FC = () => {
           ))}
         </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto">
+        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
           <span className="text-[11px] font-medium text-zinc-400 pl-1">Category:</span>
           {['ALL', 'BOOKING', 'PAYMENT', 'SESSION', 'WORKSPACE'].map((cat) => (
             <button
               key={cat}
               id={`filter-cat-${cat.toLowerCase()}`}
               onClick={() => setTypeFilter(cat)}
-              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer ${
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                 typeFilter === cat
-                  ? 'bg-zinc-900 text-white font-semibold'
+                  ? 'bg-amber-900 text-white font-semibold'
                   : 'bg-white text-zinc-600 border border-zinc-200 hover:bg-zinc-100'
               }`}
             >
@@ -171,7 +170,7 @@ export const SeekerNotificationsPage: React.FC = () => {
             </button>
           ))}
         </div>
-      </div>
+      </motion.div>
 
       {/* Notification List */}
       {loading ? (
@@ -186,21 +185,35 @@ export const SeekerNotificationsPage: React.FC = () => {
           description={
             statusFilter === 'unread'
               ? 'You have read all pending alerts. Switch to "All" to review earlier booking activity.'
-              : 'You do not have any notifications matching this filter yet. You can trigger simulated lifecycle events using the panel above.'
+              : 'You do not have any notifications matching this filter yet.'
           }
         />
       ) : (
-        <div className="space-y-3">
+        <motion.div
+          initial="hidden"
+          animate="show"
+          variants={{
+            hidden: { opacity: 0 },
+            show: { opacity: 1, transition: { staggerChildren: 0.04 } },
+          }}
+          className="space-y-3"
+        >
           {notifications.map((n) => (
-            <NotificationCard
+            <motion.div
               key={n.id}
-              notification={n}
-              onMarkRead={handleMarkRead}
-              role="seeker"
-            />
+              variants={{ hidden: { opacity: 0, y: 4 }, show: { opacity: 1, y: 0 } }}
+            >
+              <NotificationCard
+                notification={n}
+                onMarkRead={handleMarkRead}
+                role="seeker"
+              />
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       )}
-    </div>
+    </motion.div>
   );
 };
+
+export default SeekerNotificationsPage;

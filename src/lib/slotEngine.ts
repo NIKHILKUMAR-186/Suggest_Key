@@ -77,6 +77,17 @@ export function formatLocalTimeLabel(timeStr: string): string {
   return `${displayHour}:${displayMin} ${period}`;
 }
 
+export function formatDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('en-IN', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
 /**
  * Returns day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday) for a date string (YYYY-MM-DD)
  */

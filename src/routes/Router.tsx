@@ -116,72 +116,27 @@ export const Router: React.FC = () => {
     );
   }
 
-  // 5. Seeker Routes
-  // Some seeker views are public (discovery, mentor profiles)
-  // Action-oriented views require authentication
-  if (pathname.startsWith('/seeker') || pathname === '/') {
-    if (pathname === '/seeker/mentors') return <SeekerMentorListPage />;
-    if (pathname === '/seeker/mentor-detail') return <SeekerMentorDetailPage />;
+  // 5. Seeker Routes (Strictly Protected: 'seeker' or 'admin' role required)
+  if (pathname.startsWith('/seeker')) {
+    return (
+      <ProtectedRoute allowedRoles={['seeker', 'admin']}>
+        {(() => {
+          if (pathname === '/seeker/mentors') return <SeekerMentorListPage />;
+          if (pathname === '/seeker/mentor-detail') return <SeekerMentorDetailPage />;
 
-    if (pathname === '/seeker/payment' || pathname === '/seeker/checkout') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerPaymentPage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/bookings') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerBookingsPage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/booking-detail') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerBookingDetailPage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/session') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerSessionPage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/workspace') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerWorkspacePage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/notifications') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerNotificationsPage />
-        </ProtectedRoute>
-      );
-    }
-    if (pathname === '/seeker/settings') {
-      return (
-        <ProtectedRoute requireAuth={true} allowedRoles={['seeker', 'admin', 'mentor']}>
-          <SeekerSettingsPage />
-        </ProtectedRoute>
-      );
-    }
-
-    // Role-aware root redirect if user is authenticated and lands on root '/'
-    // This should not be reached since '/' is handled above, but kept for safety
-    if (pathname === '/' && isAuthenticated) {
-      if (activeRole === 'admin') return <AdminDashboardPage />;
-      if (activeRole === 'mentor') return <MentorHomePage />;
-      return <SeekerHomePage />;
-    }
-
-    return <SeekerHomePage />;
+          if (pathname === '/seeker/payment' || pathname === '/seeker/checkout') {
+            return <SeekerPaymentPage />;
+          }
+          if (pathname === '/seeker/bookings') return <SeekerBookingsPage />;
+          if (pathname === '/seeker/booking-detail') return <SeekerBookingDetailPage />;
+          if (pathname === '/seeker/session') return <SeekerSessionPage />;
+          if (pathname === '/seeker/workspace') return <SeekerWorkspacePage />;
+          if (pathname === '/seeker/notifications') return <SeekerNotificationsPage />;
+          if (pathname === '/seeker/settings') return <SeekerSettingsPage />;
+          return <SeekerHomePage />;
+        })()}
+      </ProtectedRoute>
+    );
   }
 
   // Default: redirect to landing page

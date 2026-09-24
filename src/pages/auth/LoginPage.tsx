@@ -1,130 +1,187 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { AuthLayout, AuthEyebrow, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
-import { Button } from '@/src/components/ui/Button';
+import { BrandPanel } from '@/src/components/auth/BrandPanel';
+import { PasswordInput } from '@/src/components/ui/PasswordInput';
 import { Input } from '@/src/components/ui/Input';
-import { AlertCircle, ArrowLeft, CheckCircle2, Sparkles, Lock } from 'lucide-react';
+import { Button } from '@/src/components/ui/Button';
+import mapAuthError from '@/src/lib/authErrors';
+import { AlertCircle, ArrowLeft, KeyRound } from 'lucide-react';
 import type { UserRole } from '@/src/types/auth';
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export const LoginPage: React.FC = () => {
-  const { signInWithPassword, error, clearError, isConfigured, activeRole } = useAuth();
+  const { signInWithPassword, signInWithDemoPersona, error, clearError, activeRole, isAuthenticated } = useAuth();
   const { navigate } = useNavigation();
 
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim() || !password) return;
-
-    setIsSubmitting(true);
-    setFeedback(null);
-    clearError();
-
-    const res = await signInWithPassword(email.trim(), password);
-    setIsSubmitting(false);
-
-    if (res.error) {
-      setFeedback(res.error.message);
-    } else {
-      // Role-aware redirect based on database role
+  // Redirect already-authenticated users to their role-specific app
+  useEffect(() => {
+    if (isAuthenticated && activeRole) {
       if (activeRole === 'admin') navigate('/admin');
       else if (activeRole === 'mentor') navigate('/mentor');
       else navigate('/seeker');
     }
+  }, [isAuthenticated, activeRole, navigate]);
+
+  const validateEmail = () => {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setEmailError('Enter your email address.');
+      return 'Enter your email address.';
+    }
+    if (!EMAIL_PATTERN.test(trimmedEmail)) {
+      setEmailError('Enter a valid email address.');
+      return 'Enter a valid email address.';
+    }
+    setEmailError(null);
+    return null;
   };
 
+  const validatePassword = () => {
+    if (!password) {
+      setPasswordError('Enter your password.');
+      return 'Enter your password.';
+    }
+    setPasswordError(null);
+    return null;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedback(null);
+    clearError();
+
+    const emailValidationError = validateEmail();
+    const passwordValidationError = validatePassword();
+    if (emailValidationError || passwordValidationError) {
+      if (emailValidationError) emailRef.current?.focus();
+      else passwordRef.current?.focus();
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const res = await signInWithPassword(email.trim(), password);
+
+      if (res.error) {
+        setFeedback(mapAuthError(res.error));
+      } else {
+        const targetRole = res.role ?? activeRole;
+        if (targetRole === 'admin') navigate('/admin');
+        else if (targetRole === 'mentor') navigate('/mentor');
+        else navigate('/seeker');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const friendlyError = error ? mapAuthError(new Error(error)) : null;
+  const displayError = feedback ?? friendlyError;
+
   return (
-    <AuthLayout>
+    <AuthLayout brandPanel={<BrandPanel />}>
       <div className="auth-card space-y-6">
-        {/* Brand */}
-        <div className="text-center space-y-2">
-          <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#663af3] text-white shadow-xs">
-              <Sparkles className="h-5 w-5" />
-            </div>
-            <span className="text-base font-bold tracking-tight text-white" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
-              Suggest Key
-            </span>
+        <div className="text-center">
+          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-sm">
+            <KeyRound className="h-5 w-5" aria-hidden="true" />
           </div>
-          <AuthEyebrow>Welcome Back</AuthEyebrow>
-          <AuthHeading>Sign In</AuthHeading>
-          <AuthBody>Access your mentorship workspace</AuthBody>
-        </div>
-
-        {/* Status Badge */}
-        <div className={`rounded-lg p-3 text-xs border flex items-start gap-2.5 ${
-          isConfigured
-            ? 'bg-[rgba(199,211,234,0.06)] border-[rgba(186,215,247,0.12)] text-[#c7d3ea]'
-            : 'bg-[rgba(199,211,234,0.06)] border-[rgba(186,215,247,0.12)] text-[#c7d3ea]'
-        }`}>
-          {isConfigured ? (
-            <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-[#b6d9fc]" />
-          ) : (
-            <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-[#9da7ba]" />
-          )}
-          <div className="space-y-0.5">
-            <span className="font-medium block text-[#d1e4fa]">
-              {isConfigured ? 'Supabase Backend Connected' : 'Preview Sandbox Mode Active'}
-            </span>
-            <p className="text-[11px] leading-relaxed text-[#9da7ba]">
-              {isConfigured
-                ? 'Authoritative Supabase Auth & PostgreSQL RLS are active.'
-                : 'Using local role test personas for validation. Configure VITE_SUPABASE_URL to link cloud project.'}
-            </p>
+          <div className="mt-4 space-y-2">
+            <AuthHeading className="mb-2">Welcome back</AuthHeading>
+            <AuthBody className="mb-0">Sign in to continue your mentorship journey.</AuthBody>
           </div>
         </div>
 
-        {/* Error Notice */}
-        {(error || feedback) && (
-          <div className="rounded-lg bg-[rgba(231,76,60,0.08)] border border-[rgba(231,76,60,0.2)] p-3 text-xs text-[#e46d4c] flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-[#e46d4c] shrink-0 mt-0.5" />
-            <span>{error || feedback}</span>
-          </div>
-        )}
-
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
           <Input
+            ref={emailRef}
             label="Email Address"
             type="email"
             placeholder="e.g. yourname@example.com"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setEmailError(null);
+              setFeedback(null);
+              clearError();
+            }}
+            onBlur={validateEmail}
+            error={emailError}
+            helperText={!emailError ? 'Use the email associated with your account.' : undefined}
+            autoComplete="email"
             className="auth-input"
           />
 
-          <Input
+          <PasswordInput
+            ref={passwordRef}
             label="Password"
-            type="password"
             placeholder="Enter your password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setPasswordError(null);
+              setFeedback(null);
+              clearError();
+            }}
+            onBlur={validatePassword}
+            error={passwordError}
+            helperText={!passwordError ? 'Keep your password private.' : undefined}
+            autoComplete="current-password"
             className="auth-input"
           />
 
           <Button
             type="submit"
             size="md"
-            disabled={isSubmitting}
+            isLoading={isSubmitting}
+            loadingText="Signing In..."
             className="w-full auth-button-primary"
           >
-            <Lock className="h-3.5 w-3.5" />
-            <span>{isSubmitting ? 'Authenticating...' : 'Sign In'}</span>
+            Continue
           </Button>
         </form>
 
-        <div className="pt-2 text-center text-xs text-[#9da7ba]">
+        {displayError && (
+          <div
+            className="rounded-lg bg-[var(--color-shell-error-soft)] border border-[var(--color-shell-error)] p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2"
+            role="alert"
+            aria-live="polite"
+          >
+            <AlertCircle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" aria-hidden="true" />
+            <span>{displayError}</span>
+          </div>
+        )}
+
+        {/* Forgot password */}
+        <div className="text-center text-xs text-[var(--color-shell-text-subtle)]">
+          <button
+            type="button"
+            onClick={() => navigate('/auth/forgot-password')}
+            className="font-medium text-[var(--color-shell-text)] hover:text-[var(--color-shell-accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+          >
+            Forgot your password?
+          </button>
+        </div>
+
+        {/* Create account link */}
+        <div className="pt-2 text-center text-xs text-[var(--color-shell-text-subtle)]">
           Don't have an account?{' '}
           <button
             type="button"
             onClick={() => navigate('/auth/signup')}
-            className="font-medium text-[#d1e4fa] hover:text-white transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#d1e4fa] rounded"
+            className="font-medium text-[var(--color-shell-text)] hover:text-[var(--color-shell-accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
           >
             Create an Account
           </button>
@@ -133,41 +190,41 @@ export const LoginPage: React.FC = () => {
 
       {/* Development-only test personas */}
       {import.meta.env?.DEV && (
-        <div className="mt-6 rounded-xl border border-[rgba(186,215,247,0.12)] bg-[rgba(186,214,247,0.03)] p-4 space-y-3">
+        <div className="mt-6 rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-[#9da7ba] uppercase tracking-wider">Development Only</span>
-            <span className="text-[10px] text-[#9da7ba]">Test Personas</span>
+            <span className="text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase tracking-wider">Development Only</span>
+            <span className="text-[10px] text-[var(--color-shell-text-subtle)]">Test Personas</span>
           </div>
-          <p className="text-[11px] text-[#9da7ba]">
+          <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
             Click any persona to test instant login and role-aware routing:
           </p>
           <div className="grid grid-cols-1 gap-2 pt-1">
             {[
-              { name: 'Aman Kumar', role: 'SEEKER', email: 'seeker@suggestkey.com', path: '/seeker' },
-              { name: 'Rahul Sharma', role: 'MENTOR', email: 'mentor@suggestkey.com', path: '/mentor' },
-              { name: 'Platform Admin', role: 'ADMIN', email: 'admin@suggestkey.com', path: '/admin' },
+              { name: 'Aman Kumar', role: 'SEEKER', path: '/seeker', persona: 'seeker' },
+              { name: 'Rahul Sharma', role: 'MENTOR', path: '/mentor', persona: 'mentor' },
+              { name: 'Platform Admin', role: 'ADMIN', path: '/admin', persona: 'admin' },
             ].map((persona) => (
               <button
-                key={persona.email}
+                key={persona.persona}
                 type="button"
                 onClick={async () => {
-                  const res = await signInWithPassword(persona.email, 'password123');
+                  const res = await signInWithDemoPersona(persona.persona as UserRole);
                   if (!res.error) {
                     navigate(persona.path);
                   }
                 }}
-                className="p-2.5 rounded-lg border border-[rgba(186,215,247,0.12)] bg-[rgba(5,6,15,0.97)] hover:border-[rgba(186,215,247,0.2)] text-left transition-all flex items-center justify-between cursor-pointer"
+                className="p-2.5 rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] hover:border-[var(--color-shell-border)] text-left transition-all flex items-center justify-between cursor-pointer"
               >
                 <div>
-                  <div className="text-xs font-medium text-white flex items-center gap-1.5">
+                  <div className="text-xs font-medium text-[var(--color-shell-text)] flex items-center gap-1.5">
                     <span>{persona.name}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-[rgba(186,215,247,0.1)] text-[#c7d3ea] text-[9px] font-bold">
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--color-shell-bg)] text-[var(--color-shell-text-muted)] text-[9px] font-bold">
                       {persona.role}
                     </span>
                   </div>
-                  <span className="text-[10px] text-[#9da7ba]">{persona.email}</span>
+                  <span className="text-[10px] text-[var(--color-shell-text-subtle)]">{persona.path}</span>
                 </div>
-                <ArrowLeft className="h-4 w-4 text-[#9da7ba] rotate-180" />
+                <ArrowLeft className="h-4 w-4 text-[var(--color-shell-text-subtle)] rotate-180" />
               </button>
             ))}
           </div>

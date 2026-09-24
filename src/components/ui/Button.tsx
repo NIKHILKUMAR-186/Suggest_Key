@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'default' | 'outline' | 'secondary' | 'ghost' | 'destructive';
+  variant?: 'default' | 'outline' | 'secondary' | 'ghost' | 'destructive' | 'accent';
   size?: 'sm' | 'md' | 'lg';
   isLoading?: boolean;
   loadingText?: string;
@@ -24,16 +24,17 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const variantStyles = {
-      default: 'bg-zinc-950 text-zinc-50 hover:bg-zinc-800 shadow-xs active:scale-[0.98]',
-      outline: 'border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50 hover:border-zinc-300 active:scale-[0.98]',
-      secondary: 'bg-zinc-100 text-zinc-900 hover:bg-zinc-200/80 active:scale-[0.98]',
-      ghost: 'text-zinc-700 hover:bg-zinc-100 hover:text-zinc-950',
-      destructive: 'bg-rose-600 text-white hover:bg-rose-700 shadow-xs active:scale-[0.98]',
+      default: 'bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] hover:bg-[var(--color-shell-primary-hover)] shadow-sm active:scale-[0.98]',
+      outline: 'border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg)] hover:border-[var(--color-shell-border-strong)] active:scale-[0.98]',
+      secondary: 'bg-[var(--color-shell-bg)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg-hover)] active:scale-[0.98]',
+      ghost: 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)]',
+      destructive: 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm active:scale-[0.98]',
+      accent: 'bg-[var(--color-shell-accent)] text-[var(--color-shell-primary)] hover:bg-[var(--color-shell-accent-hover)] shadow-sm active:scale-[0.98] font-semibold',
     };
 
     const sizeStyles = {
-      sm: 'h-8 px-3 text-xs rounded-lg gap-1.5 min-h-[32px]',
-      md: 'h-10 px-4 py-2 text-sm rounded-lg gap-2 min-h-[40px]',
+      sm: 'h-9 px-3 text-xs rounded-lg gap-1.5 min-h-[36px]',
+      md: 'h-11 px-4 py-2 text-sm rounded-lg gap-2 min-h-[44px]',
       lg: 'h-12 px-6 text-base rounded-xl gap-2.5 min-h-[48px]',
     };
 
@@ -46,7 +47,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         aria-busy={isLoading}
         className={cn(
           'inline-flex items-center justify-center font-medium transition-all select-none',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2',
           'disabled:pointer-events-none disabled:opacity-50 cursor-pointer',
           variantStyles[variant],
           sizeStyles[size],
@@ -62,4 +63,3 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 
 Button.displayName = 'Button';
-

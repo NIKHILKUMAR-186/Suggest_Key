@@ -9,6 +9,8 @@ import {
 } from '@/src/types/database';
 import { getLocalBookingEngineContext } from './bookingService';
 
+const isDevMode = process.env.NODE_ENV !== 'production';
+
 // ponytail: localWorkspaces is dev-only preview data.
 // Production must use real Supabase data; this fallback is only used when
 // isSupabaseConfigured() is false and the app is running in local preview mode.
@@ -116,18 +118,46 @@ export function getLocalWorkspaces(): SessionWorkspace[] {
 
 /**
  * Derives sanitized session overview data without exposing unrelated private details.
+ * Works synchronously from the booking's joined fields (mentor, seeker, gig, segment)
+ * or from local dev DB lookups when those fields are not populated.
  */
 export function deriveSessionOverview(booking: Booking): SessionOverviewData {
-  const db = getLocalBookingEngineContext();
-  const mentorProfile = db.profiles.find((p) => p.id === booking.mentor_id);
-  const mentorInfo = db.mentorProfiles.find((mp) => mp.id === booking.mentor_id);
-  const seekerProfile = db.profiles.find((p) => p.id === booking.seeker_id);
-  const segment = db.segments.find((s) => s.id === booking.segment_id);
-  const gig = db.gigs.find((g) => g.id === booking.gig_id);
-
   const startMs = new Date(booking.start_time).getTime();
   const endMs = new Date(booking.end_time).getTime();
   const durationMinutes = Math.max(15, Math.round((endMs - startMs) / (60 * 1000)));
+
+  // Use joined fields when available (from real Supabase queries)
+  const mentorName = booking.mentor?.full_name || '—';
+  const mentorHeadline = booking.gig?.title || '—';
+  const seekerName = booking.seeker?.full_name || '—';
+  const segmentTitle = booking.segment?.name || '—';
+  const gigTitle = booking.gig?.title || '—';
+
+  // If joined fields are missing and we're in dev mode, fall back to local DB lookup
+  if (!booking.mentor && !isSupabaseConfigured() && isDevMode) {
+    const db = getLocalBookingEngineContext();
+    const mentorProfile = db.profiles.find((p) => p.id === booking.mentor_id);
+    const mentorInfo = db.mentorProfiles.find((mp) => mp.id === booking.mentor_id);
+    const seekerProfile = db.profiles.find((p) => p.id === booking.seeker_id);
+    const segment = db.segments.find((s) => s.id === booking.segment_id);
+    const gig = db.gigs.find((g) => g.id === booking.gig_id);
+
+    return {
+      bookingId: booking.id,
+      bookingCode: booking.booking_code,
+      startTime: booking.start_time,
+      endTime: booking.end_time,
+      durationMinutes,
+      mentorId: booking.mentor_id,
+      mentorName: mentorProfile?.full_name || '—',
+      mentorHeadline: mentorInfo?.headline || '—',
+      seekerId: booking.seeker_id,
+      seekerName: seekerProfile?.full_name || '—',
+      segmentTitle: segment?.name || '—',
+      gigTitle: gig?.title || '—',
+      bookingStatus: booking.status,
+    };
+  }
 
   return {
     bookingId: booking.id,
@@ -136,12 +166,12 @@ export function deriveSessionOverview(booking: Booking): SessionOverviewData {
     endTime: booking.end_time,
     durationMinutes,
     mentorId: booking.mentor_id,
-    mentorName: mentorProfile?.full_name || 'Mentor Advisor',
-    mentorHeadline: mentorInfo?.headline || 'Certified Advisor',
+    mentorName,
+    mentorHeadline,
     seekerId: booking.seeker_id,
-    seekerName: seekerProfile?.full_name || 'Seeker Client', // display name only
-    segmentTitle: segment?.name || 'Consultation Segment',
-    gigTitle: gig?.title || 'Guidance Session',
+    seekerName,
+    segmentTitle,
+    gigTitle,
     bookingStatus: booking.status,
   };
 }
@@ -169,11 +199,22 @@ export async function fetchWorkspaceByBooking(
 
       if (error && error.code !== 'PGRST116') {
         console.warn('Supabase session_workspaces query warning:', error.message);
-      } else if (data) {
-        // Fetch booking to derive session overview
-        const db = getLocalBookingEngineContext();
-        const booking = db.bookings.find((b) => b.id === bookingId);
-        const overview = booking ? deriveSessionOverview(booking) : undefined;
+       } else if (data) {
+         // Fetch booking from Supabase to derive session overview
+         let booking: Booking | null = null;
+         try {
+           const { data: bookingData, error: bookingErr } = await supabase
+             .from('bookings')
+             .select('*, mentor:profiles!mentor_id!inner(full_name), seeker:profiles!seeker_id!inner(full_name), gig:gigs!inner(*), segment:segments!inner(*)')
+             .eq('id', bookingId)
+             .maybeSingle();
+           if (!bookingErr && bookingData) {
+             booking = bookingData as unknown as Booking;
+           }
+         } catch (bkErr: any) {
+           console.warn('Could not fetch booking for overview:', bkErr.message);
+         }
+         const overview = booking ? deriveSessionOverview(booking) : null;
 
         const record: SessionWorkspace = {
           id: data.id,
@@ -192,7 +233,7 @@ export async function fetchWorkspaceByBooking(
           published_at: data.published_at || null,
           created_at: data.created_at,
           updated_at: data.updated_at,
-          session_overview: overview,
+          session_overview: overview || undefined,
         };
 
         // Check seeker view restriction
@@ -223,7 +264,11 @@ export async function fetchWorkspaceByBooking(
     // Continue to local in-memory fallback
   }
 
-  // 3. Fallback to local in-memory engine
+  // 3. Fallback to local in-memory engine (DEV ONLY)
+  if (!isDevMode) {
+    return { workspace: null, error: null };
+  }
+
   const db = getLocalBookingEngineContext();
   const booking = db.bookings.find(
     (b) => b.id === bookingId || b.booking_code.toUpperCase() === bookingId.toUpperCase()
@@ -274,9 +319,29 @@ export async function saveWorkspaceAuthoritative(
   userId: string,
   role: string
 ): Promise<{ success: boolean; workspace?: SessionWorkspace; error?: { message: string } }> {
-  // Authorization validation
-  const db = getLocalBookingEngineContext();
-  const booking = db.bookings.find((b) => b.id === payload.booking_id);
+  // Authorization validation - fetch booking from Supabase if configured
+  let booking: Booking | null = null;
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: bookingData, error: bookingErr } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('id', payload.booking_id)
+        .maybeSingle();
+      if (!bookingErr && bookingData) {
+        booking = bookingData as Booking;
+      }
+    } catch (err: any) {
+      console.warn('Failed to fetch booking for authorization check:', err.message);
+    }
+  }
+
+  if (!booking && isDevMode) {
+    // Dev-only fallback to local DB
+    const db = getLocalBookingEngineContext();
+    booking = db.bookings.find((b) => b.id === payload.booking_id) || null;
+  }
 
   if (!booking) {
     return { success: false, error: { message: 'Referenced booking does not exist.' } };
@@ -359,7 +424,15 @@ export async function saveWorkspaceAuthoritative(
     // Continue to local sync
   }
 
-  // 3. In-memory update
+  // 3. In-memory update (DEV ONLY)
+  if (!isDevMode) {
+    return {
+      success: false,
+      error: { message: 'Workspace service is unavailable without a backend connection.' },
+    };
+  }
+
+  const db = getLocalBookingEngineContext();
   let existingIndex = localWorkspaces.findIndex((w) => w.booking_id === payload.booking_id);
   const overview = deriveSessionOverview(booking);
 
@@ -414,8 +487,6 @@ export async function saveWorkspaceAuthoritative(
  * Fetch all workspaces for Admin operational view.
  */
 export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorkspace[]> {
-  const db = getLocalBookingEngineContext();
-
   // Try real Supabase query if configured
   if (isSupabaseConfigured()) {
     try {
@@ -426,7 +497,6 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
 
       if (!error && data && data.length > 0) {
         return data.map((d: any) => {
-          const booking = db.bookings.find((b) => b.id === d.booking_id);
           return {
             id: d.id,
             booking_id: d.booking_id,
@@ -444,7 +514,7 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
             published_at: d.published_at || null,
             created_at: d.created_at,
             updated_at: d.updated_at,
-            session_overview: booking ? deriveSessionOverview(booking) : undefined,
+            session_overview: undefined,
           };
         });
       }
@@ -453,7 +523,12 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
     }
   }
 
-  // Fallback to local
+  // Fallback to local (DEV ONLY)
+  if (!isDevMode) {
+    return [];
+  }
+
+  const db = getLocalBookingEngineContext();
   return localWorkspaces.map((ws) => {
     const booking = db.bookings.find((b) => b.id === ws.booking_id);
     return {

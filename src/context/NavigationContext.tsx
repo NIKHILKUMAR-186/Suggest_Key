@@ -15,11 +15,11 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const [currentPath, setCurrentPath] = useState<string>(() => {
     if (typeof window !== 'undefined') {
-      const p = window.location.pathname;
-      if (p.startsWith('/mentor')) return p;
-      if (p.startsWith('/admin')) return p;
-      if (p.startsWith('/seeker')) return p;
-      return '/seeker';
+    const p = `${window.location.pathname}${window.location.search}`;
+    if (p.startsWith('/admin')) return p;
+    if (p.startsWith('/mentor')) return p;
+    if (p.startsWith('/seeker')) return p;
+    return p;
     }
     return '/seeker';
   });
@@ -33,7 +33,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   useEffect(() => {
     const handlePopState = () => {
-      const p = window.location.pathname || '/seeker';
+      const p = `${window.location.pathname || '/seeker'}${window.location.search}`;
       setCurrentPath(p);
     };
 

@@ -29,7 +29,10 @@ export interface AuthContextType {
   isLoading: boolean;
   isConfigured: boolean;
   error: string | null;
-  signInWithPassword: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signInWithPassword: (email: string, password: string) => Promise<{ error: Error | null; role?: UserRole }>;
+  signInWithDemoPersona: (persona: UserRole) => Promise<{ error: Error | null; role?: UserRole }>;
+  requestPasswordReset: (email: string) => Promise<{ error: Error | null }>;
+  updatePassword: (password: string) => Promise<{ error: Error | null }>;
   signUp: (
     email: string,
     password: string,

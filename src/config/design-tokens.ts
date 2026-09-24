@@ -144,3 +144,62 @@ export const surfaces = {
   level2: colors.frostedGlass,        // Frosted Glass
   level3: colors.deepGlass,           // Deep Glass
 };
+
+export const mentorTheme = {
+  // Premium base palette (slate / warm amber / deep navy)
+  base: '#ffffff',
+  baseAlt: '#faf9f6',          // warm off-white background
+  baseHover: '#f4f2ed',
+  surface: '#ffffff',
+  surfaceHover: '#fefefc',
+  surfaceAlt: '#f8f6f1',
+  textPrimary: '#1c1b1a',      // deep charcoal
+  textSecondary: '#6b6763',
+  textTertiary: '#9b9793',
+  border: '#e8e5dc',
+  borderStrong: '#d8d4ca',
+  borderAccent: '#e6d6b0',     // warm amber border
+
+  // Accent (warm amber — primary CTA / links)
+  accent: '#b8860b',
+  accentHover: '#9d7209',
+  accentSoft: '#f3eada',
+  accentBorder: '#e6d6b0',
+
+  // Deep navy (for headings / premium contrast)
+  navy: '#1e293b',
+  navyHover: '#1e2a46',
+
+  // Status
+  success: '#16a34a',
+  successSoft: '#dcfce7',
+  warning: '#d97706',
+  warningSoft: '#fef3c7',
+  error: '#dc2626',
+  errorSoft: '#fee2e2',
+
+  // Glass
+  glassHighlight: 'rgba(184, 134, 11, 0.04)',
+  glassBorder: 'rgba(184, 134, 11, 0.12)',
+  glassBg: 'rgba(255, 255, 255, 0.72)',
+
+  // Gradients
+  accentGradient: 'linear-gradient(135deg, #b8860b 0%, #9d7209 100%)',
+  surfaceGradient: 'linear-gradient(180deg, #ffffff 0%, #faf9f6 100%)',
+};
+
+export const mentorTypography = {
+  fontFamily: {
+    body: "'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    heading: "'Space Grotesk', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    mono: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  scale: {
+    h1: 'text-2xl font-bold tracking-tight sm:text-3xl',
+    h2: 'text-xl font-bold tracking-tight',
+    h3: 'text-sm font-bold text-zinc-950',
+    bodySm: 'text-xs text-zinc-500',
+    body: 'text-sm text-zinc-600',
+    caption: 'text-[11px] text-zinc-400',
+  },
+};

@@ -1,8 +1,17 @@
 import React from 'react';
 import { useAuth } from '@/src/context/AuthContext';
+import { useNavigation } from '@/src/context/NavigationContext';
 import { SeekerShell } from '@/src/components/layout/SeekerShell';
 import { MentorShell } from '@/src/components/layout/MentorShell';
 import { AdminShell } from '@/src/components/layout/AdminShell';
+
+const isPublicRoute = (pathname: string) => (
+  pathname === '/' ||
+  pathname.startsWith('/auth') ||
+  pathname === '/login' ||
+  pathname === '/signup' ||
+  pathname === '/403'
+);
 
 /**
  * Role-aware AppShell.
@@ -15,6 +24,12 @@ import { AdminShell } from '@/src/components/layout/AdminShell';
  */
 export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { activeRole, isLoading } = useAuth();
+  const { currentPath } = useNavigation();
+  const pathname = currentPath.split('?')[0];
+
+  if (isPublicRoute(pathname)) {
+    return <>{children}</>;
+  }
 
   if (isLoading) {
     return (

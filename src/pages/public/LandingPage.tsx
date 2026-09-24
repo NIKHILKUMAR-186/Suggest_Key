@@ -405,7 +405,7 @@ export const LandingPage: React.FC = () => {
                   viewport={{ once: true }}
                   transition={{ duration: 0.5 }}
                   className="rounded-2xl border border-[rgba(186,215,247,0.12)] bg-[rgba(186,214,247,0.03)] p-6 hover:border-[rgba(186,215,247,0.2)] transition-colors cursor-pointer group"
-                  onClick={() => navigate(`/seeker/mentors?segmentId=${seg.id}`)}
+                  onClick={() => navigate('/auth/login')}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-base font-semibold text-white group-hover:text-[#d1e4fa] transition-colors">{seg.name}</h3>

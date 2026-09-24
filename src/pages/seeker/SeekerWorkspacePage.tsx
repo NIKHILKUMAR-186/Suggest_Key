@@ -58,7 +58,7 @@ export const SeekerWorkspacePage: React.FC = () => {
 
         // Filter bookings that have completed or have past sessions
         const completed = bookings.filter(
-          (b: EnrichedBookingRecord) => b.status === 'COMPLETED' || b.id === 'bk-session-ended' || b.id === 'bk-9021'
+          (b: EnrichedBookingRecord) => b.status === 'COMPLETED'
         );
 
         setCompletedBookings(completed);

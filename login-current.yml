@@ -1,0 +1,55 @@
+- generic [ref=f12e3] [box=0,0,1030,1322]:
+  - link "Skip to main content" [ref=f12e4] [cursor=pointer] [box=-1,-1,1,1]:
+    - /url: "#main-content"
+  - banner [ref=f12e5] [box=0,0,1030,65]:
+    - generic [ref=f12e6] [box=0,0,1030,64]:
+      - generic [ref=f12e7] [box=32,6,613,52]:
+        - button "SK Suggest Key Seeker Space" [ref=f12e8] [cursor=pointer] [box=32,6,148,52]:
+          - generic [ref=f12e9] [box=36,14,36,36]: SK
+          - generic [ref=f12e11] [box=82,10,94,44]:
+            - generic [ref=f12e12] [box=82,10,94,20]: Suggest Key
+            - text: Seeker Space
+        - navigation "Main Navigation" [ref=f12e13] [box=212,16,433,32]:
+          - button "Home" [ref=f12e14] [cursor=pointer] [box=212,16,82,32]
+          - button "My Bookings" [ref=f12e19] [cursor=pointer] [box=298,16,122,32]
+          - button "Notifications" [ref=f12e23] [cursor=pointer] [box=425,16,121,32]
+          - button "Settings" [ref=f12e28] [cursor=pointer] [box=550,16,95,32]
+      - button "Sign In" [ref=f12e35] [cursor=pointer] [box=914,16,85,32]
+  - main [ref=f12e40] [box=0,65,1030,1257]:
+    - generic [ref=f12e41] [box=32,97,966,1193]:
+      - generic [ref=f12e42] [box=32,97,966,162]:
+        - generic [ref=f12e43] [box=32,97,261,30]: Curated 1:1 Mentorship Marketplace
+        - heading "Discover Expert Mentors" [level=1] [ref=f12e48] [box=32,142,966,48]
+        - paragraph [ref=f12e49] [box=32,206,672,52]: Browse verified mentors across every segment. Compare real-time availability, transparent pricing, and book sessions that fit your schedule.
+      - textbox "Search mentors, segments, languages, or topics…" [ref=f12e54] [box=32,298,966,58]
+      - generic [ref=f12e55] [box=32,396,966,42]:
+        - tablist "Mentorship segments" [ref=f12e82] [box=32,396,666,42]:
+          - tab "Relationship Advisor" [selected] [ref=f12e83] [cursor=pointer] [box=32,396,153,38]
+          - tab "Autism Mentor" [ref=f12e84] [cursor=pointer] [box=193,396,119,38]
+          - tab "Career Mentor" [ref=f12e85] [cursor=pointer] [box=320,396,118,38]
+        - generic [ref=f12e86] [box=710,400,288,34]:
+          - button "Language" [ref=f12e88] [cursor=pointer] [box=710,400,120,34]
+          - 'button "Exp: All Experience" [ref=f12e95] [cursor=pointer] [box=839,400,160,34]':
+            - generic [ref=f12e97] [box=871,409,25,16]: "Exp:"
+            - generic [ref=f12e98] [box=902,409,83,16]: All Experience
+      - generic [ref=f12e60] [box=32,478,966,38]:
+        - generic [ref=f12e61] [box=32,478,203,38]:
+          - generic [ref=f12e65] [box=71,489,27,16]: Date
+          - textbox "Select session date" [ref=f12e66] [cursor=pointer] [box=105,489,114,16]: 2026-09-23
+        - generic [ref=f12e67] [box=247,489,101,17]: Past dates disabled
+      - generic [ref=f12e68] [box=32,556,966,734]:
+        - generic [ref=f12e69] [box=32,556,966,28]:
+          - generic [ref=f12e70] [box=32,556,283,28]:
+            - heading "Available Mentors" [level=2] [ref=f12e71] [box=32,556,154,28]
+            - generic [ref=f12e99] [box=194,559,121,21]: Relationship Advisor
+          - generic [ref=f12e73] [box=941,562,57,16]: 2 mentors
+        - generic [ref=f12e100] [box=32,604,966,315]:
+          - generic [ref=f12e101] [box=32,604,966,16]: Premium Mentors
+          - generic [ref=f12e107] [box=32,632,473,287]:
+            - generic [ref=f12e108] [box=53,652,432,176]
+            - generic [ref=f12e142] [box=53,849,432,49]
+        - generic [ref=f12e151] [box=32,938,966,352]:
+          - generic [ref=f12e153] [box=32,975,966,16]: More Mentors
+          - generic [ref=f12e156] [box=32,1003,473,287]:
+            - generic [ref=f12e157] [box=53,1024,432,176]
+            - generic [ref=f12e188] [box=53,1220,432,49]

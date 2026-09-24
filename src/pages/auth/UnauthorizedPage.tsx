@@ -15,10 +15,10 @@ export const UnauthorizedPage: React.FC = () => {
         {/* Brand */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#663af3] text-white shadow-xs">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
               <ShieldAlert className="h-5 w-5" />
             </div>
-            <span className="text-base font-bold tracking-tight text-white" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
+            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
               Suggest Key
             </span>
           </div>
@@ -27,25 +27,25 @@ export const UnauthorizedPage: React.FC = () => {
           <AuthBody>You don't have permission to access this resource</AuthBody>
         </div>
 
-        <div className="rounded-lg bg-[rgba(186,215,247,0.06)] border border-[rgba(186,215,247,0.12)] p-4 space-y-3">
-          <div className="flex justify-between items-center border-b border-[rgba(186,215,247,0.12)] pb-2">
-            <span className="text-xs text-[#9da7ba]">Current User:</span>
-            <span className="font-mono font-medium text-[#d1e4fa]">{user?.email || 'Anonymous'}</span>
+        <div className="rounded-lg bg-[var(--color-shell-bg)] border border-[var(--color-shell-border-strong)] p-4 space-y-3">
+          <div className="flex justify-between items-center border-b border-[var(--color-shell-border-strong)] pb-2">
+            <span className="text-xs text-[var(--color-shell-text-subtle)]">Current User:</span>
+            <span className="font-mono font-medium text-[var(--color-shell-text)]">{user?.email || 'Anonymous'}</span>
           </div>
-          <div className="flex justify-between items-center border-b border-[rgba(186,215,247,0.12)] pb-2">
-            <span className="text-xs text-[#9da7ba]">Assigned Roles:</span>
-            <span className="font-mono font-medium text-[#d1e4fa] uppercase">
+          <div className="flex justify-between items-center border-b border-[var(--color-shell-border-strong)] pb-2">
+            <span className="text-xs text-[var(--color-shell-text-subtle)]">Assigned Roles:</span>
+            <span className="font-mono font-medium text-[var(--color-shell-text)] uppercase">
               {roles.join(', ') || 'NONE'}
             </span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-[#9da7ba]">Active Shell:</span>
-            <span className="font-mono font-medium text-[#d1e4fa] capitalize">{activeRole}</span>
+            <span className="text-xs text-[var(--color-shell-text-subtle)]">Active Shell:</span>
+            <span className="font-mono font-medium text-[var(--color-shell-text)] capitalize">{activeRole}</span>
           </div>
         </div>
 
-        <div className="rounded-lg border border-[rgba(186,215,247,0.12)] bg-[rgba(186,214,247,0.03)] p-3 text-left text-xs text-[#c7d3ea] space-y-1">
-          <span className="font-medium text-[#d1e4fa] flex items-center gap-1">
+        <div className="rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-3 text-left text-xs text-[var(--color-shell-text-muted)] space-y-1">
+          <span className="font-medium text-[var(--color-shell-text)] flex items-center gap-1">
             <Lock className="h-3 w-3" />
             Server-Side & Database Security:
           </span>

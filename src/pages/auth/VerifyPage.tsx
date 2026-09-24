@@ -13,10 +13,10 @@ export const VerifyPage: React.FC = () => {
         {/* Brand */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#663af3] text-white shadow-xs">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
               <Mail className="h-5 w-5" />
             </div>
-            <span className="text-base font-bold tracking-tight text-white" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
+            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
               Suggest Key
             </span>
           </div>
@@ -26,17 +26,17 @@ export const VerifyPage: React.FC = () => {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-lg bg-[rgba(199,211,234,0.06)] border border-[rgba(186,215,247,0.12)] p-4 text-center space-y-2">
-            <CheckCircle2 className="h-8 w-8 text-[#b6d9fc] mx-auto" />
-            <p className="text-sm text-[#d1e4fa]">Verification email sent</p>
-            <p className="text-xs text-[#9da7ba]">
+          <div className="rounded-lg bg-[var(--color-shell-bg)] border border-[var(--color-shell-border-strong)] p-4 text-center space-y-2">
+            <CheckCircle2 className="h-8 w-8 text-[var(--color-shell-primary)] mx-auto" />
+            <p className="text-sm text-[var(--color-shell-text)]">Verification email sent</p>
+            <p className="text-xs text-[var(--color-shell-text-subtle)]">
               We've sent a verification link to:
             </p>
-            <p className="text-xs font-mono text-[#c7d3ea] break-all">user@example.com</p>
+            <p className="text-xs font-mono text-[var(--color-shell-text-muted)] break-all">user@example.com</p>
           </div>
 
-          <div className="rounded-lg border border-[rgba(186,215,247,0.12)] bg-[rgba(186,214,247,0.03)] p-3 text-left text-xs text-[#c7d3ea] space-y-1">
-            <span className="font-medium text-[#d1e4fa] block">What's next?</span>
+          <div className="rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-3 text-left text-xs text-[var(--color-shell-text-muted)] space-y-1">
+            <span className="font-medium text-[var(--color-shell-text)] block">What's next?</span>
             <p>1. Open your email inbox</p>
             <p>2. Click the verification link</p>
             <p>3. Return here to continue</p>

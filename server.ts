@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import { timingSafeEqual } from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import {
   executeAtomicBookingWithHold,
@@ -20,6 +21,77 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  type DemoRole = 'seeker' | 'mentor' | 'admin';
+
+  interface DemoAccount {
+    id: string;
+    email: string;
+    full_name: string;
+    password: string;
+    role: DemoRole;
+  }
+
+  interface DemoAuthResponse {
+    user: { id: string; email: string };
+    profile: {
+      id: string;
+      email: string;
+      full_name: string;
+      timezone: string;
+      created_at: string;
+      updated_at: string;
+    };
+    roles: DemoRole[];
+    activeRole: DemoRole;
+  }
+
+  const demoAccounts: Record<DemoRole, DemoAccount> = {
+    seeker: {
+      id: 'demo-seeker',
+      email: 'seeker@suggestkey.com',
+      full_name: 'Aman Kumar',
+      password: 'password123',
+      role: 'seeker',
+    },
+    mentor: {
+      id: 'demo-mentor',
+      email: 'mentor@suggestkey.com',
+      full_name: 'Rahul Sharma',
+      password: 'password123',
+      role: 'mentor',
+    },
+    admin: {
+      id: process.env.ADMIN_EMAIL || 'suggestkey1505@gmail.com',
+      email: process.env.ADMIN_EMAIL || 'suggestkey1505@gmail.com',
+      full_name: 'Suggest Key Admin',
+      password: process.env.ADMIN_PASSWORD || 'password',
+      role: 'admin',
+    },
+  };
+
+  const passwordsMatch = (expected: string, candidate: string) => {
+    const expectedBuffer = Buffer.from(expected);
+    const candidateBuffer = Buffer.from(candidate);
+    return expectedBuffer.length === candidateBuffer.length && timingSafeEqual(expectedBuffer, candidateBuffer);
+  };
+
+  const demoAuthResponse = (account: DemoAccount): DemoAuthResponse => {
+    const now = new Date().toISOString();
+    return {
+      user: { id: account.id, email: account.email },
+      profile: {
+        id: account.id,
+        email: account.email,
+        full_name: account.full_name,
+        timezone: 'Asia/Kolkata',
+        created_at: now,
+        updated_at: now,
+      },
+      roles: [account.role],
+      activeRole: account.role,
+    };
+  };
+
   app.use(express.json());
 
   // --------------------------------------------------------------------------
@@ -31,6 +103,47 @@ async function startServer() {
       service: 'suggest-key-api',
       timestamp: new Date().toISOString(),
     });
+  });
+
+  app.post('/api/auth/demo-login', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    // DEMO-ONLY: Demo login is explicitly disabled in production.
+    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_DEMO_PERSONAS !== 'true') {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'DEMO_LOGIN_DISABLED', message: 'Demo login is unavailable.' },
+      });
+    }
+    const body = req.body as { email?: unknown; password?: unknown; persona?: unknown };
+    const persona = typeof body.persona === 'string' ? body.persona.toLowerCase() : '';
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+
+    let account: DemoAccount | undefined;
+    if (persona && Object.prototype.hasOwnProperty.call(demoAccounts, persona)) {
+      if (process.env.NODE_ENV === 'production' && process.env.ENABLE_DEMO_PERSONAS !== 'true') {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'DEMO_LOGIN_DISABLED', message: 'Demo login is unavailable.' },
+        });
+      }
+      account = demoAccounts[persona as DemoRole];
+    } else if (email) {
+      account = Object.values(demoAccounts).find(
+        (candidate) => candidate.email.toLowerCase() === email
+      );
+      if (account && !passwordsMatch(account.password, typeof body.password === 'string' ? body.password : '')) {
+        account = undefined;
+      }
+    }
+
+    if (!account) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'INVALID_DEMO_CREDENTIALS', message: 'Invalid demo credentials.' },
+      });
+    }
+
+    return res.json({ success: true, ...demoAuthResponse(account) });
   });
 
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
@@ -104,7 +217,7 @@ async function startServer() {
       }
 
       const db = getLocalBookingEngineContext();
-      const mentorIds = [mentorId, mentorId === 'usr-8802' ? 'usr-mentor-rahul' : 'usr-8802'];
+      const mentorIds = [mentorId];
 
       let matched = db.bookings.filter((b) => mentorIds.includes(b.mentor_id));
       if (status && typeof status === 'string' && status !== 'ALL') {
@@ -140,10 +253,7 @@ async function startServer() {
       }
 
       if (mentorId && typeof mentorId === 'string') {
-        const isOwner =
-          booking.mentor_id === mentorId ||
-          (booking.mentor_id === 'usr-mentor-rahul' && mentorId === 'usr-8802') ||
-          (booking.mentor_id === 'usr-8802' && mentorId === 'usr-mentor-rahul');
+        const isOwner = booking.mentor_id === mentorId;
 
         if (!isOwner) {
           return res.status(403).json({
@@ -315,12 +425,7 @@ async function startServer() {
       }
 
       const db = getLocalBookingEngineContext();
-      const userAliasMap: Record<string, string[]> = {
-        'usr-8801': ['usr-8801', '88888888-8888-8888-8888-888888888881'],
-        'usr-8802': ['usr-8802', '11111111-1111-1111-1111-111111111111', 'usr-mentor-rahul'],
-        'usr-8800': ['usr-8800', '88888888-8888-8888-8888-888888888880', 'admin'],
-      };
-      const userIds = userAliasMap[userId] || [userId];
+      const userIds = [userId];
 
       const count = (db.notifications || [])
         .filter((n) => userIds.includes(n.user_id) && !n.is_read).length;

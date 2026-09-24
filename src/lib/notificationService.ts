@@ -448,7 +448,7 @@ export const NOTIFICATION_EVENT_PRESETS: EventPreset[] = [
 export async function simulateNotificationEvent(
   eventType: NotificationEventType,
   userId: string,
-  bookingCode: string = 'BK-9021',
+   bookingCode: string = 'BK-CODE',
   customMessage?: string
 ): Promise<Notification | null> {
   const preset = NOTIFICATION_EVENT_PRESETS.find((p) => p.eventType === eventType);

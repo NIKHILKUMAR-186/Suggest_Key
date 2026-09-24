@@ -10,15 +10,14 @@ import {
   Copy,
   Check,
   AlertCircle,
-  Sparkles,
-  Info,
   Calendar,
   User,
   Radio,
-  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
+import { EmptyState } from '@/src/components/shared/EmptyState';
+import { ErrorState } from '@/src/components/shared/ErrorState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import {
@@ -52,7 +51,7 @@ export const SeekerSessionPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
   const { user } = useAuth();
 
-  // Extract bookingId from query string or default to 'bk-session-soon' or 'bk-9020'
+  // Extract bookingId from query string
   const getBookingIdFromUrl = (): string => {
     try {
       if (typeof window !== 'undefined') {
@@ -67,19 +66,16 @@ export const SeekerSessionPage: React.FC = () => {
     } catch {
       // Ignore
     }
-    return 'bk-session-soon';
+    return '';
   };
 
-  const [selectedBookingId, setSelectedBookingId] = useState<string>(getBookingIdFromUrl());
+  const [selectedBookingId, setSelectedBookingId] = useState<string>(getBookingIdFromUrl() || '');
   const [sessionAccess, setSessionAccess] = useState<SessionAccessResult | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [joining, setJoining] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-
-  // Time-shift simulation mode for thorough evaluation
-  const [simulatedOffsetMinutes, setSimulatedOffsetMinutes] = useState<number | null>(null);
 
   // Countdown ticker states in seconds
   const [secondsUntilT5, setSecondsUntilT5] = useState<number>(0);
@@ -88,21 +84,18 @@ export const SeekerSessionPage: React.FC = () => {
 
   const userId = user?.id;
 
-  // Compute effective simulation timestamp if offset is applied
-  const getEffectiveTime = useCallback((): Date | undefined => {
-    if (simulatedOffsetMinutes === null) return undefined;
-    return new Date(Date.now() + simulatedOffsetMinutes * 60 * 1000);
-  }, [simulatedOffsetMinutes]);
-
-  // Load authoritative session access state from server
+   // Load authoritative session access state from server
   const loadSessionAccess = useCallback(
     async (bId: string) => {
-      if (!userId) return;
+      if (!userId || !bId) {
+        setSessionAccess(null);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setServerError(null);
       try {
-        const effectiveTime = getEffectiveTime();
-        const data = await fetchSessionAccess(bId, userId, effectiveTime);
+        const data = await fetchSessionAccess(bId, userId);
         setSessionAccess(data);
         setSecondsUntilT5(data.secondsUntilT5);
         setSecondsUntilStart(data.secondsUntilStart);
@@ -113,12 +106,16 @@ export const SeekerSessionPage: React.FC = () => {
         setLoading(false);
       }
     },
-    [userId, getEffectiveTime]
+    [userId]
   );
 
   useEffect(() => {
+    if (!selectedBookingId) {
+      setLoading(false);
+      return;
+    }
     loadSessionAccess(selectedBookingId);
-  }, [selectedBookingId, simulatedOffsetMinutes, loadSessionAccess]);
+  }, [selectedBookingId, loadSessionAccess]);
 
   // Local 1-second countdown interval
   useEffect(() => {
@@ -161,8 +158,7 @@ export const SeekerSessionPage: React.FC = () => {
     setActionNotice(null);
 
     try {
-      const effectiveTime = getEffectiveTime();
-      const result = await joinSessionRequest(selectedBookingId, userId, effectiveTime);
+      const result = await joinSessionRequest(selectedBookingId, userId);
 
       if (!result.success || !result.canJoin) {
         setServerError(
@@ -191,35 +187,6 @@ export const SeekerSessionPage: React.FC = () => {
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const handlePresetSimulation = (stateType: 'BEFORE_T5' | 'T5_WINDOW' | 'IN_PROGRESS' | 'COMPLETED') => {
-    if (!sessionAccess) return;
-    const now = Date.now();
-    const startMs = new Date(sessionAccess.startTime).getTime();
-    const endMs = new Date(sessionAccess.endTime).getTime();
-
-    if (stateType === 'BEFORE_T5') {
-      // Set time to 15 minutes before session start
-      const targetTime = startMs - 15 * 60 * 1000;
-      setSimulatedOffsetMinutes(Math.round((targetTime - now) / 60000));
-    } else if (stateType === 'T5_WINDOW') {
-      // Set time to 3 minutes before session start (inside T-5)
-      const targetTime = startMs - 3 * 60 * 1000;
-      setSimulatedOffsetMinutes(Math.round((targetTime - now) / 60000));
-    } else if (stateType === 'IN_PROGRESS') {
-      // Set time to 15 minutes into session
-      const targetTime = startMs + 15 * 60 * 1000;
-      setSimulatedOffsetMinutes(Math.round((targetTime - now) / 60000));
-    } else if (stateType === 'COMPLETED') {
-      // Set time to 5 minutes after session end
-      const targetTime = endMs + 5 * 60 * 1000;
-      setSimulatedOffsetMinutes(Math.round((targetTime - now) / 60000));
-    }
-  };
-
-  const resetToRealTime = () => {
-    setSimulatedOffsetMinutes(null);
-  };
-
   const accessState = sessionAccess?.accessState || 'BEFORE_T5';
   const isBeforeT5 = accessState === 'BEFORE_T5';
   const isT5Window = accessState === 'T5_WINDOW';
@@ -232,15 +199,34 @@ export const SeekerSessionPage: React.FC = () => {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6 pb-12">
-      {/* Top Breadcrumb & Navigation */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Bookings</span>
-        </button>
+      {!selectedBookingId && !loading && (
+        <EmptyState
+          icon={AlertCircle}
+          title="No Booking Reference"
+          description="No booking ID was provided in the URL. Navigate to this page from your bookings list."
+          actionLabel="View My Bookings"
+          onAction={() => navigate('/seeker/bookings')}
+        />
+      )}
+
+      {loading && selectedBookingId && (
+        <div className="py-16 flex flex-col justify-center items-center text-zinc-400 text-xs gap-2">
+          <Calendar className="h-6 w-6 animate-spin text-zinc-600" />
+          <span>Loading session access state from server...</span>
+        </div>
+      )}
+
+      {selectedBookingId && !loading && (
+      <div className="space-y-6">
+        {/* Top Breadcrumb & Navigation */}
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => navigate('/seeker/bookings')}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>Back to Bookings</span>
+          </button>
 
         <div className="flex items-center gap-2">
           <Badge
@@ -263,93 +249,7 @@ export const SeekerSessionPage: React.FC = () => {
               ? 'COMPLETED'
               : 'UPCOMING (LOCKED)'}
           </Badge>
-          <span className="text-xs text-zinc-400">#{sessionAccess?.bookingCode || 'BK'}</span>
-        </div>
-      </div>
-
-      {/* Phase 9 Interactive State Simulator & Session Selector */}
-      <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-3.5 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-zinc-900">Select Test Session:</span>
-            <select
-              value={selectedBookingId}
-              onChange={(e) => {
-                setSelectedBookingId(e.target.value);
-                setSimulatedOffsetMinutes(null);
-              }}
-              className="px-2 py-1 bg-white border border-zinc-300 rounded text-xs text-zinc-800 font-medium focus:outline-none focus:ring-1 focus:ring-zinc-500"
-            >
-              <option value="bk-session-soon">BK-SOON-01 (Starts in 3 mins · T-5 Early Entry)</option>
-              <option value="bk-session-live">BK-LIVE-02 (Live In Progress · Started 12 mins ago)</option>
-              <option value="bk-session-ended">BK-ENDED-03 (Concluded Session · Ended 20 mins ago)</option>
-              <option value="bk-9020">BK-9020 (Starts Tomorrow · Locked Before T-5)</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1.5 self-start">
-            <button
-              onClick={() => loadSessionAccess(selectedBookingId)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-white border border-zinc-200 text-zinc-600 hover:text-zinc-900 shadow-2xs"
-              title="Refresh server authoritative state"
-            >
-              <RefreshCw className="h-3 w-3" />
-              <span>Refresh</span>
-            </button>
-            {simulatedOffsetMinutes !== null && (
-              <button
-                onClick={resetToRealTime}
-                className="px-2 py-1 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 hover:bg-amber-200"
-              >
-                Reset Real-Time
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Quick Time Shift Controls */}
-        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-zinc-200/70 text-[11px]">
-          <span className="text-zinc-500 mr-1">Authoritative Time-Gate Test:</span>
-          <button
-            onClick={() => handlePresetSimulation('BEFORE_T5')}
-            className={`px-2 py-1 rounded transition-colors ${
-              isBeforeT5
-                ? 'bg-zinc-900 text-white font-medium'
-                : 'bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100'
-            }`}
-          >
-            1. Before T-5 (Lock Active)
-          </button>
-          <button
-            onClick={() => handlePresetSimulation('T5_WINDOW')}
-            className={`px-2 py-1 rounded transition-colors ${
-              isT5Window
-                ? 'bg-amber-600 text-white font-medium'
-                : 'bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100'
-            }`}
-          >
-            2. T-5 Window (Early Entry)
-          </button>
-          <button
-            onClick={() => handlePresetSimulation('IN_PROGRESS')}
-            className={`px-2 py-1 rounded transition-colors ${
-              isInProgress
-                ? 'bg-emerald-600 text-white font-medium'
-                : 'bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100'
-            }`}
-          >
-            3. Live In-Progress
-          </button>
-          <button
-            onClick={() => handlePresetSimulation('COMPLETED')}
-            className={`px-2 py-1 rounded transition-colors ${
-              isCompleted
-                ? 'bg-zinc-600 text-white font-medium'
-                : 'bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100'
-            }`}
-          >
-            4. Concluded (Completed)
-          </button>
+           <span className="text-xs text-zinc-400">#{sessionAccess?.bookingCode || ''}</span>
         </div>
       </div>
 
@@ -381,18 +281,18 @@ export const SeekerSessionPage: React.FC = () => {
             </Badge>
             <span className="text-xs text-zinc-400">·</span>
             <span className="text-xs font-medium text-zinc-600">
-              Booking Ref: {sessionAccess?.bookingCode || 'BK-9021'}
+               Booking Ref: {sessionAccess?.bookingCode || '—'}
             </span>
           </div>
 
           <h1 className="text-xl sm:text-2xl font-bold text-zinc-950">
-            {sessionAccess?.sessionTitle || '1:1 Mentorship Guidance'}
+             {sessionAccess?.sessionTitle || '—'}
           </h1>
 
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 text-xs text-zinc-600 pt-1">
             <span className="inline-flex items-center gap-1.5">
               <User className="h-3.5 w-3.5 text-zinc-400" />
-              <span>Mentor: {sessionAccess?.mentorName || 'Rahul Sharma'}</span>
+              <span>Mentor: {sessionAccess?.mentorName || '—'}</span>
             </span>
             <span>·</span>
             <span className="inline-flex items-center gap-1.5">
@@ -529,7 +429,7 @@ export const SeekerSessionPage: React.FC = () => {
                     Early Access Window Open
                   </h2>
                   <p className="text-xs text-amber-800">
-                    You may join early to test audio/video before mentor Rahul Sharma begins.
+                    You may join early to test audio/video before the session begins.
                   </p>
                 </div>
               </div>
@@ -552,7 +452,7 @@ export const SeekerSessionPage: React.FC = () => {
               </label>
               <div className="flex items-center gap-2">
                 <div className="flex-1 p-3 bg-white rounded-lg border border-amber-200 font-mono text-xs text-zinc-800 truncate select-all">
-                  {sessionAccess?.meetingUrl || 'https://meet.google.com/early-access-room'}
+                   {sessionAccess?.meetingUrl || ''}
                 </div>
                 {sessionAccess?.meetingUrl && (
                   <Button
@@ -628,7 +528,7 @@ export const SeekerSessionPage: React.FC = () => {
               </label>
               <div className="flex items-center gap-2">
                 <div className="flex-1 p-3 bg-white rounded-lg border border-emerald-200 font-mono text-xs text-zinc-800 truncate select-all">
-                  {sessionAccess?.meetingUrl || 'https://meet.google.com/live-session-room'}
+                   {sessionAccess?.meetingUrl || ''}
                 </div>
                 {sessionAccess?.meetingUrl && (
                   <Button
@@ -754,8 +654,10 @@ export const SeekerSessionPage: React.FC = () => {
                 : 'Synced'}
             </span>
           </div>
-        </div>
-      </div>
+           </div>
+         </div>
+       </div>
+      )}
     </div>
   );
 };

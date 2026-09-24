@@ -1,3 +1,4 @@
+import { isSupabaseConfigured } from './supabase';
 import { Booking, SlotHold, Payment, Notification } from '@/src/types/database';
 import { supabase } from './supabase';
 import {
@@ -17,6 +18,8 @@ import {
 
 export type { SessionAccessResult, SessionAccessState, AuthoritativeJoinResult };
 export { validateSessionAccess, joinSessionAuthoritative };
+
+const isDevMode = process.env.NODE_ENV !== 'production';
 
 export interface CreateBookingRequest {
   seekerId: string;
@@ -102,7 +105,16 @@ export async function createBookingWithHold(
     }
   }
 
-  // 3. Deterministic Local State Engine Fallback (for preview/testing)
+  // 3. Deterministic Local State Engine Fallback (for preview/testing only)
+  if (!isDevMode) {
+    return {
+      success: false,
+      error: {
+        code: 'NO_BACKEND',
+        message: 'Booking service is unavailable in production without a backend connection.',
+      },
+    };
+  }
   const seedDb: BookingEngineContext = getLocalBookingEngineContext();
   return executeAtomicBookingWithHold(request, seedDb);
 }
@@ -901,6 +913,23 @@ export async function fetchMentorBookings(
   mentorId: string,
   statusFilter?: string
 ): Promise<EnrichedBookingRecord[]> {
+  if (!isDevMode) {
+    try {
+      const params = new URLSearchParams({ mentorId });
+      if (statusFilter && statusFilter !== 'ALL') {
+        params.append('status', statusFilter);
+      }
+      const res = await fetch(`/api/mentor/bookings?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.bookings) return data.bookings;
+      }
+    } catch {
+      // API unreachable
+    }
+    return [];
+  }
+
   try {
     const params = new URLSearchParams({ mentorId });
     if (statusFilter && statusFilter !== 'ALL') {
@@ -932,6 +961,21 @@ export async function fetchMentorBookings(
  * Fetches bookings for a seeker, enriched with mentor, gig, and segment data.
  */
 export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBookingRecord[]> {
+  // Try server API first, then Supabase
+  try {
+    const res = await fetch(`/api/seeker/bookings?seekerId=${encodeURIComponent(seekerId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.bookings) return data.bookings;
+    }
+  } catch {
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return [];
+  }
+
   const db = getLocalBookingEngineContext();
   const seekerIds = [seekerId];
   const matched = db.bookings.filter((b) => seekerIds.includes(b.seeker_id));
@@ -949,14 +993,19 @@ export async function fetchBookingDetail(
   try {
     const url = mentorId
       ? `/api/mentor/bookings/${bookingId}?mentorId=${mentorId}`
-      : `/api/mentor/bookings/${bookingId}`;
+      : `/api/seeker/bookings/${bookingId}`;
     const res = await fetch(url);
     if (res.ok) {
       const data = await res.json();
       if (data.booking) return data.booking;
+      if (data.bookings && data.bookings[0]) return data.bookings[0];
     }
   } catch {
-    // Fallback to local DB
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return null;
   }
 
   const db = getLocalBookingEngineContext();
@@ -983,13 +1032,15 @@ export async function confirmMentorBooking(
 
     const data = await res.json();
     if (res.ok && data.success) {
-      // Also sync to local DB in case client was using local state
-      const db = getLocalBookingEngineContext();
-      const localBooking = db.bookings.find((b) => b.id === bookingId);
-      if (localBooking) {
-        localBooking.status = 'CONFIRMED';
-        localBooking.meeting_url = meetingUrl;
-        localBooking.updated_at = new Date().toISOString();
+      if (isDevMode) {
+        // Also sync to local DB in case client was using local state
+        const db = getLocalBookingEngineContext();
+        const localBooking = db.bookings.find((b) => b.id === bookingId);
+        if (localBooking) {
+          localBooking.status = 'CONFIRMED';
+          localBooking.meeting_url = meetingUrl;
+          localBooking.updated_at = new Date().toISOString();
+        }
       }
       return data;
     }
@@ -999,6 +1050,12 @@ export async function confirmMentorBooking(
       error: data.error || { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm session.' },
     };
   } catch {
+    if (!isDevMode) {
+      return {
+        success: false,
+        error: { code: 'NO_BACKEND', message: 'Booking confirmation service is unavailable.' },
+      };
+    }
     // Direct execution fallback on local db
     const db = getLocalBookingEngineContext();
     return await confirmSessionByMentor({ bookingId, mentorId, meetingUrl }, db);
@@ -1016,8 +1073,13 @@ export async function fetchOverdueBookings(): Promise<Booking[]> {
       if (data.bookings) return data.bookings;
     }
   } catch {
-    // Fallback
+    // API unreachable
   }
+
+  if (!isDevMode) {
+    return [];
+  }
+
   const db = getLocalBookingEngineContext();
   return getOverdueBookings(db);
 }
@@ -1033,7 +1095,11 @@ export async function fetchUserNotifications(userId: string): Promise<Notificati
       if (data.notifications) return data.notifications;
     }
   } catch {
-    // Fallback
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return [];
   }
 
   const db = getLocalBookingEngineContext();
@@ -1064,7 +1130,31 @@ export async function fetchSessionAccess(
       return data;
     }
   } catch {
-    // Fallback to local engine
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return {
+      success: false,
+      accessState: 'BEFORE_T5',
+      canJoin: false,
+      meetingUrl: null,
+      sessionTitle: '',
+      mentorName: '',
+      seekerName: '',
+      mentorId: '',
+      seekerId: '',
+      startTime: '',
+      endTime: '',
+      currentServerTime: new Date().toISOString(),
+      secondsUntilT5: 0,
+      secondsUntilStart: 0,
+      secondsUntilEnd: 0,
+      bookingStatus: 'PENDING_VERIFICATION',
+      bookingCode: '',
+      message: 'Session access service is unavailable.',
+      error: { code: 'NO_BACKEND', message: 'Session access service is unavailable.' },
+    };
   }
 
   const db = getLocalBookingEngineContext();
@@ -1100,7 +1190,16 @@ export async function joinSessionRequest(
     const data = await res.json();
     return data;
   } catch {
-    // Fallback to local engine
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return {
+      success: false,
+      canJoin: false,
+      accessState: 'BEFORE_T5',
+      error: { code: 'NO_BACKEND', message: 'Session join service is unavailable.' },
+    };
   }
 
   const db = getLocalBookingEngineContext();
@@ -1126,7 +1225,11 @@ export async function markSessionCompleted(bookingId: string): Promise<boolean> 
     const data = await res.json();
     if (res.ok && data.success) return true;
   } catch {
-    // Fallback
+    // API unreachable
+  }
+
+  if (!isDevMode) {
+    return false;
   }
 
   const db = getLocalBookingEngineContext();

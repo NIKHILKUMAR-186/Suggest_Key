@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { AuthLayout, AuthEyebrow, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
-import { AlertCircle, ArrowLeft, CheckCircle2, Sparkles, UserPlus, Lock } from 'lucide-react';
+import { AlertCircle, Sparkles, UserPlus } from 'lucide-react';
 import type { UserRole } from '@/src/types/auth';
 
 export const SignUpPage: React.FC = () => {
-  const { signUp, error, clearError, isConfigured } = useAuth();
+  const { signUp, error, clearError, activeRole, isAuthenticated } = useAuth();
   const { navigate } = useNavigation();
 
   const [fullName, setFullName] = useState('');
@@ -17,6 +17,15 @@ export const SignUpPage: React.FC = () => {
   const [role, setRole] = useState<UserRole>('seeker');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  // Redirect already-authenticated users to their role-specific app
+  useEffect(() => {
+    if (isAuthenticated && activeRole) {
+      if (activeRole === 'admin') navigate('/admin');
+      else if (activeRole === 'mentor') navigate('/mentor');
+      else navigate('/seeker');
+    }
+  }, [isAuthenticated, activeRole, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,10 +51,10 @@ export const SignUpPage: React.FC = () => {
         {/* Brand */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#663af3] text-white shadow-xs">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
               <Sparkles className="h-5 w-5" />
             </div>
-            <span className="text-base font-bold tracking-tight text-white" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
+            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
               Suggest Key
             </span>
           </div>
@@ -56,8 +65,8 @@ export const SignUpPage: React.FC = () => {
 
         {/* Error Notice */}
         {(error || feedback) && (
-          <div className="rounded-lg bg-[rgba(231,76,60,0.08)] border border-[rgba(231,76,60,0.2)] p-3 text-xs text-[#e46d4c] flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-[#e46d4c] shrink-0 mt-0.5" />
+          <div className="rounded-lg bg-[var(--color-shell-error-soft)] border border-[var(--color-shell-error)] p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" />
             <span>{error || feedback}</span>
           </div>
         )}
@@ -96,19 +105,19 @@ export const SignUpPage: React.FC = () => {
 
           {/* Role Selection */}
           <div className="space-y-2">
-            <label className="block text-xs font-semibold text-[#c7d3ea]">Account Type</label>
+            <label className="block text-xs font-semibold text-[var(--color-shell-text-muted)]">Account Type</label>
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={() => setRole('seeker')}
                 className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
                   role === 'seeker'
-                    ? 'border-[#663af3] bg-[rgba(102,58,243,0.08)] ring-1 ring-[#663af3]'
-                    : 'border-[rgba(186,215,247,0.12)] hover:border-[rgba(186,215,247,0.2)] bg-[rgba(186,214,247,0.03)]'
+                    ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-accent-soft)] ring-1 ring-[var(--color-shell-primary)]'
+                    : 'border-[var(--color-shell-border-strong)] hover:border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]'
                 }`}
               >
-                <div className="font-semibold text-xs text-white">Seeker</div>
-                <div className="text-[11px] text-[#9da7ba] mt-0.5">
+                <div className="font-semibold text-xs text-[var(--color-shell-text)]">Seeker</div>
+                <div className="text-[11px] text-[var(--color-shell-text-subtle)] mt-0.5">
                   Discover mentors & book sessions
                 </div>
               </button>
@@ -117,17 +126,17 @@ export const SignUpPage: React.FC = () => {
                 onClick={() => setRole('mentor')}
                 className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
                   role === 'mentor'
-                    ? 'border-[#663af3] bg-[rgba(102,58,243,0.08)] ring-1 ring-[#663af3]'
-                    : 'border-[rgba(186,215,247,0.12)] hover:border-[rgba(186,215,247,0.2)] bg-[rgba(186,214,247,0.03)]'
+                    ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-accent-soft)] ring-1 ring-[var(--color-shell-primary)]'
+                    : 'border-[var(--color-shell-border-strong)] hover:border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]'
                 }`}
               >
-                <div className="font-semibold text-xs text-white">Mentor</div>
-                <div className="text-[11px] text-[#9da7ba] mt-0.5">
+                <div className="font-semibold text-xs text-[var(--color-shell-text)]">Mentor</div>
+                <div className="text-[11px] text-[var(--color-shell-text-subtle)] mt-0.5">
                   Offer gigs & conduct sessions
                 </div>
               </button>
             </div>
-            <p className="text-[10px] text-[#9da7ba] italic">
+            <p className="text-[10px] text-[var(--color-shell-text-subtle)] italic">
               Administrator roles are assigned by platform administrators only.
             </p>
           </div>
@@ -143,12 +152,12 @@ export const SignUpPage: React.FC = () => {
           </Button>
         </form>
 
-        <div className="pt-2 text-center text-xs text-[#9da7ba]">
+        <div className="pt-2 text-center text-xs text-[var(--color-shell-text-subtle)]">
           Already have an account?{' '}
           <button
             type="button"
             onClick={() => navigate('/auth/login')}
-            className="font-medium text-[#d1e4fa] hover:text-white transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#d1e4fa] rounded"
+            className="font-medium text-[var(--color-shell-text)] hover:text-[var(--color-shell-accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-text)] rounded"
           >
             Sign In
           </button>

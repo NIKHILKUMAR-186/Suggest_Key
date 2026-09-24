@@ -1,17 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft,
   Clock,
-  Calendar,
   CheckCircle2,
   Shield,
   AlertTriangle,
-  ArrowRight,
-  Lock,
   Globe,
   Star,
-  Sparkles,
+  ArrowRight,
+  Lock,
+  Calendar,
 } from 'lucide-react';
+import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
@@ -21,19 +21,19 @@ import { useAuth } from '@/src/context/AuthContext';
 import { fetchMentorDetail } from '@/src/lib/discoveryService';
 import { createBookingWithHold, calculateRemainingHoldSeconds, formatCountdown } from '@/src/lib/bookingService';
 import { DiscoverableMentor, GeneratedSlot, Booking, SlotHold } from '@/src/types/database';
-import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
+import { formatLocalTimeLabel, formatDate } from '@/src/lib/slotEngine';
 
 export const SeekerMentorDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
   const { user } = useAuth();
 
-  // Parse parameters from query string
   const searchParams = new URLSearchParams(
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
-  const paramMentorId = searchParams.get('mentorId') || 'usr-mentor-rahul';
-  const paramSegmentId = searchParams.get('segmentId') || 'seg-rel-01';
+  const paramMentorId = searchParams.get('mentorId') || '';
+  const paramSegmentId = searchParams.get('segmentId') || '';
   const paramDate = searchParams.get('date') || new Date().toISOString().split('T')[0];
+  const hasRequiredParams = Boolean(paramMentorId && paramSegmentId);
 
   const [selectedDate, setSelectedDate] = useState<string>(paramDate);
   const [mentorData, setMentorData] = useState<DiscoverableMentor | null>(null);
@@ -47,8 +47,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [holdSecondsRemaining, setHoldSecondsRemaining] = useState<number>(0);
   const [bookingConflictError, setBookingConflictError] = useState<string | null>(null);
 
-  // Function to reload mentor and availability slots
-  const reloadMentorSlots = async () => {
+  const reloadMentorSlots = useCallback(async () => {
     try {
       const { mentor } = await fetchMentorDetail(
         paramMentorId,
@@ -57,11 +56,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
       );
       if (mentor) {
         setMentorData(mentor);
+        if (selectedSlot && !mentor.all_slots.find((s) => s.id === selectedSlot.id)) {
+          setSelectedSlot(null);
+        }
       }
     } catch (e) {
       // Ignore background reload failure
     }
-  };
+  }, [paramMentorId, paramSegmentId, selectedDate, selectedSlot]);
 
   // Live 15-Minute Countdown Timer
   useEffect(() => {
@@ -72,7 +74,9 @@ export const SeekerMentorDetailPage: React.FC = () => {
         if (prev <= 1) {
           clearInterval(interval);
           setActiveHold(null);
-          setBookingConflictError('Slot hold expired. The 15-minute reservation window has ended and the slot has been released.');
+          setBookingConflictError(
+            'Slot hold expired. The 15-minute reservation window has ended and the slot has been released.'
+          );
           reloadMentorSlots();
           return 0;
         }
@@ -81,7 +85,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [activeHold, holdSecondsRemaining]);
+  }, [activeHold, holdSecondsRemaining, reloadMentorSlots]);
 
   const handleReserveSlot = async () => {
     if (!selectedSlot || !mentorData) return;
@@ -105,18 +109,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
         setBookingConflictError(
           result.error?.message || 'Failed to acquire slot hold. Please try selecting a different slot.'
         );
-        // Refresh slots from server to reflect the newly taken slot
         await reloadMentorSlots();
         return;
       }
 
-      // Success: Store active booking and hold
       setActiveBooking(result.booking);
       setActiveHold(result.hold);
       const remainingSec = calculateRemainingHoldSeconds(result.hold.expires_at) || 900;
       setHoldSecondsRemaining(remainingSec);
-
-      // Refresh slot list to show updated state
       await reloadMentorSlots();
     } catch (err: any) {
       setBookingConflictError(err.message || 'An unexpected error occurred while locking the slot.');
@@ -129,6 +129,12 @@ export const SeekerMentorDetailPage: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     async function load() {
+      if (!hasRequiredParams) {
+        setIsLoading(false);
+        setError('Select a mentor and segment to view availability.');
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
       try {
@@ -140,7 +146,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
         if (err) throw err;
         if (isMounted) {
           setMentorData(mentor);
-          // Auto-select first available slot if present
           if (mentor && mentor.available_slots.length > 0) {
             setSelectedSlot(mentor.available_slots[0]);
           } else {
@@ -163,33 +168,46 @@ export const SeekerMentorDetailPage: React.FC = () => {
   }, [paramMentorId, paramSegmentId, selectedDate]);
 
   return (
-    <div className="space-y-6">
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.23, 1, 0.31, 1] }}
+      className="space-y-6"
+    >
       {/* Navigation breadcrumb */}
-      <button
+      <motion.button
+        initial={{ opacity: 0, x: -10 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.3 }}
         onClick={() =>
           navigate(
             `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`
           )
         }
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-950 transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         <span>Back to Mentors List</span>
-      </button>
+      </motion.button>
 
       {isLoading ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
-            <div className="rounded-xl border border-zinc-200 bg-white p-6 space-y-4">
-              <Skeleton className="h-20 w-20 rounded-full" />
-              <Skeleton className="h-6 w-1/2" />
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-32 w-full" />
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 space-y-4 shadow-xs">
+              <div className="flex items-start gap-5">
+                <Skeleton variant="circular" className="h-20 w-20" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-6 w-1/2" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-16 w-full mt-2" />
+                </div>
+              </div>
             </div>
           </div>
-          <div className="rounded-xl border border-zinc-200 bg-white p-6 space-y-4">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4">
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-32 w-full" />
+            <Skeleton className="h-8 w-full" />
           </div>
         </div>
       ) : !mentorData ? (
@@ -202,62 +220,98 @@ export const SeekerMentorDetailPage: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column: Mentor Profile & Active Gig Information */}
-          <div className="lg:col-span-2 space-y-6">
-            <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-start gap-5">
-                <div className="h-20 w-20 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-bold text-2xl text-zinc-800 shrink-0">
-                  {mentorData.full_name
-                    .split(' ')
-                    .map((n) => n[0])
-                    .join('')
-                    .toUpperCase() || 'M'}
-                </div>
-                <div className="space-y-1.5 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.05 }}
+            className="lg:col-span-2 space-y-6"
+          >
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-6">
+              <div className="flex items-start gap-5">
+                {mentorData.avatar_url ? (
+                  <img
+                    src={mentorData.avatar_url}
+                    alt={mentorData.full_name}
+                    className="h-20 w-20 rounded-full object-cover border border-zinc-200 shrink-0"
+                  />
+                ) : (
+                  <div className="h-20 w-20 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-bold text-xl text-zinc-700 font-display shrink-0">
+                    {mentorData.full_name
+                      .split(' ')
+                      .map((n) => n[0])
+                      .join('')
+                      .toUpperCase() || 'M'}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h1 className="text-xl font-bold text-zinc-950">
                       {mentorData.full_name}
                     </h1>
-                    <Badge variant="success" className="text-xs">
-                      Approved Mentor
-                    </Badge>
-                    <Badge variant="secondary" className="text-xs">
-                      {mentorData.segment.name}
-                    </Badge>
-                  </div>
-                  <p className="text-xs font-medium text-zinc-500 flex items-center gap-1">
-                    <Globe className="h-3.5 w-3.5 text-zinc-400" />
-                    <span>Mentor Operating Timezone: {mentorData.timezone}</span>
-                  </p>
-                  <p className="text-xs text-zinc-700 max-w-xl leading-relaxed pt-1">
-                    {mentorData.about || mentorData.headline}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5 pt-2">
-                    {mentorData.languages.map((lang) => (
-                      <span
-                        key={lang}
-                        className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] bg-zinc-100 text-zinc-700"
+                    {mentorData.is_featured && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] gap-0.5 bg-amber-50 text-amber-800 border-amber-200"
                       >
-                        {lang}
-                      </span>
-                    ))}
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] bg-zinc-100 text-zinc-700">
-                      {mentorData.experience_years}+ Years Experience
-                    </span>
+                        <Star className="h-3 w-3 fill-current" />
+                        Featured
+                      </Badge>
+                    )}
+                    {mentorData.is_approved && (
+                      <Badge variant="success" className="text-[10px]">
+                        Verified
+                      </Badge>
+                    )}
                   </div>
+                  <p className="text-xs text-zinc-500 mt-1">{mentorData.headline}</p>
                 </div>
               </div>
 
+              {/* Timezone Info */}
+              <div className="flex items-center gap-2 text-xs text-zinc-600">
+                <Globe className="h-4 w-4 text-zinc-400" />
+                <span>Mentor Operating Timezone:</span>
+                <span className="font-medium text-zinc-900">{mentorData.timezone}</span>
+              </div>
+
+              {/* About */}
+              {mentorData.about && (
+                <p className="text-xs text-zinc-600 leading-relaxed">
+                  {mentorData.about}
+                </p>
+              )}
+
+              {/* Languages & Experience */}
+              <div className="flex flex-wrap gap-2">
+                {mentorData.languages.map((lang) => (
+                  <span
+                    key={lang}
+                    className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-zinc-50 text-zinc-700 border border-zinc-100"
+                  >
+                    {lang}
+                  </span>
+                ))}
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-zinc-50 text-zinc-700 border border-zinc-100 font-medium">
+                  {mentorData.experience_years}+ Years Experience
+                </span>
+              </div>
+
               {/* Selected Active Gig Offer */}
-              <div className="rounded-lg border border-zinc-100 bg-zinc-50/70 p-5 space-y-3">
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, delay: 0.1 }}
+                className="rounded-2xl border border-amber-200 bg-amber-50/30 p-5 space-y-3"
+              >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-amber-800">
                     Active Gig Offer
                   </span>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge variant="secondary" className="text-[10px] border-amber-200 bg-amber-50 text-amber-900">
                     Segment: {mentorData.segment.name}
                   </Badge>
                 </div>
-                <h3 className="text-base font-bold text-zinc-900">
+                <h3 className="text-lg font-bold text-zinc-950">
                   {mentorData.gig.title}
                 </h3>
                 <p className="text-xs text-zinc-600 leading-relaxed">
@@ -266,7 +320,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 <div className="flex items-center gap-6 pt-2 text-xs">
                   <div>
                     <span className="text-zinc-400 block text-[11px]">Session Length</span>
-                    <span className="font-semibold text-zinc-900 flex items-center gap-1">
+                    <span className="font-semibold text-zinc-950 flex items-center gap-1">
                       <Clock className="h-3.5 w-3.5 text-zinc-500" />{' '}
                       {mentorData.gig.duration_minutes} Minutes
                     </span>
@@ -284,26 +338,38 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     </span>
                   </div>
                 </div>
-              </div>
+              </motion.div>
 
               {/* Global Mentor Availability Invariant Notice */}
-              <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/50 p-4 text-xs text-blue-900">
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, delay: 0.15 }}
+                className="flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-xs text-blue-900"
+              >
                 <Shield className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
                 <div>
                   <span className="font-semibold">
                     Global Mentor Availability Invariant:
                   </span>
                   <p className="text-blue-800 mt-0.5 leading-relaxed">
-                    Availability belongs to {mentorData.full_name}, not individual gigs. Any slot confirmed or held here is locked across all segments {mentorData.full_name} mentors on the platform.
+                    Availability belongs to {mentorData.full_name}, not individual gigs. Any slot
+                    confirmed or held here is locked across all segments {mentorData.full_name}{' '}
+                    mentors on the platform.
                   </p>
                 </div>
-              </div>
+              </motion.div>
             </div>
-          </div>
+          </motion.div>
 
           {/* Right Column: Dynamic Slot Selection & Booking Summary */}
-          <div className="space-y-6">
-            <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-5 sticky top-20">
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.08 }}
+            className="space-y-6"
+          >
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-5 sticky top-20">
               <div>
                 <h3 className="text-base font-bold text-zinc-950">Select Session Slot</h3>
                 <p className="text-xs text-zinc-500 mt-0.5">
@@ -314,22 +380,26 @@ export const SeekerMentorDetailPage: React.FC = () => {
               {/* Date Input */}
               <div>
                 <label className="block text-xs font-medium text-zinc-700 mb-1.5">
-                  Date
+                  Session Date
                 </label>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  min={new Date().toISOString().split('T')[0]}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-900 focus:border-zinc-900 focus:outline-hidden"
-                />
+                <div className="flex items-center gap-2 bg-white rounded-xl border border-zinc-200 px-3 py-2.5 shadow-xs">
+                  <Calendar className="h-4 w-4 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={selectedDate}
+                    min={new Date().toISOString().split('T')[0]}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                    className="text-xs text-zinc-900 border-none bg-transparent focus:outline-none font-semibold cursor-pointer w-full"
+                    aria-label="Select session date"
+                  />
+                </div>
               </div>
 
               {/* Dynamic Slots Grid */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-xs font-medium text-zinc-700">
-                    Slots on {selectedDate}
+                    Slots on {formatDate(selectedDate)}
                   </label>
                   <span className="text-[11px] text-zinc-400">
                     {mentorData.available_slots.length} available
@@ -341,7 +411,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     No operating slots or mentor has leave on this date.
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                  <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
                     {mentorData.all_slots.map((s) => {
                       const isSelected = selectedSlot?.id === s.id;
                       const timeLabel = `${formatLocalTimeLabel(
@@ -353,7 +423,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                           key={s.id}
                           disabled={!s.is_available}
                           onClick={() => setSelectedSlot(s)}
-                          className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-medium transition-all ${
+                          className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                             s.status === 'PAST'
                               ? 'border-zinc-100 bg-zinc-50 text-zinc-300 cursor-not-allowed line-through'
                               : s.status === 'BOOKED'
@@ -361,7 +431,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                               : s.status === 'HELD'
                               ? 'border-amber-100 bg-amber-50/50 text-amber-700 cursor-not-allowed'
                               : isSelected
-                              ? 'border-zinc-900 bg-zinc-900 text-white shadow-xs font-semibold'
+                              ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-xs'
                               : 'border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-zinc-50'
                           }`}
                         >
@@ -387,18 +457,26 @@ export const SeekerMentorDetailPage: React.FC = () => {
 
               {/* Conflict / Error Banner */}
               {bookingConflictError && (
-                <div className="rounded-lg border border-red-200 bg-red-50/80 p-3 text-xs text-red-700 flex items-start gap-2.5">
-                  <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-xl border border-rose-200 bg-rose-50/80 p-3 text-xs text-rose-700 flex items-start gap-2.5"
+                >
+                  <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
                   <div className="space-y-1">
-                    <p className="font-semibold text-red-800">Booking Concurrency Alert</p>
+                    <p className="font-semibold text-rose-800">Booking Concurrency Alert</p>
                     <p>{bookingConflictError}</p>
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {/* Active Hold State Display */}
               {activeHold && activeBooking ? (
-                <div className="rounded-xl border-2 border-emerald-500/80 bg-emerald-50/40 p-4 space-y-4">
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-2xl border-2 border-emerald-500/80 bg-emerald-50/40 p-4 space-y-4"
+                >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-emerald-800 font-bold text-xs">
                       <span className="relative flex h-2 w-2">
@@ -415,7 +493,9 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <div className="rounded-lg bg-white border border-emerald-200 p-3 space-y-1.5 text-xs">
                     <div className="flex justify-between text-zinc-600">
                       <span>Booking Code:</span>
-                      <span className="font-mono font-bold text-zinc-900">{activeBooking.booking_code}</span>
+                      <span className="font-mono font-bold text-zinc-900">
+                        {activeBooking.booking_code}
+                      </span>
                     </div>
                     <div className="flex justify-between text-zinc-600">
                       <span>Status:</span>
@@ -426,7 +506,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     <div className="flex justify-between text-zinc-600">
                       <span>Session Time:</span>
                       <span className="font-medium text-zinc-900">
-                        {selectedSlot ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} – ${formatLocalTimeLabel(selectedSlot.local_end_time)}` : ''}
+                        {selectedSlot
+                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} – ${formatLocalTimeLabel(
+                              selectedSlot.local_end_time
+                            )}`
+                          : ''}
                       </span>
                     </div>
                     <div className="flex justify-between text-zinc-900 font-bold pt-1 border-t border-zinc-100">
@@ -436,21 +520,22 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   </div>
 
                   <p className="text-[11px] text-emerald-900 leading-relaxed">
-                    This slot has been locked exclusively for you in the database. Complete payment within 15 minutes before the hold expires.
+                    This slot has been locked exclusively for you in the database. Complete
+                    payment within 15 minutes before the hold expires.
                   </p>
 
                   <Button
                     onClick={() => {
-                      navigate(`/seeker/payments?bookingId=${activeBooking.id}`);
+                      navigate(`/seeker/payment?bookingId=${activeBooking.id}`);
                     }}
-                    className="w-full gap-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white"
+                    className="w-full gap-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-semibold"
                     size="md"
                   >
                     <CheckCircle2 className="h-4 w-4" />
                     <span>Proceed to Payment Proof Upload</span>
                     <ArrowRight className="h-3.5 w-3.5" />
                   </Button>
-                </div>
+                </motion.div>
               ) : (
                 <>
                   {/* Booking Summary Box */}
@@ -465,9 +550,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       <span>Selected Time</span>
                       <span className="font-semibold text-zinc-900">
                         {selectedSlot
-                          ? `${formatLocalTimeLabel(
-                              selectedSlot.local_start_time
-                            )} – ${formatLocalTimeLabel(
+                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} – ${formatLocalTimeLabel(
                               selectedSlot.local_end_time
                             )} (${mentorData.timezone})`
                           : 'Please select an available slot'}
@@ -483,7 +566,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <Button
                     disabled={!selectedSlot || !selectedSlot.is_available || isReserving}
                     onClick={handleReserveSlot}
-                    className="w-full gap-2 text-xs"
+                    className="w-full gap-2 text-xs font-semibold"
                     size="md"
                   >
                     <Lock className="h-3.5 w-3.5" />
@@ -498,9 +581,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 </>
               )}
             </div>
-          </div>
+          </motion.div>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 };
+
+export default SeekerMentorDetailPage;

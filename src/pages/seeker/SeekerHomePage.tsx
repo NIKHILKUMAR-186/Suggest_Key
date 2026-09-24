@@ -1,21 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Compass,
-  Calendar as CalendarIcon,
-  ArrowRight,
-  Clock,
+  Search,
   ShieldCheck,
   Sparkles,
-  AlertCircle,
+  Filter,
+  ChevronDown,
   Star,
-  Globe,
-  CheckCircle2,
-  RefreshCw,
+  X,
 } from 'lucide-react';
-import { Button } from '@/src/components/ui/Button';
+import { motion, AnimatePresence } from 'motion/react';
 import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { PremiumMentorCard } from '@/src/components/seeker/PremiumMentorCard';
 import { useNavigation } from '@/src/context/NavigationContext';
 import {
   fetchActiveSegments,
@@ -23,15 +20,27 @@ import {
   fetchDiscoverableMentors,
 } from '@/src/lib/discoveryService';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
-import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
+
+type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
+
+const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
+  { value: 'all', label: 'All Experience' },
+  { value: '0-2', label: '0–2 Years' },
+  { value: '3-5', label: '3–5 Years' },
+  { value: '6+', label: '6+ Years' },
+];
 
 export const SeekerHomePage: React.FC = () => {
-  const { navigate, currentPath } = useNavigation();
+  const { navigate } = useNavigation();
 
-  // Date selection: default to today (YYYY-MM-DD)
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     return new Date().toISOString().split('T')[0];
   });
+
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [languageFilter, setLanguageFilter] = useState<string>('all');
+  const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
+  const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
 
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
@@ -40,7 +49,6 @@ export const SeekerHomePage: React.FC = () => {
   const [isLoadingMentors, setIsLoadingMentors] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 1. Initial Load: Fetch active segments and select highest-priority segment
   useEffect(() => {
     let isMounted = true;
     async function loadSegments() {
@@ -51,7 +59,6 @@ export const SeekerHomePage: React.FC = () => {
         if (segErr) throw segErr;
         if (isMounted) {
           setSegments(activeSegs);
-          // Auto-select highest-priority active segment
           const topSegment = getHighestPriorityActiveSegment(activeSegs);
           setSelectedSegment(topSegment);
         }
@@ -64,21 +71,18 @@ export const SeekerHomePage: React.FC = () => {
         if (isMounted) setIsLoadingSegments(false);
       }
     }
-
     loadSegments();
     return () => {
       isMounted = false;
     };
   }, []);
 
-  // 2. Query discoverable mentors whenever selectedSegment or selectedDate changes
   useEffect(() => {
     let isMounted = true;
     if (!selectedSegment) {
       setMentors([]);
       return;
     }
-
     async function loadMentors() {
       setIsLoadingMentors(true);
       try {
@@ -98,271 +102,426 @@ export const SeekerHomePage: React.FC = () => {
         if (isMounted) setIsLoadingMentors(false);
       }
     }
-
     loadMentors();
     return () => {
       isMounted = false;
     };
   }, [selectedSegment, selectedDate]);
 
+  const availableLanguages = useMemo(() => {
+    const langs = new Set<string>();
+    mentors.forEach((m) => (m.languages || []).forEach((l) => langs.add(l)));
+    return Array.from(langs).sort();
+  }, [mentors]);
+
+  const filteredMentors = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return mentors.filter((m) => {
+      if (query) {
+        const searchable = [
+          m.full_name,
+          m.headline,
+          m.segment?.name || '',
+          m.gig.title,
+          m.gig.description,
+          ...(m.languages || []),
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!searchable.includes(query)) return false;
+      }
+      if (languageFilter !== 'all' && !(m.languages || []).includes(languageFilter)) {
+        return false;
+      }
+      if (experienceFilter !== 'all') {
+        const exp = m.experience_years || 0;
+        if (experienceFilter === '0-2' && (exp < 0 || exp > 2)) return false;
+        if (experienceFilter === '3-5' && (exp < 3 || exp > 5)) return false;
+        if (experienceFilter === '6+' && exp < 6) return false;
+      }
+      return true;
+    });
+  }, [mentors, searchQuery, languageFilter, experienceFilter]);
+
+  const featuredMentors = filteredMentors.filter((m) => m.is_featured);
+  const regularMentors = filteredMentors.filter((m) => !m.is_featured);
+
+  const hasActiveFilters = languageFilter !== 'all' || experienceFilter !== 'all' || searchQuery.trim() !== '';
+
+  const clearAllFilters = useCallback(() => {
+    setSearchQuery('');
+    setLanguageFilter('all');
+    setExperienceFilter('all');
+  }, []);
+
+  const today = new Date().toISOString().split('T')[0];
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  const quickDates = useMemo(() => {
+    const dates = [{ label: 'Today', value: today }];
+    if (tomorrow) dates.push({ label: 'Tomorrow', value: tomorrow });
+    return dates;
+  }, [today, tomorrow]);
+
+  const handleDateSelect = (dateValue: string) => {
+    setSelectedDate(dateValue);
+  };
+
   return (
     <div className="space-y-8">
-      {/* Platform Invariant Header */}
-      <div className="space-y-3">
-        <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-700">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-          <span>Real-Time Supabase Discovery · Concurrency-Safe Booking</span>
-        </div>
-        <h1 className="text-3xl font-bold tracking-tight text-zinc-950 sm:text-4xl">
-          Find Your Mentor & Book 1:1 Guidance
-        </h1>
-        <p className="max-w-2xl text-base text-zinc-600 leading-relaxed">
-          Select a verified segment and date. All slots are dynamically calculated in the mentor's timezone, validated against UTC invariants, and filtered for booking conflicts.
-        </p>
-      </div>
+      {/* Hero Section */}
+      <div className="space-y-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: [0.23, 1, 0.31, 1] }}
+          className="inline-flex items-center gap-2.5 rounded-full border border-amber-200 bg-amber-50/80 px-4 py-1.5 text-xs font-semibold text-amber-800"
+        >
+          <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+          <span>Verified 1:1 Mentorship Marketplace</span>
+        </motion.div>
 
-      {/* Discovery Filters: Segments + Date Picker */}
-      <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-5">
-        <div>
-          <div className="flex items-center justify-between mb-2.5">
-            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Mentorship Segment
-            </label>
-            <span className="text-[11px] text-zinc-400">
-              Highest-priority active segment auto-selected
-            </span>
-          </div>
+        <motion.h1
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.05, ease: [0.23, 1, 0.31, 1] }}
+          className="text-4xl font-bold tracking-tight text-zinc-950 sm:text-5xl md:text-6xl leading-tight font-display"
+        >
+          Find the right mentor
+          <br />
+          for your journey
+        </motion.h1>
 
-          {isLoadingSegments ? (
-            <div className="flex gap-2">
-              <Skeleton className="h-10 w-44 rounded-lg" />
-              <Skeleton className="h-10 w-36 rounded-lg" />
-              <Skeleton className="h-10 w-36 rounded-lg" />
-            </div>
-          ) : segments.length === 0 ? (
-            <div className="text-xs text-zinc-500 italic">No active segments found.</div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {segments.map((seg) => {
-                const isSelected = selectedSegment?.id === seg.id;
-                const isHighest = seg.priority === 1;
+        <motion.p
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
+          className="max-w-2xl text-lg text-zinc-600 leading-relaxed"
+        >
+          Real guidance. Meaningful conversations. One session at a time.
+        </motion.p>
 
-                return (
-                  <button
-                    key={seg.id}
-                    onClick={() => setSelectedSegment(seg)}
-                    className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-all ${
-                      isSelected
-                        ? 'border-zinc-950 bg-zinc-950 text-white shadow-xs'
-                        : 'border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:bg-zinc-50'
-                    }`}
-                  >
-                    <span>{seg.name}</span>
-                    {isHighest && (
-                      <Badge
-                        variant="secondary"
-                        className={
-                          isSelected
-                            ? 'bg-zinc-800 text-zinc-200 text-[10px] py-0 px-1.5'
-                            : 'bg-zinc-100 text-zinc-700 text-[10px] py-0 px-1.5'
-                        }
-                      >
-                        Priority {seg.priority}
-                      </Badge>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-4 border-t border-zinc-100">
-          <div>
-            <label className="block text-xs font-medium text-zinc-700 mb-1.5">
-              Select Session Date
-            </label>
-            <div className="relative">
-              <input
-                type="date"
-                value={selectedDate}
-                min={new Date().toISOString().split('T')[0]}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="w-full rounded-lg border border-zinc-200 bg-white px-3.5 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-hidden focus:ring-1 focus:ring-zinc-900"
-              />
-            </div>
-            <p className="mt-1 text-[11px] text-zinc-500">
-              Past intervals are disabled per server UTC rules.
-            </p>
-          </div>
-
-          <div className="flex items-end">
-            <Button
-              onClick={() =>
-                navigate(
-                  `/seeker/mentors?segmentId=${selectedSegment?.id || ''}&date=${selectedDate}`
-                )
-              }
-              className="w-full gap-2 text-sm"
-              size="md"
-              disabled={!selectedSegment}
-            >
-              <span>View All Segment Mentors</span>
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Discovery Content Area: Real Mentors */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-zinc-900">
-            Available Mentors on {selectedDate}
-          </h2>
-          <span className="text-xs text-zinc-500">
-            {mentors.length} discoverable {mentors.length === 1 ? 'mentor' : 'mentors'} with valid slots
-          </span>
-        </div>
-
-        {isLoadingMentors ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {[1, 2].map((i) => (
-              <div key={i} className="rounded-xl border border-zinc-200 bg-white p-6 space-y-4">
-                <div className="flex items-center gap-4">
-                  <Skeleton className="h-14 w-14 rounded-full" />
-                  <div className="space-y-2 flex-1">
-                    <Skeleton className="h-5 w-1/2" />
-                    <Skeleton className="h-3 w-1/3" />
-                  </div>
-                </div>
-                <Skeleton className="h-12 w-full" />
-                <div className="flex justify-between items-center pt-2">
-                  <Skeleton className="h-5 w-24" />
-                  <Skeleton className="h-9 w-28" />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : mentors.length === 0 ? (
-          <EmptyState
-            icon={Compass}
-            title="No Available Mentors On This Date"
-            description={`No approved mentors in ${
-              selectedSegment?.name || 'this segment'
-            } have open bookable slots on ${selectedDate}. Mentors with 0 valid slots are excluded to prevent dead ends.`}
-            actionLabel="Try Tomorrow"
-            onAction={() => {
-              const tomorrow = new Date();
-              tomorrow.setDate(tomorrow.getDate() + 1);
-              setSelectedDate(tomorrow.toISOString().split('T')[0]);
-            }}
+        {/* Hero Search */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.15, ease: [0.23, 1, 0.31, 1] }}
+          className="relative max-w-3xl pt-4"
+        >
+          <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-5 w-5 text-zinc-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search mentors, segments, languages, or topics..."
+            aria-label="Search mentors"
+            className="w-full rounded-2xl border border-zinc-200 bg-white pl-12 pr-4 py-4 text-base text-zinc-900 placeholder:text-zinc-400 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500/15 shadow-md"
           />
+        </motion.div>
+      </div>
+
+      {/* Segment Selector */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.2, ease: [0.23, 1, 0.31, 1] }}
+      >
+        {isLoadingSegments ? (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            <Skeleton className="h-10 w-40 rounded-full" />
+            <Skeleton className="h-10 w-32 rounded-full" />
+            <Skeleton className="h-10 w-36 rounded-full" />
+          </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {mentors.map((mentor) => (
-              <div
-                key={mentor.id}
-                className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs flex flex-col justify-between transition-all hover:border-zinc-300"
-              >
-                <div className="space-y-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-3.5">
-                      <div className="h-12 w-12 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-bold text-zinc-700 shrink-0">
-                        {mentor.full_name
-                          .split(' ')
-                          .map((n) => n[0])
-                          .join('')
-                          .toUpperCase() || 'M'}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <h3 className="font-semibold text-zinc-950 text-base">
-                            {mentor.full_name}
-                          </h3>
-                          <Badge variant="success" className="text-[10px] py-0 px-1">
-                            Approved
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-zinc-500 line-clamp-1">
-                          {mentor.headline}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-semibold text-zinc-900">
-                        {mentor.gig.title}
-                      </h4>
-                      <Badge variant="secondary" className="text-[10px]">
-                        {mentor.experience_years}+ Yrs
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-zinc-600 mt-1 line-clamp-2 leading-relaxed">
-                      {mentor.gig.description}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs text-zinc-500 border-t border-zinc-100 pt-3">
-                    <div className="flex items-center gap-3">
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3.5 w-3.5 text-zinc-400" />
-                        {mentor.gig.duration_minutes} mins
-                      </span>
-                      <span>·</span>
-                      <span className="font-bold text-zinc-950 text-sm">
-                        ₹{mentor.gig.price_inr} INR
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1 text-[11px] text-zinc-500">
-                      <Globe className="h-3 w-3 text-zinc-400" />
-                      <span>{mentor.timezone}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-5 flex items-center justify-between border-t border-zinc-100 pt-4">
-                  <span className="text-xs text-emerald-700 font-medium flex items-center gap-1">
-                    <Sparkles className="h-3.5 w-3.5" />
-                    Next:{' '}
-                    {mentor.next_available_slot
-                      ? formatLocalTimeLabel(mentor.next_available_slot.local_start_time)
-                      : 'Slots Available'}
-                  </span>
-                  <Button
-                    onClick={() =>
-                      navigate(
-                        `/seeker/mentor-detail?mentorId=${mentor.id}&segmentId=${
-                          selectedSegment?.id || mentor.segment.id
-                        }&date=${selectedDate}`
-                      )
-                    }
-                    size="sm"
-                    className="gap-1 text-xs"
-                  >
-                    <span>View Slots & Book</span>
-                    <ArrowRight className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-            ))}
+          <div
+            className="flex gap-2 overflow-x-auto pb-1 scrollbar-none"
+            role="tablist"
+            aria-label="Mentorship segments"
+          >
+            {segments.map((seg) => {
+              const isSelected = selectedSegment?.id === seg.id;
+              return (
+                <button
+                  key={seg.id}
+                  role="tab"
+                  aria-selected={isSelected}
+                  onClick={() => setSelectedSegment(seg)}
+                  className={`px-5 py-2.5 rounded-full text-xs font-semibold transition-all whitespace-nowrap border cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 min-h-[40px] ${
+                    isSelected
+                      ? 'border-amber-300 bg-amber-50 text-amber-900 shadow-xs'
+                      : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300'
+                  }`}
+                >
+                  {seg.name}
+                </button>
+              );
+            })}
           </div>
         )}
+      </motion.div>
+
+      {/* Date Discovery */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.25, ease: [0.23, 1, 0.31, 1] }}
+        className="space-y-3"
+      >
+        <h2 className="text-sm font-semibold text-zinc-700">When would you like to talk?</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5 bg-white rounded-xl border border-zinc-200 px-1.5 py-1 shadow-xs">
+            {quickDates.map((d) => (
+              <button
+                key={d.value}
+                onClick={() => handleDateSelect(d.value)}
+                className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+                  selectedDate === d.value
+                    ? 'bg-amber-50 text-amber-900 border border-amber-200'
+                    : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900'
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+
+            <div className="w-px h-5 bg-zinc-200 mx-1" />
+            <label className="sr-only" htmlFor="date-picker">Pick a date</label>
+            <input
+              id="date-picker"
+              type="date"
+              value={selectedDate}
+              min={today}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="text-xs text-zinc-700 border-none bg-transparent focus:outline-none font-semibold cursor-pointer w-32 truncate"
+              aria-label="Select session date"
+            />
+          </div>
+
+          <span className="text-[11px] text-zinc-400">
+            Past dates disabled
+          </span>
+        </div>
+      </motion.div>
+
+      {/* Filters Bar */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.3, ease: [0.23, 1, 0.31, 1] }}
+        className="flex items-center gap-2.5 flex-wrap"
+      >
+        {/* Language Filter */}
+        <div className="relative">
+          <button
+            onClick={() => setShowLanguageDropdown((v) => !v)}
+            aria-haspopup="listbox"
+            aria-expanded={showLanguageDropdown}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50 hover:border-zinc-300 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+          >
+            <Filter className="h-3.5 w-3.5" />
+            <span>Language</span>
+            {languageFilter !== 'all' && <Badge variant="default" className="text-[9px] ml-1">{languageFilter}</Badge>}
+            <ChevronDown className={`h-3 w-3 transition-transform ${showLanguageDropdown ? 'rotate-180' : ''}`} />
+          </button>
+          <AnimatePresence>
+            {showLanguageDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setShowLanguageDropdown(false)}
+                />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute left-0 top-full mt-1 z-20 w-44 rounded-xl border border-zinc-200 bg-white shadow-lg p-1 space-y-0.5"
+                  role="listbox"
+                >
+                  <button
+                    onClick={() => {
+                      setLanguageFilter('all');
+                      setShowLanguageDropdown(false);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
+                      languageFilter === 'all' ? 'bg-amber-50 text-amber-900 font-semibold' : 'hover:bg-zinc-50 text-zinc-700'
+                    }`}
+                  >
+                    All Languages
+                  </button>
+                  {availableLanguages.map((lang) => (
+                    <button
+                      key={lang}
+                      onClick={() => {
+                        setLanguageFilter(lang);
+                        setShowLanguageDropdown(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
+                        languageFilter === lang ? 'bg-amber-50 text-amber-900 font-semibold' : 'hover:bg-zinc-50 text-zinc-700'
+                      }`}
+                    >
+                      {lang}
+                    </button>
+                  ))}
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Experience Filter */}
+        <div className="relative">
+          <select
+            value={experienceFilter}
+            onChange={(e) => setExperienceFilter(e.target.value as ExperienceFilter)}
+            aria-label="Filter by experience"
+            className="appearance-none rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 pr-8"
+          >
+            {EXPERIENCE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-400 pointer-events-none" />
+        </div>
+
+        {/* Clear Filters */}
+        {hasActiveFilters && (
+          <button
+            onClick={clearAllFilters}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+          >
+            <X className="h-3 w-3" />
+            Clear
+          </button>
+        )}
+      </motion.div>
+
+      {/* Results Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-xl font-bold text-zinc-950">Available Mentors</h2>
+          {selectedSegment && (
+            <Badge variant="secondary" className="text-xs font-semibold">
+              {selectedSegment.name}
+            </Badge>
+          )}
+        </div>
+        <span className="text-xs text-zinc-500">
+          {isLoadingMentors ? '…' : `${filteredMentors.length} mentor${filteredMentors.length !== 1 ? 's' : ''}`}
+        </span>
       </div>
 
-      {/* Discovery Architecture & Business Invariant Notice */}
-      <div className="rounded-xl border border-zinc-200 bg-zinc-50/70 p-5 space-y-2 text-xs text-zinc-600">
-        <div className="flex items-center gap-2 font-semibold text-zinc-900">
-          <ShieldCheck className="h-4 w-4 text-zinc-700" />
-          <span>Phase 5 Architecture: Discoverability Invariants Enforced</span>
+      {/* Error */}
+      {error && (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 shadow-xs">
+          <div className="flex items-center gap-2 font-semibold">
+            <ShieldCheck className="h-4 w-4" />
+            <span>Something went wrong</span>
+          </div>
+          <p className="mt-1 text-rose-600">{error}</p>
         </div>
-        <p className="leading-relaxed">
-          A mentor is discoverable only when: (1) Approved in <code className="text-zinc-800">mentor_profiles</code>; (2) Belongs to selected segment; (3) Has an active gig for that segment; (4) Has at least <strong>1 valid unbooked, non-held slot</strong> on the selected calendar date. Time intervals are converted to authoritative UTC and checked against global mentor bookings across all segments.
-        </p>
+      )}
+
+      {/* Content */}
+      {isLoadingMentors ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {[1, 2, 3, 4].map((i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+      ) : filteredMentors.length === 0 ? (
+        <EmptyState
+          icon={Search}
+          title="No Mentors Available"
+          description={
+            searchQuery || languageFilter !== 'all' || experienceFilter !== 'all'
+              ? 'Try adjusting your search terms or clearing filters to discover more mentors.'
+              : `No approved mentors in ${selectedSegment?.name || 'selected segment'} have open slots for your selected date. Mentors with zero available slots are excluded to prevent dead ends.`
+          }
+          actionLabel={hasActiveFilters ? 'Clear Filters' : undefined}
+          onAction={hasActiveFilters ? clearAllFilters : undefined}
+        />
+      ) : (
+        <motion.div
+          initial="hidden"
+          animate="show"
+          variants={{
+            hidden: { opacity: 0 },
+            show: {
+              opacity: 1,
+              transition: { staggerChildren: 0.06 },
+            },
+          }}
+          className="space-y-8"
+        >
+          {featuredMentors.length > 0 && (
+            <div className="space-y-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                <Star className="h-3 w-3 text-amber-500 fill-current" />
+                <span>Featured Mentors</span>
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {featuredMentors.map((mentor) => (
+                  <PremiumMentorCard
+                    key={`featured-${mentor.id}`}
+                    mentor={mentor}
+                    selectedSegment={selectedSegment}
+                    selectedDate={selectedDate}
+                    navigate={navigate}
+                    isFeatured
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {regularMentors.length > 0 && (
+            <div className="space-y-4">
+              {featuredMentors.length > 0 && <div className="border-t border-zinc-100 pt-6" />}
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                Available Mentors
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {regularMentors.map((mentor) => (
+                  <PremiumMentorCard
+                    key={`regular-${mentor.id}`}
+                    mentor={mentor}
+                    selectedSegment={selectedSegment}
+                    selectedDate={selectedDate}
+                    navigate={navigate}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </motion.div>
+      )}
+    </div>
+  );
+};
+
+const SkeletonCard: React.FC<{ className?: string }> = ({ className }) => {
+  return (
+    <div
+      className={`rounded-2xl border border-zinc-200 bg-white p-5 space-y-4 shadow-xs ${className || ''}`}
+      aria-hidden="true"
+    >
+      <div className="flex items-start gap-3.5">
+        <Skeleton variant="circular" className="h-12 w-12 shrink-0" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-3 w-1/2" />
+        </div>
+      </div>
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-2/3" />
+      <div className="flex items-center justify-between pt-3 border-t border-zinc-100">
+        <Skeleton className="h-3 w-20" />
+        <Skeleton className="h-8 w-24 rounded-lg" />
       </div>
     </div>
   );
 };
+
+export default SeekerHomePage;

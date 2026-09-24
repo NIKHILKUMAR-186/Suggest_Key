@@ -3,6 +3,41 @@ import type { User, Session } from '@supabase/supabase-js';
 import type { Profile, UserRole, AuthContextType } from '@/src/types/auth';
 import { supabase, isSupabaseConfigured, fetchUserProfile, fetchUserRoles, upsertUserProfile } from '@/src/lib/supabase';
 
+const isDevMode = process.env.NODE_ENV !== 'production';
+
+interface DemoAuthResponse {
+  user: { id: string; email: string };
+  profile: Profile;
+  roles: UserRole[];
+  activeRole: UserRole;
+}
+
+const DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth';
+const LEGACY_DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth_user';
+const DEMO_LOGIN_URL = '/api/auth/demo-login';
+
+const isUserRole = (value: unknown): value is UserRole => {
+  return value === 'seeker' || value === 'mentor' || value === 'admin';
+};
+
+const isDemoAuthResponse = (value: unknown): value is DemoAuthResponse => {
+  if (!value || typeof value !== 'object') return false;
+  const data = value as Partial<DemoAuthResponse>;
+  return !!data.user &&
+    typeof data.user.id === 'string' &&
+    typeof data.user.email === 'string' &&
+    !!data.profile &&
+    typeof data.profile.id === 'string' &&
+    typeof data.profile.email === 'string' &&
+    typeof data.profile.full_name === 'string' &&
+    typeof data.profile.timezone === 'string' &&
+    typeof data.profile.created_at === 'string' &&
+    typeof data.profile.updated_at === 'string' &&
+    Array.isArray(data.roles) &&
+    data.roles.every(isUserRole) &&
+    isUserRole(data.activeRole);
+};
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -15,8 +50,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
   const [isConfigured] = useState<boolean>(isSupabaseConfigured());
 
+  const setDemoAuth = (data: DemoAuthResponse) => {
+    setUser(data.user as unknown as User);
+    setSession(null);
+    setProfile(data.profile);
+    setRoles(data.roles);
+    setActiveRole(data.activeRole);
+    try {
+      localStorage.setItem(DEMO_AUTH_STORAGE_KEY, JSON.stringify(data));
+    } catch {
+    }
+  };
+
+  const restoreDemoAuth = () => {
+    try {
+      const saved = localStorage.getItem(DEMO_AUTH_STORAGE_KEY);
+      if (!saved) return false;
+      const parsed = JSON.parse(saved);
+      if (!isDemoAuthResponse(parsed)) {
+        localStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
+        return false;
+      }
+      setDemoAuth(parsed);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const clearDemoAuth = () => {
+    try {
+      localStorage.removeItem(DEMO_AUTH_STORAGE_KEY);
+    } catch {
+    }
+  };
+
+  const requestDemoLogin = async (body: Record<string, string>): Promise<{ error: Error | null; data?: DemoAuthResponse }> => {
+    if (!isDevMode) {
+      return { error: new Error('Demo login is unavailable in production.') };
+    }
+    try {
+      const response = await fetch(DEMO_LOGIN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) return { error: new Error('Invalid demo credentials') };
+      const data: unknown = await response.json();
+      if (!isDemoAuthResponse(data)) return { error: new Error('Invalid demo login response') };
+      return { error: null, data };
+    } catch {
+      return { error: new Error('Demo login is unavailable') };
+    }
+  };
+
   // Sync Supabase user profile and roles
-  const loadUserData = useCallback(async (supabaseUser: User) => {
+  const loadUserData = useCallback(async (supabaseUser: User): Promise<UserRole> => {
+    let primary: UserRole = 'seeker';
     try {
       // 1. Fetch Profile
       let { profile: userProfile } = await fetchUserProfile(supabaseUser.id);
@@ -47,7 +137,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRoles(effectiveRoles);
 
       // 3. Set Active Role (from database, never frontend-assigned)
-      const primary: UserRole = effectiveRoles.includes('admin')
+      primary = effectiveRoles.includes('admin')
         ? 'admin'
         : effectiveRoles.includes('mentor')
           ? 'mentor'
@@ -56,6 +146,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err: any) {
       console.error('Error loading Supabase user data:', err);
     }
+    return primary;
   }, []);
 
   // Initialize Session
@@ -63,19 +154,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
 
     async function initAuth() {
+      const restoredDemoSession = restoreDemoAuth();
+
       if (isConfigured) {
         try {
-          const { data: { session: currentSession } } = await supabase.auth.getSession();
-          if (isMounted) {
-            if (currentSession?.user) {
-              setSession(currentSession);
-              setUser(currentSession.user);
-              await loadUserData(currentSession.user);
-            } else {
-              setSession(null);
-              setUser(null);
-              setProfile(null);
-              setRoles([]);
+          if (!restoredDemoSession) {
+            const { data: { session: currentSession } } = await supabase.auth.getSession();
+            if (isMounted) {
+              if (currentSession?.user) {
+                setSession(currentSession);
+                setUser(currentSession.user);
+                await loadUserData(currentSession.user);
+              } else {
+                setSession(null);
+                setUser(null);
+                setProfile(null);
+                setRoles([]);
+              }
             }
           }
         } catch (err: any) {
@@ -88,6 +183,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
           async (event, newSession) => {
             if (!isMounted) return;
+            try {
+              if (localStorage.getItem(DEMO_AUTH_STORAGE_KEY)) return;
+            } catch {
+              return;
+            }
             setSession(newSession);
             if (newSession?.user) {
               setUser(newSession.user);
@@ -107,20 +207,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       } else {
         // Fallback: Check local storage for simulated active user (DEV ONLY)
-        try {
-          const savedDemoKey = localStorage.getItem('suggestkey_demo_auth_user');
-          if (savedDemoKey) {
-            const demo = { id: savedDemoKey, email: savedDemoKey, full_name: savedDemoKey, timezone: 'Asia/Kolkata', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-            setUser(demo as unknown as User);
-            setProfile(demo as Profile);
-            setRoles(['seeker']);
-            setActiveRole('seeker');
+        if (!restoredDemoSession) {
+          try {
+            const savedDemoKey = localStorage.getItem(LEGACY_DEMO_AUTH_STORAGE_KEY);
+            if (savedDemoKey && isMounted) {
+              const demoProfile: Profile = {
+                id: savedDemoKey,
+                email: savedDemoKey,
+                full_name: savedDemoKey,
+                timezone: 'Asia/Kolkata',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              };
+              setUser(demoProfile as unknown as User);
+              setProfile(demoProfile);
+              setRoles(['seeker']);
+              setActiveRole('seeker');
+            }
+          } catch {
+            // localStorage access disabled
           }
-        } catch {
-          // localStorage access disabled
-        } finally {
-          setIsLoading(false);
         }
+        if (isMounted) setIsLoading(false);
       }
     }
 
@@ -132,11 +240,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [isConfigured, loadUserData]);
 
   // Sign In with email & password
-  const signInWithPassword = async (email: string, password: string): Promise<{ error: Error | null }> => {
+  const signInWithPassword = async (email: string, password: string): Promise<{ error: Error | null; role?: UserRole }> => {
     setError(null);
     setIsLoading(true);
 
+    // Try demo login first (dev only)
+    if (isDevMode) {
+      const demoResult = await requestDemoLogin({ email: email.trim(), password });
+      if (!demoResult.error && demoResult.data) {
+        setDemoAuth(demoResult.data);
+        setIsLoading(false);
+        return { error: null, role: demoResult.data.activeRole };
+      }
+    }
+
     if (isConfigured) {
+      clearDemoAuth();
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -151,12 +270,100 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.user) {
         setUser(data.user);
         setSession(data.session);
-        await loadUserData(data.user);
+        const role = await loadUserData(data.user);
+        setIsLoading(false);
+        return { error: null, role };
       }
+
       setIsLoading(false);
       return { error: null };
     }
-    return { error: null };
+
+    // Fallback: not configured or demo auth failed
+    const loginError = isDevMode ? new Error('Invalid email or password') : new Error('Authentication is not configured.');
+    setError(loginError.message);
+    setIsLoading(false);
+    return { error: loginError };
+  };
+
+  // Demo persona login (development only)
+  const signInWithDemoPersona = async (persona: UserRole): Promise<{ error: Error | null; role?: UserRole }> => {
+    if (!isDevMode) {
+      return { error: new Error('Demo login is unavailable in production.') };
+    }
+    setError(null);
+    setIsLoading(true);
+
+    const demoResult = await requestDemoLogin({ persona });
+    if (!demoResult.error && demoResult.data) {
+      setDemoAuth(demoResult.data);
+      setIsLoading(false);
+      return { error: null, role: demoResult.data.activeRole };
+    }
+
+    const error = demoResult.error ?? new Error('Demo login is unavailable');
+    setError(error.message);
+    setIsLoading(false);
+    return { error };
+  };
+
+  const requestPasswordReset = async (email: string): Promise<{ error: Error | null }> => {
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      if (!isConfigured) {
+        const error = new Error('Password reset is unavailable until authentication is configured.');
+        setError(error.message);
+        return { error };
+      }
+
+      const redirectTo = typeof window === 'undefined' ? undefined : `${window.location.origin}/auth/reset-password`;
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim(),
+        redirectTo ? { redirectTo } : undefined
+      );
+
+      if (error) {
+        setError(error.message);
+        return { error };
+      }
+
+      return { error: null };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Password reset is unavailable.');
+      setError(error.message);
+      return { error };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const updatePassword = async (password: string): Promise<{ error: Error | null }> => {
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      if (!isConfigured) {
+        const error = new Error('Password update is unavailable until authentication is configured.');
+        setError(error.message);
+        return { error };
+      }
+
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) {
+        setError(error.message);
+        return { error };
+      }
+
+      return { error: null };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Password update is unavailable.');
+      setError(error.message);
+      return { error };
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Sign Up with email, password, full name, and requested role
@@ -202,8 +409,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Sign Out
   const signOut = async () => {
     setIsLoading(true);
+    clearDemoAuth();
     if (isConfigured) {
-      await supabase.auth.signOut();
+      try {
+        await supabase.auth.signOut();
+      } catch {
+      }
     }
     setUser(null);
     setSession(null);
@@ -233,6 +444,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isConfigured,
         error,
         signInWithPassword,
+        signInWithDemoPersona,
+        requestPasswordReset,
+        updatePassword,
         signUp,
         signOut,
         hasRole,
