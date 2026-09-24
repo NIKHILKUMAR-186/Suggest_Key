@@ -18,10 +18,10 @@ export interface AttentionItem {
 }
 
 const toneStyles: Record<NonNullable<AttentionItem['tone']>, string> = {
-  warning: 'border-amber-200 bg-amber-50/40',
-  error: 'border-rose-200 bg-rose-50/40',
-  info: 'border-zinc-200 bg-white',
-  urgent: 'border-amber-400 bg-amber-50/60',
+  warning: 'border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]',
+  error: 'border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)]',
+  info: 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]',
+  urgent: 'border-[var(--color-shell-warning)]/50 bg-[var(--color-shell-warning-soft)]',
 };
 
 export const MentorAttentionCard: React.FC<{ item: AttentionItem; className?: string }> = ({
@@ -45,17 +45,17 @@ export const MentorAttentionCard: React.FC<{ item: AttentionItem; className?: st
           <div
             className={cn(
               'p-2 rounded-lg border shrink-0',
-              tone === 'warning' && 'bg-amber-100 text-amber-800 border-amber-200',
-              tone === 'error' && 'bg-rose-100 text-rose-700 border-rose-200',
-              tone === 'info' && 'bg-zinc-100 text-zinc-700 border-zinc-200',
-              tone === 'urgent' && 'bg-amber-100 text-amber-900 border-amber-300'
+              tone === 'warning' && 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30',
+              tone === 'error' && 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)] border-[var(--color-shell-error)]/30',
+              tone === 'info' && 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border-[var(--color-shell-border)]',
+              tone === 'urgent' && 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/50'
             )}
           >
             <Icon className="h-4 w-4" />
           </div>
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h4 className="text-sm font-bold text-zinc-950 tracking-tight">{item.title}</h4>
+              <h4 className="text-sm font-bold text-[var(--color-shell-text)] tracking-tight">{item.title}</h4>
               {tone === 'urgent' && (
                 <Badge variant="warning" className="text-[10px] uppercase tracking-wider">
                   Urgent
@@ -67,8 +67,8 @@ export const MentorAttentionCard: React.FC<{ item: AttentionItem; className?: st
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-zinc-600 leading-relaxed">{item.description}</p>
-            {item.meta && <p className="text-[11px] text-zinc-400 font-medium">{item.meta}</p>}
+            <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">{item.description}</p>
+            {item.meta && <p className="text-[11px] text-[var(--color-shell-text-subtle)] font-medium">{item.meta}</p>}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -79,7 +79,7 @@ export const MentorAttentionCard: React.FC<{ item: AttentionItem; className?: st
             <Button
               size="sm"
               variant="outline"
-              onClick={item.secondaryAction}
+              onClick={() => item.secondaryAction?.onClick()}
               className="text-xs"
             >
               {item.secondaryAction.label}

@@ -93,12 +93,16 @@ ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
 -- ------------------------------------------------------------------------------
 
 -- Policy: Users can view their own profile
+DROP POLICY IF EXISTS "Users can view own profile"
+  ON public.profiles;
 CREATE POLICY "Users can view own profile"
   ON public.profiles
   FOR SELECT
   USING (auth.uid() = id);
 
 -- Policy: Mentors profile can be viewed by all authenticated users (for seeker discovery)
+DROP POLICY IF EXISTS "Authenticated users can view mentor profiles"
+  ON public.profiles;
 CREATE POLICY "Authenticated users can view mentor profiles"
   ON public.profiles
   FOR SELECT
@@ -108,18 +112,24 @@ CREATE POLICY "Authenticated users can view mentor profiles"
   );
 
 -- Policy: Admins can view all profiles
+DROP POLICY IF EXISTS "Admins can view all profiles"
+  ON public.profiles;
 CREATE POLICY "Admins can view all profiles"
   ON public.profiles
   FOR SELECT
   USING (public.is_admin());
 
 -- Policy: Users can insert their own profile
+DROP POLICY IF EXISTS "Users can insert own profile"
+  ON public.profiles;
 CREATE POLICY "Users can insert own profile"
   ON public.profiles
   FOR INSERT
   WITH CHECK (auth.uid() = id);
 
 -- Policy: Users can update their own profile, or admins can update
+DROP POLICY IF EXISTS "Users can update own profile"
+  ON public.profiles;
 CREATE POLICY "Users can update own profile"
   ON public.profiles
   FOR UPDATE
@@ -127,6 +137,8 @@ CREATE POLICY "Users can update own profile"
   WITH CHECK (auth.uid() = id OR public.is_admin());
 
 -- Policy: Users can delete own profile or admin
+DROP POLICY IF EXISTS "Users can delete own profile"
+  ON public.profiles;
 CREATE POLICY "Users can delete own profile"
   ON public.profiles
   FOR DELETE
@@ -137,24 +149,32 @@ CREATE POLICY "Users can delete own profile"
 -- ------------------------------------------------------------------------------
 
 -- Policy: Users can view only their own assigned roles
+DROP POLICY IF EXISTS "Users can view own roles"
+  ON public.user_roles;
 CREATE POLICY "Users can view own roles"
   ON public.user_roles
   FOR SELECT
   USING (auth.uid() = user_id);
 
 -- Policy: Admins can view all role assignments
+DROP POLICY IF EXISTS "Admins can view all roles"
+  ON public.user_roles;
 CREATE POLICY "Admins can view all roles"
   ON public.user_roles
   FOR SELECT
   USING (public.is_admin());
 
 -- Policy: ONLY Admins can insert/assign roles (Prevent privilege escalation)
+DROP POLICY IF EXISTS "Only admins can insert roles"
+  ON public.user_roles;
 CREATE POLICY "Only admins can insert roles"
   ON public.user_roles
   FOR INSERT
   WITH CHECK (public.is_admin());
 
 -- Policy: ONLY Admins can update roles
+DROP POLICY IF EXISTS "Only admins can update roles"
+  ON public.user_roles;
 CREATE POLICY "Only admins can update roles"
   ON public.user_roles
   FOR UPDATE
@@ -162,6 +182,8 @@ CREATE POLICY "Only admins can update roles"
   WITH CHECK (public.is_admin());
 
 -- Policy: ONLY Admins can delete/revoke roles
+DROP POLICY IF EXISTS "Only admins can delete roles"
+  ON public.user_roles;
 CREATE POLICY "Only admins can delete roles"
   ON public.user_roles
   FOR DELETE

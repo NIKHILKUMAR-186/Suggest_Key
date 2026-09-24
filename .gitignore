@@ -8,3 +8,11 @@ coverage/
 !.env.example
 .kilo/
 .playwright-mcp/
+
+
+
+prd.md
+PRODUCT.md
+SUGGEST-KEY-UPDATED.md
+memory.md
+aut_design.md

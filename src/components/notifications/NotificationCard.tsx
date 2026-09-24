@@ -69,34 +69,34 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
       return {
         variant: 'destructive' as const,
         label: n.event_type?.replace(/_/g, ' ') || 'Action Required',
-        iconBg: 'bg-rose-100 text-rose-700 border-rose-200',
+        iconBg: 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)] border-[var(--color-shell-error)]/30',
       };
     }
     if (ev.includes('APPROVED') || ev.includes('CONFIRMED') || ev.includes('COMPLETED')) {
       return {
         variant: 'default' as const,
         label: n.event_type?.replace(/_/g, ' ') || 'Success',
-        iconBg: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        iconBg: 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)] border-[var(--color-shell-success)]/30',
       };
     }
     if (ev.includes('DEADLINE') || ev.includes('REMINDER') || ev.includes('SUBMITTED')) {
       return {
         variant: 'warning' as const,
         label: n.event_type?.replace(/_/g, ' ') || 'Notice',
-        iconBg: 'bg-amber-100 text-amber-800 border-amber-200',
+        iconBg: 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30',
       };
     }
     if (tp === 'WORKSPACE') {
       return {
         variant: 'secondary' as const,
         label: 'Workspace',
-        iconBg: 'bg-blue-100 text-blue-800 border-blue-200',
+        iconBg: 'bg-[var(--color-shell-info-soft)] text-[var(--color-shell-info)] border-[var(--color-shell-info)]/30',
       };
     }
     return {
       variant: 'outline' as const,
       label: n.type,
-      iconBg: 'bg-zinc-100 text-zinc-700 border-zinc-200',
+      iconBg: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border-[var(--color-shell-border)]',
     };
   };
 
@@ -122,8 +122,8 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
       id={`notification-${n.id}`}
       className={`group relative rounded-2xl border p-4 sm:p-5 transition-all shadow-2xs ${
         !n.is_read
-          ? 'bg-white border-zinc-300 ring-1 ring-zinc-950/5 shadow-xs'
-          : 'bg-zinc-50/60 border-zinc-200 hover:bg-white hover:border-zinc-300'
+          ? 'bg-[var(--color-shell-surface)] border-[var(--color-shell-border)] ring-1 ring-[var(--color-shell-primary)]/20 shadow-xs'
+          : 'bg-[var(--color-shell-surface)]/60 border-[var(--color-shell-border)] hover:bg-[var(--color-shell-surface)] hover:border-[var(--color-shell-border-strong)]'
       }`}
     >
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
@@ -140,15 +140,15 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
             <div className="flex items-center gap-2 flex-wrap">
               <h4
                 className={`text-sm tracking-tight leading-snug ${
-                  !n.is_read ? 'font-bold text-zinc-950 font-display' : 'font-semibold text-zinc-800'
+                  !n.is_read ? 'font-bold text-[var(--color-shell-text)] font-display' : 'font-semibold text-[var(--color-shell-text-muted)]'
                 }`}
               >
                 {n.title}
               </h4>
 
               {!n.is_read && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-accent)] border border-[var(--color-shell-accent)]/30">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-shell-accent)] animate-pulse" />
                   New
                 </span>
               )}
@@ -161,21 +161,21 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
             </div>
 
             {/* Message Body */}
-            <p className="text-xs text-zinc-600 leading-relaxed max-w-2xl font-normal">
+            <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed max-w-2xl font-normal">
               {n.message}
             </p>
 
             {/* Metadata and Timestamp */}
-            <div className="flex items-center gap-2.5 pt-1 text-[11px] text-zinc-400">
-              <span className="flex items-center gap-1 font-medium text-zinc-500">
-                <Clock className="h-3 w-3 text-zinc-400" />
+            <div className="flex items-center gap-2.5 pt-1 text-[11px] text-[var(--color-shell-text-subtle)]">
+              <span className="flex items-center gap-1 font-medium text-[var(--color-shell-text-muted)]">
+                <Clock className="h-3 w-3 text-[var(--color-shell-text-subtle)]" />
                 {formatRelativeTime(n.created_at)}
               </span>
 
               {n.entity_id && (
                 <>
                   <span>•</span>
-                  <span className="font-mono text-zinc-600 font-semibold text-[10px]">
+                  <span className="font-mono text-[var(--color-shell-text-muted)] font-semibold text-[10px]">
                     #{n.entity_id.toUpperCase()}
                   </span>
                 </>
@@ -184,7 +184,7 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
               {n.read_at && (
                 <>
                   <span>•</span>
-                  <span className="text-zinc-400 text-[10px]">
+                  <span className="text-[var(--color-shell-text-subtle)] text-[10px]">
                     Read {formatRelativeTime(n.read_at)}
                   </span>
                 </>
@@ -194,7 +194,7 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center sm:flex-col sm:items-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-zinc-100">
+        <div className="flex items-center sm:flex-col sm:items-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[var(--color-shell-border)]">
           {actionLabel && n.link && (
             <Button
               id={`action-btn-${n.id}`}
@@ -215,14 +215,14 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
             <button
               id={`mark-read-${n.id}`}
               onClick={() => onMarkRead(n.id)}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-zinc-500 hover:text-zinc-950 px-2.5 py-1 rounded-lg hover:bg-zinc-100 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] px-2.5 py-1 rounded-lg hover:bg-[var(--color-shell-surface-elevated)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
             >
               <Check className="h-3 w-3" />
               <span>Mark as read</span>
             </button>
           ) : (
-            <span className="text-[11px] text-zinc-400 flex items-center gap-1 px-1">
-              <CheckCircle2 className="h-3 w-3 text-zinc-400" />
+            <span className="text-[11px] text-[var(--color-shell-text-subtle)] flex items-center gap-1 px-1">
+              <CheckCircle2 className="h-3 w-3 text-[var(--color-shell-text-subtle)]" />
               <span>Read</span>
             </span>
           )}

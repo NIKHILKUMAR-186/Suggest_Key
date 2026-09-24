@@ -10,6 +10,7 @@ import { UnauthorizedPage } from '@/src/pages/auth/UnauthorizedPage';
 import { ForgotPasswordPage } from '@/src/pages/auth/ForgotPasswordPage';
 import { ResetPasswordPage } from '@/src/pages/auth/ResetPasswordPage';
 import { VerifyPage } from '@/src/pages/auth/VerifyPage';
+import { AuthCallback } from '@/src/pages/auth/AuthCallback';
 
 // Landing Page
 import { LandingPage } from '@/src/pages/public/LandingPage';
@@ -73,6 +74,9 @@ export const Router: React.FC = () => {
   }
   if (pathname === '/auth/verify') {
     return <VerifyPage />;
+  }
+  if (pathname === '/auth/callback') {
+    return <AuthCallback />;
   }
   if (pathname === '/auth/unauthorized' || pathname === '/403') {
     return <UnauthorizedPage />;

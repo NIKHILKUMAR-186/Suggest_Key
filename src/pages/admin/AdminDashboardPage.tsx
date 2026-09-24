@@ -1,12 +1,60 @@
-import React, { useState } from 'react';
-import { CreditCard, CheckCircle2, Clock, Users, ShieldAlert, AlertTriangle, ArrowRight, Layers, Calendar } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { CreditCard, CheckCircle2, Clock, Users, ShieldAlert, AlertTriangle, ArrowRight, Layers, Calendar, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { apiFetch } from '@/src/lib/apiClient';
+
+interface DashboardMetrics {
+  totalMentors: number;
+  totalSeekers: number;
+  pendingApprovals: number;
+  activeSegments: number;
+  pendingPaymentsCount: number;
+  todaysBookingsCount: number;
+  pendingPayments: Array<{
+    id: string;
+    bookingId: string;
+    seeker: string;
+    mentor: string;
+    amount: number;
+    time: string;
+  }>;
+  defaultSegment: string;
+}
 
 export const AdminDashboardPage: React.FC = () => {
   const { navigate } = useNavigation();
   const [viewState, setViewState] = useState<'operational' | 'quiet'>('operational');
+  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchMetrics = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/admin/dashboard/metrics');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch metrics');
+      setMetrics(data.metrics);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load dashboard metrics');
+      console.error('Failed to fetch dashboard metrics:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMetrics();
+  }, []);
+
+  const pendingPaymentsCount = metrics?.pendingPaymentsCount || 0;
+  const pendingApprovalsCount = metrics?.pendingApprovals || 0;
+  const todaysBookingsCount = metrics?.todaysBookingsCount || 0;
+  const activeSegmentsCount = metrics?.activeSegments || 0;
+  const defaultSegmentName = metrics?.defaultSegment || 'None';
 
   return (
     <div className="space-y-6">
@@ -43,59 +91,84 @@ export const AdminDashboardPage: React.FC = () => {
 
       {/* Primary Operational Counters (Denser, operational, non-vanity) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div
-          onClick={() => navigate('/admin/payments')}
-          className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 cursor-pointer hover:border-amber-300 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-amber-900">Payments Pending Review</span>
-            <Badge variant="warning" className="text-[10px]">Action Required</Badge>
-          </div>
-          <div className="mt-2 text-2xl font-bold text-amber-950">
-            {viewState === 'operational' ? '3' : '0'}
-          </div>
-          <span className="text-[11px] text-amber-800">Manual QR receipts awaiting verification</span>
-        </div>
+        {loading ? (
+          [1, 2, 3, 4].map((i) => (
+            <div key={i} className="rounded-lg border border-zinc-200 bg-white p-4 animate-pulse">
+              <div className="flex items-center justify-between">
+                <div className="h-3 w-24 bg-zinc-200 rounded"></div>
+                <div className="h-4 w-16 bg-zinc-200 rounded"></div>
+              </div>
+              <div className="mt-2 h-8 w-16 bg-zinc-200 rounded"></div>
+              <div className="mt-1 h-3 w-32 bg-zinc-200 rounded"></div>
+            </div>
+          ))
+        ) : error ? (
+          <>
+            <div className="col-span-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-center text-rose-600">
+              <AlertTriangle className="h-6 w-6 mx-auto mb-2" />
+              <p className="text-xs">{error}</p>
+              <Button variant="outline" size="sm" onClick={fetchMetrics} className="mt-2">
+                Retry
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              onClick={() => navigate('/admin/payments')}
+              className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 cursor-pointer hover:border-amber-300 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-amber-900">Payments Pending Review</span>
+                <Badge variant="warning" className="text-[10px]">Action Required</Badge>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-950">
+                {pendingPaymentsCount}
+              </div>
+              <span className="text-[11px] text-amber-800">Manual QR receipts awaiting verification</span>
+            </div>
 
-        <div
-          onClick={() => navigate('/admin/mentors')}
-          className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-700">Pending Mentor Approvals</span>
-            <span className="text-xs text-zinc-400">Queue</span>
-          </div>
-          <div className="mt-2 text-2xl font-bold text-zinc-950">
-            {viewState === 'operational' ? '2' : '0'}
-          </div>
-          <span className="text-[11px] text-zinc-500">Mentors awaiting segment authorization</span>
-        </div>
+            <div
+              onClick={() => navigate('/admin/mentors')}
+              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-700">Pending Mentor Approvals</span>
+                <span className="text-xs text-zinc-400">Queue</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-zinc-950">
+                {pendingApprovalsCount}
+              </div>
+              <span className="text-[11px] text-zinc-500">Mentors awaiting segment authorization</span>
+            </div>
 
-        <div
-          onClick={() => navigate('/admin/bookings')}
-          className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-700">Active Bookings Today</span>
-            <Badge variant="success" className="text-[10px]">Scheduled</Badge>
-          </div>
-          <div className="mt-2 text-2xl font-bold text-zinc-950">
-            {viewState === 'operational' ? '8' : '0'}
-          </div>
-          <span className="text-[11px] text-zinc-500">Atomic slots locked & confirmed</span>
-        </div>
+            <div
+              onClick={() => navigate('/admin/bookings')}
+              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-700">Active Bookings Today</span>
+                <Badge variant="success" className="text-[10px]">Scheduled</Badge>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-zinc-950">
+                {todaysBookingsCount}
+              </div>
+              <span className="text-[11px] text-zinc-500">Atomic slots locked & confirmed</span>
+            </div>
 
-        <div
-          onClick={() => navigate('/admin/segments')}
-          className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-700">Active Segments</span>
-            <span className="text-xs text-zinc-400">System</span>
-          </div>
-          <div className="mt-2 text-2xl font-bold text-zinc-950">3</div>
-          <span className="text-[11px] text-zinc-500">Highest priority: Relationship Advisor</span>
-        </div>
+            <div
+              onClick={() => navigate('/admin/segments')}
+              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-700">Active Segments</span>
+                <span className="text-xs text-zinc-400">System</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-zinc-950">{activeSegmentsCount}</div>
+              <span className="text-[11px] text-zinc-500">Highest priority: {defaultSegmentName}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {viewState === 'operational' ? (
@@ -119,30 +192,31 @@ export const AdminDashboardPage: React.FC = () => {
             </div>
 
             <div className="space-y-2.5">
-              {[
-                { id: 'PAY-901', seeker: 'Aman Kumar', mentor: 'Rahul Sharma', amount: 999, time: '6m ago' },
-                { id: 'PAY-902', seeker: 'Pooja V.', mentor: 'Ananya Patel', amount: 1200, time: '18m ago' },
-              ].map((p) => (
-                <div
-                  key={p.id}
-                  className="flex items-center justify-between p-3 rounded-lg border border-zinc-100 bg-zinc-50/70 text-xs"
-                >
-                  <div>
-                    <span className="font-bold text-zinc-900 block">{p.seeker} ➔ {p.mentor}</span>
-                    <span className="text-[11px] text-zinc-500">{p.id} · Submitted {p.time}</span>
+              {metrics?.pendingPayments?.length === 0 ? (
+                <div className="text-center text-zinc-400 text-xs py-4">No pending payments</div>
+              ) : (
+                metrics?.pendingPayments?.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between p-3 rounded-lg border border-zinc-100 bg-zinc-50/70 text-xs"
+                  >
+                    <div>
+                      <span className="font-bold text-zinc-900 block">{p.seeker} ➔ {p.mentor}</span>
+                      <span className="text-[11px] text-zinc-500">{p.id} · Submitted {p.time}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-zinc-900">₹{p.amount}</span>
+                      <Button
+                        onClick={() => navigate('/admin/payments')}
+                        size="sm"
+                        className="text-xs py-1 h-7"
+                      >
+                        Inspect Proof
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold text-zinc-900">₹{p.amount}</span>
-                    <Button
-                      onClick={() => navigate('/admin/payments')}
-                      size="sm"
-                      className="text-xs py-1 h-7"
-                    >
-                      Inspect Proof
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 

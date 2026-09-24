@@ -16,19 +16,19 @@ export interface MetricCardProps {
 }
 
 const toneBorder: Record<NonNullable<MetricCardProps['tone']>, string> = {
-  default: 'border-zinc-200',
-  success: 'border-emerald-200',
-  warning: 'border-amber-200',
-  error: 'border-rose-200',
-  info: 'border-zinc-200',
+  default: 'border-[var(--color-shell-border)]',
+  success: 'border-[var(--color-shell-success)]/30',
+  warning: 'border-[var(--color-shell-warning)]/30',
+  error: 'border-[var(--color-shell-error)]/30',
+  info: 'border-[var(--color-shell-border)]',
 };
 
 const toneIconBg: Record<NonNullable<MetricCardProps['tone']>, string> = {
-  default: 'bg-zinc-100 text-zinc-700',
-  success: 'bg-emerald-50 text-emerald-700',
-  warning: 'bg-amber-50 text-amber-700',
-  error: 'bg-rose-50 text-rose-700',
-  info: 'bg-zinc-100 text-zinc-700',
+  default: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]',
+  success: 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)]',
+  warning: 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)]',
+  error: 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)]',
+  info: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]',
 };
 
 export const MentorMetricCard: React.FC<MetricCardProps> = ({
@@ -41,18 +41,18 @@ export const MentorMetricCard: React.FC<MetricCardProps> = ({
 }) => (
   <div
     className={cn(
-      'rounded-xl border bg-white p-5 shadow-xs space-y-3',
+      'rounded-xl border bg-[var(--color-shell-surface)] p-5 shadow-xs space-y-3',
       toneBorder[tone],
       className
     )}
   >
     <div className="flex items-start justify-between">
       <div className="space-y-1">
-        <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+        <p className="text-xs font-medium text-[var(--color-shell-text-muted)] uppercase tracking-wider">
           {title}
         </p>
-        <p className="text-2xl font-bold text-zinc-950">{value}</p>
-        {description && <p className="text-[11px] text-zinc-400">{description}</p>}
+        <p className="text-2xl font-bold text-[var(--color-shell-text)]">{value}</p>
+        {description && <p className="text-[11px] text-[var(--color-shell-text-subtle)]">{description}</p>}
       </div>
       <div className={cn('p-2.5 rounded-lg shrink-0', toneIconBg[tone])}>
         <Icon className="h-5 w-5" />

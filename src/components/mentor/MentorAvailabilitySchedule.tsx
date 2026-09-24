@@ -37,8 +37,8 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
           className={cn(
             'rounded-xl border p-4 transition-colors',
             day.enabled
-              ? 'border-zinc-200 bg-white'
-              : 'border-zinc-100 bg-zinc-50/60 opacity-70'
+              ? 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]'
+              : 'border-[var(--color-shell-border)]/60 bg-[var(--color-shell-surface)]/50 opacity-70'
           )}
         >
           <div className="flex items-center justify-between mb-2">
@@ -47,14 +47,14 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
                 type="checkbox"
                 checked={day.enabled}
                 onChange={(e) => onToggleDay?.(day.dayIndex, e.target.checked)}
-                className="rounded border-zinc-300"
+                className="rounded border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)]"
                 id={`day-${day.dayName}`}
               />
               <label
                 htmlFor={`day-${day.dayName}`}
                 className={cn(
                   'text-sm font-bold cursor-pointer',
-                  day.enabled ? 'text-zinc-950' : 'text-zinc-400'
+                  day.enabled ? 'text-[var(--color-shell-text)]' : 'text-[var(--color-shell-text-subtle)]'
                 )}
               >
                 {day.dayName}
@@ -90,21 +90,21 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
                         type="time"
                         value={w.start}
                         onChange={(e) => onEdit?.({ ...day, windows: day.windows.map((win, i) => i === wIdx ? { ...win, start: e.target.value } : win) })}
-                        className="rounded-md border border-zinc-200 px-2 py-1 bg-white text-xs"
+                        className="rounded-md border border-[var(--color-shell-border-strong)] px-2 py-1 bg-[var(--color-shell-bg)] text-xs text-[var(--color-shell-text)]"
                       />
-                      <span className="text-zinc-400 text-xs">to</span>
+                      <span className="text-[var(--color-shell-text-subtle)] text-xs">to</span>
                       <input
                         type="time"
                         value={w.end}
                         onChange={(e) => onEdit?.({ ...day, windows: day.windows.map((win, i) => i === wIdx ? { ...win, end: e.target.value } : win) })}
-                        className="rounded-md border border-zinc-200 px-2 py-1 bg-white text-xs"
+                        className="rounded-md border border-[var(--color-shell-border-strong)] px-2 py-1 bg-[var(--color-shell-bg)] text-xs text-[var(--color-shell-text)]"
                       />
                     </div>
                     {day.windows.length > 1 && (
                       <button
                         type="button"
                         onClick={() => onRemoveWindow?.(day.dayIndex, wIdx)}
-                        className="text-zinc-400 hover:text-red-600 p-1"
+                        className="text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-error)] p-1"
                         aria-label="Remove window"
                       >
                         <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -116,18 +116,18 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
                 ))}
               </div>
             ) : (
-              <span className="text-[11px] text-zinc-400 italic">Marked available — add a time window to begin</span>
+              <span className="text-[11px] text-[var(--color-shell-text-subtle)] italic">Marked available — add a time window to begin</span>
             )
           ) : (
-            <span className="text-[11px] text-zinc-400 italic">Marked Unavailable</span>
+            <span className="text-[11px] text-[var(--color-shell-text-subtle)] italic">Marked Unavailable</span>
           )}
-        </div>
+        </motion.div>
       ))}
       <div className="flex items-center gap-2 pt-1">
         <Badge variant="secondary" className="text-[11px] font-mono">
           {timezone}
         </Badge>
-        <span className="text-[11px] text-zinc-400">
+        <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
           All times interpreted in your mentor timezone
         </span>
       </div>

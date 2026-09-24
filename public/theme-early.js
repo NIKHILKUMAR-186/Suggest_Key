@@ -2,10 +2,10 @@
   const STORAGE_KEY = 'sk-theme-mode';
   const THEME_ATTR = 'data-theme';
 
-  function getInitialMode() {
+  function getStoredMode() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored && ['light', 'dark', 'system'].includes(stored)) {
+      if (stored === 'light' || stored === 'dark' || stored === 'system') {
         return stored;
       }
     } catch {}
@@ -31,19 +31,10 @@
     root.classList.add(theme);
     root.style.colorScheme = theme;
     // Paint the correct page background before first render — no flash.
-    document.documentElement.style.backgroundColor = theme === 'dark' ? '#0e1114' : '#f2f7fd';
+    document.documentElement.style.backgroundColor = theme === 'dark' ? '#05060f' : '#f4f7fc';
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#05060f' : '#f4f7fc');
   }
 
-  function init() {
-    const mode = getInitialMode();
-    const theme = resolveTheme(mode);
-    applyTheme(theme);
-
-    const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (themeColor) {
-      themeColor.setAttribute('content', theme === 'dark' ? '#0e1114' : '#f2f7fd');
-    }
-  }
-
-  init();
+  applyTheme(resolveTheme(getStoredMode()));
 })();

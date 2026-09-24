@@ -1,3 +1,4 @@
+import { apiFetch } from './apiClient';
 import { supabase, isSupabaseConfigured } from './supabase';
 import type { Notification, NotificationType, NotificationEventType } from '@/src/types/database';
 
@@ -33,7 +34,7 @@ export async function fetchUserNotifications(
   if (filter?.limit) queryParams.set('limit', String(filter.limit));
 
   try {
-    const res = await fetch(`/api/notifications?${queryParams.toString()}`);
+    const res = await apiFetch(`/api/notifications?${queryParams.toString()}`);
     if (res.ok) {
       const data = await res.json();
       if (data.notifications && Array.isArray(data.notifications)) {
@@ -87,7 +88,7 @@ export async function markNotificationAsRead(
   userId: string
 ): Promise<boolean> {
   try {
-    const res = await fetch(`/api/notifications/${notificationId}/read`, {
+    const res = await apiFetch(`/api/notifications/${notificationId}/read`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, isRead: true }),
@@ -121,7 +122,7 @@ export async function markNotificationAsRead(
  */
 export async function markAllNotificationsAsRead(userId: string): Promise<number> {
   try {
-    const res = await fetch('/api/notifications/mark-all-read', {
+    const res = await apiFetch('/api/notifications/mark-all-read', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId }),
@@ -160,7 +161,7 @@ export async function dispatchNotification(
   payload: NotificationDispatchPayload
 ): Promise<Notification | null> {
   try {
-    const res = await fetch('/api/notifications/dispatch', {
+    const res = await apiFetch('/api/notifications/dispatch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -47,7 +47,7 @@ export const MentorBookingDetailPage: React.FC = () => {
     } catch {
       // Ignore
     }
-    return 'bk-9021';
+    return '';
   };
 
   const [bookingId, setBookingId] = useState<string>(getBookingIdFromUrl());
@@ -244,24 +244,28 @@ export const MentorBookingDetailPage: React.FC = () => {
             <span>Session Workspace</span>
           </Button>
 
-          {/* Quick switcher between sample bookings if in demo */}
-          <span className="text-[11px] text-zinc-400">Switch Demo Booking:</span>
-          {['bk-9021', 'bk-9022', 'bk-9020'].map((id) => (
-            <button
-              key={id}
-              onClick={() => {
-                setBookingId(id);
-                loadBooking(id);
-              }}
-              className={`px-2 py-0.5 text-xs font-mono rounded border cursor-pointer ${
-                booking.id === id
-                  ? 'bg-zinc-900 text-white border-zinc-900'
-                  : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50'
-              }`}
-            >
-              {id.toUpperCase()}
-            </button>
-          ))}
+          {import.meta.env?.DEV && (
+            <>
+              {/* Quick switcher between sample bookings if in demo */}
+              <span className="text-[11px] text-zinc-400">Switch Demo Booking:</span>
+              {['bk-9021', 'bk-9022', 'bk-9020'].map((id) => (
+                <button
+                  key={id}
+                  onClick={() => {
+                    setBookingId(id);
+                    loadBooking(id);
+                  }}
+                  className={`px-2 py-0.5 text-xs font-mono rounded border cursor-pointer ${
+                    booking.id === id
+                      ? 'bg-zinc-900 text-white border-zinc-900'
+                      : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50'
+                  }`}
+                >
+                  {id.toUpperCase()}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
@@ -406,13 +410,13 @@ export const MentorBookingDetailPage: React.FC = () => {
             <div className="flex justify-between">
               <span className="text-zinc-500">Segment:</span>
               <span className="font-medium text-zinc-900">
-                {booking.segment?.name || 'Relationship Advisor'}
+                {booking.segment?.name || 'Unknown Segment'}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-zinc-500">Gig:</span>
               <span className="font-medium text-zinc-900">
-                {booking.gig?.title || '1:1 Relationship Guidance'}
+                {booking.gig?.title || 'Unknown Gig'}
               </span>
             </div>
             <div className="flex justify-between">

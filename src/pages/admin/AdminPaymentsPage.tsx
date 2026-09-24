@@ -1,11 +1,24 @@
-import React, { useState } from 'react';
-import { CreditCard, CheckCircle2, XCircle, FileImage, ShieldCheck, AlertCircle, Eye } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { CreditCard, CheckCircle2, XCircle, FileImage, ShieldCheck, AlertCircle, Eye, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { apiFetch } from '@/src/lib/apiClient';
 
 interface PaymentItem {
+  id: string;
+  bookingId: string;
+  seekerName: string;
+  mentorName: string;
+  amount: number;
+  submittedAt: string;
+  status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
+  proofUrl: string;
+  rejectionReason?: string;
+}
+
+interface ApiPayment {
   id: string;
   bookingId: string;
   seekerName: string;
@@ -21,59 +34,63 @@ export const AdminPaymentsPage: React.FC = () => {
   const [selectedPayment, setSelectedPayment] = useState<PaymentItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
+  const [payments, setPayments] = useState<PaymentItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [payments, setPayments] = useState<PaymentItem[]>([
-    {
-      id: 'PAY-901',
-      bookingId: 'BK-9021',
-      seekerName: 'Aman Kumar',
-      mentorName: 'Rahul Sharma',
-      amount: 999,
-      submittedAt: '6 minutes ago',
-      status: 'PENDING_VERIFICATION',
-      proofUrl: 'upi_ref_0921_screenshot.png',
-    },
-    {
-      id: 'PAY-902',
-      bookingId: 'BK-9024',
-      seekerName: 'Pooja Verma',
-      mentorName: 'Ananya Patel',
-      amount: 1200,
-      submittedAt: '18 minutes ago',
-      status: 'PENDING_VERIFICATION',
-      proofUrl: 'gpay_receipt_tx109.png',
-    },
-    {
-      id: 'PAY-899',
-      bookingId: 'BK-9019',
-      seekerName: 'Sneha Roy',
-      mentorName: 'Rahul Sharma',
-      amount: 999,
-      submittedAt: '15 March 2026',
-      status: 'VERIFIED',
-      proofUrl: 'receipt_899.png',
-    },
-  ]);
+  const fetchPayments = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/admin/payments');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch payments');
+      setPayments(data.payments || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load payments');
+      console.error('Failed to fetch payments:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const handleApprove = (id: string) => {
-    setPayments(
-      payments.map((p) => (p.id === id ? { ...p, status: 'VERIFIED' } : p))
-    );
+  useEffect(() => {
+    fetchPayments();
+  }, [fetchPayments]);
+
+  const handleApprove = async (id: string) => {
     setSelectedPayment(null);
+    try {
+      const res = await apiFetch(`/api/admin/payments/${id}/approve`, { method: 'PATCH' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to approve payment');
+      await fetchPayments();
+    } catch (err: any) {
+      console.error('Failed to approve payment:', err);
+      alert('Failed to approve payment: ' + err.message);
+    }
   };
 
-  const handleReject = (id: string) => {
-    setPayments(
-      payments.map((p) =>
-        p.id === id
-          ? { ...p, status: 'REJECTED', rejectionReason: rejectReason || 'Invalid transaction screenshot' }
-          : p
-      )
-    );
+  const handleReject = async (id: string) => {
     setSelectedPayment(null);
     setIsRejecting(false);
-    setRejectReason('');
+    try {
+      const res = await apiFetch(`/api/admin/payments/${id}/reject`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rejectionReason: rejectReason || 'Invalid transaction screenshot' }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to reject payment');
+      setRejectReason('');
+      await fetchPayments();
+    } catch (err: any) {
+      console.error('Failed to reject payment:', err);
+      alert('Failed to reject payment: ' + err.message);
+    }
   };
+
+  const pendingCount = payments.filter((p) => p.status === 'PENDING_VERIFICATION').length;
 
   return (
     <div className="space-y-6">
@@ -88,7 +105,7 @@ export const AdminPaymentsPage: React.FC = () => {
         </div>
 
         <Badge variant="warning" className="self-start text-xs font-semibold">
-          {payments.filter((p) => p.status === 'PENDING_VERIFICATION').length} Awaiting Verification
+          {pendingCount} Awaiting Verification
         </Badge>
       </div>
 
@@ -101,61 +118,82 @@ export const AdminPaymentsPage: React.FC = () => {
 
       {/* Payment Table */}
       <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden shadow-xs">
-        <table className="w-full text-left text-xs text-zinc-600">
-          <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
-            <tr>
-              <th className="py-3 px-4">Payment / Booking</th>
-              <th className="py-3 px-4">Seeker</th>
-              <th className="py-3 px-4">Mentor</th>
-              <th className="py-3 px-4">Amount</th>
-              <th className="py-3 px-4">Submitted</th>
-              <th className="py-3 px-4">Status</th>
-              <th className="py-3 px-4 text-right">Inspect Proof</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-100">
-            {payments.map((p) => (
-              <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
-                <td className="py-3 px-4 font-mono">
-                  <span className="font-bold text-zinc-950 block">{p.id}</span>
-                  <span className="text-[11px] text-zinc-400">{p.bookingId}</span>
-                </td>
-                <td className="py-3 px-4 font-semibold text-zinc-900">{p.seekerName}</td>
-                <td className="py-3 px-4">{p.mentorName}</td>
-                <td className="py-3 px-4 font-bold text-zinc-950">₹{p.amount}</td>
-                <td className="py-3 px-4 text-zinc-500">{p.submittedAt}</td>
-                <td className="py-3 px-4">
-                  <Badge
-                    variant={
-                      p.status === 'VERIFIED'
-                        ? 'success'
-                        : p.status === 'PENDING_VERIFICATION'
-                        ? 'warning'
-                        : 'destructive'
-                    }
-                    className="text-[10px]"
-                  >
-                    {p.status}
-                  </Badge>
-                </td>
-                <td className="py-3 px-4 text-right">
-                  <Button
-                    size="sm"
-                    variant={p.status === 'PENDING_VERIFICATION' ? 'default' : 'outline'}
-                    className="text-xs py-1 h-7 gap-1"
-                    onClick={() => {
-                      setSelectedPayment(p);
-                      setIsRejecting(false);
-                    }}
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                    <span>{p.status === 'PENDING_VERIFICATION' ? 'Verify Proof' : 'View'}</span>
-                  </Button>
-                </td>
+        {loading ? (
+          <div className="p-8 text-center">
+            <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
+            <p className="mt-2 text-xs text-zinc-500">Loading payments...</p>
+          </div>
+        ) : error ? (
+          <div className="p-6 text-center text-rose-600">
+            <AlertCircle className="h-6 w-6 mx-auto mb-2" />
+            <p className="text-xs">{error}</p>
+            <Button variant="outline" size="sm" onClick={fetchPayments} className="mt-2">
+              Retry
+            </Button>
+          </div>
+        ) : payments.length === 0 ? (
+          <EmptyState
+            icon={CreditCard}
+            title="No Payments Found"
+            description="No payment records found in the system."
+          />
+        ) : (
+          <table className="w-full text-left text-xs text-zinc-600">
+            <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-3 px-4">Payment / Booking</th>
+                <th className="py-3 px-4">Seeker</th>
+                <th className="py-3 px-4">Mentor</th>
+                <th className="py-3 px-4">Amount</th>
+                <th className="py-3 px-4">Submitted</th>
+                <th className="py-3 px-4">Status</th>
+                <th className="py-3 px-4 text-right">Inspect Proof</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {payments.map((p) => (
+                <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
+                  <td className="py-3 px-4 font-mono">
+                    <span className="font-bold text-zinc-950 block">{p.id}</span>
+                    <span className="text-[11px] text-zinc-400">{p.bookingId}</span>
+                  </td>
+                  <td className="py-3 px-4 font-semibold text-zinc-900">{p.seekerName}</td>
+                  <td className="py-3 px-4">{p.mentorName}</td>
+                  <td className="py-3 px-4 font-bold text-zinc-950">₹{p.amount}</td>
+                  <td className="py-3 px-4 text-zinc-500">{p.submittedAt}</td>
+                  <td className="py-3 px-4">
+                    <Badge
+                      variant={
+                        p.status === 'VERIFIED'
+                          ? 'success'
+                          : p.status === 'PENDING_VERIFICATION'
+                          ? 'warning'
+                          : 'destructive'
+                      }
+                      className="text-[10px]"
+                    >
+                      {p.status}
+                    </Badge>
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <Button
+                      size="sm"
+                      variant={p.status === 'PENDING_VERIFICATION' ? 'default' : 'outline'}
+                      className="text-xs py-1 h-7 gap-1"
+                      onClick={() => {
+                        setSelectedPayment(p);
+                        setIsRejecting(false);
+                      }}
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      <span>{p.status === 'PENDING_VERIFICATION' ? 'Verify Proof' : 'View'}</span>
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Payment Inspection Modal */}

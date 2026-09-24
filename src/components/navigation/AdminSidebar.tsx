@@ -14,6 +14,7 @@ import { useNotifications } from '@/src/context/NotificationContext';
 import { ROLE_NAVIGATION } from '@/src/config/navigation';
 import { cn } from '@/src/lib/utils';
 import { Button } from '@/src/components/ui/Button';
+import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 
 export const AdminSidebar: React.FC = () => {
   const { currentPath, navigate } = useNavigation();
@@ -71,16 +72,16 @@ export const AdminSidebar: React.FC = () => {
       {/* Top section: Brand & Navigation */}
       <div className="space-y-6">
         {/* Admin Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-zinc-200">
+        <div className="flex items-center justify-between pb-3 border-b border-[var(--color-shell-border)]">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-950 text-white shadow-xs ring-1 ring-zinc-800">
-              <Shield className="h-5 w-5 text-rose-400" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-white shadow-xs ring-1 ring-[var(--color-shell-primary)]/50">
+              <Shield className="h-5 w-5 text-white" />
             </div>
             <div>
-              <span className="text-sm font-bold tracking-tight text-zinc-950 block font-display">
+              <span className="text-sm font-bold tracking-tight text-[var(--color-shell-text)] block font-display">
                 Suggest Key
               </span>
-              <span className="text-[10px] font-bold tracking-wider uppercase text-rose-600">
+              <span className="text-[10px] font-bold tracking-wider uppercase text-[var(--color-shell-accent)]">
                 Admin Console
               </span>
             </div>
@@ -88,7 +89,7 @@ export const AdminSidebar: React.FC = () => {
           {mobileSidebarOpen && (
             <button
               onClick={() => setMobileSidebarOpen(false)}
-              className="p-1.5 text-zinc-500 hover:text-zinc-950 rounded-lg hover:bg-zinc-100 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+              className="p-1.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
               aria-label="Close sidebar"
             >
               <X className="h-5 w-5" />
@@ -98,7 +99,7 @@ export const AdminSidebar: React.FC = () => {
 
         {/* Navigation List */}
         <div className="space-y-1">
-          <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+          <div className="px-2.5 py-1 text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase tracking-wider">
             Operations & Governance
           </div>
           <nav className="space-y-0.5" aria-label="Admin Navigation">
@@ -115,21 +116,21 @@ export const AdminSidebar: React.FC = () => {
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
                     'group flex w-full items-center justify-between px-3 py-2.5 text-xs font-medium rounded-xl transition-all text-left cursor-pointer min-h-[40px]',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
                     isActive
-                      ? 'bg-zinc-950 text-white shadow-xs font-semibold'
-                      : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-950'
+                      ? 'bg-[var(--color-shell-primary)] text-white shadow-xs font-semibold'
+                      : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface)] hover:text-[var(--color-shell-text)]'
                   )}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-white' : 'text-zinc-500')} />
+                    <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-white' : 'text-[var(--color-shell-text-muted)]')} />
                     <span>{item.label}</span>
                   </div>
                   {item.badge !== undefined && (
                     <span
                       className={cn(
                         'rounded-full px-2 py-0.5 text-[10px] font-bold',
-                        isActive ? 'bg-zinc-800 text-zinc-100' : 'bg-zinc-200 text-zinc-800'
+                        isActive ? 'bg-white/20 text-white' : 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
                       )}
                     >
                       {item.badge}
@@ -143,21 +144,29 @@ export const AdminSidebar: React.FC = () => {
       </div>
 
       {/* Admin User Profile & Sign Out */}
-      <div className="pt-4 border-t border-zinc-200 space-y-3">
+      <div className="pt-4 border-t border-[var(--color-shell-border)] space-y-3">
+        {/* Theme selection */}
+        <div className="flex items-center justify-between gap-3 px-1">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
+            Theme
+          </span>
+          <ThemeToggle variant="labeled" />
+        </div>
+
         {/* User Card */}
-        <div className="rounded-xl bg-white border border-zinc-200 p-2.5 flex items-center gap-2.5 shadow-2xs">
-          <div className="h-8 w-8 rounded-lg bg-zinc-950 text-white flex items-center justify-center font-bold text-xs shrink-0 ring-1 ring-zinc-800">
+        <div className="rounded-xl bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] p-2.5 flex items-center gap-2.5 shadow-2xs">
+          <div className="h-8 w-8 rounded-lg bg-[var(--color-shell-primary)] text-white flex items-center justify-center font-bold text-xs shrink-0 ring-1 ring-[var(--color-shell-primary)]/50">
             {profile?.full_name?.charAt(0) || 'A'}
           </div>
           <div className="overflow-hidden flex-1">
-            <span className="text-xs font-bold text-zinc-950 truncate block">
+            <span className="text-xs font-bold text-[var(--color-shell-text)] truncate block">
               {profile?.full_name || 'Admin User'}
             </span>
-            <span className="text-[10px] text-zinc-400 truncate block">
+            <span className="text-[10px] text-[var(--color-shell-text-subtle)] truncate block">
               {user?.email || 'admin@suggestkey.com'}
             </span>
           </div>
-          <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[9px] font-bold uppercase tracking-wider">
+          <span className="px-1.5 py-0.5 rounded bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-accent)] text-[9px] font-bold uppercase tracking-wider">
             Admin
           </span>
         </div>
@@ -167,15 +176,15 @@ export const AdminSidebar: React.FC = () => {
           variant="outline"
           size="sm"
           onClick={handleSignOut}
-          className="w-full text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 gap-1.5 min-h-[38px]"
+          className="w-full text-xs text-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)] border-[var(--color-shell-error)]/30 gap-1.5 min-h-[38px]"
         >
           <LogOut className="h-3.5 w-3.5" />
           <span>Sign Out Admin</span>
         </Button>
 
-        <div className="px-2 text-[10px] text-zinc-400 flex items-center justify-between">
+        <div className="px-2 text-[10px] text-[var(--color-shell-text-subtle)] flex items-center justify-between">
           <span>RLS & Security Definers</span>
-          <span className="font-mono text-[10px] bg-zinc-100 px-1.5 py-0.5 rounded">PostgreSQL</span>
+          <span className="font-mono text-[10px] bg-[var(--color-shell-surface-elevated)] px-1.5 py-0.5 rounded">PostgreSQL</span>
         </div>
       </div>
     </div>
@@ -184,23 +193,26 @@ export const AdminSidebar: React.FC = () => {
   return (
     <>
       {/* Mobile Header Bar for Admin */}
-      <div className="md:hidden sticky top-0 z-40 flex h-14 w-full items-center justify-between border-b border-zinc-200 bg-white/95 backdrop-blur-md px-4">
+      <div className="md:hidden sticky top-0 z-40 flex h-14 w-full items-center justify-between border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]/95 backdrop-blur-md px-4">
         <div className="flex items-center gap-2">
-          <Shield className="h-5 w-5 text-rose-600" />
-          <span className="font-bold text-sm text-zinc-950 font-display">Suggest Key Admin</span>
+          <Shield className="h-5 w-5 text-[var(--color-shell-accent)]" />
+          <span className="font-bold text-sm text-[var(--color-shell-text)] font-display">Suggest Key Admin</span>
         </div>
-        <button
-          onClick={() => setMobileSidebarOpen(true)}
-          className="p-2 text-zinc-600 hover:text-zinc-950 rounded-lg hover:bg-zinc-100 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
-          aria-label="Open Sidebar"
-          aria-expanded={mobileSidebarOpen}
-        >
-          <Menu className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <ThemeToggle />
+          <button
+            onClick={() => setMobileSidebarOpen(true)}
+            className="p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+            aria-label="Open Sidebar"
+            aria-expanded={mobileSidebarOpen}
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       {/* Desktop Persistent Sidebar */}
-      <aside className="hidden md:flex w-64 flex-col border-r border-zinc-200 bg-zinc-50/50 shrink-0 min-h-screen">
+      <aside className="hidden md:flex w-64 flex-col border-r border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] shrink-0 min-h-screen">
         {navContent}
       </aside>
 
@@ -213,7 +225,7 @@ export const AdminSidebar: React.FC = () => {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.15 }}
-              className="fixed inset-0 bg-zinc-950/40 backdrop-blur-xs"
+              className="fixed inset-0 bg-black/60 backdrop-blur-xs"
               onClick={() => setMobileSidebarOpen(false)}
             />
             <motion.div
@@ -221,7 +233,7 @@ export const AdminSidebar: React.FC = () => {
               animate={{ x: 0 }}
               exit={{ x: -280 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-              className="relative flex w-72 flex-col bg-white shadow-2xl z-10"
+              className="relative flex w-72 flex-col bg-[var(--color-shell-surface)] shadow-2xl z-10"
             >
               {navContent}
             </motion.div>

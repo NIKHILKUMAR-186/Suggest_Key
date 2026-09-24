@@ -83,16 +83,16 @@ export const SeekerBookingsPage: React.FC = () => {
       className="space-y-6"
     >
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl font-display">
+        <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
           My Bookings
         </h1>
-        <p className="mt-1 text-sm text-zinc-500">
+        <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
           View active sessions, countdown timers, historical notes, and session workspaces.
         </p>
       </div>
 
       <div
-        className="flex border-b border-zinc-200 gap-6 text-xs sm:text-sm font-semibold"
+        className="flex border-b border-[var(--color-shell-border)] gap-6 text-xs sm:text-sm font-semibold"
         role="tablist"
         aria-label="Booking tabs"
       >
@@ -108,20 +108,20 @@ export const SeekerBookingsPage: React.FC = () => {
             role="tab"
             aria-selected={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`pb-3 capitalize transition-all cursor-pointer relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded-xs ${
+            className={`pb-3 capitalize transition-all cursor-pointer relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-xs ${
               activeTab === tab.id
-                ? 'text-amber-900 font-bold border-amber-600 border-b-2'
-                : 'text-zinc-500 hover:text-zinc-800'
+                ? 'text-[var(--color-shell-text)] font-bold border-amber-600 border-b-2'
+                : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
             }`}
           >
             <span>{tab.label}</span>
             {tab.id === 'upcoming' && upcomingCount > 0 && activeTab !== 'upcoming' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-zinc-600">
+              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-[var(--color-shell-text-muted)]">
                 {upcomingCount}
               </Badge>
             )}
             {tab.id === 'cancelled' && cancelledCount > 0 && activeTab !== 'cancelled' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-zinc-600">
+              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-[var(--color-shell-text-muted)]">
                 {cancelledCount}
               </Badge>
             )}
@@ -130,18 +130,18 @@ export const SeekerBookingsPage: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="py-16 flex flex-col justify-center items-center text-zinc-400 text-xs gap-2">
-          <Calendar className="h-6 w-6 animate-spin text-zinc-600" />
+        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
+          <Calendar className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
           <span>Synchronizing bookings with real database...</span>
         </div>
       ) : error ? (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-900 flex items-center justify-between gap-3"
+          className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-xs text-[var(--color-shell-text)] flex items-center justify-between gap-3"
         >
           <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+            <AlertTriangle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0" />
             <span>{error}</span>
           </div>
           <Button size="sm" variant="outline" onClick={loadBookings}>
@@ -171,17 +171,17 @@ export const SeekerBookingsPage: React.FC = () => {
               <motion.div
                 key={booking.id}
                 variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4 hover:border-zinc-300 transition-all"
+                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
               >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
                   <div className="flex items-center gap-2">
                     {getBookingStatusBadge(booking.status)}
-                    <span className="text-xs text-zinc-400 font-mono">
+                    <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
                       Booking #{booking.booking_code}
                     </span>
                   </div>
                   {booking.status === 'CONFIRMED' && (
-                    <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-100 px-2.5 py-1 rounded-full">
+                    <span className="text-xs font-semibold text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] border border-[var(--color-shell-warning)]/20 px-2.5 py-1 rounded-full">
                       Meeting unlocks at T-5 minutes
                     </span>
                   )}
@@ -189,16 +189,16 @@ export const SeekerBookingsPage: React.FC = () => {
 
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-base font-bold text-zinc-950">
+                    <h2 className="text-base font-bold text-[var(--color-shell-text)]">
                       {booking.gig?.title || '1:1 Guidance Session'}
                     </h2>
-                    <p className="text-xs text-zinc-500 mt-0.5">
+                    <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
                       Mentor: {booking.mentor?.full_name || 'Mentor'} · Segment:{' '}
                       {booking.segment?.name || 'N/A'}
                     </p>
-                    <div className="flex items-center gap-3 text-xs text-zinc-600 mt-2 font-medium flex-wrap">
+                    <div className="flex items-center gap-3 text-xs text-[var(--color-shell-text-muted)] mt-2 font-medium flex-wrap">
                       <span className="flex items-center gap-1.5">
-                        <Calendar className="h-3.5 w-3.5 text-zinc-400" />
+                        <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
                         {new Date(booking.start_time).toLocaleDateString('en-IN', {
                           weekday: 'short',
                           month: 'short',
@@ -208,7 +208,7 @@ export const SeekerBookingsPage: React.FC = () => {
                       </span>
                       <span>·</span>
                       <span className="flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5 text-zinc-400" />
+                        <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
                         {new Date(booking.start_time).toLocaleTimeString([], {
                           hour: '2-digit',
                           minute: '2-digit',
@@ -254,12 +254,12 @@ export const SeekerBookingsPage: React.FC = () => {
               <motion.div
                 key={booking.id}
                 variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4 hover:border-zinc-300 transition-all"
+                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
               >
-                <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+                <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
                   <div className="flex items-center gap-2">
                     {getBookingStatusBadge(booking.status)}
-                    <span className="text-xs text-zinc-400 font-mono">
+                    <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
                       {new Date(booking.start_time).toLocaleDateString('en-IN', {
                         day: 'numeric',
                         month: 'short',
@@ -274,10 +274,10 @@ export const SeekerBookingsPage: React.FC = () => {
 
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-base font-bold text-zinc-950">
+                    <h2 className="text-base font-bold text-[var(--color-shell-text)]">
                       {booking.gig?.title || '1:1 Guidance Session'}
                     </h2>
-                    <p className="text-xs text-zinc-500 mt-0.5">
+                    <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
                       Mentor: {booking.mentor?.full_name || 'Mentor'} ·{' '}
                       {booking.segment?.name || 'N/A'}
                     </p>
@@ -299,18 +299,18 @@ export const SeekerBookingsPage: React.FC = () => {
               <motion.div
                 key={booking.id}
                 variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-2"
+                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-2"
               >
                 <div className="flex items-center justify-between">
                   {getBookingStatusBadge(booking.status)}
-                  <span className="text-xs text-zinc-400 font-medium">
+                  <span className="text-xs text-[var(--color-shell-text-subtle)] font-medium">
                     {booking.cancellation_reason || 'Cancelled'}
                   </span>
                 </div>
-                <h2 className="text-sm font-bold text-zinc-950">
+                <h2 className="text-sm font-bold text-[var(--color-shell-text)]">
                   {booking.gig?.title || '1:1 Guidance Session'}
                 </h2>
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-[var(--color-shell-text-muted)]">
                   Normal cancellation policy: Permitted ≥24 hours before start.
                 </p>
               </motion.div>

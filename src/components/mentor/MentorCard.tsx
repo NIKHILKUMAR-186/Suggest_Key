@@ -16,9 +16,9 @@ const paddingStyles = {
 };
 
 const variantStyles = {
-  default: 'border border-zinc-200 bg-white shadow-xs',
-  elevated: 'border border-zinc-200 bg-white shadow-md',
-  glass: 'border border-zinc-200/60 bg-white/80 backdrop-blur-sm shadow-sm',
+  default: 'border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-xs',
+  elevated: 'border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-md',
+  glass: 'border border-[var(--color-shell-border)]/60 bg-[var(--color-shell-surface)]/80 backdrop-blur-sm shadow-sm',
 };
 
 export const MentorCard = React.forwardRef<HTMLDivElement, MentorCardProps>(

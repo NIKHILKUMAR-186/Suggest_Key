@@ -11,12 +11,12 @@ export const Badge: React.FC<BadgeProps> = ({
   ...props
 }) => {
   const variantStyles = {
-    default: 'bg-zinc-900 text-zinc-50 border-transparent',
-    secondary: 'bg-zinc-100 text-zinc-800 border-transparent',
-    outline: 'text-zinc-900 border-zinc-200',
-    success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    warning: 'bg-amber-50 text-amber-700 border-amber-200',
-    destructive: 'bg-red-50 text-red-700 border-red-200',
+    default: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text)] border-[var(--color-shell-border)]',
+    secondary: 'bg-[var(--color-shell-bg)] text-[var(--color-shell-text-muted)] border-[var(--color-shell-border)]',
+    outline: 'text-[var(--color-shell-text)] border-[var(--color-shell-border)]',
+    success: 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)] border-[var(--color-shell-success)]/30',
+    warning: 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30',
+    destructive: 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)] border-[var(--color-shell-error)]/30',
   };
 
   return (

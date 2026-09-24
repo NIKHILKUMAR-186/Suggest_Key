@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
-import { Users, Search, Filter, Shield, MoreVertical, CheckCircle2, XCircle } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Users, Search, Filter, Shield, MoreVertical, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { apiFetch } from '@/src/lib/apiClient';
 
 interface UserRecord {
   id: string;
@@ -13,51 +14,47 @@ interface UserRecord {
   timezone: string;
   createdAt: string;
   status: 'ACTIVE' | 'SUSPENDED';
+  roles: string[];
+}
+
+interface ApiUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'SEEKER' | 'MENTOR' | 'ADMIN';
+  timezone: string;
+  createdAt: string;
+  status: 'ACTIVE' | 'SUSPENDED';
+  roles: string[];
 }
 
 export const AdminUsersPage: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'SEEKER' | 'MENTOR' | 'ADMIN'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [viewState, setViewState] = useState<'table' | 'skeleton' | 'empty'>('table');
+  const [users, setUsers] = useState<UserRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const users: UserRecord[] = [
-    {
-      id: 'usr-8801',
-      name: 'Aman Kumar',
-      email: 'suggestkey1505@gmail.com',
-      role: 'SEEKER',
-      timezone: 'Asia/Kolkata',
-      createdAt: '10 Jan 2026',
-      status: 'ACTIVE',
-    },
-    {
-      id: 'usr-8802',
-      name: 'Rahul Sharma',
-      email: 'mentor.rahul@suggestkey.com',
-      role: 'MENTOR',
-      timezone: 'Asia/Kolkata',
-      createdAt: '12 Jan 2026',
-      status: 'ACTIVE',
-    },
-    {
-      id: 'usr-8803',
-      name: 'Ananya Patel',
-      email: 'mentor.ananya@suggestkey.com',
-      role: 'MENTOR',
-      timezone: 'Asia/Kolkata',
-      createdAt: '15 Jan 2026',
-      status: 'ACTIVE',
-    },
-    {
-      id: 'usr-8800',
-      name: 'Platform Administrator',
-      email: 'admin@suggestkey.com',
-      role: 'ADMIN',
-      timezone: 'UTC',
-      createdAt: '01 Jan 2026',
-      status: 'ACTIVE',
-    },
-  ];
+  const fetchUsers = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/admin/users');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch users');
+      setUsers(data.users || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load users');
+      console.error('Failed to fetch users:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
 
   const filteredUsers = users.filter((u) => {
     const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
@@ -154,59 +151,84 @@ export const AdminUsersPage: React.FC = () => {
 
       {viewState === 'table' && (
         <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-zinc-600">
-              <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="py-3 px-4">User</th>
-                  <th className="py-3 px-4">Role</th>
-                  <th className="py-3 px-4">Timezone</th>
-                  <th className="py-3 px-4">Registered</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100">
-                {filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-zinc-50/50 transition-colors">
-                    <td className="py-3 px-4">
-                      <div className="font-bold text-zinc-950">{user.name}</div>
-                      <div className="text-[11px] text-zinc-400 font-mono">{user.email}</div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <Badge
-                        variant={
-                          user.role === 'ADMIN'
-                            ? 'destructive'
-                            : user.role === 'MENTOR'
-                            ? 'warning'
-                            : 'secondary'
-                        }
-                        className="text-[10px]"
-                      >
-                        {user.role}
-                      </Badge>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-[11px] text-zinc-500">
-                      {user.timezone}
-                    </td>
-                    <td className="py-3 px-4 text-zinc-500">{user.createdAt}</td>
-                    <td className="py-3 px-4">
-                      <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        {user.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <button className="text-zinc-500 hover:text-zinc-950 font-medium underline">
-                        Edit
-                      </button>
-                    </td>
+          {loading ? (
+            <div className="p-8 text-center">
+              <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
+              <p className="mt-2 text-xs text-zinc-500">Loading users...</p>
+            </div>
+          ) : error ? (
+            <div className="p-6 text-center text-rose-600">
+              <p className="text-xs">{error}</p>
+              <Button variant="outline" size="sm" onClick={fetchUsers} className="mt-2">
+                Retry
+              </Button>
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title="No Users Found"
+              description="No user records match the selected filter criteria."
+              actionLabel="Reset Filters"
+              onAction={() => {
+                setRoleFilter('ALL');
+                setSearchTerm('');
+              }}
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-zinc-600">
+                <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th className="py-3 px-4">User</th>
+                    <th className="py-3 px-4">Role</th>
+                    <th className="py-3 px-4">Timezone</th>
+                    <th className="py-3 px-4">Registered</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {filteredUsers.map((user) => (
+                    <tr key={user.id} className="hover:bg-zinc-50/50 transition-colors">
+                      <td className="py-3 px-4">
+                        <div className="font-bold text-zinc-950">{user.name}</div>
+                        <div className="text-[11px] text-zinc-400 font-mono">{user.email}</div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <Badge
+                          variant={
+                            user.role === 'ADMIN'
+                              ? 'destructive'
+                              : user.role === 'MENTOR'
+                              ? 'warning'
+                              : 'secondary'
+                          }
+                          className="text-[10px]"
+                        >
+                          {user.role}
+                        </Badge>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-[11px] text-zinc-500">
+                        {user.timezone}
+                      </td>
+                      <td className="py-3 px-4 text-zinc-500">{user.createdAt}</td>
+                      <td className="py-3 px-4">
+                        <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {user.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <button className="text-zinc-500 hover:text-zinc-950 font-medium underline">
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

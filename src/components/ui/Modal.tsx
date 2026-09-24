@@ -65,7 +65,8 @@ export const Modal: React.FC<ModalProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className="fixed inset-0 bg-zinc-950/50 backdrop-blur-xs"
+            className="fixed inset-0 backdrop-blur-xs"
+            style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={onClose}
           />
 
@@ -76,7 +77,7 @@ export const Modal: React.FC<ModalProps> = ({
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className={cn(
-              'relative w-full rounded-2xl border border-zinc-200 bg-white p-6 sm:p-7 shadow-2xl z-10 my-8',
+              'relative w-full rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 sm:p-7 shadow-2xl z-10 my-8',
               maxWidthStyles[maxWidth],
               className
             )}
@@ -85,12 +86,12 @@ export const Modal: React.FC<ModalProps> = ({
             <div className="flex items-start justify-between pb-3 gap-3">
               <div>
                 {title && (
-                  <h3 id={titleId} className="text-lg font-bold text-zinc-950 tracking-tight">
+                  <h3 id={titleId} className="text-lg font-bold text-[var(--color-shell-text)] tracking-tight">
                     {title}
                   </h3>
                 )}
                 {description && (
-                  <p id={descId} className="text-xs text-zinc-500 mt-1 leading-relaxed">
+                  <p id={descId} className="text-xs text-[var(--color-shell-text-muted)] mt-1 leading-relaxed">
                     {description}
                   </p>
                 )}
@@ -98,7 +99,7 @@ export const Modal: React.FC<ModalProps> = ({
               <button
                 onClick={onClose}
                 aria-label="Close dialog"
-                className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 cursor-pointer"
+                className="rounded-lg p-1.5 text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>

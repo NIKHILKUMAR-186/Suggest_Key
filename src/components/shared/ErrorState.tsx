@@ -25,21 +25,21 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
       role="alert"
       aria-live="assertive"
       className={cn(
-        'flex min-h-[260px] w-full flex-col items-center justify-center rounded-2xl border border-rose-200/80 bg-rose-50/40 p-8 sm:p-10 text-center',
+        'flex min-h-[260px] w-full flex-col items-center justify-center rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-8 sm:p-10 text-center',
         className
       )}
     >
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-100 text-rose-600 mb-3.5 border border-rose-200 shadow-xs">
+      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)] mb-3.5 border border-[var(--color-shell-error)]/30 shadow-xs">
         <AlertCircle className="h-6 w-6" />
       </div>
-      <h3 className="text-base sm:text-lg font-bold text-zinc-950 tracking-tight">{title}</h3>
-      <p className="mt-1.5 text-xs sm:text-sm text-zinc-600 max-w-md leading-relaxed">{message}</p>
+      <h3 className="text-base sm:text-lg font-bold text-[var(--color-shell-text)] tracking-tight">{title}</h3>
+      <p className="mt-1.5 text-xs sm:text-sm text-[var(--color-shell-text-muted)] max-w-md leading-relaxed">{message}</p>
       {onRetry && (
         <Button
           onClick={onRetry}
           variant="outline"
           size="sm"
-          className="mt-5 border-rose-200 text-rose-700 hover:bg-rose-50 hover:border-rose-300 gap-1.5"
+          className="mt-5 border-[var(--color-shell-error)]/40 text-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)] hover:border-[var(--color-shell-error)]/60 gap-1.5"
         >
           <RotateCcw className="h-3.5 w-3.5" />
           <span>Try Again</span>

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { AuthLayout, AuthEyebrow, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
+import { AuthLayout, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
 import { BrandPanel } from '@/src/components/auth/BrandPanel';
 import { PasswordInput } from '@/src/components/ui/PasswordInput';
 import { Input } from '@/src/components/ui/Input';
@@ -13,7 +13,7 @@ import type { UserRole } from '@/src/types/auth';
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const LoginPage: React.FC = () => {
-  const { signInWithPassword, signInWithDemoPersona, error, clearError, activeRole, isAuthenticated } = useAuth();
+  const { signInWithPassword, signInWithGoogle, signInWithDemoPersona, error, clearError, activeRole, isAuthenticated } = useAuth();
   const { navigate } = useNavigation();
 
   const emailRef = useRef<HTMLInputElement>(null);
@@ -102,6 +102,25 @@ export const LoginPage: React.FC = () => {
             <AuthHeading className="mb-2">Welcome back</AuthHeading>
             <AuthBody className="mb-0">Sign in to continue your mentorship journey.</AuthBody>
           </div>
+        </div>
+
+        <div className="space-y-3">
+          <Button
+            type="button"
+            size="md"
+            variant="outline"
+            className="w-full"
+            onClick={async () => {
+              const res = await signInWithGoogle();
+              if (res.error) setFeedback(mapAuthError(res.error));
+            }}
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.21h5.96-2.27v8.29h3.75c0-2.17 1.75-3.95 3.96-3.95v-6.3z" />
+              <path d="M12 23c2.43 0 4.47-.8 5.93-2.16l-3.66-2.85c-1.43 1.06-3.29 1.7-5.27 1.7-4.07 0-7.44-3.26-7.44-7.25 0-1.39.25-2.71.69-3.91l-.09-.01C4.03 7.44 7.96 3.5 12 3.5c1.64 0 3.14.6 4.31 1.59l2.88-2.88C17.54 1.26 14.96 0 12 0 6.84 0 2.56 4.93 2.56 10.06c0 2.33.89 4.45 2.35 6.02l-.02.18z" />
+            </svg>
+            <span>Continue with Google</span>
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>

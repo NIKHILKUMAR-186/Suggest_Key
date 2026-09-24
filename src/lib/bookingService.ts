@@ -1,3 +1,4 @@
+import { apiFetch } from './apiClient';
 import { isSupabaseConfigured } from './supabase';
 import { Booking, SlotHold, Payment, Notification } from '@/src/types/database';
 import { supabase } from './supabase';
@@ -52,7 +53,7 @@ export async function createBookingWithHold(
 ): Promise<CreateBookingResponse> {
   // 1. Try server-side Express endpoint if available
   try {
-    const res = await fetch('/api/bookings/hold', {
+    const res = await apiFetch('/api/bookings/hold', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -919,7 +920,7 @@ export async function fetchMentorBookings(
       if (statusFilter && statusFilter !== 'ALL') {
         params.append('status', statusFilter);
       }
-      const res = await fetch(`/api/mentor/bookings?${params.toString()}`);
+      const res = await apiFetch(`/api/mentor/bookings?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         if (data.bookings) return data.bookings;
@@ -935,7 +936,7 @@ export async function fetchMentorBookings(
     if (statusFilter && statusFilter !== 'ALL') {
       params.append('status', statusFilter);
     }
-    const res = await fetch(`/api/mentor/bookings?${params.toString()}`);
+    const res = await apiFetch(`/api/mentor/bookings?${params.toString()}`);
     if (res.ok) {
       const data = await res.json();
       if (data.bookings) return data.bookings;
@@ -963,7 +964,7 @@ export async function fetchMentorBookings(
 export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBookingRecord[]> {
   // Try server API first, then Supabase
   try {
-    const res = await fetch(`/api/seeker/bookings?seekerId=${encodeURIComponent(seekerId)}`);
+    const res = await apiFetch(`/api/seeker/bookings?seekerId=${encodeURIComponent(seekerId)}`);
     if (res.ok) {
       const data = await res.json();
       if (data.bookings) return data.bookings;
@@ -994,7 +995,7 @@ export async function fetchBookingDetail(
     const url = mentorId
       ? `/api/mentor/bookings/${bookingId}?mentorId=${mentorId}`
       : `/api/seeker/bookings/${bookingId}`;
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     if (res.ok) {
       const data = await res.json();
       if (data.booking) return data.booking;
@@ -1024,7 +1025,7 @@ export async function confirmMentorBooking(
   meetingUrl: string
 ): Promise<ConfirmSessionResult> {
   try {
-    const res = await fetch(`/api/mentor/bookings/${bookingId}/confirm`, {
+    const res = await apiFetch(`/api/mentor/bookings/${bookingId}/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mentorId, meetingUrl }),
@@ -1067,7 +1068,7 @@ export async function confirmMentorBooking(
  */
 export async function fetchOverdueBookings(): Promise<Booking[]> {
   try {
-    const res = await fetch('/api/admin/bookings/overdue-links');
+    const res = await apiFetch('/api/admin/bookings/overdue-links');
     if (res.ok) {
       const data = await res.json();
       if (data.bookings) return data.bookings;
@@ -1089,7 +1090,7 @@ export async function fetchOverdueBookings(): Promise<Booking[]> {
  */
 export async function fetchUserNotifications(userId: string): Promise<Notification[]> {
   try {
-    const res = await fetch(`/api/notifications?userId=${userId}`);
+    const res = await apiFetch(`/api/notifications?userId=${encodeURIComponent(userId)}`);
     if (res.ok) {
       const data = await res.json();
       if (data.notifications) return data.notifications;
@@ -1124,7 +1125,7 @@ export async function fetchSessionAccess(
 ): Promise<SessionAccessResult> {
   const timeParam = simulatedTime ? `&currentTime=${encodeURIComponent(simulatedTime.toISOString())}` : '';
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(bookingId)}/access?userId=${encodeURIComponent(userId)}${timeParam}`);
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/access?userId=${encodeURIComponent(userId)}${timeParam}`);
     const data = await res.json();
     if (res.ok && data.success !== undefined) {
       return data;
@@ -1179,7 +1180,7 @@ export async function joinSessionRequest(
   simulatedTime?: Date
 ): Promise<AuthoritativeJoinResult> {
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(bookingId)}/join`, {
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1218,7 +1219,7 @@ export async function joinSessionRequest(
  */
 export async function markSessionCompleted(bookingId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(bookingId)}/complete`, {
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });

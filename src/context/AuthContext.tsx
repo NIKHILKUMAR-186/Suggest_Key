@@ -8,9 +8,11 @@ const isDevMode = process.env.NODE_ENV !== 'production';
 interface DemoAuthResponse {
   user: { id: string; email: string };
   profile: Profile;
-  roles: UserRole[];
-  activeRole: UserRole;
-}
+    roles: UserRole[];
+    activeRole: UserRole;
+    token: string;
+  }
+
 
 const DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth';
 const LEGACY_DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth_user';
@@ -35,7 +37,8 @@ const isDemoAuthResponse = (value: unknown): value is DemoAuthResponse => {
     typeof data.profile.updated_at === 'string' &&
     Array.isArray(data.roles) &&
     data.roles.every(isUserRole) &&
-    isUserRole(data.activeRole);
+    isUserRole(data.activeRole) &&
+    typeof data.token === 'string';
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -48,6 +51,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeRole, setActiveRole] = useState<UserRole>('seeker');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [isConfigured] = useState<boolean>(isSupabaseConfigured());
 
   const setDemoAuth = (data: DemoAuthResponse) => {
@@ -128,12 +132,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setProfile(userProfile);
 
-      // 2. Fetch User Roles from user_roles table
+      // 2. Fetch User Roles from user_roles table (server-authoritative)
       const { roles: userRoles } = await fetchUserRoles(supabaseUser.id);
       const effectiveRoles: UserRole[] =
         userRoles.length > 0
           ? userRoles
-          : [(supabaseUser.user_metadata?.requested_role as UserRole) || 'seeker'];
+          : ['seeker'];
       setRoles(effectiveRoles);
 
       // 3. Set Active Role (from database, never frontend-assigned)
@@ -286,6 +290,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: loginError };
   };
 
+   // Sign In with Google OAuth
+   const signInWithGoogle = async (): Promise<{ error: Error | null }> => {
+    setError(null);
+    if (!isConfigured) {
+      const error = new Error('Authentication is not configured.');
+      setError(error.message);
+      return { error };
+    }
+    try {
+      const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : undefined;
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo },
+      });
+      if (error) {
+        setError(error.message);
+        return { error };
+      }
+      return { error: null };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Google sign-in is unavailable.');
+      setError(error.message);
+      return { error };
+    }
+  };
+
   // Demo persona login (development only)
   const signInWithDemoPersona = async (persona: UserRole): Promise<{ error: Error | null; role?: UserRole }> => {
     if (!isDevMode) {
@@ -396,14 +426,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data.user) {
-        setUser(data.user);
-        setSession(data.session);
-        await loadUserData(data.user);
+        if (!data.user.email_confirmed_at && !data.session) {
+          setUser(null);
+          setSession(null);
+          setProfile(null);
+          setRoles([]);
+          setActiveRole('seeker');
+          setPendingEmail(data.user.email || email);
+        } else {
+          setUser(data.user);
+          setSession(data.session);
+          await loadUserData(data.user);
+          setPendingEmail(null);
+        }
       }
       setIsLoading(false);
       return { error: null, user: data.user };
     }
-    return { error: null };
+    return { error: null, user: null };
+  };
+
+   // Resend email verification code
+   const resendVerification = async (emailAddr: string): Promise<{ error: Error | null }> => {
+    setError(null);
+    if (!isConfigured) {
+      const error = new Error('Authentication is not configured.');
+      setError(error.message);
+      return { error };
+    }
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: emailAddr.trim(),
+      });
+      if (error) {
+        setError(error.message);
+        return { error };
+      }
+      return { error: null };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error('Unable to resend verification email.');
+      setError(error.message);
+      return { error };
+    }
   };
 
   // Sign Out
@@ -421,6 +486,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProfile(null);
     setRoles([]);
     setActiveRole('seeker');
+    setPendingEmail(null);
     setIsLoading(false);
   };
 
@@ -443,11 +509,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isConfigured,
         error,
+        pendingEmail,
         signInWithPassword,
+        signInWithGoogle,
         signInWithDemoPersona,
         requestPasswordReset,
         updatePassword,
         signUp,
+        resendVerification,
         signOut,
         hasRole,
         clearError,

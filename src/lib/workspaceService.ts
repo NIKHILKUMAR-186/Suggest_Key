@@ -1,3 +1,4 @@
+import { apiFetch } from './apiClient';
 import { supabase, isSupabaseConfigured } from './supabase';
 import {
   SessionWorkspace,
@@ -250,7 +251,7 @@ export async function fetchWorkspaceByBooking(
 
   // 2. Query server API or local in-memory fallback
   try {
-    const res = await fetch(`/api/workspaces/booking/${bookingId}?userId=${encodeURIComponent(userId || '')}&role=${encodeURIComponent(role || '')}`);
+    const res = await apiFetch(`/api/workspaces/booking/${bookingId}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success) {

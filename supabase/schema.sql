@@ -10,3 +10,6 @@
 \i migrations/20260920000003_phase6_atomic_booking.sql
 \i migrations/20260921000001_phase10_session_workspace.sql
 \i migrations/20260921000002_phase11_notifications.sql
+\i migrations/20260924000000_phase12_mentor_onboarding.sql
+\i migrations/20260924000001_phase13_system_logs.sql
+\i migrations/20260924000001_phase13_system_logs.sql

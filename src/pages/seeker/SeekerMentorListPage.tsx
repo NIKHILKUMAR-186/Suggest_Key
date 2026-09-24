@@ -170,30 +170,30 @@ export const SeekerMentorListPage: React.FC = () => {
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.3 }}
             onClick={() => navigate('/seeker')}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-500 hover:text-zinc-950 transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 cursor-pointer"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-text)] cursor-pointer"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             <span>Back to Discovery</span>
           </motion.button>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl font-display mt-2">
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display mt-2">
             {selectedSegment ? `${selectedSegment.name} Mentors` : 'Mentors'}
           </h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
             Verified mentors with active gigs and valid bookable slots on{' '}
-            <span className="font-mono font-medium text-zinc-700">{selectedDate}</span>.
+            <span className="font-mono font-medium text-[var(--color-shell-text-muted)]">{selectedDate}</span>.
           </p>
         </div>
       </div>
 
       {/* Search Bar */}
       <div className="relative">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-zinc-400" />
+        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-[var(--color-shell-text-subtle)]" />
         <input
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search mentors by name, expertise, or language…"
-          className="w-full rounded-2xl border border-zinc-200 bg-white pl-12 pr-4 py-3.5 text-base text-zinc-900 placeholder:text-zinc-400 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500/15 shadow-xs"
+          className="w-full rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] pl-12 pr-4 py-3.5 text-base text-[var(--color-shell-text)] placeholder:text-[var(--color-shell-text-subtle)] focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500/15 shadow-xs"
         />
       </div>
 
@@ -211,7 +211,7 @@ export const SeekerMentorListPage: React.FC = () => {
               onClick={() => setShowLanguageDropdown((v) => !v)}
               aria-haspopup="listbox"
               aria-expanded={showLanguageDropdown}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
             >
               <Filter className="h-3.5 w-3.5" />
               <span>Language</span>
@@ -236,7 +236,7 @@ export const SeekerMentorListPage: React.FC = () => {
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: -4 }}
                     transition={{ duration: 0.15 }}
-                    className="absolute left-0 top-full mt-1 z-20 w-44 rounded-xl border border-zinc-200 bg-white shadow-lg p-1 space-y-0.5"
+                    className="absolute left-0 top-full mt-1 z-20 w-44 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-lg p-1 space-y-0.5"
                     role="listbox"
                   >
                     <button
@@ -246,8 +246,8 @@ export const SeekerMentorListPage: React.FC = () => {
                       }}
                       className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
                         languageFilter === 'all'
-                          ? 'bg-amber-50 text-amber-900 font-semibold'
-                          : 'hover:bg-zinc-50 text-zinc-700'
+                          ? 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] font-semibold'
+                          : 'hover:bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
                       }`}
                     >
                       All Languages
@@ -261,8 +261,8 @@ export const SeekerMentorListPage: React.FC = () => {
                         }}
                         className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
                           languageFilter === lang
-                            ? 'bg-amber-50 text-amber-900 font-semibold'
-                            : 'hover:bg-zinc-50 text-zinc-700'
+                            ? 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] font-semibold'
+                            : 'hover:bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
                         }`}
                       >
                         {lang}
@@ -276,12 +276,12 @@ export const SeekerMentorListPage: React.FC = () => {
 
           {/* Experience Filter */}
           <div className="flex items-center gap-1">
-            <SlidersHorizontal className="h-3.5 w-3.5 text-zinc-500" />
+            <SlidersHorizontal className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)]" />
             <select
               value={experienceFilter}
               onChange={(e) => setExperienceFilter(e.target.value as ExperienceFilter)}
               aria-label="Filter by experience"
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
             >
               {EXPERIENCE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -295,7 +295,7 @@ export const SeekerMentorListPage: React.FC = () => {
           {hasActiveFilters && (
             <button
               onClick={clearAllFilters}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
             >
               <X className="h-3 w-3" />
               Clear
@@ -309,15 +309,15 @@ export const SeekerMentorListPage: React.FC = () => {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3, delay: 0.08 }}
-        className="flex items-center gap-2.5 bg-white rounded-xl border border-zinc-200 px-3.5 py-2.5 shadow-xs self-start text-xs"
+        className="flex items-center gap-2.5 bg-[var(--color-shell-surface)] rounded-xl border border-[var(--color-shell-border)] px-3.5 py-2.5 shadow-xs self-start text-xs"
       >
-        <span className="font-medium text-zinc-700">Session date:</span>
+        <span className="font-medium text-[var(--color-shell-text-muted)]">Session date:</span>
         <input
           type="date"
           value={selectedDate}
           min={new Date().toISOString().split('T')[0]}
           onChange={(e) => setSelectedDate(e.target.value)}
-          className="text-xs text-zinc-900 border border-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-500/15 cursor-pointer font-semibold"
+          className="text-xs text-[var(--color-shell-text)] border border-[var(--color-shell-border-strong)] rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-500/15 cursor-pointer font-semibold"
           aria-label="Filter by appointment date"
         />
       </motion.div>
@@ -343,10 +343,10 @@ export const SeekerMentorListPage: React.FC = () => {
                 role="tab"
                 aria-selected={isSelected}
                 onClick={() => setSelectedSegment(seg)}
-                className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all whitespace-nowrap border cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 min-h-[38px] ${
+                className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all whitespace-nowrap border cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] min-h-[38px] ${
                   isSelected
-                    ? 'border-amber-300 bg-amber-50 text-amber-900 shadow-xs'
-                    : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 hover:border-zinc-300'
+                    ? 'border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] shadow-xs'
+                    : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] hover:border-[var(--color-shell-border-strong)]'
                 }`}
               >
                 {seg.name}
@@ -358,7 +358,7 @@ export const SeekerMentorListPage: React.FC = () => {
 
       {/* Error */}
       {error && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)]">
           <div className="flex items-center gap-2 font-semibold">
             <Shield className="h-4 w-4" />
             <span>Error Loading Mentors</span>
@@ -369,8 +369,8 @@ export const SeekerMentorListPage: React.FC = () => {
 
       {/* Results Count */}
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-zinc-950">Available Mentors</h2>
-        <span className="text-xs text-zinc-500">
+        <h2 className="text-xl font-bold text-[var(--color-shell-text)]">Available Mentors</h2>
+        <span className="text-xs text-[var(--color-shell-text-muted)]">
           {isLoadingMentors ? '…' : `${filteredMentors.length} mentor${filteredMentors.length !== 1 ? 's' : ''}`}
         </span>
       </div>
@@ -409,8 +409,8 @@ export const SeekerMentorListPage: React.FC = () => {
         >
           {featuredMentors.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-amber-700 flex items-center gap-2">
-                <Star className="h-3 w-3 text-amber-500 fill-current" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-warning)] flex items-center gap-2">
+                <Star className="h-3 w-3 text-[var(--color-shell-warning)] fill-current" />
                 <span>Featured Mentors</span>
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -430,8 +430,8 @@ export const SeekerMentorListPage: React.FC = () => {
 
           {regularMentors.length > 0 && (
             <div className="space-y-4">
-              {featuredMentors.length > 0 && <div className="border-t border-zinc-100 pt-6" />}
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              {featuredMentors.length > 0 && <div className="border-t border-[var(--color-shell-border)] pt-6" />}
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
                 Available Mentors
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -456,12 +456,12 @@ export const SeekerMentorListPage: React.FC = () => {
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.15 }}
-          className="flex items-start gap-3 rounded-2xl border border-zinc-200 bg-zinc-50/80 p-4 text-xs text-zinc-600"
+          className="flex items-start gap-3 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]/80 p-4 text-xs text-[var(--color-shell-text-muted)]"
         >
-          <Shield className="h-4 w-4 text-zinc-600 shrink-0 mt-0.5" />
+          <Shield className="h-4 w-4 text-[var(--color-shell-text-muted)] shrink-0 mt-0.5" />
           <div>
-            <span className="font-bold text-zinc-950">Global Mentor Invariant:</span>
-            <p className="mt-0.5 leading-relaxed text-zinc-600">
+            <span className="font-bold text-[var(--color-shell-text)]">Global Mentor Invariant:</span>
+            <p className="mt-0.5 leading-relaxed text-[var(--color-shell-text-muted)]">
               Mentor availability is attached globally to the mentor, not to an individual gig.
               Bookings across all segments are reconciled in UTC to ensure no concurrent
               double-bookings can occur.

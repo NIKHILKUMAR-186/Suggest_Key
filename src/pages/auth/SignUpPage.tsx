@@ -41,7 +41,7 @@ export const SignUpPage: React.FC = () => {
     if (res.error) {
       setFeedback(res.error.message);
     } else {
-      navigate('/seeker');
+      navigate('/auth/verify');
     }
   };
 

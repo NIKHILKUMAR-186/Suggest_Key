@@ -24,12 +24,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const variantStyles = {
-      default: 'bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] hover:bg-[var(--color-shell-primary-hover)] shadow-sm active:scale-[0.98]',
+      default: 'bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-primary-hover)] shadow-sm active:scale-[0.98]',
       outline: 'border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg)] hover:border-[var(--color-shell-border-strong)] active:scale-[0.98]',
       secondary: 'bg-[var(--color-shell-bg)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg-hover)] active:scale-[0.98]',
       ghost: 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)]',
-      destructive: 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm active:scale-[0.98]',
-      accent: 'bg-[var(--color-shell-accent)] text-[var(--color-shell-primary)] hover:bg-[var(--color-shell-accent-hover)] shadow-sm active:scale-[0.98] font-semibold',
+      destructive: 'bg-[var(--color-shell-error)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-error)]/90 shadow-sm active:scale-[0.98]',
+      accent: 'bg-[var(--color-shell-accent)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-accent-hover)] shadow-sm active:scale-[0.98] font-semibold',
     };
 
     const sizeStyles = {

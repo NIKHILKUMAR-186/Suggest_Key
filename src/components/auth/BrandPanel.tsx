@@ -10,7 +10,7 @@ export const BrandPanel: React.FC<BrandPanelProps> = ({ className }) => {
     <div className={cn('flex flex-col h-full', className)}>
       {/* Logo */}
       <div className="flex items-center gap-3 mb-16">
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-sm">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-white shadow-sm">
           <svg
             className="h-6 w-6"
             viewBox="0 0 24 24"

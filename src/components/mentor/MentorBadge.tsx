@@ -20,15 +20,15 @@ export interface MentorBadgeProps {
 }
 
 const variantStyles: Record<MentorBadgeVariant, string> = {
-  default: 'bg-zinc-900 text-zinc-50 border-transparent',
-  success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  warning: 'bg-amber-50 text-amber-700 border-amber-200',
-  destructive: 'bg-rose-50 text-rose-700 border-rose-200',
-  info: 'bg-blue-50 text-blue-700 border-blue-200',
-  pending: 'bg-amber-50 text-amber-700 border-amber-200',
-  confirmed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  completed: 'bg-blue-50 text-blue-700 border-blue-200',
-  cancelled: 'bg-zinc-100 text-zinc-600 border-zinc-200',
+  default: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text)] border-transparent',
+  success: 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)] border-[var(--color-shell-success)]/30',
+  warning: 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30',
+  destructive: 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)] border-[var(--color-shell-error)]/30',
+  info: 'bg-[var(--color-shell-info-soft)] text-[var(--color-shell-info)] border-[var(--color-shell-info)]/30',
+  pending: 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30',
+  confirmed: 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)] border-[var(--color-shell-success)]/30',
+  completed: 'bg-[var(--color-shell-info-soft)] text-[var(--color-shell-info)] border-[var(--color-shell-info)]/30',
+  cancelled: 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border-[var(--color-shell-border)]',
 };
 
 const sizeStyles = {

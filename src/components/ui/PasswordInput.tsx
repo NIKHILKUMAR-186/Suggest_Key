@@ -36,7 +36,7 @@ export const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputPro
             aria-describedby={errorId || helperId}
             className={cn(
               'flex h-12 w-full rounded-lg border bg-[var(--color-shell-surface)] px-3 py-2 text-base text-[var(--color-shell-text)] placeholder:text-[var(--color-shell-text-subtle)] transition-all',
-              'border-[var(--color-shell-border-strong)] focus:border-[var(--color-shell-accent)] focus:outline-none focus:ring-3 focus:ring-[rgba(184,134,11,0.12)]',
+              'border-[var(--color-shell-border-strong)] focus:border-[var(--color-shell-accent)] focus:outline-none focus:ring-3 focus:ring-[var(--color-shell-accent-soft)]',
               'disabled:cursor-not-allowed disabled:bg-[var(--color-shell-bg)] disabled:text-[var(--color-shell-text-subtle)]',
               error && 'border-[var(--color-shell-error)] focus:border-[var(--color-shell-error)] focus:ring-[rgba(220,38,38,0.10)] pr-11',
               className

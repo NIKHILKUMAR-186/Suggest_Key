@@ -26,11 +26,11 @@ export const LoadingState: React.FC<LoadingStateProps> = ({
         className
       )}
     >
-      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-zinc-100 mb-3 text-zinc-900 shadow-xs border border-zinc-200/70">
-        <Loader2 className="h-5 w-5 animate-spin text-zinc-700" />
+      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--color-shell-surface-elevated)] mb-3 text-[var(--color-shell-accent)] shadow-xs border border-[var(--color-shell-border)]">
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--color-shell-accent)]" />
       </div>
-      <p className="text-sm font-semibold text-zinc-900 tracking-tight">{message}</p>
-      {description && <p className="mt-1 text-xs text-zinc-500 max-w-sm leading-relaxed">{description}</p>}
+      <p className="text-sm font-semibold text-[var(--color-shell-text)] tracking-tight">{message}</p>
+      {description && <p className="mt-1 text-xs text-[var(--color-shell-text-muted)] max-w-sm leading-relaxed">{description}</p>}
       <span className="sr-only">{message}</span>
     </motion.div>
   );

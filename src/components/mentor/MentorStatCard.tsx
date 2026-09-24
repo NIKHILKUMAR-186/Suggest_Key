@@ -23,17 +23,17 @@ export const MentorStatCard: React.FC<MentorStatCardProps> = ({
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.3 }}
     className={cn(
-      'rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6 shadow-xs transition-shadow hover:shadow-sm',
+      'rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 sm:p-6 shadow-xs transition-shadow hover:shadow-sm',
       className
     )}
   >
     <div className="flex items-start justify-between">
       <div className="flex-1">
-        <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">
+        <p className="text-xs font-medium text-[var(--color-shell-text-muted)] uppercase tracking-wider">
           {title}
         </p>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="text-2xl sm:text-3xl font-bold text-zinc-950">
+          <span className="text-2xl sm:text-3xl font-bold text-[var(--color-shell-text)]">
             {value}
           </span>
           {trend && (
@@ -41,8 +41,8 @@ export const MentorStatCard: React.FC<MentorStatCardProps> = ({
               className={cn(
                 'text-xs font-semibold px-2 py-0.5 rounded-full',
                 trend.positive
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'bg-rose-50 text-rose-700'
+                  ? 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)]'
+                  : 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)]'
               )}
             >
               {trend.value} {trend.label}
@@ -50,7 +50,7 @@ export const MentorStatCard: React.FC<MentorStatCardProps> = ({
           )}
         </div>
       </div>
-      <div className="p-3 rounded-xl bg-zinc-100 text-zinc-800 shrink-0">
+      <div className="p-3 rounded-xl bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-accent)] shrink-0">
         <Icon className="h-5 w-5" />
       </div>
     </div>

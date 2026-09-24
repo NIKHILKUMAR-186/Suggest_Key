@@ -66,12 +66,10 @@ CREATE POLICY "Users can update own or admin update notifications"
   USING (user_id = auth.uid() OR public.is_admin())
   WITH CHECK (user_id = auth.uid() OR public.is_admin());
 
--- Policy: Users or system can insert notifications
-DROP POLICY IF EXISTS "Allow authenticated users and admin to insert notifications" ON public.notifications;
-
-CREATE POLICY "Allow authenticated users and admin to insert notifications"
+-- Policy: Users can insert notifications for themselves; Admins can insert for any user
+CREATE POLICY "Allow authenticated users to insert own or admin can insert for any user"
   ON public.notifications FOR INSERT
-  WITH CHECK (auth.uid() IS NOT NULL OR public.is_admin());
+  WITH CHECK (auth.uid() = user_id OR public.is_admin());
 
 -- 3. RPC FUNCTIONS FOR NOTIFICATION LIFECYCLE
 CREATE OR REPLACE FUNCTION public.mark_notification_as_read(p_notification_id UUID, p_user_id UUID)

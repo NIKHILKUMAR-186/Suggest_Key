@@ -30,7 +30,7 @@ export const Skeleton: React.FC<SkeletonProps> = ({
   return (
     <div
       className={cn(
-        'animate-pulse bg-gradient-to-r from-zinc-200/80 via-zinc-100 to-zinc-200/80',
+        'animate-pulse bg-gradient-to-r from-[var(--color-shell-surface-elevated)] via-[var(--color-shell-surface)] to-[var(--color-shell-surface-elevated)]',
         variantStyles[variant],
         className
       )}
@@ -63,7 +63,7 @@ export const SkeletonText: React.FC<{ lines?: number; className?: string }> = ({
 export const SkeletonCard: React.FC<{ className?: string }> = ({ className }) => {
   return (
     <div
-      className={cn('rounded-xl border border-zinc-200 bg-white p-5 space-y-4 shadow-xs', className)}
+      className={cn('rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 space-y-4 shadow-xs', className)}
       aria-hidden="true"
     >
       <div className="flex items-center gap-3">
@@ -74,7 +74,7 @@ export const SkeletonCard: React.FC<{ className?: string }> = ({ className }) =>
         </div>
       </div>
       <SkeletonText lines={2} />
-      <div className="flex items-center justify-between pt-2 border-t border-zinc-100">
+      <div className="flex items-center justify-between pt-2 border-t border-[var(--color-shell-border)]">
         <Skeleton className="h-4 w-20" />
         <Skeleton className="h-8 w-24 rounded-lg" />
       </div>
@@ -87,7 +87,7 @@ export const SkeletonTableRow: React.FC<{ cols?: number; className?: string }> =
   className,
 }) => {
   return (
-    <div className={cn('flex items-center justify-between py-3 px-4 border-b border-zinc-100 gap-4', className)} aria-hidden="true">
+    <div className={cn('flex items-center justify-between py-3 px-4 border-b border-[var(--color-shell-border)] gap-4', className)} aria-hidden="true">
       {Array.from({ length: cols }).map((_, i) => (
         <Skeleton key={i} className={cn('h-4', i === 0 ? 'w-1/4' : 'w-1/6')} />
       ))}

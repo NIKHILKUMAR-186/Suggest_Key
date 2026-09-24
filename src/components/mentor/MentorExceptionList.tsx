@@ -37,10 +37,10 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
 
   return (
     <div className={cn('space-y-4', className)}>
-      <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+      <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
         <div>
-          <h2 className="text-base font-bold text-zinc-950">Date Exceptions</h2>
-          <p className="text-xs text-zinc-500 mt-0.5">
+          <h2 className="text-base font-bold text-[var(--color-shell-text)]">Date Exceptions</h2>
+          <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
             Date-specific overrides take precedence over recurring hours.
           </p>
         </div>
@@ -55,8 +55,8 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
       </div>
 
       {upcoming.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50/60 p-6 text-center">
-          <p className="text-xs text-zinc-500">
+        <div className="rounded-lg border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 p-6 text-center">
+          <p className="text-xs text-[var(--color-shell-text-muted)]">
             No upcoming date exceptions. Your recurring schedule applies.
           </p>
         </div>
@@ -67,20 +67,20 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
               key={ex.id}
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex items-center justify-between gap-3 p-3 rounded-lg border border-zinc-200 bg-white"
+              className="flex items-center justify-between gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <div className="flex flex-col items-center justify-center h-10 w-10 rounded-lg bg-zinc-100 shrink-0">
-                  <span className="text-[10px] font-bold text-zinc-500 uppercase">
+                <div className="flex flex-col items-center justify-center h-10 w-10 rounded-lg bg-[var(--color-shell-surface-elevated)] shrink-0">
+                  <span className="text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase">
                     {formatDate(ex.exception_date).split(' ')[0]}
                   </span>
-                  <span className="text-sm font-bold text-zinc-950 leading-none">
+                  <span className="text-sm font-bold text-[var(--color-shell-text)] leading-none">
                     {formatDate(ex.exception_date).split(' ')[1].replace(',', '')}
                   </span>
                 </div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-zinc-900">
+                    <span className="text-xs font-bold text-[var(--color-shell-text)]">
                       {formatDate(ex.exception_date)}
                     </span>
                     <Badge
@@ -90,7 +90,7 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
                       {ex.is_available ? 'Custom Hours' : 'Unavailable'}
                     </Badge>
                   </div>
-                  <p className="text-[11px] text-zinc-500">
+                  <p className="text-[11px] text-[var(--color-shell-text-muted)]">
                     {ex.is_available && ex.start_time && ex.end_time
                       ? `${ex.start_time.slice(0, 5)} – ${ex.end_time.slice(0, 5)}`
                       : ex.reason || 'All-day unavailable'}
@@ -116,7 +116,7 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
                     size="sm"
                     variant="ghost"
                     onClick={() => onRemove(ex)}
-                    className="h-7 w-7 p-0 text-zinc-400 hover:text-red-600"
+                    className="h-7 w-7 p-0 text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-error)]"
                     aria-label="Remove exception"
                   >
                     <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
@@ -16,6 +17,17 @@ import {
   getLocalWorkspaces,
   deriveSessionOverview,
 } from './src/lib/workspaceService';
+import {
+  requireAuth,
+  requireAdmin,
+  requireRole,
+  getSupabaseAdmin,
+  createDemoToken,
+  type AuthRequest,
+} from './src/lib/supabaseServer';
+import { generateRequestId } from './src/lib/requestId';
+import { logger } from './src/lib/logger';
+import { auditAction } from './src/lib/auditLogger';
 
 async function startServer() {
   const app = express();
@@ -43,28 +55,29 @@ async function startServer() {
     };
     roles: DemoRole[];
     activeRole: DemoRole;
+    token: string;
   }
 
   const demoAccounts: Record<DemoRole, DemoAccount> = {
     seeker: {
-      id: 'demo-seeker',
+      id: 'usr-seeker-demo',
       email: 'seeker@suggestkey.com',
       full_name: 'Aman Kumar',
       password: 'password123',
       role: 'seeker',
     },
     mentor: {
-      id: 'demo-mentor',
+      id: 'usr-mentor-rahul',
       email: 'mentor@suggestkey.com',
       full_name: 'Rahul Sharma',
       password: 'password123',
       role: 'mentor',
     },
     admin: {
-      id: process.env.ADMIN_EMAIL || 'suggestkey1505@gmail.com',
-      email: process.env.ADMIN_EMAIL || 'suggestkey1505@gmail.com',
-      full_name: 'Suggest Key Admin',
-      password: process.env.ADMIN_PASSWORD || 'password',
+      id: process.env.ADMIN_EMAIL || 'admin@suggestkey.local',
+      email: process.env.ADMIN_EMAIL || 'admin@suggestkey.local',
+      full_name: 'Platform Administrator',
+      password: process.env.ADMIN_PASSWORD || '',
       role: 'admin',
     },
   };
@@ -89,10 +102,83 @@ async function startServer() {
       },
       roles: [account.role],
       activeRole: account.role,
+      token: createDemoToken({ sub: account.id, email: account.email, role: account.role }),
     };
   };
 
   app.use(express.json());
+
+  // --------------------------------------------------------------------------
+  // Request ID + Centralized Request Logging Middleware
+  // --------------------------------------------------------------------------
+  app.use((req, res, next) => {
+    const requestId = generateRequestId();
+    (req as AuthRequest).requestId = requestId;
+    (req as AuthRequest).logStart = Date.now();
+    res.set('X-Request-ID', requestId);
+    next();
+  });
+
+  // Capture response finish to log every API request
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) {
+      next();
+      return;
+    }
+    const originalJson = res.json.bind(res);
+    const originalSend = res.send.bind(res);
+    let capturedBody: unknown = undefined;
+    let capturedStatus: number | undefined;
+
+    res.json = ((body: unknown) => {
+      capturedBody = body;
+      return originalJson(body);
+    }) as typeof res.json;
+
+    res.on('finish', () => {
+      const authReq = req as AuthRequest;
+      const durationMs = authReq.logStart ? Date.now() - authReq.logStart : undefined;
+      const statusCode = res.statusCode;
+      const userId = authReq.auth?.user?.id || null;
+      const role = authReq.auth?.roles?.includes('admin')
+        ? 'admin'
+        : authReq.auth?.roles?.includes('mentor')
+          ? 'mentor'
+          : authReq.auth?.roles?.includes('seeker')
+            ? 'seeker'
+            : null;
+
+      const errorObj = capturedBody as any;
+      const errorCode = errorObj?.error?.code || null;
+      const errorMessage = errorObj?.error?.message || null;
+
+      logger.requestEnd(
+        {
+          requestId: authReq.requestId,
+          start: authReq.logStart || Date.now(),
+          method: req.method,
+          path: req.path,
+          userId,
+          role,
+        },
+        statusCode,
+        errorCode,
+        errorMessage || undefined,
+        {
+          durationMs,
+          statusCode,
+          error: errorMessage
+            ? {
+                code: errorCode,
+                message: errorMessage,
+              }
+            : undefined,
+        },
+      );
+    });
+
+    next();
+  });
 
   // --------------------------------------------------------------------------
   // API Routes
@@ -343,7 +429,7 @@ async function startServer() {
   });
 
   // GET /api/admin/bookings/overdue-links: Admin inspection of overdue meeting links
-  app.get('/api/admin/bookings/overdue-links', (req, res) => {
+  app.get('/api/admin/bookings/overdue-links', requireAuth, requireAdmin, (req: AuthRequest, res) => {
     try {
       const db = getLocalBookingEngineContext();
       const overdue = getOverdueBookings(db);
@@ -359,6 +445,1053 @@ async function startServer() {
         success: false,
         error: { code: 'SERVER_ERROR', message: err.message },
       });
+    }
+  });
+
+  // GET /api/mentor/segments: Get segments for authenticated mentor
+  app.get('/api/mentor/segments', async (req, res) => {
+    try {
+      const { mentorId } = req.query;
+      if (!mentorId || typeof mentorId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Fetch mentor_segments with segment details
+      const { data: mentorSegments, error: msErr } = await admin
+        .from('mentor_segments')
+        .select('*, segment:segments(*)')
+        .eq('mentor_id', mentorId);
+
+      if (msErr) throw msErr;
+
+      const segments = (mentorSegments || []).map((ms: any) => ({
+        id: ms.segment?.id,
+        name: ms.segment?.name,
+        slug: ms.segment?.slug,
+        status: ms.segment?.is_active ? 'APPROVED' : 'INACTIVE',
+        appliedAt: ms.created_at ? new Date(ms.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
+        gigsCount: 0, // Will be populated below
+      }));
+
+      // Fetch gig counts per segment for this mentor
+      if (segments.length > 0) {
+        const segmentIds = segments.map((s: any) => s.id);
+        const { data: gigs, error: gigsErr } = await admin
+          .from('gigs')
+          .select('segment_id')
+          .eq('mentor_id', mentorId)
+          .eq('is_active', true)
+          .in('segment_id', segmentIds);
+
+        if (!gigsErr && gigs) {
+          const gigCounts = gigs.reduce((acc: Record<string, number>, g: any) => {
+            acc[g.segment_id] = (acc[g.segment_id] || 0) + 1;
+            return acc;
+          }, {});
+          segments.forEach((s: any) => {
+            s.gigsCount = gigCounts[s.id] || 0;
+          });
+        }
+      }
+
+      return res.json({ success: true, segments });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/mentor/gigs: Get gigs for authenticated mentor
+  app.get('/api/mentor/gigs', async (req, res) => {
+    try {
+      const { mentorId } = req.query;
+      if (!mentorId || typeof mentorId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: gigs, error: gigsErr } = await admin
+        .from('gigs')
+        .select(`
+          *,
+          segment:segments(*)
+        `)
+        .eq('mentor_id', mentorId)
+        .order('created_at', { ascending: false });
+
+      if (gigsErr) throw gigsErr;
+
+      const formattedGigs = (gigs || []).map((g: any) => ({
+        id: g.id,
+        title: g.title,
+        segmentName: g.segment?.name || 'Unknown',
+        segmentSlug: g.segment?.slug || 'unknown',
+        durationMinutes: g.duration_minutes,
+        priceInr: g.price_inr,
+        isActive: g.is_active,
+        description: g.description,
+      }));
+
+      return res.json({ success: true, gigs: formattedGigs });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // POST /api/mentor/gigs: Create a new gig for authenticated mentor
+  app.post('/api/mentor/gigs', async (req, res) => {
+    try {
+      const { mentorId, title, segmentId, durationMinutes, priceInr, description } = req.body;
+      if (!mentorId || !title || !segmentId || !durationMinutes || priceInr === undefined) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'Missing required fields.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Verify mentor has this segment approved
+      const { data: msData, error: msErr } = await admin
+        .from('mentor_segments')
+        .select('*')
+        .eq('mentor_id', mentorId)
+        .eq('segment_id', segmentId)
+        .maybeSingle();
+
+      if (msErr) throw msErr;
+      if (!msData) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'You are not approved for this segment.' },
+        });
+      }
+
+      const { data: gig, error } = await admin
+        .from('gigs')
+        .insert({
+          mentor_id: mentorId,
+          segment_id: segmentId,
+          title,
+          duration_minutes: durationMinutes,
+          price_inr: priceInr,
+          description: description || '',
+          is_active: true,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return res.json({ success: true, gig });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // PATCH /api/mentor/gigs/:id: Update gig
+  app.patch('/api/mentor/gigs/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { mentorId, title, durationMinutes, priceInr, description, isActive } = req.body;
+
+      if (!mentorId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'AUTH_REQUIRED', message: 'Mentor authentication required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Verify ownership
+      const { data: existing } = await admin
+        .from('gigs')
+        .select('mentor_id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (!existing || existing.mentor_id !== mentorId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Not authorized to update this gig.' },
+        });
+      }
+
+      const updates: any = { updated_at: new Date().toISOString() };
+      if (title !== undefined) updates.title = title;
+      if (durationMinutes !== undefined) updates.duration_minutes = durationMinutes;
+      if (priceInr !== undefined) updates.price_inr = priceInr;
+      if (description !== undefined) updates.description = description;
+      if (isActive !== undefined) updates.is_active = isActive;
+
+      const { data: gig, error } = await admin
+        .from('gigs')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return res.json({ success: true, gig });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // DELETE /api/mentor/gigs/:id: Delete gig
+  app.delete('/api/mentor/gigs/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { mentorId } = req.query;
+
+      if (!mentorId || typeof mentorId !== 'string') {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'AUTH_REQUIRED', message: 'Mentor authentication required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Verify ownership
+      const { data: existing } = await admin
+        .from('gigs')
+        .select('mentor_id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (!existing || existing.mentor_id !== mentorId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Not authorized to delete this gig.' },
+        });
+      }
+
+      const { error } = await admin
+        .from('gigs')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: 'Gig deleted successfully.' });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/mentor/available-segments: Get all active segments for mentor to apply
+  app.get('/api/mentor/available-segments', async (req, res) => {
+    try {
+      const { mentorId } = req.query;
+      if (!mentorId || typeof mentorId !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Get all active segments
+      const { data: allSegments, error: segErr } = await admin
+        .from('segments')
+        .select('*')
+        .eq('is_active', true)
+        .order('priority', { ascending: true });
+
+      if (segErr) throw segErr;
+
+      // Get mentor's current segments
+      const { data: mentorSegments, error: msErr } = await admin
+        .from('mentor_segments')
+        .select('segment_id')
+        .eq('mentor_id', mentorId);
+
+      if (msErr) throw msErr;
+
+      const mentorSegmentIds = new Set((mentorSegments || []).map((ms: any) => ms.segment_id));
+
+      // Filter out segments mentor already has
+      const availableSegments = (allSegments || [])
+        .filter((s: any) => !mentorSegmentIds.has(s.id))
+        .map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          slug: s.slug,
+          description: s.description,
+        }));
+
+      return res.json({ success: true, segments: availableSegments });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // POST /api/mentor/segments/apply: Apply for a new segment
+  app.post('/api/mentor/segments/apply', async (req, res) => {
+    try {
+      const { mentorId, segmentId } = req.body;
+      if (!mentorId || !segmentId) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'mentorId and segmentId are required.' },
+        });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Check if already applied
+      const { data: existing } = await admin
+        .from('mentor_segments')
+        .select('*')
+        .eq('mentor_id', mentorId)
+        .eq('segment_id', segmentId)
+        .maybeSingle();
+
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'CONFLICT', message: 'Already applied for this segment.' },
+        });
+      }
+
+      // Check segment exists and is active
+      const { data: segment } = await admin
+        .from('segments')
+        .select('*')
+        .eq('id', segmentId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (!segment) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Segment not found or inactive.' },
+        });
+      }
+
+      // Insert application (status PENDING by default)
+      const { error } = await admin
+        .from('mentor_segments')
+        .insert({
+          mentor_id: mentorId,
+          segment_id: segmentId,
+        });
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: 'Segment application submitted for admin review.' });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Admin API: Mentors Management
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/mentors: Fetch all mentors with profile, segments, and approval status
+  app.get('/api/admin/mentors', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({
+          success: false,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' },
+        });
+      }
+
+      // Fetch profiles with mentor role
+      const { data: mentorRoles, error: rolesErr } = await admin
+        .from('user_roles')
+        .select('user_id')
+        .eq('role', 'mentor');
+
+      if (rolesErr) throw rolesErr;
+      if (!mentorRoles || mentorRoles.length === 0) {
+        return res.json({ success: true, mentors: [] });
+      }
+
+      const mentorIds = mentorRoles.map((mr: { user_id: string }) => mr.user_id);
+
+      // Fetch profiles
+      const { data: profiles, error: profilesErr } = await admin
+        .from('profiles')
+        .select('id, email, full_name, timezone, created_at, updated_at')
+        .in('id', mentorIds);
+
+      if (profilesErr) throw profilesErr;
+
+      // Fetch mentor_profiles
+      const { data: mentorProfiles, error: mpErr } = await admin
+        .from('mentor_profiles')
+        .select('*')
+        .in('id', mentorIds);
+
+      if (mpErr) throw mpErr;
+
+      // Fetch mentor_segments with segment details
+      const { data: mentorSegments, error: msErr } = await admin
+        .from('mentor_segments')
+        .select('*, segment:segments(*)')
+        .in('mentor_id', mentorIds);
+
+      if (msErr) throw msErr;
+
+      // Fetch gigs for these mentors
+      const { data: gigs, error: gigsErr } = await admin
+        .from('gigs')
+        .select('*')
+        .in('mentor_id', mentorIds);
+
+      if (gigsErr) throw gigsErr;
+
+      // Combine data
+      const mentorMap = new Map();
+      for (const p of profiles || []) {
+        mentorMap.set(p.id, {
+          id: p.id,
+          email: p.email,
+          full_name: p.full_name,
+          timezone: p.timezone,
+          created_at: p.created_at,
+          updated_at: p.updated_at,
+        });
+      }
+
+      const mpMap = new Map();
+      for (const mp of mentorProfiles || []) {
+        mpMap.set(mp.id, mp);
+      }
+
+      const msMap = new Map<string, any[]>();
+      for (const ms of mentorSegments || []) {
+        if (!msMap.has(ms.mentor_id)) msMap.set(ms.mentor_id, []);
+        msMap.get(ms.mentor_id)!.push(ms);
+      }
+
+      const gigMap = new Map<string, any[]>();
+      for (const g of gigs || []) {
+        if (!gigMap.has(g.mentor_id)) gigMap.set(g.mentor_id, []);
+        gigMap.get(g.mentor_id)!.push(g);
+      }
+
+      const mentors = [];
+      for (const [mentorId, profile] of mentorMap) {
+        const mp = mpMap.get(mentorId);
+        const segments = msMap.get(mentorId) || [];
+        const mentorGigs = gigMap.get(mentorId) || [];
+
+        // Determine primary segment for display
+        const primarySegment = segments.find((s: any) => s.is_primary) || segments[0];
+
+        mentors.push({
+          id: mentorId,
+          name: profile.full_name,
+          email: profile.email,
+          segmentName: primarySegment?.segment?.name || 'No Segment',
+          status: mp?.is_approved ? 'APPROVED' : 'PENDING',
+          experienceYears: mp?.experience_years || 0,
+          bio: mp?.about || '',
+          appliedDate: profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
+          isApproved: mp?.is_approved || false,
+          isActive: true, // could be derived from gigs/segments
+          profile: mp,
+          segments: segments.map((s: any) => s.segment),
+          gigs: mentorGigs,
+        });
+      }
+
+      return res.json({ success: true, mentors });
+    } catch (err: any) {
+      console.error('Failed to fetch admin mentors:', err);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // PATCH /api/admin/mentors/:id/approve: Approve mentor
+  app.patch('/api/admin/mentors/:id/approve', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { error } = await admin
+        .from('mentor_profiles')
+        .update({ is_approved: true, updated_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: 'Mentor approved successfully.' });
+    } catch (err: any) {
+      console.error('Failed to approve mentor:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/mentors/:id/reject: Reject mentor
+  app.patch('/api/admin/mentors/:id/reject', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { error } = await admin
+        .from('mentor_profiles')
+        .update({ is_approved: false, updated_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: 'Mentor rejected successfully.' });
+    } catch (err: any) {
+      console.error('Failed to reject mentor:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/mentors/:id/toggle-active: Activate/Deactivate mentor
+  app.patch('/api/admin/mentors/:id/toggle-active', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { isActive } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Toggle mentor approval status (used as active/inactive)
+      const { error } = await admin
+        .from('mentor_profiles')
+        .update({ is_approved: isActive, updated_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: `Mentor ${isActive ? 'activated' : 'deactivated'} successfully.` });
+    } catch (err: any) {
+      console.error('Failed to toggle mentor active status:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Admin API: Segments Management
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/segments: Fetch all segments with mentor counts
+  app.get('/api/admin/segments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Fetch all segments
+      const { data: segments, error: segErr } = await admin
+        .from('segments')
+        .select('*')
+        .order('priority', { ascending: true });
+
+      if (segErr) throw segErr;
+
+      // Fetch mentor counts per segment (only approved and active mentors with active gigs)
+      const segmentIds = segments?.map((s: any) => s.id) || [];
+      let mentorCounts: Record<string, number> = {};
+
+      if (segmentIds.length > 0) {
+        // Get mentor_segments for active segments
+        const { data: msData, error: msErr } = await admin
+          .from('mentor_segments')
+          .select('mentor_id, segment_id')
+          .in('segment_id', segmentIds);
+
+        if (msErr) throw msErr;
+
+        if (msData && msData.length > 0) {
+          const mentorIds = [...new Set(msData.map((ms: any) => ms.mentor_id))];
+
+          // Check which mentors are approved
+          const { data: mpData, error: mpErr } = await admin
+            .from('mentor_profiles')
+            .select('id, is_approved')
+            .in('id', mentorIds);
+
+          if (mpErr) throw mpErr;
+
+          const approvedMentorIds = new Set((mpData || []).filter((mp: any) => mp.is_approved).map((mp: any) => mp.id));
+
+          // Check which approved mentors have active gigs for these segments
+          if (approvedMentorIds.size > 0) {
+            const { data: gigsData, error: gigsErr } = await admin
+              .from('gigs')
+              .select('mentor_id, segment_id')
+              .in('mentor_id', [...approvedMentorIds])
+              .in('segment_id', segmentIds)
+              .eq('is_active', true);
+
+            if (gigsErr) throw gigsErr;
+
+            // Count unique mentors per segment who have active gigs
+            for (const g of gigsData || []) {
+              if (approvedMentorIds.has(g.mentor_id)) {
+                mentorCounts[g.segment_id] = (mentorCounts[g.segment_id] || 0) + 1;
+              }
+            }
+          }
+        }
+      }
+
+      const segmentsWithCounts = (segments || []).map((s: any) => ({
+        ...s,
+        mentorsCount: mentorCounts[s.id] || 0,
+      }));
+
+      return res.json({ success: true, segments: segmentsWithCounts });
+    } catch (err: any) {
+      console.error('Failed to fetch admin segments:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/admin/segments: Create new segment
+  app.post('/api/admin/segments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { name, slug, priority, isActive } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (!name || !slug) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Name and slug are required.' } });
+      }
+
+      const { data, error } = await admin
+        .from('segments')
+        .insert({
+          name,
+          slug,
+          priority: priority || 10,
+          is_active: isActive !== false,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === '23505') { // unique violation
+          return res.status(409).json({ success: false, error: { code: 'DUPLICATE', message: 'Segment name or slug already exists.' } });
+        }
+        throw error;
+      }
+
+      return res.status(201).json({ success: true, segment: data, message: 'Segment created successfully.' });
+    } catch (err: any) {
+      console.error('Failed to create segment:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/segments/:id: Update segment
+  app.patch('/api/admin/segments/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { name, slug, priority, isActive, description } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updateData.name = name;
+      if (slug !== undefined) updateData.slug = slug;
+      if (priority !== undefined) updateData.priority = priority;
+      if (isActive !== undefined) updateData.is_active = isActive;
+      if (description !== undefined) updateData.description = description;
+
+      const { data, error } = await admin
+        .from('segments')
+        .update(updateData)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === '23505') {
+          return res.status(409).json({ success: false, error: { code: 'DUPLICATE', message: 'Segment name or slug already exists.' } });
+        }
+        throw error;
+      }
+
+      return res.json({ success: true, segment: data, message: 'Segment updated successfully.' });
+    } catch (err: any) {
+      console.error('Failed to update segment:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/segments/:id/toggle-active: Toggle segment active status
+  app.patch('/api/admin/segments/:id/toggle-active', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { isActive } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data, error } = await admin
+        .from('segments')
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return res.json({ success: true, segment: data, message: `Segment ${isActive ? 'activated' : 'deactivated'} successfully.` });
+    } catch (err: any) {
+      console.error('Failed to toggle segment active status:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Admin API: Users Management
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/users: Fetch all users with roles
+  app.get('/api/admin/users', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Fetch all profiles
+      const { data: profiles, error: profilesErr } = await admin
+        .from('profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (profilesErr) throw profilesErr;
+
+      // Fetch all user_roles
+      const { data: userRoles, error: rolesErr } = await admin
+        .from('user_roles')
+        .select('*');
+
+      if (rolesErr) throw rolesErr;
+
+      // Combine: for each profile, get their roles
+      const rolesMap = new Map<string, string[]>();
+      for (const ur of userRoles || []) {
+        if (!rolesMap.has(ur.user_id)) rolesMap.set(ur.user_id, []);
+        rolesMap.get(ur.user_id)!.push(ur.role);
+      }
+
+      const users = (profiles || []).map((p: any) => {
+        const roles = rolesMap.get(p.id) || ['seeker'];
+        const primaryRole = roles.includes('admin') ? 'ADMIN' : roles.includes('mentor') ? 'MENTOR' : 'SEEKER';
+        return {
+          id: p.id,
+          name: p.full_name,
+          email: p.email,
+          role: primaryRole,
+          timezone: p.timezone,
+          createdAt: p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
+          status: 'ACTIVE', // Could be derived from a status field if added
+          roles,
+        };
+      });
+
+      return res.json({ success: true, users });
+    } catch (err: any) {
+      console.error('Failed to fetch admin users:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Admin API: Dashboard Metrics
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/dashboard/metrics: Fetch real-time dashboard metrics
+  app.get('/api/admin/dashboard/metrics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Parallel queries for all metrics
+      const [
+        { count: totalMentors },
+        { count: totalSeekers },
+        { count: pendingApprovals },
+        { count: activeSegments },
+        { data: pendingPayments },
+        { data: todaysBookings },
+      ] = await Promise.all([
+        // Total mentors
+        admin.from('user_roles').select('*', { count: 'exact', head: true }).eq('role', 'mentor'),
+        // Total seekers
+        admin.from('user_roles').select('*', { count: 'exact', head: true }).eq('role', 'seeker'),
+        // Pending mentor approvals (mentors with is_approved = false)
+        admin.from('mentor_profiles').select('*', { count: 'exact', head: true }).eq('is_approved', false),
+        // Active segments
+        admin.from('segments').select('*', { count: 'exact', head: true }).eq('is_active', true),
+        // Pending payments
+        admin.from('payments').select('*').eq('status', 'PENDING_VERIFICATION').order('created_at', { ascending: false }).limit(10),
+        // Today's bookings
+        admin.from('bookings').select('*').gte('start_time', new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).lt('start_time', new Date(new Date().setHours(23, 59, 59, 999)).toISOString()),
+      ]);
+
+      // Format pending payments for dashboard
+      const formattedPayments = (pendingPayments || []).map((p: any) => ({
+        id: p.id,
+        bookingId: p.booking_id,
+        seeker: p.seeker_id, // will be resolved below
+        mentor: 'Mentor', // will be resolved below
+        amount: p.amount_inr,
+        time: new Date(p.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+      }));
+
+      // Resolve seeker/mentor names for payments
+      if (formattedPayments.length > 0) {
+        const bookingIds = formattedPayments.map((p: any) => p.bookingId);
+        const { data: bookings } = await admin
+          .from('bookings')
+          .select('id, seeker_id, mentor_id')
+          .in('id', bookingIds);
+
+        const seekerIds = [...new Set(bookings?.map((b: any) => b.seeker_id) || [])];
+        const mentorIds = [...new Set(bookings?.map((b: any) => b.mentor_id) || [])];
+
+        const [{ data: seekers }, { data: mentors }] = await Promise.all([
+          admin.from('profiles').select('id, full_name').in('id', seekerIds),
+          admin.from('profiles').select('id, full_name').in('id', mentorIds),
+        ]);
+
+        const seekerMap = new Map(seekers?.map((s: any) => [s.id, s.full_name]) || []);
+        const mentorMap = new Map(mentors?.map((m: any) => [m.id, m.full_name]) || []);
+
+        for (const payment of formattedPayments) {
+          const booking = bookings?.find((b: any) => b.id === payment.bookingId);
+          if (booking) {
+            payment.seeker = seekerMap.get(booking.seeker_id) || 'Unknown';
+            payment.mentor = mentorMap.get(booking.mentor_id) || 'Unknown';
+          }
+        }
+      }
+
+      // Get default active segment (lowest priority)
+      const { data: defaultSegment } = await admin
+        .from('segments')
+        .select('name')
+        .eq('is_active', true)
+        .order('priority', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      return res.json({
+        success: true,
+        metrics: {
+          totalMentors: totalMentors || 0,
+          totalSeekers: totalSeekers || 0,
+          pendingApprovals: pendingApprovals || 0,
+          activeSegments: activeSegments || 0,
+          pendingPaymentsCount: pendingPayments?.length || 0,
+          todaysBookingsCount: todaysBookings?.length || 0,
+          pendingPayments: formattedPayments,
+          defaultSegment: defaultSegment?.name || 'None',
+        },
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch dashboard metrics:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Admin API: Payments Management
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/payments: Fetch all payments with booking, seeker, mentor details
+  app.get('/api/admin/payments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: payments, error: paymentsErr } = await admin
+        .from('payments')
+        .select(`
+          *,
+          booking:bookings (
+            id,
+            booking_code,
+            seeker_id,
+            mentor_id,
+            gig_id,
+            status,
+            amount_inr
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (paymentsErr) throw paymentsErr;
+
+      // Get all unique seeker and mentor IDs
+      const seekerIds = [...new Set((payments || []).map((p: any) => p.booking?.seeker_id).filter(Boolean))];
+      const mentorIds = [...new Set((payments || []).map((p: any) => p.booking?.mentor_id).filter(Boolean))];
+
+      // Fetch profiles for seekers and mentors
+      const [{ data: seekers }, { data: mentors }] = await Promise.all([
+        admin.from('profiles').select('id, full_name').in('id', seekerIds),
+        admin.from('profiles').select('id, full_name').in('id', mentorIds),
+      ]);
+
+      const seekerMap = new Map(seekers?.map((s: any) => [s.id, s.full_name]) || []);
+      const mentorMap = new Map(mentors?.map((m: any) => [m.id, m.full_name]) || []);
+
+      const formattedPayments = (payments || []).map((p: any) => ({
+        id: p.id,
+        bookingId: p.booking?.booking_code || p.booking_id,
+        seekerName: p.booking?.seeker_id ? seekerMap.get(p.booking.seeker_id) || 'Unknown' : 'Unknown',
+        mentorName: p.booking?.mentor_id ? mentorMap.get(p.booking.mentor_id) || 'Unknown' : 'Unknown',
+        amount: p.amount_inr,
+        submittedAt: p.created_at ? new Date(p.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : 'Unknown',
+        status: p.status,
+        proofUrl: p.proof_storage_path,
+        rejectionReason: p.rejection_reason,
+      }));
+
+      return res.json({ success: true, payments: formattedPayments });
+    } catch (err: any) {
+      console.error('Failed to fetch admin payments:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/payments/:id/approve: Approve payment
+  app.patch('/api/admin/payments/:id/approve', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { error } = await admin
+        .from('payments')
+        .update({ status: 'VERIFIED', verified_by: req.auth?.user?.id, verified_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Also update the associated booking status to MENTOR_PENDING
+      const { data: payment } = await admin.from('payments').select('booking_id').eq('id', id).single();
+      if (payment?.booking_id) {
+        await admin.from('bookings').update({ status: 'MENTOR_PENDING' }).eq('id', payment.booking_id);
+      }
+
+      return res.json({ success: true, message: 'Payment approved successfully.' });
+    } catch (err: any) {
+      console.error('Failed to approve payment:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // PATCH /api/admin/payments/:id/reject: Reject payment
+  app.patch('/api/admin/payments/:id/reject', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { rejectionReason } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { error } = await admin
+        .from('payments')
+        .update({ status: 'REJECTED', rejection_reason: rejectionReason || 'Invalid transaction screenshot', verified_by: req.auth?.user?.id, verified_at: new Date().toISOString() })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Also update the associated booking status back to PAYMENT_PENDING
+      const { data: payment } = await admin.from('payments').select('booking_id').eq('id', id).single();
+      if (payment?.booking_id) {
+        await admin.from('bookings').update({ status: 'PAYMENT_PENDING' }).eq('id', payment.booking_id);
+      }
+
+      return res.json({ success: true, message: 'Payment rejected successfully.' });
+    } catch (err: any) {
+      console.error('Failed to reject payment:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
     }
   });
 
@@ -500,20 +1633,32 @@ async function startServer() {
     }
   });
 
-  // POST /api/notifications/dispatch: Dispatch new notification
-  app.post('/api/notifications/dispatch', (req, res) => {
-    try {
-      const {
-        userId,
-        title,
-        message,
-        type = 'SYSTEM',
-        eventType,
-        entityType,
-        entityId,
-        link,
-        metadata = {},
-      } = req.body;
+   // POST /api/notifications/dispatch: Dispatch new notification (admin or self only)
+   app.post('/api/notifications/dispatch', requireAuth, (req: AuthRequest, res) => {
+     try {
+       const {
+         userId: bodyUserId,
+         title,
+         message,
+         type = 'SYSTEM',
+         eventType,
+         entityType,
+         entityId,
+         link,
+         metadata = {},
+       } = req.body;
+
+       const callerId = req.auth?.user?.id;
+       const isAdmin = req.auth?.roles.includes('admin') ?? false;
+
+       if (!isAdmin && bodyUserId && bodyUserId !== callerId) {
+         return res.status(403).json({
+           success: false,
+           error: { code: 'FORBIDDEN', message: 'You can only dispatch notifications for your own account.' },
+         });
+       }
+
+       const userId = bodyUserId || callerId;
 
       if (!userId || !title || !message) {
         return res.status(400).json({
@@ -556,13 +1701,15 @@ async function startServer() {
   // Phase 9: Session Access & Join Endpoints
   // --------------------------------------------------------------------------
 
-  // GET /api/sessions/:bookingId/access: Authoritative server check for session countdown & state
-  app.get('/api/sessions/:bookingId/access', (req, res) => {
-    try {
-      const { bookingId } = req.params;
-      const { userId, currentTime } = req.query;
+   // GET /api/sessions/:bookingId/access: Authoritative server check for session countdown & state
+   app.get('/api/sessions/:bookingId/access', requireAuth, (req: AuthRequest, res) => {
+     try {
+       const { bookingId } = req.params;
+       const callerId = req.auth?.user?.id;
+       const userId = (callerId || req.query.userId) as string | undefined;
+       const currentTime = req.query.currentTime;
 
-      if (!userId || typeof userId !== 'string') {
+       if (!userId || typeof userId !== 'string') {
         return res.status(400).json({
           success: false,
           error: { code: 'MISSING_USER_ID', message: 'userId query parameter is required.' },
@@ -896,7 +2043,7 @@ async function startServer() {
   });
 
   // GET /api/admin/workspaces: Operational Access
-  app.get('/api/admin/workspaces', (req, res) => {
+  app.get('/api/admin/workspaces', requireAuth, requireAdmin, (req: AuthRequest, res) => {
     try {
       const db = getLocalBookingEngineContext();
       const workspaces = getLocalWorkspaces();

@@ -117,6 +117,19 @@ CREATE TABLE IF NOT EXISTS public.mentor_availability (
   CONSTRAINT chk_availability_time CHECK (start_time < end_time)
 );
 
+-- Ensure the unique constraint exists (needed for ON CONFLICT in phase5 seed)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'uq_mentor_availability_slot'
+      AND conrelid = 'public.mentor_availability'::regclass
+  ) THEN
+    ALTER TABLE public.mentor_availability
+      ADD CONSTRAINT uq_mentor_availability_slot UNIQUE (mentor_id, day_of_week, start_time, end_time);
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_mentor_availability_lookup 
   ON public.mentor_availability(mentor_id, day_of_week, is_enabled);
 
@@ -543,6 +556,7 @@ SET public = FALSE,
     file_size_limit = 5242880;
 
 -- Storage RLS on payment-proofs
+DROP POLICY IF EXISTS "Seekers can upload own payment proofs" ON storage.objects;
 CREATE POLICY "Seekers can upload own payment proofs"
   ON storage.objects
   FOR INSERT
@@ -552,6 +566,7 @@ CREATE POLICY "Seekers can upload own payment proofs"
     (storage.foldername(name))[1] = auth.uid()::text
   );
 
+DROP POLICY IF EXISTS "Seekers can view own payment proofs" ON storage.objects;
 CREATE POLICY "Seekers can view own payment proofs"
   ON storage.objects
   FOR SELECT
@@ -563,6 +578,7 @@ CREATE POLICY "Seekers can view own payment proofs"
     )
   );
 
+DROP POLICY IF EXISTS "Admins have full access to payment proofs" ON storage.objects;
 CREATE POLICY "Admins have full access to payment proofs"
   ON storage.objects
   FOR ALL
@@ -592,10 +608,12 @@ ALTER TABLE public.session_workspaces ENABLE ROW LEVEL SECURITY;
 -- ------------------------------------------------------------------------------
 -- SEGMENTS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Anyone can view active segments" ON public.segments;
 CREATE POLICY "Anyone can view active segments"
   ON public.segments FOR SELECT
   USING (is_active = TRUE OR public.is_admin());
 
+DROP POLICY IF EXISTS "Admins can manage segments" ON public.segments;
 CREATE POLICY "Admins can manage segments"
   ON public.segments FOR ALL
   USING (public.is_admin())
@@ -604,19 +622,23 @@ CREATE POLICY "Admins can manage segments"
 -- ------------------------------------------------------------------------------
 -- MENTOR PROFILES POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Anyone can view approved mentor profiles" ON public.mentor_profiles;
 CREATE POLICY "Anyone can view approved mentor profiles"
   ON public.mentor_profiles FOR SELECT
   USING (is_approved = TRUE OR id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Mentors can update own profile" ON public.mentor_profiles;
 CREATE POLICY "Mentors can update own profile"
   ON public.mentor_profiles FOR UPDATE
   USING (id = auth.uid() OR public.is_admin())
   WITH CHECK (id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Mentors or admin can insert mentor profile" ON public.mentor_profiles;
 CREATE POLICY "Mentors or admin can insert mentor profile"
   ON public.mentor_profiles FOR INSERT
   WITH CHECK (id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Only admin can delete mentor profiles" ON public.mentor_profiles;
 CREATE POLICY "Only admin can delete mentor profiles"
   ON public.mentor_profiles FOR DELETE
   USING (public.is_admin());
@@ -624,10 +646,12 @@ CREATE POLICY "Only admin can delete mentor profiles"
 -- ------------------------------------------------------------------------------
 -- MENTOR SEGMENTS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Anyone can view mentor segments" ON public.mentor_segments;
 CREATE POLICY "Anyone can view mentor segments"
   ON public.mentor_segments FOR SELECT
   USING (TRUE);
 
+DROP POLICY IF EXISTS "Mentors or admin can manage mentor segments" ON public.mentor_segments;
 CREATE POLICY "Mentors or admin can manage mentor segments"
   ON public.mentor_segments FOR ALL
   USING (mentor_id = auth.uid() OR public.is_admin())
@@ -636,10 +660,12 @@ CREATE POLICY "Mentors or admin can manage mentor segments"
 -- ------------------------------------------------------------------------------
 -- SEEKER PROFILES POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Seekers can view own profile or admin" ON public.seeker_profiles;
 CREATE POLICY "Seekers can view own profile or admin"
   ON public.seeker_profiles FOR SELECT
   USING (id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Seekers can manage own profile" ON public.seeker_profiles;
 CREATE POLICY "Seekers can manage own profile"
   ON public.seeker_profiles FOR ALL
   USING (id = auth.uid() OR public.is_admin())
@@ -648,6 +674,7 @@ CREATE POLICY "Seekers can manage own profile"
 -- ------------------------------------------------------------------------------
 -- GIGS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Anyone can view active gigs of approved mentors" ON public.gigs;
 CREATE POLICY "Anyone can view active gigs of approved mentors"
   ON public.gigs FOR SELECT
   USING (
@@ -659,6 +686,7 @@ CREATE POLICY "Anyone can view active gigs of approved mentors"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Mentors can create own gigs" ON public.gigs;
 CREATE POLICY "Mentors can create own gigs"
   ON public.gigs FOR INSERT
   WITH CHECK (
@@ -666,11 +694,13 @@ CREATE POLICY "Mentors can create own gigs"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Mentors can update own gigs" ON public.gigs;
 CREATE POLICY "Mentors can update own gigs"
   ON public.gigs FOR UPDATE
   USING (mentor_id = auth.uid() OR public.is_admin())
   WITH CHECK (mentor_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Mentors can delete own gigs" ON public.gigs;
 CREATE POLICY "Mentors can delete own gigs"
   ON public.gigs FOR DELETE
   USING (mentor_id = auth.uid() OR public.is_admin());
@@ -678,19 +708,23 @@ CREATE POLICY "Mentors can delete own gigs"
 -- ------------------------------------------------------------------------------
 -- MENTOR AVAILABILITY & EXCEPTIONS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Anyone can view mentor availability rules" ON public.mentor_availability;
 CREATE POLICY "Anyone can view mentor availability rules"
   ON public.mentor_availability FOR SELECT
   USING (TRUE);
 
+DROP POLICY IF EXISTS "Mentors can manage own availability" ON public.mentor_availability;
 CREATE POLICY "Mentors can manage own availability"
   ON public.mentor_availability FOR ALL
   USING (mentor_id = auth.uid() OR public.is_admin())
   WITH CHECK (mentor_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Anyone can view mentor availability exceptions" ON public.mentor_availability_exceptions;
 CREATE POLICY "Anyone can view mentor availability exceptions"
   ON public.mentor_availability_exceptions FOR SELECT
   USING (TRUE);
 
+DROP POLICY IF EXISTS "Mentors can manage own exceptions" ON public.mentor_availability_exceptions;
 CREATE POLICY "Mentors can manage own exceptions"
   ON public.mentor_availability_exceptions FOR ALL
   USING (mentor_id = auth.uid() OR public.is_admin())
@@ -699,6 +733,7 @@ CREATE POLICY "Mentors can manage own exceptions"
 -- ------------------------------------------------------------------------------
 -- SLOT HOLDS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Participants and admin can view slot holds" ON public.slot_holds;
 CREATE POLICY "Participants and admin can view slot holds"
   ON public.slot_holds FOR SELECT
   USING (
@@ -707,10 +742,12 @@ CREATE POLICY "Participants and admin can view slot holds"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Seekers can create slot holds" ON public.slot_holds;
 CREATE POLICY "Seekers can create slot holds"
   ON public.slot_holds FOR INSERT
   WITH CHECK (seeker_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Seekers or admin can update slot holds" ON public.slot_holds;
 CREATE POLICY "Seekers or admin can update slot holds"
   ON public.slot_holds FOR UPDATE
   USING (seeker_id = auth.uid() OR public.is_admin())
@@ -719,6 +756,7 @@ CREATE POLICY "Seekers or admin can update slot holds"
 -- ------------------------------------------------------------------------------
 -- BOOKINGS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Participants and admin can view bookings" ON public.bookings;
 CREATE POLICY "Participants and admin can view bookings"
   ON public.bookings FOR SELECT
   USING (
@@ -727,10 +765,12 @@ CREATE POLICY "Participants and admin can view bookings"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Seekers can insert initial bookings" ON public.bookings;
 CREATE POLICY "Seekers can insert initial bookings"
   ON public.bookings FOR INSERT
   WITH CHECK (seeker_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Participants can update bookings within authorization" ON public.bookings;
 CREATE POLICY "Participants can update bookings within authorization"
   ON public.bookings FOR UPDATE
   USING (
@@ -747,6 +787,7 @@ CREATE POLICY "Participants can update bookings within authorization"
 -- ------------------------------------------------------------------------------
 -- PAYMENTS POLICIES (Strict Seeker & Admin privacy)
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Seekers and admins can view payments" ON public.payments;
 CREATE POLICY "Seekers and admins can view payments"
   ON public.payments FOR SELECT
   USING (
@@ -754,10 +795,12 @@ CREATE POLICY "Seekers and admins can view payments"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Seekers can submit payment proofs" ON public.payments;
 CREATE POLICY "Seekers can submit payment proofs"
   ON public.payments FOR INSERT
   WITH CHECK (seeker_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Only admins can update payment verification status" ON public.payments;
 CREATE POLICY "Only admins can update payment verification status"
   ON public.payments FOR UPDATE
   USING (public.is_admin())
@@ -766,10 +809,12 @@ CREATE POLICY "Only admins can update payment verification status"
 -- ------------------------------------------------------------------------------
 -- NOTIFICATIONS POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Users can view own notifications" ON public.notifications;
 CREATE POLICY "Users can view own notifications"
   ON public.notifications FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can mark own notifications as read" ON public.notifications;
 CREATE POLICY "Users can mark own notifications as read"
   ON public.notifications FOR UPDATE
   USING (user_id = auth.uid())
@@ -778,6 +823,7 @@ CREATE POLICY "Users can mark own notifications as read"
 -- ------------------------------------------------------------------------------
 -- SESSION WORKSPACES POLICIES
 -- ------------------------------------------------------------------------------
+DROP POLICY IF EXISTS "Session participants and admin can view workspaces" ON public.session_workspaces;
 CREATE POLICY "Session participants and admin can view workspaces"
   ON public.session_workspaces FOR SELECT
   USING (
@@ -786,10 +832,12 @@ CREATE POLICY "Session participants and admin can view workspaces"
     public.is_admin()
   );
 
+DROP POLICY IF EXISTS "Mentors and admin can create workspaces" ON public.session_workspaces;
 CREATE POLICY "Mentors and admin can create workspaces"
   ON public.session_workspaces FOR INSERT
   WITH CHECK (mentor_id = auth.uid() OR public.is_admin());
 
+DROP POLICY IF EXISTS "Mentors and admin can update workspaces" ON public.session_workspaces;
 CREATE POLICY "Mentors and admin can update workspaces"
   ON public.session_workspaces FOR UPDATE
   USING (mentor_id = auth.uid() OR public.is_admin())
