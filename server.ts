@@ -46,6 +46,15 @@ import type {
   MentorApplicationQueueAuditEntry,
   MentorApplicationQueueRow,
 } from './src/types/database';
+import {
+  MENTOR_ADMIN_AUDIT_ACTIONS,
+  MENTOR_STATUS_ACTION_SPECS,
+  buildMentorStatusUpdate,
+  deriveMentorAccountState,
+  parseMentorStatusAction,
+  validateMentorStatusAction,
+  type MentorAccountState,
+} from './src/lib/adminMentorControl';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -78,7 +87,7 @@ const MENTOR_APPLICATION_SEARCH_MATCH_LIMIT = 200;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MIN_MENTOR_BIO_LENGTH = 20;
+const MIN_MENTOR_BIO_LENGTH = 10;
 const MIN_PASSWORD_LENGTH = 6;
 
 
@@ -978,26 +987,62 @@ async function startServer() {
         gigMap.get(g.mentor_id)!.push(g);
       }
 
+      // ---- Account status comes from the DATABASE, never hardcoded ----
+      // `profiles.account_status` and `mentor_profiles.is_active` are the source
+      // of truth (prompt section 13). The previous implementation returned a
+      // literal `isActive: true`, which made a deactivated mentor look active
+      // in the Admin UI.
+      const { data: accountProfiles, error: accountErr } = await admin
+        .from('profiles')
+        .select('id, account_status, suspended_at, suspended_until, suspension_reason, deactivated_at')
+        .in('id', mentorIds);
+
+      if (accountErr) throw accountErr;
+
+      const accountMap = new Map<string, any>();
+      for (const row of accountProfiles || []) {
+        accountMap.set(row.id, row);
+      }
+
       const mentors = [];
       for (const [mentorId, profile] of mentorMap) {
         const mp = mpMap.get(mentorId);
         const segments = msMap.get(mentorId) || [];
         const mentorGigs = gigMap.get(mentorId) || [];
+        const account = accountMap.get(mentorId) || {};
 
         // Determine primary segment for display
         const primarySegment = segments.find((s: any) => s.is_primary) || segments[0];
+
+        const state: MentorAccountState = deriveMentorAccountState({
+          approval_status: mp?.approval_status ?? null,
+          is_approved: mp?.is_approved ?? null,
+          is_active: mp?.is_active ?? null,
+          account_status: account.account_status ?? null,
+          suspended_until: account.suspended_until ?? null,
+        });
 
         mentors.push({
           id: mentorId,
           name: profile.full_name,
           email: profile.email,
           segmentName: primarySegment?.segment?.name || 'No Segment',
-          status: mp?.is_approved ? 'APPROVED' : 'PENDING',
+          status: state.isApproved
+            ? 'APPROVED'
+            : mp?.approval_status === 'rejected' ? 'REJECTED' : 'PENDING',
           experienceYears: mp?.experience_years || 0,
           bio: mp?.about || '',
           appliedDate: profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
-          isApproved: mp?.is_approved || false,
-          isActive: true, // could be derived from gigs/segments
+          isApproved: state.isApproved,
+          // Read from the DB, not assumed.
+          isActive: state.isActive,
+          isSuspended: state.isSuspended,
+          isDeactivated: state.isDeactivated,
+          isEligible: state.isEligible,
+          approvalStatus: mp?.approval_status ?? null,
+          accountStatus: account.account_status ?? 'active',
+          suspendedUntil: account.suspended_until ?? null,
+          suspensionReason: account.suspension_reason ?? null,
           profile: mp,
           segments: segments.map((s: any) => s.segment),
           gigs: mentorGigs,
@@ -1074,32 +1119,72 @@ async function startServer() {
     }
   });
 
-  // PATCH /api/admin/mentors/:id/toggle-active: Activate/Deactivate mentor
+  // PATCH /api/admin/mentors/:id/toggle-active
+  //
+  // Backwards-compatible wrapper around the status endpoint below. The old
+  // implementation wrote `is_approved`, which conflated APPROVAL with
+  // ACTIVE/INACTIVE - deactivating a mentor silently un-approved them, and
+  // reactivating them silently re-approved them without any verification.
+  // Activation state now lives exclusively in `mentor_profiles.is_active`.
   app.patch('/api/admin/mentors/:id/toggle-active', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { isActive } = req.body;
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // Toggle mentor approval status (used as active/inactive)
-      const { error } = await admin
+      const { data: current, error: readErr } = await admin
         .from('mentor_profiles')
-        .update({ is_approved: isActive, updated_at: new Date().toISOString() })
+        .select('is_active, approval_status, is_approved')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (readErr) throw readErr;
+      if (!current) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      const isCurrentlyActive = current.is_active === true;
+      const action = isCurrentlyActive ? 'deactivate' : 'activate';
+
+      const state = deriveMentorAccountState({
+        approval_status: current.approval_status ?? null,
+        is_approved: current.is_approved ?? null,
+        is_active: current.is_active ?? null,
+        account_status: null,
+      });
+
+      const validation = validateMentorStatusAction({ action, state });
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          error: { code: validation.code, message: validation.message },
+        });
+      }
+
+      const update = buildMentorStatusUpdate({ action, adminId: req.auth!.user.id });
+
+      const { error: mpErr } = await admin
+        .from('mentor_profiles')
+        .update(update.mentorProfile)
         .eq('id', id);
+      if (mpErr) throw mpErr;
 
-      if (error) throw error;
+      const { error: profileErr } = await admin
+        .from('profiles')
+        .update(update.profile)
+        .eq('id', id);
+      if (profileErr) throw profileErr;
 
-      auditAction(req.auth, isActive ? 'mentor_activated' : 'mentor_deactivated', {
+      auditAction(req.auth, MENTOR_STATUS_ACTION_SPECS[action].auditAction, {
         entityType: 'mentor_profile',
         entityId: id,
         requestId: req.requestId,
-        metadata: { isActive },
+        metadata: { isActive: update.mentorProfile.is_active, via: 'toggle-active' },
       });
 
-      return res.json({ success: true, message: `Mentor ${isActive ? 'activated' : 'deactivated'} successfully.` });
+      return res.json({ success: true, message: `Mentor ${action === 'activate' ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
       console.error('Failed to toggle mentor active status:', err);
       return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
@@ -1117,6 +1202,561 @@ async function startServer() {
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
+  // PATCH /api/admin/mentors/:id/status
+  //
+  // The single server-side authorized entry point for Admin operational control
+  // over a mentor account (prompt sections 3, 5, 6, 7).
+  //   body: { action, reason?, suspendedUntil? }
+  //
+  // Guarantees:
+  //  - server-side Admin authorization. The Admin never needs the mentor's
+  //    password and never impersonates the mentor (prompt section 10).
+  //  - a STATUS CHANGE ONLY. No profile, gig, availability, booking, payment,
+  //    workspace, notification or audit row is ever deleted (section 5).
+  //  - approval_status is never modified, so reactivation never requires
+  //    repeating verification (section 6).
+  //  - every transition is audited with admin_id, mentor_id, timestamp, action
+  //    and the reason (section 12).
+  app.patch('/api/admin/mentors/:id/status', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const requestId = req.requestId ?? '';
+    try {
+      const { id } = req.params;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      if (!UUID_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
+      }
+
+      const action = parseMentorStatusAction((req.body || {}).action);
+      if (!action) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'action must be one of: activate, deactivate, suspend, reactivate.' },
+        });
+      }
+
+      const adminId = req.auth!.user.id;
+
+      // An Admin may not suspend or deactivate themselves.
+      if (id === adminId) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'SELF_STATUS_CHANGE_FORBIDDEN', message: 'Administrators cannot change their own account status.' },
+        });
+      }
+
+      const { data: mentorProfile, error: mpReadErr } = await admin
+        .from('mentor_profiles')
+        .select('id, approval_status, is_approved, is_active')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (mpReadErr) throw mpReadErr;
+      if (!mentorProfile) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      const { data: accountProfile, error: profileReadErr } = await admin
+        .from('profiles')
+        .select('id, account_status, suspended_until')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (profileReadErr) throw profileReadErr;
+
+      // Interpret the STORED columns; never assume a status.
+      const state = deriveMentorAccountState({
+        approval_status: mentorProfile.approval_status ?? null,
+        is_approved: mentorProfile.is_approved ?? null,
+        is_active: mentorProfile.is_active ?? null,
+        account_status: accountProfile?.account_status ?? null,
+        suspended_until: accountProfile?.suspended_until ?? null,
+      });
+
+      const validation = validateMentorStatusAction({
+        action,
+        reason: (req.body || {}).reason,
+        suspendedUntil: (req.body || {}).suspendedUntil,
+        state,
+      });
+
+      if (!validation.valid) {
+        return res.status(400).json({
+          success: false,
+          error: { code: validation.code, message: validation.message },
+        });
+      }
+
+      const update = buildMentorStatusUpdate({
+        action,
+        adminId,
+        reason: validation.reason,
+        suspendedUntil: validation.suspendedUntil,
+      });
+
+      // Two writes, two tables. Neither one deletes anything.
+      const { error: mpWriteErr } = await admin
+        .from('mentor_profiles')
+        .update(update.mentorProfile)
+        .eq('id', id);
+      if (mpWriteErr) throw mpWriteErr;
+
+      if (accountProfile) {
+        const { error: profileWriteErr } = await admin
+          .from('profiles')
+          .update(update.profile)
+          .eq('id', id);
+        if (profileWriteErr) throw profileWriteErr;
+      }
+
+      auditAction(req.auth, MENTOR_STATUS_ACTION_SPECS[action].auditAction, {
+        entityType: 'mentor_profile',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: {
+          action,
+          adminId,
+          mentorId: id,
+          reason: validation.reason ?? null,
+          suspendedUntil: validation.suspendedUntil ?? null,
+          previousState: state,
+        },
+      });
+
+      const pastTense = action === 'activate'
+        ? 'activated'
+        : action === 'deactivate' ? 'deactivated' : action === 'suspend' ? 'suspended' : 'reactivated';
+      return res.json({
+        success: true,
+        message: `Mentor ${pastTense} successfully.`,
+        action: MENTOR_STATUS_ACTION_SPECS[action].auditAction,
+        isActive: update.mentorProfile.is_active,
+        accountStatus: update.profile.account_status,
+      });
+    } catch (err: any) {
+      const info = describeSupabaseError(err);
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: resolveHttpStatusForSupabaseError(info),
+        message: `admin mentor status change failed - [${info.code}] ${info.message}`,
+        error_code: info.code,
+        userId: req.auth!.user.id,
+        role: 'admin',
+        stack: info.stack,
+        metadata: { operation: 'mentor_status_change', mentorId: req.params.id },
+      }).catch(() => {});
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'PATCH /api/admin/mentors/:id/status',
+        clientMessage: 'Unable to update the mentor account status.',
+      });
+    }
+  });
+
+
+  //
+  // Full operational visibility for ONE mentor (prompt section 8 / TEST E).
+  // Every value is read from the database (section 13); no status is hardcoded.
+  //
+  // ADMIN-ONLY: served from an authenticated, Admin-gated endpoint and never
+  // exposed through public mentor discovery (prompt section 11). Verification
+  // documents, internal notes and audit records live here and nowhere public.
+  app.get('/api/admin/mentors/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const mentorId = req.params.id;
+      if (!UUID_PATTERN.test(mentorId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
+      }
+
+      const { data: profile, error: profileErr } = await admin
+        .from('profiles').select('*').eq('id', mentorId).maybeSingle();
+      if (profileErr) throw profileErr;
+      if (!profile) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      const [{ data: mentorProfile, error: mpErr }, { data: roles, error: rolesErr }] = await Promise.all([
+        admin.from('mentor_profiles').select('*').eq('id', mentorId).maybeSingle(),
+        admin.from('user_roles').select('role').eq('user_id', mentorId),
+      ]);
+      if (mpErr) throw mpErr;
+      if (rolesErr) throw rolesErr;
+      if (!mentorProfile) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor profile not found.' } });
+      }
+
+      const [segmentsRes, gigsRes, availabilityRes, exceptionsRes] = await Promise.all([
+        admin.from('mentor_segments').select('*, segment:segments(*)').eq('mentor_id', mentorId),
+        admin.from('gigs').select('*, segment:segments(id, name, slug)').eq('mentor_id', mentorId).order('created_at', { ascending: false }),
+        admin.from('mentor_availability').select('*').eq('mentor_id', mentorId).order('day_of_week', { ascending: true }).order('start_time', { ascending: true }),
+        admin.from('mentor_availability_exceptions').select('*').eq('mentor_id', mentorId).order('exception_date', { ascending: true }),
+      ]);
+      if (segmentsRes.error) throw segmentsRes.error;
+      if (gigsRes.error) throw gigsRes.error;
+      if (availabilityRes.error) throw availabilityRes.error;
+      if (exceptionsRes.error) throw exceptionsRes.error;
+
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications').select('*').eq('user_id', mentorId).maybeSingle();
+      if (appErr) throw appErr;
+
+      const { data: documents, error: docsErr } = application
+        ? await admin
+            .from('mentor_verification_documents').select('*')
+            .eq('application_id', application.id).order('uploaded_at', { ascending: false })
+        : { data: [], error: null };
+      if (docsErr) throw docsErr;
+
+      // Short-lived signed URLs, minted server-side. The bucket is private, so
+      // this is the ONLY way an Admin can read a document.
+      const signedDocuments = await Promise.all(
+        (documents || []).map(async (document: { storage_path: string }) => {
+          try {
+            const { data: signed } = await admin.storage
+              .from('mentor-verification-documents')
+              .createSignedUrl(document.storage_path, 300);
+            return { ...document, download_url: signed?.signedUrl || null };
+          } catch {
+            return { ...document, download_url: null };
+          }
+        }),
+      );
+
+      // Approver identity, resolved from the application, not assumed.
+      let approvedBy: { id: string; full_name: string | null; email: string | null } | null = null;
+      if (application?.reviewed_by) {
+        const { data: approver } = await admin
+          .from('profiles').select('id, full_name, email').eq('id', application.reviewed_by).maybeSingle();
+        approvedBy = approver || null;
+      }
+
+      return res.json({
+        success: true,
+        mentor: {
+          // ---- PROFILE ----
+          profile: {
+            id: profile.id,
+            fullName: profile.full_name,
+            email: profile.email,
+            avatarUrl: profile.avatar_url,
+            timezone: profile.timezone,
+            createdAt: profile.created_at,
+          },
+          roles: (roles || []).map((r: { role: string }) => r.role),
+          mentorProfile: {
+            headline: mentorProfile.headline,
+            about: mentorProfile.about,
+            experienceYears: mentorProfile.experience_years,
+            languages: mentorProfile.languages,
+            rating: mentorProfile.rating,
+            reviewCount: mentorProfile.review_count,
+            sessionCount: mentorProfile.session_count,
+            isFeatured: mentorProfile.is_featured,
+          },
+          // ---- VERIFICATION ----
+          verification: {
+            approvalStatus: mentorProfile.approval_status ?? null,
+            isApproved: mentorProfile.is_approved ?? false,
+            applicationStatus: application?.status ?? null,
+            applicationId: application?.id ?? null,
+            submittedAt: application?.submitted_at ?? null,
+            reviewedAt: application?.reviewed_at ?? null,
+            rejectionReason: application?.rejection_reason ?? null,
+            approvedBy,
+            documents: signedDocuments,
+          },
+          // ---- SEGMENTS ----
+          segments: (segmentsRes.data || []).map((row: any) => ({
+            segmentId: row.segment_id,
+            isPrimary: row.is_primary,
+            name: row.segment?.name ?? null,
+            slug: row.segment?.slug ?? null,
+            isActive: row.segment?.is_active ?? null,
+            createdAt: row.created_at,
+          })),
+          // ---- GIGS ----
+          gigs: (gigsRes.data || []).map((gig: any) => ({
+            id: gig.id,
+            title: gig.title,
+            description: gig.description,
+            priceInr: gig.price_inr,
+            durationMinutes: gig.duration_minutes,
+            isActive: gig.is_active,
+            segmentId: gig.segment_id,
+            segmentName: gig.segment?.name ?? null,
+            createdAt: gig.created_at,
+            updatedAt: gig.updated_at,
+          })),
+          // ---- AVAILABILITY ----
+          availability: (availabilityRes.data || []).map((rule: any) => ({
+            id: rule.id,
+            dayOfWeek: rule.day_of_week,
+            startTime: rule.start_time,
+            endTime: rule.end_time,
+            timezone: rule.timezone,
+            isEnabled: rule.is_enabled,
+          })),
+          availabilityExceptions: (exceptionsRes.data || []).map((exception: any) => ({
+            id: exception.id,
+            exceptionDate: exception.exception_date,
+            isAvailable: exception.is_available,
+            startTime: exception.start_time,
+            endTime: exception.end_time,
+            reason: exception.reason,
+          })),
+          // ---- ACCOUNT STATUS (from stored columns) ----
+          account: {
+            accountStatus: profile.account_status ?? 'active',
+            isActive: mentorProfile.is_active === true,
+            suspendedAt: profile.suspended_at ?? null,
+            suspendedUntil: profile.suspended_until ?? null,
+            suspensionReason: profile.suspension_reason ?? null,
+            suspendedBy: profile.suspended_by ?? null,
+            deactivatedAt: profile.deactivated_at ?? null,
+            internalNote: profile.internal_note ?? null,
+          },
+        },
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/mentors/:id',
+        clientMessage: 'Unable to load mentor details.',
+      });
+    }
+  });
+
+  // GET /api/admin/mentors/:id/bookings
+  //
+  // Booking + payment history for the mentor detail page. Kept separate from
+  // the detail payload because it is the only potentially large collection, so
+  // it is loaded on demand rather than on every detail render.
+  app.get('/api/admin/mentors/:id/bookings', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const mentorId = req.params.id;
+      if (!UUID_PATTERN.test(mentorId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
+      }
+
+      // bookings has FKs to both profiles (mentor_id, seeker_id) and to gigs,
+      // so the seeker embed is named explicitly to avoid PGRST201.
+      const { data: bookings, error: bookingsErr } = await admin
+        .from('bookings')
+        .select('*, seeker:profiles!bookings_seeker_id_fkey(id, full_name, email)')
+        .eq('mentor_id', mentorId)
+        .order('start_time', { ascending: false });
+
+      if (bookingsErr) throw bookingsErr;
+
+      const bookingIds = (bookings || []).map((b: { id: string }) => b.id);
+      const { data: payments, error: paymentsErr } = bookingIds.length
+        ? await admin.from('payments').select('*').in('booking_id', bookingIds)
+        : { data: [], error: null };
+      if (paymentsErr) throw paymentsErr;
+
+      const paymentByBooking = new Map<string, any>();
+      for (const payment of payments || []) {
+        paymentByBooking.set(payment.booking_id, payment);
+      }
+
+      const now = Date.now();
+      const decorated = (bookings || []).map((booking: any) => {
+        const payment = paymentByBooking.get(booking.id);
+        const startMs = Date.parse(booking.start_time);
+        return {
+          id: booking.id,
+          bookingCode: booking.booking_code,
+          startTime: booking.start_time,
+          endTime: booking.end_time,
+          amountInr: booking.amount_inr,
+          status: booking.status,
+          meetingUrl: booking.meeting_url,
+          cancellationReason: booking.cancellation_reason,
+          isUpcoming:
+            startMs >= now && !['CANCELLED', 'REJECTED', 'COMPLETED'].includes(booking.status),
+          seeker: booking.seeker ?? null,
+          payment: payment
+            ? {
+                id: payment.id,
+                status: payment.status,
+                amountInr: payment.amount_inr,
+                verifiedAt: payment.verified_at,
+              }
+            : null,
+        };
+      });
+
+      return res.json({
+        success: true,
+        bookings: decorated,
+        upcoming: decorated.filter((b: any) => b.isUpcoming),
+        completed: decorated.filter((b: any) => b.status === 'COMPLETED'),
+        cancelled: decorated.filter((b: any) => ['CANCELLED', 'REJECTED'].includes(b.status)),
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/mentors/:id/bookings',
+        clientMessage: 'Unable to load mentor bookings.',
+      });
+    }
+  });
+
+  // PATCH /api/admin/mentors/:id/profile
+  //
+  // Admin edit access to mentor operational information (prompt section 9).
+  // Everything is PERSISTED to the database - no UI-only changes. Server-side
+  // Admin authorization only: the Admin never needs the mentor's password and
+  // never impersonates the mentor (prompt section 10).
+  //
+  // approval_status and is_active are deliberately NOT editable here: approval
+  // belongs to the verification flow and activation to the status endpoint, so
+  // this endpoint can never be used to bypass either.
+  app.patch('/api/admin/mentors/:id/profile', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const mentorId = req.params.id;
+      if (!UUID_PATTERN.test(mentorId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
+      }
+
+      const body = (req.body || {}) as Record<string, unknown>;
+
+      const profileUpdates: Record<string, unknown> = {};
+      if (typeof body.fullName === 'string' && body.fullName.trim()) {
+        profileUpdates.full_name = body.fullName.trim();
+      }
+      if (typeof body.timezone === 'string' && body.timezone.trim()) {
+        profileUpdates.timezone = body.timezone.trim();
+      }
+      if (body.avatarUrl === null || typeof body.avatarUrl === 'string') {
+        profileUpdates.avatar_url = typeof body.avatarUrl === 'string' ? body.avatarUrl.trim() || null : null;
+      }
+
+      const mentorUpdates: Record<string, unknown> = {};
+      if (typeof body.headline === 'string') mentorUpdates.headline = body.headline.trim();
+      if (typeof body.bio === 'string') mentorUpdates.about = body.bio.trim() || null;
+      if (typeof body.experienceYears === 'number'
+        && Number.isInteger(body.experienceYears)
+        && body.experienceYears >= 0) {
+        mentorUpdates.experience_years = body.experienceYears;
+      }
+      if (Array.isArray(body.languages) && body.languages.every((l) => typeof l === 'string')) {
+        mentorUpdates.languages = body.languages as string[];
+      }
+      if (typeof body.isFeatured === 'boolean') mentorUpdates.is_featured = body.isFeatured;
+
+      // Segments: add / remove, only when explicitly provided.
+      const replaceSegments = Array.isArray(body.segmentIds);
+      const requestedSegmentIds = replaceSegments ? (body.segmentIds as unknown[]) : [];
+      if (replaceSegments && !requestedSegmentIds.every((s) => typeof s === 'string' && UUID_PATTERN.test(s))) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'segmentIds must be an array of segment UUIDs.' } });
+      }
+
+      if (Object.keys(profileUpdates).length === 0
+        && Object.keys(mentorUpdates).length === 0
+        && !replaceSegments) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No editable fields were provided.' } });
+      }
+
+      const { data: existing, error: existsErr } = await admin
+        .from('mentor_profiles').select('id').eq('id', mentorId).maybeSingle();
+      if (existsErr) throw existsErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      const nowIso = new Date().toISOString();
+
+      if (Object.keys(profileUpdates).length > 0) {
+        const { error } = await admin
+          .from('profiles')
+          .update({ ...profileUpdates, updated_at: nowIso })
+          .eq('id', mentorId);
+        if (error) throw error;
+      }
+
+      if (Object.keys(mentorUpdates).length > 0) {
+        const { error } = await admin
+          .from('mentor_profiles')
+          .update({ ...mentorUpdates, updated_at: nowIso })
+          .eq('id', mentorId);
+        if (error) throw error;
+      }
+
+      if (replaceSegments) {
+        const nextSegmentIds = body.segmentIds as string[];
+
+        // Validate every referenced segment actually exists.
+        if (nextSegmentIds.length > 0) {
+          const { data: validSegments, error: segErr } = await admin
+            .from('segments').select('id').in('id', nextSegmentIds);
+          if (segErr) throw segErr;
+          const validIds = new Set((validSegments || []).map((s: { id: string }) => s.id));
+          const unknown = nextSegmentIds.filter((id) => !validIds.has(id));
+          if (unknown.length > 0) {
+            return res.status(400).json({
+              success: false,
+              error: { code: 'UNKNOWN_SEGMENT', message: `Unknown segment id(s): ${unknown.join(', ')}.` },
+            });
+          }
+        }
+
+        const { error: deleteErr } = await admin
+          .from('mentor_segments').delete().eq('mentor_id', mentorId);
+        if (deleteErr) throw deleteErr;
+
+        if (nextSegmentIds.length > 0) {
+          const { error: insertErr } = await admin
+            .from('mentor_segments')
+            .insert(nextSegmentIds.map((segmentId) => ({
+              mentor_id: mentorId,
+              segment_id: segmentId,
+              is_primary: false,
+            })));
+          if (insertErr) throw insertErr;
+        }
+      }
+
+      auditAction(req.auth, MENTOR_ADMIN_AUDIT_ACTIONS.PROFILE_UPDATED, {
+        entityType: 'mentor_profile',
+        entityId: mentorId,
+        requestId: req.requestId,
+        metadata: {
+          adminId: req.auth!.user.id,
+          mentorId,
+          fields: [...Object.keys(profileUpdates), ...Object.keys(mentorUpdates)],
+          segmentsChanged: replaceSegments,
+        },
+      });
+
+      return res.json({ success: true, message: 'Mentor profile updated successfully.' });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'PATCH /api/admin/mentors/:id/profile',
+        clientMessage: 'Unable to update the mentor profile.',
+      });
+    }
+  });
+
 
       // Fetch all segments
       const { data: segments, error: segErr } = await admin

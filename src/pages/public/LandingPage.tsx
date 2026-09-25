@@ -27,7 +27,7 @@ const NAV_ITEMS = [
   { label: 'Home', href: '#' },
   { label: 'Explore Mentors', href: '/seeker/mentors' },
   { label: 'How It Works', href: '#how-it-works' },
-  { label: 'For Mentors', href: '#for-mentors' },
+  // { label: 'For Mentors', href: '#for-mentors' },
 ];
 
 const PRINCIPLES = [
@@ -215,14 +215,14 @@ export const LandingPage: React.FC = () => {
               Find a Mentor
               <ArrowRight className="h-4 w-4" />
             </Button>
-            <Button
+            {/* <Button
               variant="outline"
               size="lg"
               onClick={() => navigate('/mentor/signup')}
               className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
             >
               Become a Mentor
-            </Button>
+            </Button> */}
           </div>
         </motion.div>
 
@@ -375,7 +375,7 @@ export const LandingPage: React.FC = () => {
       <LandingFeatureSection />
 
       {/* For Mentors */}
-      <section id="for-mentors" className="relative z-10 px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
+      {/* <section id="for-mentors" className="relative z-10 px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
         <div className="max-w-[1200px] mx-auto">
           <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 p-8 sm:p-12">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
@@ -437,7 +437,7 @@ export const LandingPage: React.FC = () => {
             </div>
           </div>
         </div>
-      </section>
+      </section> */}
 
       {/* Trust / Platform Principles */}
       <section className="relative z-10 px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
@@ -483,14 +483,14 @@ export const LandingPage: React.FC = () => {
             >
               Find a Mentor
             </Button>
-            <Button
+            {/* <Button
               variant="outline"
               size="lg"
               onClick={() => navigate('/mentor/signup')}
               className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
             >
               Become a Mentor
-            </Button>
+            </Button> */}
           </div>
         </div>
       </section>

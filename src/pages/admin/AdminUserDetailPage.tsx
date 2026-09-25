@@ -27,7 +27,6 @@ interface UserApplication {
   submitted_at: string | null;
   reviewed_at: string | null;
   rejection_reason: string | null;
-  years_of_experience?: number | null;
 }
 
 interface UserDocument {
@@ -92,7 +91,9 @@ export const AdminUserDetailPage: React.FC = () => {
       setTimezone(data.user.profile.timezone || '');
       setBio(typeof data.user.mentorProfile?.bio === 'string' ? data.user.mentorProfile.bio : data.user.application?.bio || '');
       setHeadline(typeof data.user.mentorProfile?.headline === 'string' ? data.user.mentorProfile.headline : '');
-      setExperienceYears(String(data.user.mentorProfile?.years_experience ?? data.user.application?.years_of_experience ?? ''));
+      // `years_experience` is the server-side alias of the real `mentor_profiles.experience_years` column.
+      // `mentor_applications` has no experience column, so it must never be read as a fallback.
+      setExperienceYears(String(data.user.mentorProfile?.years_experience ?? ''));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load user details.');
     } finally {
