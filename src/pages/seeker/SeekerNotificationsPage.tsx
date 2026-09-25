@@ -83,7 +83,7 @@ export const SeekerNotificationsPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl font-display">
+            <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
               Notifications
             </h1>
             {unreadCount > 0 && (
@@ -92,7 +92,7 @@ export const SeekerNotificationsPage: React.FC = () => {
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-sm text-zinc-500">
+          <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
             Authoritative in-app alerts for your bookings, payment verifications, session rooms,
             and mentor workspace notes.
           </p>
@@ -134,7 +134,7 @@ export const SeekerNotificationsPage: React.FC = () => {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3, delay: 0.05 }}
-        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200"
+        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[var(--color-shell-surface-elevated)] p-2 rounded-xl border border-[var(--color-shell-border)]"
       >
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
           {(['all', 'unread', 'read'] as const).map((st) => (
@@ -142,10 +142,10 @@ export const SeekerNotificationsPage: React.FC = () => {
               key={st}
               id={`filter-status-${st}`}
               onClick={() => setStatusFilter(st)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
                 statusFilter === st
-                  ? 'bg-white text-zinc-950 shadow-xs border border-zinc-200 font-semibold'
-                  : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
+                  ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs border border-[var(--color-shell-border)] font-semibold'
+                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] hover:bg-zinc-100'
               }`}
             >
               {st} {st === 'unread' && unreadCount > 0 && `(${unreadCount})`}
@@ -154,16 +154,16 @@ export const SeekerNotificationsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
-          <span className="text-[11px] font-medium text-zinc-400 pl-1">Category:</span>
+          <span className="text-[11px] font-medium text-[var(--color-shell-text-subtle)] pl-1">Category:</span>
           {['ALL', 'BOOKING', 'PAYMENT', 'SESSION', 'WORKSPACE'].map((cat) => (
             <button
               key={cat}
               id={`filter-cat-${cat.toLowerCase()}`}
               onClick={() => setTypeFilter(cat)}
-              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
                 typeFilter === cat
                   ? 'bg-amber-900 text-white font-semibold'
-                  : 'bg-white text-zinc-600 border border-zinc-200 hover:bg-zinc-100'
+                  : 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)] hover:bg-zinc-100'
               }`}
             >
               {cat === 'ALL' ? 'All Types' : cat}
@@ -174,8 +174,8 @@ export const SeekerNotificationsPage: React.FC = () => {
 
       {/* Notification List */}
       {loading ? (
-        <div className="py-16 flex flex-col justify-center items-center text-zinc-400 text-xs gap-2">
-          <Loader2 className="h-6 w-6 animate-spin text-zinc-600" />
+        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
           <span>Synchronizing alerts with real database...</span>
         </div>
       ) : notifications.length === 0 ? (

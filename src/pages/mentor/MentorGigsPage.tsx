@@ -7,6 +7,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useAuth } from '@/src/context/AuthContext';
+import { apiFetch } from '@/src/lib/apiClient';
 
 interface Gig {
   id: string;
@@ -47,7 +48,7 @@ export const MentorGigsPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/mentor/gigs?mentorId=${user.id}`);
+      const res = await apiFetch(`/api/mentor/gigs?mentorId=${user.id}`);
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch gigs');
       setGigs(data.gigs || []);
@@ -61,7 +62,7 @@ export const MentorGigsPage: React.FC = () => {
   const fetchSegments = useCallback(async () => {
     if (!user?.id) return;
     try {
-      const res = await fetch(`/api/mentor/segments?mentorId=${user.id}`);
+      const res = await apiFetch(`/api/mentor/segments?mentorId=${user.id}`);
       const data = await res.json();
       if (data.success) {
         setSegments(data.segments.map((s: any) => ({ id: s.id, name: s.name, slug: s.slug })));
@@ -74,7 +75,7 @@ export const MentorGigsPage: React.FC = () => {
   const fetchAvailableSegments = useCallback(async (): Promise<SegmentOption[]> => {
     if (!user?.id) return [];
     try {
-      const res = await fetch(`/api/mentor/available-segments?mentorId=${user.id}`);
+      const res = await apiFetch(`/api/mentor/available-segments?mentorId=${user.id}`);
       const data = await res.json();
       if (data.success) return data.segments;
     } catch (err: any) {
@@ -119,11 +120,10 @@ export const MentorGigsPage: React.FC = () => {
     }
 
     try {
-      const res = await fetch('/api/mentor/gigs', {
+      const res = await apiFetch('/api/mentor/gigs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          mentorId: user.id,
           title,
           segmentId,
           durationMinutes: durNum,
@@ -154,10 +154,10 @@ export const MentorGigsPage: React.FC = () => {
   const handleToggleActive = async (gig: Gig) => {
     if (!user?.id) return;
     try {
-      const res = await fetch(`/api/mentor/gigs/${gig.id}`, {
+      const res = await apiFetch(`/api/mentor/gigs/${gig.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentorId: user.id, isActive: !gig.isActive }),
+        body: JSON.stringify({ isActive: !gig.isActive }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to update gig');
@@ -172,7 +172,7 @@ export const MentorGigsPage: React.FC = () => {
     if (!user?.id) return;
     if (!confirm('Are you sure you want to delete this gig?')) return;
     try {
-      const res = await fetch(`/api/mentor/gigs/${gigId}?mentorId=${user.id}`, {
+      const res = await apiFetch(`/api/mentor/gigs/${gigId}`, {
         method: 'DELETE',
       });
       const data = await res.json();

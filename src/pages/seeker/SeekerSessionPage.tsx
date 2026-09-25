@@ -210,8 +210,8 @@ export const SeekerSessionPage: React.FC = () => {
       )}
 
       {loading && selectedBookingId && (
-        <div className="py-16 flex flex-col justify-center items-center text-zinc-400 text-xs gap-2">
-          <Calendar className="h-6 w-6 animate-spin text-zinc-600" />
+        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
+          <Calendar className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
           <span>Loading session access state from server...</span>
         </div>
       )}
@@ -222,7 +222,7 @@ export const SeekerSessionPage: React.FC = () => {
         <div className="flex items-center justify-between">
           <button
             onClick={() => navigate('/seeker/bookings')}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             <span>Back to Bookings</span>
@@ -249,7 +249,7 @@ export const SeekerSessionPage: React.FC = () => {
               ? 'COMPLETED'
               : 'UPCOMING (LOCKED)'}
           </Badge>
-           <span className="text-xs text-zinc-400">#{sessionAccess?.bookingCode || ''}</span>
+           <span className="text-xs text-[var(--color-shell-text-subtle)]">#{sessionAccess?.bookingCode || ''}</span>
         </div>
       </div>
 
@@ -272,31 +272,31 @@ export const SeekerSessionPage: React.FC = () => {
       )}
 
       {/* Main Session Access Room Card */}
-      <div className="rounded-xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-xs space-y-6">
+      <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 sm:p-8 shadow-xs space-y-6">
         {/* Session Metadata Header */}
-        <div className="space-y-2 border-b border-zinc-100 pb-6 text-center sm:text-left">
+        <div className="space-y-2 border-b border-[var(--color-shell-border)] pb-6 text-center sm:text-left">
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
             <Badge variant="secondary" className="text-xs font-normal">
               1:1 Advisory Session
             </Badge>
-            <span className="text-xs text-zinc-400">·</span>
-            <span className="text-xs font-medium text-zinc-600">
+            <span className="text-xs text-[var(--color-shell-text-subtle)]">·</span>
+            <span className="text-xs font-medium text-[var(--color-shell-text-muted)]">
                Booking Ref: {sessionAccess?.bookingCode || '—'}
             </span>
           </div>
 
-          <h1 className="text-xl sm:text-2xl font-bold text-zinc-950">
+          <h1 className="text-xl sm:text-2xl font-bold text-[var(--color-shell-text)]">
              {sessionAccess?.sessionTitle || '—'}
           </h1>
 
-          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 text-xs text-zinc-600 pt-1">
+          <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 text-xs text-[var(--color-shell-text-muted)] pt-1">
             <span className="inline-flex items-center gap-1.5">
-              <User className="h-3.5 w-3.5 text-zinc-400" />
+              <User className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
               <span>Mentor: {sessionAccess?.mentorName || '—'}</span>
             </span>
             <span>·</span>
             <span className="inline-flex items-center gap-1.5">
-              <Calendar className="h-3.5 w-3.5 text-zinc-400" />
+              <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
               <span>
                 {sessionAccess?.startTime
                   ? new Date(sessionAccess.startTime).toLocaleDateString(undefined, {
@@ -310,7 +310,7 @@ export const SeekerSessionPage: React.FC = () => {
             </span>
             <span>·</span>
             <span className="inline-flex items-center gap-1.5">
-              <Clock className="h-3.5 w-3.5 text-zinc-400" />
+              <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
               <span>
                 {sessionAccess?.startTime
                   ? new Date(sessionAccess.startTime).toLocaleTimeString([], {
@@ -334,65 +334,65 @@ export const SeekerSessionPage: React.FC = () => {
         {/* STATE 1: BEFORE T-5 (Link hidden & Join Denied)                   */}
         {/* ------------------------------------------------------------------ */}
         {isBeforeT5 && (
-          <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 p-6 sm:p-8 text-center space-y-5">
-            <div className="h-12 w-12 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mx-auto shadow-2xs">
+          <div className="rounded-xl border border-[var(--color-shell-warning)]/30/80 bg-[var(--color-shell-warning-soft)]/50 p-6 sm:p-8 text-center space-y-5">
+            <div className="h-12 w-12 rounded-full bg-amber-100 text-[var(--color-shell-warning)] flex items-center justify-center mx-auto shadow-2xs">
               <Lock className="h-6 w-6" />
             </div>
 
             <div className="space-y-1">
-              <h2 className="text-lg font-bold text-amber-950">
+              <h2 className="text-lg font-bold text-[var(--color-shell-text)]">
                 Session Locked Until T-5 Minutes
               </h2>
-              <p className="text-xs text-amber-800/90 max-w-md mx-auto">
+              <p className="text-xs text-[var(--color-shell-warning)]/90 max-w-md mx-auto">
                 Per security rules, the HTTPS meeting link is hidden and join access is denied until exactly 5 minutes prior to scheduled start.
               </p>
             </div>
 
             {/* Countdown Box to T-5 */}
-            <div className="inline-flex items-center justify-center gap-3 bg-white/90 border border-amber-200 rounded-xl px-6 py-4 shadow-2xs">
+            <div className="inline-flex items-center justify-center gap-3 bg-[var(--color-shell-surface)]/90 border border-[var(--color-shell-warning)]/30 rounded-xl px-6 py-4 shadow-2xs">
               {t5Countdown.days > 0 && (
                 <div className="text-center">
-                  <div className="text-2xl sm:text-3xl font-mono font-bold text-amber-950">
+                  <div className="text-2xl sm:text-3xl font-mono font-bold text-[var(--color-shell-text)]">
                     {padZero(t5Countdown.days)}
                   </div>
-                  <div className="text-[10px] uppercase tracking-wider text-amber-700 font-medium">Days</div>
+                  <div className="text-[10px] uppercase tracking-wider text-[var(--color-shell-warning)] font-medium">Days</div>
                 </div>
               )}
               {t5Countdown.days > 0 && <span className="text-xl font-bold text-amber-300">:</span>}
 
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-mono font-bold text-amber-950">
+                <div className="text-2xl sm:text-3xl font-mono font-bold text-[var(--color-shell-text)]">
                   {padZero(t5Countdown.hours)}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-amber-700 font-medium">Hours</div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--color-shell-warning)] font-medium">Hours</div>
               </div>
               <span className="text-xl font-bold text-amber-300">:</span>
 
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-mono font-bold text-amber-950">
+                <div className="text-2xl sm:text-3xl font-mono font-bold text-[var(--color-shell-text)]">
                   {padZero(t5Countdown.minutes)}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-amber-700 font-medium">Mins</div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--color-shell-warning)] font-medium">Mins</div>
               </div>
               <span className="text-xl font-bold text-amber-300">:</span>
 
               <div className="text-center">
-                <div className="text-2xl sm:text-3xl font-mono font-bold text-amber-950">
+                <div className="text-2xl sm:text-3xl font-mono font-bold text-[var(--color-shell-text)]">
                   {padZero(t5Countdown.seconds)}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-amber-700 font-medium">Secs</div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--color-shell-warning)] font-medium">Secs</div>
               </div>
             </div>
 
             {/* Concealed Meeting Link Placeholder */}
-            <div className="max-w-md mx-auto rounded-lg border border-amber-200/70 bg-white/70 p-3 text-xs text-amber-900/80 flex items-center justify-between gap-2">
+            <div className="max-w-md mx-auto rounded-lg border border-[var(--color-shell-warning)]/30/70 bg-[var(--color-shell-surface)]/70 p-3 text-xs text-[var(--color-shell-text)]/80 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 truncate">
-                <Lock className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                <span className="font-mono text-zinc-400 select-none">
+                <Lock className="h-3.5 w-3.5 text-[var(--color-shell-warning)] shrink-0" />
+                <span className="font-mono text-[var(--color-shell-text-subtle)] select-none">
                   https://meet.google.com/••••-••••-••••
                 </span>
               </div>
-              <Badge variant="outline" className="text-[10px] text-amber-800 border-amber-300 shrink-0">
+              <Badge variant="outline" className="text-[10px] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/40 shrink-0">
                 Concealed
               </Badge>
             </div>
@@ -401,13 +401,13 @@ export const SeekerSessionPage: React.FC = () => {
             <div className="pt-2">
               <Button
                 disabled
-                className="w-full sm:w-auto px-8 gap-2 text-xs opacity-60 cursor-not-allowed bg-zinc-300 text-zinc-600"
+                className="w-full sm:w-auto px-8 gap-2 text-xs opacity-60 cursor-not-allowed bg-zinc-300 text-[var(--color-shell-text-muted)]"
                 size="lg"
               >
                 <Lock className="h-3.5 w-3.5" />
                 <span>Join Locked (Opens at T-5)</span>
               </Button>
-              <p className="text-[11px] text-zinc-400 mt-2">
+              <p className="text-[11px] text-[var(--color-shell-text-subtle)] mt-2">
                 Server authorization strictly denies joins before T-5 minutes.
               </p>
             </div>
@@ -418,28 +418,28 @@ export const SeekerSessionPage: React.FC = () => {
         {/* STATE 2: T-5 WINDOW (Link available & Pre-Session Join Allowed)   */}
         {/* ------------------------------------------------------------------ */}
         {isT5Window && (
-          <div className="rounded-xl border border-amber-300 bg-amber-50/40 p-6 sm:p-8 space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-amber-200 pb-4">
+          <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)]/40 p-6 sm:p-8 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--color-shell-warning)]/30 pb-4">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <div className="h-10 w-10 rounded-full bg-amber-100 text-[var(--color-shell-warning)] flex items-center justify-center shrink-0">
                   <Radio className="h-5 w-5 animate-pulse" />
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-amber-950">
+                  <h2 className="text-base font-bold text-[var(--color-shell-text)]">
                     Early Access Window Open
                   </h2>
-                  <p className="text-xs text-amber-800">
+                  <p className="text-xs text-[var(--color-shell-warning)]">
                     You may join early to test audio/video before the session begins.
                   </p>
                 </div>
               </div>
 
               {/* Countdown to Session Start */}
-              <div className="bg-white border border-amber-200 rounded-lg px-4 py-2 text-right self-start sm:self-auto">
-                <div className="text-[10px] uppercase tracking-wider text-amber-700 font-semibold">
+              <div className="bg-[var(--color-shell-surface)] border border-[var(--color-shell-warning)]/30 rounded-lg px-4 py-2 text-right self-start sm:self-auto">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--color-shell-warning)] font-semibold">
                   Starts In
                 </div>
-                <div className="text-lg font-mono font-bold text-amber-950">
+                <div className="text-lg font-mono font-bold text-[var(--color-shell-text)]">
                   {padZero(startCountdown.minutes)}m {padZero(startCountdown.seconds)}s
                 </div>
               </div>
@@ -447,11 +447,11 @@ export const SeekerSessionPage: React.FC = () => {
 
             {/* Revealed Meeting Link Card */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-zinc-700">
+              <label className="text-xs font-semibold text-[var(--color-shell-text-muted)]">
                 Verified HTTPS Meeting Link:
               </label>
               <div className="flex items-center gap-2">
-                <div className="flex-1 p-3 bg-white rounded-lg border border-amber-200 font-mono text-xs text-zinc-800 truncate select-all">
+                <div className="flex-1 p-3 bg-[var(--color-shell-surface)] rounded-lg border border-[var(--color-shell-warning)]/30 font-mono text-xs text-[var(--color-shell-text)] truncate select-all">
                    {sessionAccess?.meetingUrl || ''}
                 </div>
                 {sessionAccess?.meetingUrl && (
@@ -480,7 +480,7 @@ export const SeekerSessionPage: React.FC = () => {
                 <span>{joining ? 'Validating Access...' : 'Enter Waiting Room / Join Early'}</span>
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-[var(--color-shell-text-muted)]">
                 Official session starts at {sessionAccess?.startTime ? new Date(sessionAccess.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
               </span>
             </div>
@@ -511,7 +511,7 @@ export const SeekerSessionPage: React.FC = () => {
               </div>
 
               {/* Countdown to Session End */}
-              <div className="bg-white border border-emerald-200 rounded-lg px-4 py-2 text-right self-start sm:self-auto">
+              <div className="bg-[var(--color-shell-surface)] border border-emerald-200 rounded-lg px-4 py-2 text-right self-start sm:self-auto">
                 <div className="text-[10px] uppercase tracking-wider text-emerald-700 font-semibold">
                   Session Ends In
                 </div>
@@ -523,11 +523,11 @@ export const SeekerSessionPage: React.FC = () => {
 
             {/* Meeting Link Card */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-zinc-700">
+              <label className="text-xs font-semibold text-[var(--color-shell-text-muted)]">
                 Verified HTTPS Meeting Link:
               </label>
               <div className="flex items-center gap-2">
-                <div className="flex-1 p-3 bg-white rounded-lg border border-emerald-200 font-mono text-xs text-zinc-800 truncate select-all">
+                <div className="flex-1 p-3 bg-[var(--color-shell-surface)] rounded-lg border border-emerald-200 font-mono text-xs text-[var(--color-shell-text)] truncate select-all">
                    {sessionAccess?.meetingUrl || ''}
                 </div>
                 {sessionAccess?.meetingUrl && (
@@ -567,10 +567,10 @@ export const SeekerSessionPage: React.FC = () => {
         {/* STATE 4: COMPLETED / ENDED (Join Denied & Link Expired)           */}
         {/* ------------------------------------------------------------------ */}
         {isCompleted && (
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-6 sm:p-8 space-y-6 text-center sm:text-left">
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-6 sm:p-8 space-y-6 text-center sm:text-left">
             <div className="flex flex-col sm:flex-row items-center gap-4">
-              <div className="h-12 w-12 rounded-full bg-zinc-200 text-zinc-700 flex items-center justify-center shrink-0">
-                <Check className="h-6 w-6 text-zinc-900" />
+              <div className="h-12 w-12 rounded-full bg-zinc-200 text-[var(--color-shell-text-muted)] flex items-center justify-center shrink-0">
+                <Check className="h-6 w-6 text-[var(--color-shell-text)]" />
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-center sm:justify-start gap-2">
@@ -578,24 +578,24 @@ export const SeekerSessionPage: React.FC = () => {
                     STATUS: COMPLETED
                   </Badge>
                 </div>
-                <h2 className="text-lg font-bold text-zinc-950">
+                <h2 className="text-lg font-bold text-[var(--color-shell-text)]">
                   Session Has Concluded
                 </h2>
-                <p className="text-xs text-zinc-500 max-w-lg">
+                <p className="text-xs text-[var(--color-shell-text-muted)] max-w-lg">
                   Scheduled time has ended. The meeting link has been deactivated, and joining is permanently closed per server policy.
                 </p>
               </div>
             </div>
 
             {/* Session Workspace Callout */}
-            <div className="rounded-lg border border-zinc-200 bg-white p-4 space-y-3">
+            <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 space-y-3">
               <div className="flex items-start gap-3">
-                <div className="p-2 rounded-md bg-zinc-100 text-zinc-700 shrink-0">
+                <div className="p-2 rounded-md bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] shrink-0">
                   <FileText className="h-4 w-4" />
                 </div>
                 <div className="text-xs space-y-1">
-                  <span className="font-semibold text-zinc-900">Session Workspace & Notes</span>
-                  <p className="text-zinc-500">
+                  <span className="font-semibold text-[var(--color-shell-text)]">Session Workspace & Notes</span>
+                  <p className="text-[var(--color-shell-text-muted)]">
                     Review notes, key takeaways, and action items recorded for this session.
                   </p>
                 </div>
@@ -624,12 +624,12 @@ export const SeekerSessionPage: React.FC = () => {
             <div className="pt-1 flex flex-col sm:flex-row items-center gap-3">
               <Button
                 disabled
-                className="w-full sm:w-auto px-6 text-xs bg-zinc-200 text-zinc-500 cursor-not-allowed opacity-70"
+                className="w-full sm:w-auto px-6 text-xs bg-zinc-200 text-[var(--color-shell-text-muted)] cursor-not-allowed opacity-70"
                 size="md"
               >
                 <span>Join Denied (Session Ended)</span>
               </Button>
-              <span className="text-[11px] text-zinc-400">
+              <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
                 End time elapsed at {sessionAccess?.endTime ? new Date(sessionAccess.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}.
               </span>
             </div>
@@ -637,14 +637,14 @@ export const SeekerSessionPage: React.FC = () => {
         )}
 
         {/* Security & Verification Footer */}
-        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-400 pt-4 border-t border-zinc-100">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-[11px] text-[var(--color-shell-text-subtle)] pt-4 border-t border-[var(--color-shell-border)]">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="font-medium text-zinc-600">Server Authoritative Time-Gate Enforced</span>
+            <span className="font-medium text-[var(--color-shell-text-muted)]">Server Authoritative Time-Gate Enforced</span>
           </div>
           <div>
             <span>Server Time: </span>
-            <span className="font-mono text-zinc-600">
+            <span className="font-mono text-[var(--color-shell-text-muted)]">
               {sessionAccess?.currentServerTime
                 ? new Date(sessionAccess.currentServerTime).toLocaleTimeString([], {
                     hour: '2-digit',

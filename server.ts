@@ -12,6 +12,7 @@ import {
   transitionExpiredBookingsToCompleted,
   BookingEngineContext,
 } from './src/lib/bookingEngine';
+import { generateMentorSlots } from './src/lib/slotEngine';
 import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingService';
 import {
   getLocalWorkspaces,
@@ -26,8 +27,60 @@ import {
   type AuthRequest,
 } from './src/lib/supabaseServer';
 import { generateRequestId } from './src/lib/requestId';
-import { logger } from './src/lib/logger';
+import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError } from './src/lib/logger';
 import { auditAction } from './src/lib/auditLogger';
+import { POSTGREST_RELATIONSHIPS } from './src/lib/postgrestRelationships';
+import { describeSupabaseError, getErrorMessage, respondWithServerError, resolveHttpStatusForSupabaseError } from './src/lib/supabaseErrors';
+import {
+  MENTOR_APPLICATION_STATUSES,
+  buildMentorApplicationPagination,
+  buildProfileSearchFilter,
+  emptyMentorApplicationStatusCounts,
+  parseMentorApplicationListQuery,
+  type MentorApplicationStatusCounts,
+} from './src/lib/mentorApplicationsQuery';
+import type {
+  MentorApplicationDetailAuditEntry,
+  MentorApplicationDetailDocument,
+  MentorApplicationDetailRow,
+  MentorApplicationQueueAuditEntry,
+  MentorApplicationQueueRow,
+} from './src/types/database';
+
+/**
+ * Applicant embed for the admin mentor verification queue.
+ *
+ * `mentor_applications` has two foreign keys to `profiles`:
+ *   user_id      -> profiles.id  (the applicant)
+ *   reviewed_by  -> profiles.id  (the reviewing admin)
+ * The relationship therefore has to be named explicitly, otherwise PostgREST
+ * fails with PGRST201 "more than one relationship was found".
+ */
+const MENTOR_APPLICATION_LIST_SELECT = `
+  *,
+  documents:mentor_verification_documents(
+    id, document_type, status, original_filename, uploaded_at, reviewed_at, reviewed_by, admin_note
+  )
+`;
+
+const MENTOR_APPLICATION_DETAIL_SELECT = `
+  *
+`;
+
+const MENTOR_APPLICATION_AUDIT_SELECT = `
+  *
+`;
+
+const MENTOR_APPLICATION_STATUS_COUNT_BUCKETS = ['ALL', ...MENTOR_APPLICATION_STATUSES] as const;
+
+/** Upper bound for the applicant profile pre-filter used by the search box. */
+const MENTOR_APPLICATION_SEARCH_MATCH_LIMIT = 200;
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MIN_MENTOR_BIO_LENGTH = 20;
+const MIN_PASSWORD_LENGTH = 6;
+
 
 async function startServer() {
   const app = express();
@@ -135,7 +188,7 @@ async function startServer() {
       return originalJson(body);
     }) as typeof res.json;
 
-    res.on('finish', () => {
+    res.on('finish', async () => {
       const authReq = req as AuthRequest;
       const durationMs = authReq.logStart ? Date.now() - authReq.logStart : undefined;
       const statusCode = res.statusCode;
@@ -152,19 +205,17 @@ async function startServer() {
       const errorCode = errorObj?.error?.code || null;
       const errorMessage = errorObj?.error?.message || null;
 
-      logger.requestEnd(
-        {
-          requestId: authReq.requestId,
-          start: authReq.logStart || Date.now(),
-          method: req.method,
-          path: req.path,
-          userId,
-          role,
-        },
+      logApiRequest({
+        requestId: authReq.requestId || '',
+        method: req.method,
+        path: req.path,
         statusCode,
-        errorCode,
-        errorMessage || undefined,
-        {
+        durationMs: durationMs || 0,
+        userId: userId || undefined,
+        role: role || undefined,
+        error_code: errorCode || undefined,
+        error_message: errorMessage || undefined,
+        metadata: {
           durationMs,
           statusCode,
           error: errorMessage
@@ -174,7 +225,7 @@ async function startServer() {
               }
             : undefined,
         },
-      );
+      }).catch(() => {});
     });
 
     next();
@@ -233,18 +284,47 @@ async function startServer() {
   });
 
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
-  app.post('/api/bookings/hold', async (req, res) => {
+  app.post('/api/bookings/hold', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
     try {
-      const { seekerId, mentorId, segmentId, gigId, startTime, endTime } = req.body;
+      const { mentorId, segmentId, gigId, startTime, endTime } = req.body;
+      const seekerId = req.auth!.user.id;
 
-      if (!seekerId || !mentorId || !segmentId || !gigId || !startTime || !endTime) {
+      if (!mentorId || !segmentId || !gigId || !startTime || !endTime) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'MISSING_REQUIRED_FIELDS',
-            message: 'seekerId, mentorId, segmentId, gigId, startTime, and endTime are required.',
+            message: 'mentorId, segmentId, gigId, startTime, and endTime are required.',
           },
         });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        const { data, error } = await admin.rpc('create_booking_with_hold', {
+          p_seeker_id: seekerId,
+          p_mentor_id: mentorId,
+          p_segment_id: segmentId,
+          p_gig_id: gigId,
+          p_start_time: startTime,
+          p_end_time: endTime,
+        });
+
+        if (error) {
+          const codeMatch = error.message.match(/code:\s*([A-Z0-9_]+)/i);
+          const code = codeMatch?.[1]?.toUpperCase() || 'BOOKING_FAILED';
+          const status = ['SLOT_ALREADY_BOOKED', 'SLOT_HELD_BY_OTHER', 'BOOKING_CONFLICT'].includes(code)
+            ? 409
+            : code === 'UNAUTHORIZED' || code === 'ROLE_NOT_SEEKER'
+              ? 403
+              : 400;
+          return res.status(status).json({
+            success: false,
+            error: { code, message: error.message },
+          });
+        }
+
+        return res.status(201).json(data);
       }
 
       const db: BookingEngineContext = getLocalBookingEngineContext();
@@ -292,15 +372,10 @@ async function startServer() {
   // --------------------------------------------------------------------------
 
   // GET /api/mentor/bookings: Get bookings for a mentor with optional status filter
-  app.get('/api/mentor/bookings', (req, res) => {
+  app.get('/api/mentor/bookings', requireAuth, requireRole('mentor'), (req: AuthRequest, res) => {
     try {
-      const { mentorId, status } = req.query;
-      if (!mentorId || typeof mentorId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
-        });
-      }
+      const { status } = req.query;
+      const mentorId = req.auth!.user.id;
 
       const db = getLocalBookingEngineContext();
       const mentorIds = [mentorId];
@@ -323,10 +398,10 @@ async function startServer() {
   });
 
   // GET /api/mentor/bookings/:id: Get booking detail with authorization check
-  app.get('/api/mentor/bookings/:id', (req, res) => {
+  app.get('/api/mentor/bookings/:id', requireAuth, requireRole('mentor'), (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
-      const { mentorId } = req.query;
+      const callerId = req.auth!.user.id;
 
       const db = getLocalBookingEngineContext();
       const booking = db.bookings.find((b) => b.id === bookingId || b.booking_code === bookingId);
@@ -338,18 +413,14 @@ async function startServer() {
         });
       }
 
-      if (mentorId && typeof mentorId === 'string') {
-        const isOwner = booking.mentor_id === mentorId;
-
-        if (!isOwner) {
-          return res.status(403).json({
-            success: false,
-            error: {
-              code: 'FORBIDDEN_NOT_BOOKING_OWNER',
-              message: 'Forbidden: You are not authorized to view this booking.',
-            },
-          });
-        }
+      if (booking.mentor_id !== callerId) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'FORBIDDEN_NOT_BOOKING_OWNER',
+            message: 'Forbidden: You are not authorized to view this booking.',
+          },
+        });
       }
 
       const enriched = enrichBooking(booking, db);
@@ -363,20 +434,11 @@ async function startServer() {
   });
 
   // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
-  app.post('/api/mentor/bookings/:id/confirm', async (req, res) => {
+  app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
-      const { mentorId, meetingUrl } = req.body;
-
-      if (!mentorId) {
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'AUTH_REQUIRED',
-            message: 'Mentor authentication required to confirm session.',
-          },
-        });
-      }
+      const mentorId = req.auth!.user.id;
+      const { meetingUrl } = req.body;
 
       if (!meetingUrl) {
         return res.status(400).json({
@@ -386,6 +448,17 @@ async function startServer() {
             message: 'Meeting link is required to confirm session.',
           },
         });
+      }
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        const { data: booking, error } = await admin.rpc('confirm_booking', {
+          p_booking_id: bookingId,
+          p_meeting_url: meetingUrl,
+          p_mentor_id: mentorId,
+        });
+        if (error) throw error;
+        return res.json({ success: true, booking, isOverdue: false, message: 'Session confirmed.' });
       }
 
       const db = getLocalBookingEngineContext();
@@ -449,15 +522,9 @@ async function startServer() {
   });
 
   // GET /api/mentor/segments: Get segments for authenticated mentor
-  app.get('/api/mentor/segments', async (req, res) => {
+  app.get('/api/mentor/segments', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
-      const { mentorId } = req.query;
-      if (!mentorId || typeof mentorId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
-        });
-      }
+      const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -512,15 +579,9 @@ async function startServer() {
   });
 
   // GET /api/mentor/gigs: Get gigs for authenticated mentor
-  app.get('/api/mentor/gigs', async (req, res) => {
+  app.get('/api/mentor/gigs', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
-      const { mentorId } = req.query;
-      if (!mentorId || typeof mentorId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
-        });
-      }
+      const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -559,10 +620,11 @@ async function startServer() {
   });
 
   // POST /api/mentor/gigs: Create a new gig for authenticated mentor
-  app.post('/api/mentor/gigs', async (req, res) => {
+  app.post('/api/mentor/gigs', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
-      const { mentorId, title, segmentId, durationMinutes, priceInr, description } = req.body;
-      if (!mentorId || !title || !segmentId || !durationMinutes || priceInr === undefined) {
+      const { title, segmentId, durationMinutes, priceInr, description } = req.body;
+      const mentorId = req.auth!.user.id;
+      if (!title || !segmentId || !durationMinutes || priceInr === undefined) {
         return res.status(400).json({
           success: false,
           error: { code: 'VALIDATION_ERROR', message: 'Missing required fields.' },
@@ -616,17 +678,11 @@ async function startServer() {
   });
 
   // PATCH /api/mentor/gigs/:id: Update gig
-  app.patch('/api/mentor/gigs/:id', async (req, res) => {
+  app.patch('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { mentorId, title, durationMinutes, priceInr, description, isActive } = req.body;
-
-      if (!mentorId) {
-        return res.status(401).json({
-          success: false,
-          error: { code: 'AUTH_REQUIRED', message: 'Mentor authentication required.' },
-        });
-      }
+      const { title, durationMinutes, priceInr, description, isActive } = req.body;
+      const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -673,17 +729,10 @@ async function startServer() {
   });
 
   // DELETE /api/mentor/gigs/:id: Delete gig
-  app.delete('/api/mentor/gigs/:id', async (req, res) => {
+  app.delete('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { mentorId } = req.query;
-
-      if (!mentorId || typeof mentorId !== 'string') {
-        return res.status(401).json({
-          success: false,
-          error: { code: 'AUTH_REQUIRED', message: 'Mentor authentication required.' },
-        });
-      }
+      const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -981,6 +1030,13 @@ async function startServer() {
 
       if (error) throw error;
 
+      auditAction(req.auth, 'mentor_approved', {
+        entityType: 'mentor_profile',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { action: 'approve' },
+      });
+
       return res.json({ success: true, message: 'Mentor approved successfully.' });
     } catch (err: any) {
       console.error('Failed to approve mentor:', err);
@@ -1003,6 +1059,13 @@ async function startServer() {
         .eq('id', id);
 
       if (error) throw error;
+
+      auditAction(req.auth, 'mentor_rejected', {
+        entityType: 'mentor_profile',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { action: 'reject' },
+      });
 
       return res.json({ success: true, message: 'Mentor rejected successfully.' });
     } catch (err: any) {
@@ -1028,6 +1091,13 @@ async function startServer() {
         .eq('id', id);
 
       if (error) throw error;
+
+      auditAction(req.auth, isActive ? 'mentor_activated' : 'mentor_deactivated', {
+        entityType: 'mentor_profile',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { isActive },
+      });
 
       return res.json({ success: true, message: `Mentor ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
@@ -1146,6 +1216,13 @@ async function startServer() {
         throw error;
       }
 
+      auditAction(req.auth, 'segment_created', {
+        entityType: 'segment',
+        entityId: data?.id,
+        requestId: req.requestId,
+        metadata: { name, slug, priority, isActive },
+      });
+
       return res.status(201).json({ success: true, segment: data, message: 'Segment created successfully.' });
     } catch (err: any) {
       console.error('Failed to create segment:', err);
@@ -1184,6 +1261,13 @@ async function startServer() {
         throw error;
       }
 
+      auditAction(req.auth, 'segment_edited', {
+        entityType: 'segment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { updates: updateData },
+      });
+
       return res.json({ success: true, segment: data, message: 'Segment updated successfully.' });
     } catch (err: any) {
       console.error('Failed to update segment:', err);
@@ -1209,6 +1293,13 @@ async function startServer() {
         .single();
 
       if (error) throw error;
+
+      auditAction(req.auth, isActive ? 'segment_activated' : 'segment_deactivated', {
+        entityType: 'segment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { isActive },
+      });
 
       return res.json({ success: true, segment: data, message: `Segment ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
@@ -1244,6 +1335,12 @@ async function startServer() {
 
       if (rolesErr) throw rolesErr;
 
+      const { data: applications, error: applicationsErr } = await admin
+        .from('mentor_applications')
+        .select('user_id, status');
+
+      if (applicationsErr) throw applicationsErr;
+
       // Combine: for each profile, get their roles
       const rolesMap = new Map<string, string[]>();
       for (const ur of userRoles || []) {
@@ -1251,9 +1348,21 @@ async function startServer() {
         rolesMap.get(ur.user_id)!.push(ur.role);
       }
 
+      const applicationStatusMap = new Map<string, string>();
+      for (const application of applications || []) {
+        if (application.user_id) applicationStatusMap.set(application.user_id, application.status);
+      }
+
       const users = (profiles || []).map((p: any) => {
         const roles = rolesMap.get(p.id) || ['seeker'];
-        const primaryRole = roles.includes('admin') ? 'ADMIN' : roles.includes('mentor') ? 'MENTOR' : 'SEEKER';
+        const applicationStatus = applicationStatusMap.get(p.id) || null;
+        const primaryRole = roles.includes('admin')
+          ? 'ADMIN'
+          : roles.includes('mentor') && applicationStatus !== null && applicationStatus !== 'approved'
+            ? 'PENDING_MENTOR'
+            : roles.includes('mentor')
+              ? 'MENTOR'
+              : 'SEEKER';
         return {
           id: p.id,
           name: p.full_name,
@@ -1261,8 +1370,9 @@ async function startServer() {
           role: primaryRole,
           timezone: p.timezone,
           createdAt: p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
-          status: 'ACTIVE', // Could be derived from a status field if added
+          status: p.account_status === 'suspended' ? 'SUSPENDED' : 'ACTIVE',
           roles,
+          applicationStatus,
         };
       });
 
@@ -1270,6 +1380,93 @@ async function startServer() {
     } catch (err: any) {
       console.error('Failed to fetch admin users:', err);
       return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // GET /api/admin/users/:id: Central user details with mentor onboarding data.
+  app.get('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const [{ data: profile, error: profileErr }, { data: roles, error: rolesErr }, { data: mentorProfile, error: mentorErr }, { data: application, error: applicationErr }] = await Promise.all([
+        admin.from('profiles').select('*').eq('id', userId).maybeSingle(),
+        admin.from('user_roles').select('role').eq('user_id', userId),
+        admin.from('mentor_profiles').select('*').eq('id', userId).maybeSingle(),
+        admin.from('mentor_applications').select('*').eq('user_id', userId).maybeSingle(),
+      ]);
+      if (profileErr) throw profileErr;
+      if (rolesErr) throw rolesErr;
+      if (mentorErr) throw mentorErr;
+      if (applicationErr) throw applicationErr;
+      if (!profile) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+
+      const applicationId = application?.id;
+      const [{ data: documents, error: documentsErr }, { data: memberships, error: membershipsErr }] = await Promise.all([
+        applicationId ? admin.from('mentor_verification_documents').select('*').eq('application_id', applicationId).order('uploaded_at', { ascending: false }) : Promise.resolve({ data: [], error: null }),
+        admin.from('mentor_segments').select('*, segment:segments(*)').eq('mentor_id', userId),
+      ]);
+      if (documentsErr) throw documentsErr;
+      if (membershipsErr) throw membershipsErr;
+
+      const signedDocuments = await Promise.all((documents || []).map(async (document: { storage_path: string }) => {
+        const { data: signed, error: signedErr } = await admin.storage.from('mentor-verification-documents').createSignedUrl(document.storage_path, 300);
+        if (signedErr) throw signedErr;
+        return { ...document, download_url: signed?.signedUrl || null };
+      }));
+
+      // Transform mentorProfile for frontend compatibility: map 'about' -> 'bio', 'experience_years' -> 'years_experience'
+      const transformedMentorProfile = mentorProfile ? {
+        ...mentorProfile,
+        bio: mentorProfile.about,
+        years_experience: mentorProfile.experience_years,
+      } : null;
+
+      return res.json({ success: true, user: { profile, roles: (roles || []).map((entry: { role: string }) => entry.role), mentorProfile: transformedMentorProfile, application, documents: signedDocuments, segments: memberships || [] } });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id', clientMessage: 'Unable to load user details.' });
+    }
+  });
+
+  // PATCH /api/admin/users/:id: Edit approved profile fields and mentor profile data.
+  app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      const body = (req.body || {}) as Record<string, unknown>;
+      const profileUpdates: Record<string, string> = {};
+      if (typeof body.fullName === 'string' && body.fullName.trim()) profileUpdates.full_name = body.fullName.trim();
+      if (typeof body.timezone === 'string' && body.timezone.trim()) profileUpdates.timezone = body.timezone.trim();
+      // account_status column does not exist in profiles table; ignore if sent
+
+      const mentorUpdates: Record<string, unknown> = {};
+      if (typeof body.bio === 'string') mentorUpdates.about = body.bio.trim();
+      if (typeof body.headline === 'string') mentorUpdates.headline = body.headline.trim();
+      if (typeof body.experienceYears === 'number' && Number.isInteger(body.experienceYears) && body.experienceYears >= 0) mentorUpdates.experience_years = body.experienceYears;
+
+      if (Object.keys(profileUpdates).length === 0 && Object.keys(mentorUpdates).length === 0) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No editable fields were provided.' } });
+      }
+
+      if (Object.keys(profileUpdates).length > 0) {
+        const { error } = await admin.from('profiles').update({ ...profileUpdates, updated_at: new Date().toISOString() }).eq('id', userId);
+        if (error) throw error;
+      }
+
+      if (Object.keys(mentorUpdates).length > 0) {
+        const { error } = await admin.from('mentor_profiles').update({ ...mentorUpdates, updated_at: new Date().toISOString() }).eq('id', userId);
+        if (error) throw error;
+      }
+
+      auditAction(req.auth, 'admin_user_updated', { entityType: 'user', entityId: userId, requestId: req.requestId, metadata: { fields: [...Object.keys(profileUpdates), ...Object.keys(mentorUpdates)] } });
+      return res.json({ success: true, message: 'User updated successfully.' });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'PATCH /api/admin/users/:id', clientMessage: 'Unable to update user.' });
     }
   });
 
@@ -1445,18 +1642,21 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const { error } = await admin
-        .from('payments')
-        .update({ status: 'VERIFIED', verified_by: req.auth?.user?.id, verified_at: new Date().toISOString() })
-        .eq('id', id);
+      const { data, error } = await admin.rpc('review_payment', {
+        p_payment_id: id,
+        p_approve: true,
+        p_rejection_reason: null,
+        p_admin_id: req.auth!.user.id,
+      });
 
       if (error) throw error;
 
-      // Also update the associated booking status to MENTOR_PENDING
-      const { data: payment } = await admin.from('payments').select('booking_id').eq('id', id).single();
-      if (payment?.booking_id) {
-        await admin.from('bookings').update({ status: 'MENTOR_PENDING' }).eq('id', payment.booking_id);
-      }
+      auditAction(req.auth, 'payment_approved', {
+        entityType: 'payment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { bookingId: data?.booking_id },
+      });
 
       return res.json({ success: true, message: 'Payment approved successfully.' });
     } catch (err: any) {
@@ -1475,18 +1675,21 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const { error } = await admin
-        .from('payments')
-        .update({ status: 'REJECTED', rejection_reason: rejectionReason || 'Invalid transaction screenshot', verified_by: req.auth?.user?.id, verified_at: new Date().toISOString() })
-        .eq('id', id);
+      const { data, error } = await admin.rpc('review_payment', {
+        p_payment_id: id,
+        p_approve: false,
+        p_rejection_reason: rejectionReason || null,
+        p_admin_id: req.auth!.user.id,
+      });
 
       if (error) throw error;
 
-      // Also update the associated booking status back to PAYMENT_PENDING
-      const { data: payment } = await admin.from('payments').select('booking_id').eq('id', id).single();
-      if (payment?.booking_id) {
-        await admin.from('bookings').update({ status: 'PAYMENT_PENDING' }).eq('id', payment.booking_id);
-      }
+      auditAction(req.auth, 'payment_rejected', {
+        entityType: 'payment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { bookingId: data?.booking_id, rejectionReason },
+      });
 
       return res.json({ success: true, message: 'Payment rejected successfully.' });
     } catch (err: any) {
@@ -2065,6 +2268,1773 @@ async function startServer() {
         success: false,
         error: { code: 'SERVER_ERROR', message: err.message },
       });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 12: Mentor Onboarding, Verification & Admin Approval
+  // --------------------------------------------------------------------------
+
+  // GET /api/mentor/onboarding-status: Get mentor's onboarding status
+  app.get('/api/mentor/onboarding-status', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const userId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+
+      const { data: documents, error: docsErr } = application
+        ? await admin.from('mentor_verification_documents').select('*').eq('application_id', application.id)
+        : { data: [], error: null };
+
+      if (docsErr) throw docsErr;
+
+      const [{ data: mentorProfile, error: mentorProfileErr }, { data: mentorSegments, error: mentorSegmentsErr }] = await Promise.all([
+        admin.from('mentor_profiles').select('*').eq('id', userId).maybeSingle(),
+        admin.from('mentor_segments').select('segment_id, segment:segments(id, name, slug, description)').eq('mentor_id', userId),
+      ]);
+
+      if (mentorProfileErr) throw mentorProfileErr;
+      if (mentorSegmentsErr) throw mentorSegmentsErr;
+
+      const { data: documentTypes, error: dtErr } = await admin
+        .from('mentor_document_types')
+        .select('*')
+        .eq('is_active', true)
+        .order('sort_order');
+
+      if (dtErr) throw dtErr;
+
+      const { data: auditLog, error: auditErr } = application
+        ? await admin
+            .from('mentor_application_audit')
+            .select(MENTOR_APPLICATION_AUDIT_SELECT)
+            .eq('application_id', application.id)
+            .order('created_at', { ascending: false })
+        : { data: [], error: null };
+
+      if (auditErr) throw auditErr;
+
+      // Required document types are database configuration, not frontend constants.
+      const requiredDocumentTypes = (documentTypes || []).filter((documentType: { is_required: boolean }) => documentType.is_required).map((documentType: { code: string }) => documentType.code);
+      const approvedDocTypes = new Set((documents || []).filter((d: any) => d.status === 'approved').map((d: any) => d.document_type));
+
+      return res.json({
+        success: true,
+        onboarding: {
+          application: application || null,
+          documents: documents || [],
+          documentTypes: documentTypes || [],
+          mentorProfile: mentorProfile || null,
+          segments: mentorSegments || [],
+          auditLog: auditLog || [],
+          allRequiredDocsApproved: application ? application.status === 'approved' && requiredDocumentTypes.every((t) => approvedDocTypes.has(t)) : false,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/mentor/application/draft: Create or update a mentor application in draft
+  app.post('/api/mentor/application/draft', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const userId = req.auth!.user.id;
+      const { fullName, bio, timezone, headline, experienceYears, segmentIds } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (!fullName || typeof fullName !== 'string' || fullName.trim() === '') {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Full name is required.' } });
+      }
+
+      // Upsert application in draft/rejected state (RLS won't allow this from service role, so direct insert)
+      const { data: existing } = await admin
+        .from('mentor_applications')
+        .select('id, status')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      let application;
+
+      if (existing) {
+        // Only update if in draft or rejected state
+        if (existing.status !== 'draft' && existing.status !== 'rejected') {
+          return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Application cannot be edited in current status.' } });
+        }
+        const { data, error } = await admin
+          .from('mentor_applications')
+          .update({
+            full_name: fullName.trim(),
+            bio: bio || '',
+            timezone: timezone || 'Asia/Kolkata',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', userId)
+          .select()
+          .single();
+
+        if (error) throw error;
+        application = data;
+      } else {
+        const { data, error } = await admin
+          .from('mentor_applications')
+          .insert({
+            user_id: userId,
+            full_name: fullName.trim(),
+            bio: bio || '',
+            timezone: timezone || 'Asia/Kolkata',
+            status: 'draft',
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+        application = data;
+      }
+
+      const { error: mentorProfileErr } = await admin
+        .from('mentor_profiles')
+        .upsert({
+          id: userId,
+          headline: typeof headline === 'string' ? headline.trim() : '',
+          bio: typeof bio === 'string' ? bio.trim() : '',
+          years_experience: Number.isInteger(experienceYears) ? experienceYears : 0,
+          experience_years: Number.isInteger(experienceYears) ? experienceYears : 0,
+          timezone: typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Kolkata',
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'id' });
+      if (mentorProfileErr) throw mentorProfileErr;
+
+      if (Array.isArray(segmentIds)) {
+        const validSegmentIds = segmentIds.filter((segmentId: unknown): segmentId is string => typeof segmentId === 'string' && segmentId.length > 0);
+        if (validSegmentIds.length > 0) {
+          const { data: activeSegments, error: segmentErr } = await admin
+            .from('segments')
+            .select('id')
+            .in('id', validSegmentIds)
+            .eq('is_active', true);
+          if (segmentErr) throw segmentErr;
+          const memberships = (activeSegments || []).map((segment: { id: string }) => ({ mentor_id: userId, segment_id: segment.id }));
+          if (memberships.length > 0) {
+            const { error: membershipErr } = await admin.from('mentor_segments').upsert(memberships, { onConflict: 'mentor_id,segment_id', ignoreDuplicates: true });
+            if (membershipErr) throw membershipErr;
+          }
+        }
+      }
+
+      // Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: application.id,
+        action: 'created',
+        admin_user_id: null,
+        metadata: { full_name: fullName.trim() },
+      });
+
+      return res.json({ success: true, application });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/mentor/application/submit: Submit application for review
+  app.post('/api/mentor/application/submit', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const userId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Get application
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'No mentor application found.' } });
+      }
+
+      if (application.status !== 'draft' && application.status !== 'rejected') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Application cannot be submitted from current status.' } });
+      }
+
+      const { data: requiredDocumentTypes, error: requiredTypesErr } = await admin
+        .from('mentor_document_types')
+        .select('code')
+        .eq('is_active', true)
+        .eq('is_required', true);
+      if (requiredTypesErr) throw requiredTypesErr;
+
+      const { data: mentorSegments, error: mentorSegmentsErr } = await admin
+        .from('mentor_segments')
+        .select('segment_id')
+        .eq('mentor_id', userId);
+      if (mentorSegmentsErr) throw mentorSegmentsErr;
+
+      const { data: mentorProfile, error: mentorProfileErr } = await admin
+        .from('mentor_profiles')
+        .select('about, headline, experience_years')
+        .eq('id', userId)
+        .maybeSingle();
+      if (mentorProfileErr) throw mentorProfileErr;
+
+      const missingProfileFields: string[] = [];
+      if (!application.bio || application.bio.trim().length < MIN_MENTOR_BIO_LENGTH) missingProfileFields.push('Mentor bio');
+      if (!mentorProfile?.headline || !mentorProfile.headline.trim()) missingProfileFields.push('Professional headline');
+      if (!mentorSegments || mentorSegments.length === 0) missingProfileFields.push('At least one mentorship segment');
+      if (missingProfileFields.length > 0) {
+        return res.status(400).json({ success: false, error: { code: 'INCOMPLETE_APPLICATION', message: `Complete the following before submitting: ${missingProfileFields.join(', ')}.` } });
+      }
+
+      // Validate required documents are uploaded
+      const { data: docs, error: docsErr } = await admin
+        .from('mentor_verification_documents')
+        .select('document_type, status')
+        .eq('application_id', application.id);
+
+      if (docsErr) throw docsErr;
+
+      const uploadedDocTypes = new Set((docs || []).filter((d: any) => d.status === 'pending' || d.status === 'approved').map((d: any) => d.document_type));
+      const missingTypes = (requiredDocumentTypes || []).map((documentType: { code: string }) => documentType.code).filter((type: string) => !uploadedDocTypes.has(type));
+
+      if (missingTypes.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_REQUIRED_DOCUMENTS',
+            message: `Missing required documents: ${missingTypes.join(', ')}`,
+          },
+        });
+      }
+
+      // Update application status
+      const { data: updatedApp, error: updErr } = await admin
+        .from('mentor_applications')
+        .update({
+          status: 'pending_review',
+          submitted_at: new Date().toISOString(),
+          rejection_reason: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', userId)
+        .select()
+        .single();
+
+      if (updErr) throw updErr;
+
+      // Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: updatedApp.id,
+        action: 'submitted',
+        admin_user_id: null,
+        metadata: { previous_status: application.status },
+      });
+
+      // Create notification for administrators
+      const { error: notifErr } = await admin.from('notifications').insert({
+        user_id: null,
+        title: 'New Mentor Verification Submitted',
+        message: `A new mentor application from ${updatedApp.full_name} requires review.`,
+        type: 'ADMIN',
+        event_type: 'ADMIN_MENTOR_APPLICATION_SUBMITTED',
+        entity_type: 'mentor_application',
+        entity_id: updatedApp.id,
+        link: `/admin/mentor-verification/${updatedApp.id}`,
+        is_read: false,
+      });
+
+      if (notifErr) console.error('Failed to create admin notification:', notifErr.message);
+
+      return res.json({ success: true, application: updatedApp });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/mentor/document: Upsert mentor verification document metadata (after file uploaded to storage)
+  app.post('/api/mentor/document', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const userId = req.auth!.user.id;
+      const { applicationId, documentType, storagePath, originalFilename, mimeType, sizeBytes } = req.body;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (!applicationId || !documentType || !storagePath || !originalFilename || !mimeType || !sizeBytes) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'All document fields are required.' } });
+      }
+
+      // Validate application ownership and status
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('user_id, status')
+        .eq('id', applicationId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
+      }
+
+      if (!storagePath.startsWith(`${userId}/${applicationId}/`)) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'Document storage path is not owned by the current user.' } });
+      }
+
+      if (application.status !== 'draft' && application.status !== 'rejected') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Documents can only be uploaded for draft or rejected applications.' } });
+      }
+
+      // Validate document type
+      const { data: docType, error: dtErr } = await admin
+        .from('mentor_document_types')
+        .select('code')
+        .eq('code', documentType)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (dtErr) throw dtErr;
+      if (!docType) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid document type.' } });
+      }
+
+      // Upsert document
+      const { data: document, error: docErr } = await admin
+        .from('mentor_verification_documents')
+        .upsert({
+          application_id: applicationId,
+          document_type: documentType,
+          storage_path: storagePath,
+          original_filename: originalFilename,
+          mime_type: mimeType,
+          size_bytes: sizeBytes,
+          status: 'pending',
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: 'application_id,document_type',
+        })
+        .select()
+        .single();
+
+      if (docErr) throw docErr;
+
+      // Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: applicationId,
+        action: 'document_uploaded',
+        admin_user_id: null,
+        metadata: { document_type: documentType, document_id: document.id },
+      });
+
+      return res.json({ success: true, document });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // DELETE /api/mentor/document/:id: Remove replaceable verification metadata and file.
+  app.delete('/api/mentor/document/:id', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.auth!.user.id;
+      const { data: document, error: documentErr } = await admin
+        .from('mentor_verification_documents')
+        .select('id, storage_path, application_id, mentor_applications!inner(user_id, status)')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (documentErr) throw documentErr;
+      const ownerApplication = Array.isArray(document?.mentor_applications) ? document.mentor_applications[0] : document?.mentor_applications;
+      if (!document || ownerApplication?.user_id !== userId) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Document not found.' } });
+      }
+      if (ownerApplication.status !== 'draft' && ownerApplication.status !== 'rejected') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Documents cannot be changed after submission.' } });
+      }
+
+      const { error: storageErr } = await admin.storage.from('mentor-verification-documents').remove([document.storage_path]);
+      if (storageErr) throw storageErr;
+      const { error: deleteErr } = await admin.from('mentor_verification_documents').delete().eq('id', document.id);
+      if (deleteErr) throw deleteErr;
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to remove verification document.' } });
+    }
+  });
+
+  // GET /api/admin/mentor-applications: List mentor applications (admin, filtered + paginated)
+  app.get('/api/admin/mentor-applications', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    const { status, search, page, pageSize, from, to } = parseMentorApplicationListQuery(
+      req.query as Record<string, unknown>,
+    );
+
+    try {
+      // Server-side applicant search: profiles.full_name / profiles.email ->
+      // matching applicant ids -> mentor_applications.user_id (the applicant FK).
+      let applicantIds: string[] | null = null;
+      if (search) {
+        const { data: matchedProfiles, error: searchErr } = await admin
+          .from('profiles')
+          .select('id')
+          .or(buildProfileSearchFilter(search))
+          .limit(MENTOR_APPLICATION_SEARCH_MATCH_LIMIT);
+
+        if (searchErr) throw searchErr;
+
+        applicantIds = (matchedProfiles ?? []).map((profile: { id: string }) => profile.id);
+        if (applicantIds.length === 0) {
+          // No applicant matches the search term: answer a real, empty page instead
+          // of fetching the whole table and filtering in the browser.
+          return res.json({
+            success: true,
+            applications: [],
+            counts: emptyMentorApplicationStatusCounts(),
+            pagination: buildMentorApplicationPagination(page, pageSize, 0),
+          });
+        }
+      }
+
+      const countApplications = async (statusFilter: (typeof MENTOR_APPLICATION_STATUS_COUNT_BUCKETS)[number]) => {
+        let countQuery = admin
+          .from('mentor_applications')
+          .select('id', { count: 'exact', head: true });
+
+        if (statusFilter !== 'ALL') countQuery = countQuery.eq('status', statusFilter);
+        if (applicantIds) countQuery = countQuery.in('user_id', applicantIds);
+
+        const { count, error } = await countQuery;
+        if (error) throw error;
+        return count ?? 0;
+      };
+
+      let listQuery = admin
+        .from('mentor_applications')
+        .select(MENTOR_APPLICATION_LIST_SELECT, { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(from, to);
+
+      if (status !== 'ALL') listQuery = listQuery.eq('status', status);
+      if (applicantIds) listQuery = listQuery.in('user_id', applicantIds);
+
+      const [listResult, countEntries] = await Promise.all([
+        listQuery,
+        Promise.all(
+          MENTOR_APPLICATION_STATUS_COUNT_BUCKETS.map(
+            async (statusFilter) => [statusFilter, await countApplications(statusFilter)] as const,
+          ),
+        ),
+      ]);
+
+      if (listResult.error) throw listResult.error;
+
+      const counts: MentorApplicationStatusCounts = emptyMentorApplicationStatusCounts();
+      for (const [statusFilter, value] of countEntries) {
+        if (statusFilter === 'ALL') counts.all = value;
+        else counts[statusFilter] = value;
+      }
+
+      const rows = (listResult.data ?? []) as unknown as MentorApplicationQueueRow[];
+      const applicationIds = rows.map((row) => row.id);
+
+      const applicantIdsForProfiles = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
+      const { data: applicantProfiles, error: applicantProfilesErr } = applicantIdsForProfiles.length > 0
+        ? await admin.from('profiles').select('id, full_name, email, avatar_url').in('id', applicantIdsForProfiles)
+        : { data: [], error: null };
+      if (applicantProfilesErr) throw applicantProfilesErr;
+      const applicantProfileMap = new Map((applicantProfiles || []).map((profile: { id: string }) => [profile.id, profile]));
+
+      let auditLog: MentorApplicationQueueAuditEntry[] = [];
+      if (applicationIds.length > 0) {
+        const { data: audits, error: auditErr } = await admin
+          .from('mentor_application_audit')
+          .select('*')
+          .in('application_id', applicationIds)
+          .order('created_at', { ascending: false });
+
+        if (auditErr) throw auditErr;
+        auditLog = (audits ?? []) as unknown as MentorApplicationQueueAuditEntry[];
+      }
+
+      const auditMap = new Map<string, MentorApplicationQueueAuditEntry[]>();
+      for (const entry of auditLog) {
+        const existing = auditMap.get(entry.application_id);
+        if (existing) existing.push(entry);
+        else auditMap.set(entry.application_id, [entry]);
+      }
+
+      const applications = rows.map((row) => ({
+        ...row,
+        profile: applicantProfileMap.get(row.user_id) || null,
+        auditLog: auditMap.get(row.id) ?? [],
+      }));
+
+      return res.json({
+        success: true,
+        applications,
+        counts,
+        pagination: buildMentorApplicationPagination(page, pageSize, listResult.count ?? applications.length),
+      });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'GET /api/admin/mentor-applications',
+        clientMessage: 'Unable to load mentor applications.',
+      });
+    }
+  });
+
+  // GET /api/admin/mentor-applications/:id: Get detailed application with documents and audit trail
+  app.get('/api/admin/mentor-applications/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: applicationData, error: appErr } = await admin
+        .from('mentor_applications')
+        .select(MENTOR_APPLICATION_DETAIL_SELECT)
+        .eq('id', id)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+
+      const rawApplication = applicationData ?? null;
+      const application = rawApplication
+        ? ({
+            ...rawApplication,
+            profile: (await admin.from('profiles').select('id, full_name, email, avatar_url, timezone, created_at').eq('id', rawApplication.user_id).maybeSingle()).data || null,
+          } as unknown as MentorApplicationDetailRow)
+        : null;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
+      }
+
+      // The document type catalogue is joined as `document_type_ref` so the raw
+      // `document_type` code stays available for required-document checks.
+      const { data: documentRows, error: docsErr } = await admin
+        .from('mentor_verification_documents')
+        .select(`
+          *,
+          document_type_ref:mentor_document_types!inner(code, label, description, is_required)
+        `)
+        .eq('application_id', id)
+        .order('uploaded_at', { ascending: false });
+
+      if (docsErr) throw docsErr;
+
+      const { data: auditRows, error: auditErr } = await admin
+        .from('mentor_application_audit')
+        .select(MENTOR_APPLICATION_AUDIT_SELECT)
+        .eq('application_id', id)
+        .order('created_at', { ascending: false });
+
+      if (auditErr) throw auditErr;
+
+      // Get download URLs for documents (for admin viewing)
+      const documents = await Promise.all(((documentRows ?? []) as unknown as MentorApplicationDetailDocument[]).map(async (doc) => {
+        const { data: signed, error: signedErr } = await admin.storage
+          .from('mentor-verification-documents')
+          .createSignedUrl(doc.storage_path, 300);
+        if (signedErr) throw signedErr;
+        return { ...doc, download_url: signed?.signedUrl || null };
+      }));
+
+      const auditLog = (auditRows ?? []) as unknown as MentorApplicationDetailAuditEntry[];
+
+      return res.json({
+        success: true,
+        application: {
+          ...application,
+          documents,
+          auditLog,
+        },
+      });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'GET /api/admin/mentor-applications/:id',
+        clientMessage: 'Unable to load mentor application.',
+      });
+    }
+  });
+
+  // POST /api/admin/mentor-applications/:id/approve: Approve mentor application (admin)
+  app.post('/api/admin/mentor-applications/:id/approve', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const adminUserId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      // Get application with lock
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
+      }
+
+      if (application.status !== 'pending_review') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: `Application is not pending review (current: ${application.status}).` } });
+      }
+
+      // Validate required documents are approved
+      const { data: docs, error: docsErr } = await admin
+        .from('mentor_verification_documents')
+        .select('document_type, status')
+        .eq('application_id', id);
+
+      if (docsErr) throw docsErr;
+
+      const { data: requiredDocumentTypes, error: requiredTypesErr } = await admin
+        .from('mentor_document_types')
+        .select('code')
+        .eq('is_active', true)
+        .eq('is_required', true);
+      if (requiredTypesErr) throw requiredTypesErr;
+
+      const approvedDocTypes = new Set((docs || []).filter((d: any) => d.status === 'approved').map((d: any) => d.document_type));
+      const missingApproved = (requiredDocumentTypes || []).map((documentType: { code: string }) => documentType.code).filter((type: string) => !approvedDocTypes.has(type));
+
+      if (missingApproved.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_APPROVED_DOCUMENTS',
+            message: `All required documents must be approved before mentor approval: ${missingApproved.join(', ')}`,
+          },
+        });
+      }
+
+      // Atomic transaction-equivalent: update application, create mentor profile, assign role
+      await admin.rpc('approve_mentor_application', { p_application_id: id });
+
+      // The RPC handles: application status, mentor_profiles creation, user_roles, audit, notifications
+      // But since it uses auth.uid() and we're using service role, we need to do it manually
+      // Actually, the RPC uses is_admin() which checks auth.uid() - this won't work with service role
+
+      // So we need to manually perform the approve logic:
+      // 1. Update application
+      const { error: updErr } = await admin
+        .from('mentor_applications')
+        .update({
+          status: 'approved',
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: adminUserId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (updErr) throw updErr;
+
+      // 2. Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: id,
+        action: 'approved',
+        admin_user_id: adminUserId,
+        metadata: { approved_by: adminUserId },
+      });
+
+      // 3. Ensure mentor role exists
+      const { error: roleErr } = await admin.from('user_roles').upsert({
+        user_id: application.user_id,
+        role: 'mentor',
+      });
+
+      if (roleErr) throw roleErr;
+
+      // 4. Create/update mentor_profile
+      const { error: mpErr } = await admin.from('mentor_profiles').upsert({
+        id: application.user_id,
+        headline: application.bio || '',
+        about: application.bio || '',
+        experience_years: 0,
+        languages: [],
+        rating: 0.0,
+        review_count: 0,
+        session_count: 0,
+        is_approved: true,
+        is_featured: false,
+        approval_status: 'approved',
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      if (mpErr) throw mpErr;
+
+      // 5. Notification to applicant
+      await admin.from('notifications').insert({
+        user_id: application.user_id,
+        title: 'Mentor Application Approved',
+        message: 'Congratulations! Your mentor application has been approved. You can now complete your mentor profile and configure your availability.',
+        type: 'SYSTEM',
+        event_type: 'MENTOR_APPLICATION_APPROVED',
+        entity_type: 'mentor_application',
+        entity_id: id,
+        link: '/mentor',
+        is_read: false,
+      });
+
+      // 6. Audit log to audit_logs table
+      auditAction(req.auth, 'mentor_application_approved', {
+        entityType: 'mentor_application',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { approvedByUserId: adminUserId, applicantUserId: application.user_id },
+      });
+
+      return res.json({ success: true, message: 'Mentor application approved successfully.' });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/admin/mentor-applications/:id/approve',
+        clientMessage: 'Unable to approve mentor application.',
+      });
+    }
+  });
+
+  // POST /api/admin/mentor-applications/:id/reject: Reject mentor application (admin)
+  app.post('/api/admin/mentor-applications/:id/reject', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { rejectionReason } = req.body;
+      const adminUserId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (!rejectionReason || typeof rejectionReason !== 'string' || rejectionReason.trim() === '') {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Rejection reason is required.' } });
+      }
+
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
+      }
+
+      if (application.status !== 'pending_review') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: `Application is not pending review (current: ${application.status}).` } });
+      }
+
+      const { error: updErr } = await admin
+        .from('mentor_applications')
+        .update({
+          status: 'rejected',
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: adminUserId,
+          rejection_reason: rejectionReason.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (updErr) throw updErr;
+
+      // Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: id,
+        action: 'rejected',
+        admin_user_id: adminUserId,
+        rejection_reason: rejectionReason.trim(),
+        metadata: { rejected_by: adminUserId },
+      });
+
+      // Notification to applicant
+      await admin.from('notifications').insert({
+        user_id: application.user_id,
+        title: 'Mentor Application Needs Changes',
+        message: `Your mentor application needs changes: ${rejectionReason.trim()}. Please review the Admin feedback and resubmit your verification.`,
+        type: 'SYSTEM',
+        event_type: 'MENTOR_APPLICATION_REJECTED',
+        entity_type: 'mentor_application',
+        entity_id: id,
+        link: '/mentor/verification',
+        is_read: false,
+      });
+
+      auditAction(req.auth, 'mentor_application_rejected', {
+        entityType: 'mentor_application',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { rejectedByUserId: adminUserId, applicantUserId: application.user_id, rejectionReason },
+      });
+
+      return res.json({ success: true, message: 'Mentor application rejected successfully.' });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/admin/mentor-applications/:id/reject',
+        clientMessage: 'Unable to reject mentor application.',
+      });
+    }
+  });
+
+  // PATCH /api/admin/mentor-documents/:id/review: Review a verification document (admin)
+  app.patch('/api/admin/mentor-documents/:id/review', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { status, adminNote } = req.body;
+      const adminUserId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (status !== 'approved' && status !== 'rejected') {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Status must be "approved" or "rejected".' } });
+      }
+
+      // Get document with application context
+      const { data: document, error: docErr } = await admin
+        .from('mentor_verification_documents')
+        .select('*, application:mentor_applications!inner(id, user_id, full_name)')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (docErr) throw docErr;
+      if (!document) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Document not found.' } });
+      }
+
+      // Update document status
+      const { data: updatedDoc, error: updErr } = await admin
+        .from('mentor_verification_documents')
+        .update({
+          status,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: adminUserId,
+          admin_note: adminNote || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updErr) throw updErr;
+
+      // Log audit
+      await admin.from('mentor_application_audit').insert({
+        application_id: document.application.id,
+        action: 'document_reviewed',
+        admin_user_id: adminUserId,
+        metadata: { document_id: id, document_type: document.document_type, status },
+      });
+
+      auditAction(req.auth, 'mentor_document_reviewed', {
+        entityType: 'mentor_verification_document',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { documentType: document.document_type, status, adminNote },
+      });
+
+      return res.json({ success: true, document: updatedDoc });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'PATCH /api/admin/mentor-documents/:id/review',
+        clientMessage: 'Unable to review verification document.',
+      });
+    }
+  });
+
+  // POST /api/admin/users/direct-create: Admin create user directly (seeker or mentor)
+  //
+  // Account creation is DECOUPLED from email delivery. The auth user and all
+  // application profiles are committed as a controlled workflow. The invitation
+  // email is sent as a separate, non-blocking step whose delivery status is
+  // reported back to the Admin UI so they can retry if it fails.
+  app.post('/api/admin/users/direct-create', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const adminUserId = req.auth!.user.id;
+    const requestId = req.requestId ?? '';
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    // 1. Validate the request body (the browser is never trusted).
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const fullName = typeof body.fullName === 'string' ? body.fullName.trim() : '';
+    const role = typeof body.role === 'string' ? body.role.trim().toLowerCase() : '';
+    const bio = typeof body.bio === 'string' ? body.bio.trim() : '';
+    const timezone = typeof body.timezone === 'string' && body.timezone.trim() ? body.timezone.trim() : 'Asia/Kolkata';
+
+    const logContext = (operation: string, extra?: Record<string, unknown>) => ({
+      operation,
+      adminUserId,
+      targetEmail: email,
+      selectedRole: role,
+      requestId,
+      ...extra,
+    });
+
+    if (role !== 'seeker' && role !== 'mentor') {
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 400,
+        message: `direct-create validation failed - invalid role: ${role}`,
+        error_code: 'VALIDATION_ERROR',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: logContext('validation', { providedRole: role }),
+      }).catch(() => {});
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Role must be "seeker" or "mentor".', requestId: requestId || null },
+      });
+    }
+
+    const invalidFields: string[] = [];
+    if (!email || !EMAIL_PATTERN.test(email)) invalidFields.push('a valid email address');
+    if (!fullName) invalidFields.push('fullName');
+
+    if (invalidFields.length > 0) {
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 400,
+        message: `direct-create validation failed - missing fields: ${invalidFields.join(', ')}`,
+        error_code: 'VALIDATION_ERROR',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: logContext('validation', { invalidFields }),
+      }).catch(() => {});
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `Please provide ${invalidFields.join(', ')}.`,
+          requestId: requestId || null,
+        },
+      });
+    }
+
+    // 2. Duplicate email -> client-safe 409 before touching auth.users.
+    try {
+      const { data: existingProfiles, error: duplicateCheckErr } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('email', email)
+        .limit(1);
+
+      if (duplicateCheckErr) throw duplicateCheckErr;
+
+      if ((existingProfiles ?? []).length > 0) {
+        await logApiError({
+          requestId,
+          method: req.method,
+          path: req.path,
+          statusCode: 409,
+          message: `direct-create duplicate email rejected - email already exists in profiles`,
+          error_code: 'ACCOUNT_EXISTS',
+          userId: adminUserId,
+          role: 'admin',
+          metadata: logContext('duplicate_check', { existingProfileId: existingProfiles[0].id }),
+        }).catch(() => {});
+        return res.status(409).json({
+          success: false,
+          error: { code: 'ACCOUNT_EXISTS', message: 'An account with this email already exists.', requestId: requestId || null },
+        });
+      }
+    } catch (err) {
+      const info = describeSupabaseError(err);
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 500,
+        message: `direct-create duplicate check failed - [${info.code}] ${info.message}`,
+        error_code: info.code,
+        userId: adminUserId,
+        role: 'admin',
+        stack: info.stack,
+        metadata: logContext('duplicate_check', { errorDetails: info.details, errorHint: info.hint }),
+      }).catch(() => {});
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/admin/users/direct-create (duplicate check)',
+        clientMessage: 'Unable to create the user account.',
+      });
+    }
+
+    // 3. Create the Supabase Auth user WITHOUT sending any email. The
+    // invite email is a separate step (see below). Using createUser with
+    // email_confirm: true means the account is usable immediately for profile
+    // data, and the invite link lets the user set their password on first login.
+    const { data: authUser, error: createAuthErr } = await admin.auth.admin.createUser({
+      email,
+      email_confirm: true,
+      data: { full_name: fullName, timezone, requested_role: role },
+    } as any);
+
+    if (createAuthErr) {
+      const info = describeSupabaseError(createAuthErr);
+      const isDuplicateEmail =
+        info.code === 'email_exists' ||
+        info.code === '23505' ||
+        /already (been )?registered|already exists/i.test(info.message);
+
+      if (isDuplicateEmail) {
+        await logApiError({
+          requestId,
+          method: req.method,
+          path: req.path,
+          statusCode: 409,
+          message: `direct-create duplicate email rejected by auth - [${info.code}] ${info.message}`,
+          error_code: info.code,
+          userId: adminUserId,
+          role: 'admin',
+          metadata: logContext('auth_create', { authErrorCode: info.code, authErrorMessage: info.message }),
+        }).catch(() => {});
+
+        return res.status(409).json({
+          success: false,
+          error: { code: 'ACCOUNT_EXISTS', message: 'An account with this email already exists.', requestId: requestId || null },
+        });
+      }
+
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 500,
+        message: `direct-create auth user creation failed - [${info.code}] ${info.message}`,
+        error_code: info.code,
+        userId: adminUserId,
+        role: 'admin',
+        stack: info.stack,
+        metadata: logContext('auth_create', { authErrorCode: info.code, authErrorMessage: info.message, authErrorDetails: info.details, authErrorHint: info.hint }),
+      }).catch(() => {});
+
+      return respondWithServerError({
+        req,
+        res,
+        error: createAuthErr,
+        context: 'POST /api/admin/users/direct-create (auth.users insert)',
+        clientMessage: 'Unable to create the user account.',
+      });
+    }
+
+    if (!authUser.user) {
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 500,
+        message: 'direct-create auth user creation returned no user',
+        error_code: 'NO_USER_RETURNED',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: logContext('auth_create', { authUserData: authUser }),
+      }).catch(() => {});
+
+      return respondWithServerError({
+        req,
+        res,
+        error: new Error('createUser returned no user'),
+        context: 'POST /api/admin/users/direct-create (auth.users insert)',
+        clientMessage: 'Unable to create the user account.',
+      });
+    }
+
+    const userId = authUser.user.id;
+
+    /**
+     * Cascading rollback: every row written below is keyed to auth.users, so
+     * deleting the freshly created auth user removes partially written data.
+     */
+    const rollbackCreatedUser = async (reason: string) => {
+      const { error: deleteErr } = await admin.auth.admin.deleteUser(userId);
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 500,
+        message: `direct-create rollback (${reason}) for user ${userId}: ${deleteErr ? getErrorMessage(deleteErr) : 'auth user deleted'}`,
+        error_code: deleteErr ? 'ROLLBACK_FAILED' : 'ROLLED_BACK',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: logContext('rollback', { reason, deletedUserId: userId, deleteError: deleteErr ? getErrorMessage(deleteErr) : null }),
+      }).catch(() => {});
+    };
+
+    try {
+      const now = new Date().toISOString();
+
+      // 4. Profile - the signup trigger already inserted it, so this upsert is
+      //    idempotent instead of raising a duplicate key error.
+      const { error: profileErr } = await admin
+        .from('profiles')
+        .upsert(
+          { id: userId, email, full_name: fullName, timezone, avatar_url: null, created_at: now, updated_at: now },
+          { onConflict: 'id' },
+        );
+
+      if (profileErr) {
+        const info = describeSupabaseError(profileErr);
+        await logApiError({
+          requestId,
+          method: req.method,
+          path: req.path,
+          statusCode: resolveHttpStatusForSupabaseError(info),
+          message: `direct-create profile upsert failed - [${info.code}] ${info.message}`,
+          error_code: info.code,
+          userId: adminUserId,
+          role: 'admin',
+          stack: info.stack,
+          metadata: logContext('profile_upsert', { profileErrorCode: info.code, profileErrorMessage: info.message, profileErrorDetails: info.details, profileErrorHint: info.hint, userId }),
+        }).catch(() => {});
+        throw profileErr;
+      }
+
+      // 5. Role assignment. The trigger assigns `requested_role`, so the row
+      //    usually already exists - ignoreDuplicates keeps this idempotent
+      //    instead of violating uq_user_roles_user_role (the previous 500).
+      const { error: roleErr } = await admin
+        .from('user_roles')
+        .upsert({ user_id: userId, role }, { onConflict: 'user_id,role', ignoreDuplicates: true });
+
+      if (roleErr) {
+        const info = describeSupabaseError(roleErr);
+        await logApiError({
+          requestId,
+          method: req.method,
+          path: req.path,
+          statusCode: resolveHttpStatusForSupabaseError(info),
+          message: `direct-create user_roles upsert failed - [${info.code}] ${info.message}`,
+          error_code: info.code,
+          userId: adminUserId,
+          role: 'admin',
+          stack: info.stack,
+          metadata: logContext('role_upsert', { roleErrorCode: info.code, roleErrorMessage: info.message, roleErrorDetails: info.details, roleErrorHint: info.hint, userId, assignedRole: role }),
+        }).catch(() => {});
+        throw roleErr;
+      }
+
+      // 6. Admin-created mentors are trusted and immediately approved. They do
+      //    NOT enter the self-signup application/document workflow. No mentor
+      //    application is created, no documents are required.
+      if (role === 'mentor') {
+        // Use neutral defaults: rating=0, empty languages array.
+        // No fake demo values (rating=5.0, languages=['English','Hindi']).
+        const { error: mpErr } = await admin
+          .from('mentor_profiles')
+          .upsert(
+            {
+              id: userId,
+              headline: bio || '',
+              about: bio || null,
+              experience_years: 0,
+              languages: [] as unknown as string,
+              rating: 0.0,
+              review_count: 0,
+              session_count: 0,
+              is_approved: true,
+              is_featured: false,
+              approval_status: 'approved',
+              is_active: true,
+              created_at: now,
+              updated_at: now,
+            },
+            { onConflict: 'id' },
+          );
+
+        if (mpErr) {
+          const info = describeSupabaseError(mpErr);
+          await logApiError({
+            requestId,
+            method: req.method,
+            path: req.path,
+            statusCode: resolveHttpStatusForSupabaseError(info),
+            message: `direct-create mentor_profiles upsert failed - [${info.code}] ${info.message}`,
+            error_code: info.code,
+            userId: adminUserId,
+            role: 'admin',
+            stack: info.stack,
+            metadata: logContext('mentor_profile_upsert', { mentorErrorCode: info.code, mentorErrorMessage: info.message, mentorErrorDetails: info.details, mentorErrorHint: info.hint, userId, bioLength: bio.length }),
+          }).catch(() => {});
+          throw mpErr;
+        }
+
+        auditAction(req.auth, 'user_role_assigned', {
+          entityType: 'user_role',
+          entityId: userId,
+          requestId: req.requestId,
+          metadata: { role: 'mentor', assignedBy: 'admin', email, fullName },
+        });
+      } else {
+        // Seeker: create seeker_profiles row
+        const { error: spErr } = await admin
+          .from('seeker_profiles')
+          .upsert(
+            {
+              id: userId,
+              preferred_language: 'English',
+              notes: null,
+              created_at: now,
+              updated_at: now,
+            },
+            { onConflict: 'id' },
+          );
+
+        if (spErr) {
+          const info = describeSupabaseError(spErr);
+          await logApiError({
+            requestId,
+            method: req.method,
+            path: req.path,
+            statusCode: resolveHttpStatusForSupabaseError(info),
+            message: `direct-create seeker_profiles upsert failed - [${info.code}] ${info.message}`,
+            error_code: info.code,
+            userId: adminUserId,
+            role: 'admin',
+            stack: info.stack,
+            metadata: logContext('seeker_profile_upsert', { seekerErrorCode: info.code, seekerErrorMessage: info.message, seekerErrorDetails: info.details, seekerErrorHint: info.hint, userId }),
+          }).catch(() => {});
+          throw spErr;
+        }
+
+        auditAction(req.auth, 'user_role_assigned', {
+          entityType: 'user_role',
+          entityId: userId,
+          requestId: req.requestId,
+          metadata: { role: 'seeker', assignedBy: 'admin', email, fullName },
+        });
+      }
+
+      // 7. SEPARATE email delivery step — fully decoupled from account creation.
+      //    If email delivery fails or is rate-limited, the account is already
+      //    fully created with correct database state. Admin can resend later.
+      const appBaseUrl = process.env.APP_URL || process.env.APP_BASE_URL || process.env.VITE_APP_BASE_URL || process.env.PUBLIC_APP_URL;
+      let emailDeliveryStatus: 'sent' | 'not_sent' | 'failed' = 'not_sent';
+
+      if (appBaseUrl) {
+        const { error: inviteErr } = await admin.auth.admin.inviteUserByEmail(email, {
+          data: { full_name: fullName, timezone, requested_role: role },
+          redirectTo: `${appBaseUrl.replace(/\/$/, '')}/auth/callback`,
+        });
+
+        if (inviteErr) {
+          const info = describeSupabaseError(inviteErr);
+          if (info.code === 'over_email_send_rate_limit') {
+            emailDeliveryStatus = 'not_sent';
+          } else {
+            emailDeliveryStatus = 'failed';
+          }
+          await logApiError({
+            requestId,
+            method: req.method,
+            path: req.path,
+            statusCode: 201,
+            message: `direct-create invitation email ${emailDeliveryStatus} for user ${userId} - [${info.code}] ${info.message}`,
+            error_code: info.code,
+            userId: adminUserId,
+            role: 'admin',
+            metadata: logContext('email_invite', { emailDeliveryStatus, inviteErrorCode: info.code, inviteErrorMessage: info.message, appBaseUrlConfigured: true }),
+          }).catch(() => {});
+        } else {
+          emailDeliveryStatus = 'sent';
+        }
+      } else {
+        await logApiError({
+          requestId,
+          method: req.method,
+          path: req.path,
+          statusCode: 201,
+          message: 'direct-create invitation email not sent - APP_URL not configured',
+          error_code: 'APP_URL_MISSING',
+          userId: adminUserId,
+          role: 'admin',
+          metadata: logContext('email_invite', { emailDeliveryStatus: 'not_sent', appBaseUrlConfigured: false }),
+        }).catch(() => {});
+      }
+
+      // 8. Return success with actual account + email delivery state from DB.
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 201,
+        message: `direct-create success - user ${userId} created with role ${role}`,
+        error_code: 'SUCCESS',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: logContext('success', { createdUserId: userId, emailDeliveryStatus, appBaseUrlConfigured: Boolean(appBaseUrl) }),
+      }).catch(() => {});
+
+      return res.status(201).json({
+        success: true,
+        user: { id: userId, email, full_name: fullName, role },
+        account: {
+          status: 'active',
+          approval_status: role === 'mentor' ? 'approved' : null,
+        },
+        emailDelivery: {
+          status: emailDeliveryStatus,
+          redirectConfigured: Boolean(appBaseUrl),
+        },
+      });
+    } catch (err) {
+      await rollbackCreatedUser(describeSupabaseError(err).message);
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/admin/users/direct-create',
+        clientMessage: 'Unable to create the user account. No partial account was kept.',
+      });
+    }
+  });
+
+  // POST /api/admin/users/:id/resend-invite: Resend invitation email to an existing user
+  app.post('/api/admin/users/:id/resend-invite', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const adminUserId = req.auth!.user.id;
+    const requestId = req.requestId ?? '';
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    const userId = req.params.id;
+    if (!UUID_PATTERN.test(userId)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+    }
+
+    try {
+      // Verify the user and their profile exist
+      const { data: profile, error: profileErr } = await admin
+        .from('profiles')
+        .select('id, email, full_name, timezone')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (profileErr) throw profileErr;
+      if (!profile) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+      }
+
+      // Fetch user roles to include requested_role in invite metadata
+      const { data: userRoles, error: rolesErr } = await admin
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId);
+
+      if (rolesErr) throw rolesErr;
+
+      const roles = (userRoles || []).map((r: { role: string }) => r.role);
+      const primaryRole = roles.includes('mentor') ? 'mentor' : roles.includes('admin') ? 'admin' : 'seeker';
+
+      const appBaseUrl = process.env.APP_URL || process.env.APP_BASE_URL || process.env.VITE_APP_BASE_URL || process.env.PUBLIC_APP_URL;
+
+      let emailDeliveryStatus: 'sent' | 'not_sent' | 'failed' = 'not_sent';
+
+      if (appBaseUrl) {
+        const { error: inviteErr } = await admin.auth.admin.inviteUserByEmail(profile.email, {
+          data: { full_name: profile.full_name, timezone: profile.timezone, requested_role: primaryRole },
+          redirectTo: `${appBaseUrl.replace(/\/$/, '')}/auth/callback`,
+        });
+
+        if (inviteErr) {
+          const info = describeSupabaseError(inviteErr);
+          if (info.code === 'over_email_send_rate_limit') {
+            emailDeliveryStatus = 'not_sent';
+          } else {
+            emailDeliveryStatus = 'failed';
+          }
+        } else {
+          emailDeliveryStatus = 'sent';
+        }
+      } else {
+        emailDeliveryStatus = 'failed';
+      }
+
+      auditAction(req.auth, 'invitation_resent', {
+        entityType: 'user',
+        entityId: userId,
+        requestId: req.requestId,
+        metadata: { role: primaryRole, emailDeliveryStatus },
+      });
+
+      return res.json({
+        success: true,
+        message: emailDeliveryStatus === 'sent'
+          ? 'Invitation email sent successfully.'
+          : emailDeliveryStatus === 'not_sent'
+            ? 'User exists but invitation email could not be sent due to rate limiting. Please try again later.'
+            : 'User exists but invitation email delivery failed. Please try again later.',
+        userId,
+        email: profile.email,
+        emailDelivery: { status: emailDeliveryStatus, redirectConfigured: Boolean(appBaseUrl) },
+      });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/admin/users/:id/resend-invite',
+        clientMessage: 'Unable to resend invitation email.',
+      });
+    }
+  });
+
+  // GET /api/mentor/document/upload-url: Get a presigned upload URL for a verification document
+  app.get('/api/mentor/document/upload-url', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const userId = req.auth!.user.id;
+      const { applicationId, documentType, fileName, mimeType, sizeBytes } = req.query;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      if (!applicationId || !documentType || !fileName || !mimeType || !sizeBytes) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'applicationId, documentType, fileName, mimeType, and sizeBytes are required.' } });
+      }
+
+      // Validate application ownership and editable status
+      const { data: application, error: appErr } = await admin
+        .from('mentor_applications')
+        .select('user_id, status')
+        .eq('id', applicationId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (appErr) throw appErr;
+      if (!application) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
+      }
+      if (application.status !== 'draft' && application.status !== 'rejected') {
+        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'Documents can only be uploaded for draft or rejected applications.' } });
+      }
+
+      // Validate document type
+      const { data: docType, error: dtErr } = await admin
+        .from('mentor_document_types')
+        .select('code')
+        .eq('code', documentType)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (dtErr) throw dtErr;
+      if (!docType) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid document type.' } });
+      }
+
+      // Validate MIME type
+      if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(mimeType as string)) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Unsupported file type.' } });
+      }
+
+      // Validate size (5MB)
+      if (Number(sizeBytes) > 5242880) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'File size exceeds 5MB limit.' } });
+      }
+
+      // Generate storage path: userId/applicationId/documentType-timestamp-random.ext
+      const fileExt = (fileName as string).split('.').pop() || 'bin';
+      const uniqueFilename = `${documentType}-${Date.now()}-${Math.random().toString(36).substring(2, 12)}.${fileExt}`;
+      const storagePath = `${userId}/${applicationId}/${uniqueFilename}`;
+
+      // Development logging
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[MentorVerification] Signed upload URL generated:', {
+          bucket: 'mentor-verification-documents',
+          storagePath,
+          userId,
+          applicationId,
+          documentType,
+          originalFileName: fileName,
+          mimeType,
+          sizeBytes: Number(sizeBytes),
+        });
+      }
+
+      // Generate presigned upload URL
+      const { data: uploadUrl, error: urlErr } = await admin.storage
+        .from('mentor-verification-documents')
+        .createSignedUploadUrl(storagePath);
+
+      if (urlErr) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.error('[MentorVerification] createSignedUploadUrl error:', urlErr);
+        }
+        throw urlErr;
+      }
+
+      return res.json({
+        success: true,
+        uploadUrl: uploadUrl?.signedUrl || '',
+        storagePath,
+        token: uploadUrl?.token || '',
+      });
+    } catch (err: any) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('[MentorVerification] upload-url error:', err);
+      }
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 13: Admin System Health & Technical Logs Endpoints
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/system-health/metrics: Aggregated health metrics
+  app.get('/api/admin/system-health/metrics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const metrics = await fetchSystemHealthMetrics();
+      return res.json({ success: true, metrics });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/admin/system-health/logs: Paginated + filtered system logs
+  app.get('/api/admin/system-health/logs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { category, level, status_code, request_id, user_id, path, method, search, timeRangeHours, limit, offset } = req.query;
+      const logs = await fetchSystemLogs({
+        category: category as string | undefined,
+        level: level as string | undefined,
+        status_code: status_code ? Number(status_code) : undefined,
+        request_id: request_id as string | undefined,
+        user_id: user_id as string | undefined,
+        path: path as string | undefined,
+        method: method as string | undefined,
+        search: search as string | undefined,
+        timeRangeHours: timeRangeHours ? Number(timeRangeHours) : undefined,
+        limit: limit ? Number(limit) : 50,
+        offset: offset ? Number(offset) : 0,
+      });
+      return res.json({ success: true, logs });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/admin/system-health/errors: Error logs (api_error + system categories)
+  app.get('/api/admin/system-health/errors', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { level, error_code, request_id, user_id, path, search, timeRangeHours, limit, offset } = req.query;
+      const allLogs = await fetchSystemLogs({
+        level: level as string | undefined,
+        request_id: request_id as string | undefined,
+        user_id: user_id as string | undefined,
+        path: path as string | undefined,
+        search: search as string | undefined,
+        timeRangeHours: timeRangeHours ? Number(timeRangeHours) : 24,
+        limit: limit ? Number(limit) : 50,
+        offset: offset ? Number(offset) : 0,
+      });
+      const errors = allLogs.filter((l) => l.category === 'api_error' || l.category === 'system' || l.level === 'error' || l.level === 'warn');
+      const filtered = error_code
+        ? errors.filter((l) => l.error_code === error_code)
+        : errors;
+      return res.json({ success: true, errors: filtered });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/admin/system-health/auth-logs: Authentication event logs
+  app.get('/api/admin/system-health/auth-logs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { level, user_id, path, search, timeRangeHours, limit, offset } = req.query;
+      const logs = await fetchSystemLogs({
+        category: 'auth',
+        level: level as string | undefined,
+        user_id: user_id as string | undefined,
+        path: path as string | undefined,
+        search: search as string | undefined,
+        timeRangeHours: timeRangeHours ? Number(timeRangeHours) : 24,
+        limit: limit ? Number(limit) : 50,
+        offset: offset ? Number(offset) : 0,
+      });
+      return res.json({ success: true, logs });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/admin/system-health/audit-logs: Admin audit trail
+  app.get('/api/admin/system-health/audit-logs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { actor_user_id, action, entity_type, request_id, search, timeRangeHours, limit, offset } = req.query;
+      const logs = await fetchAuditLogs({
+        actor_user_id: actor_user_id as string | undefined,
+        action: action as string | undefined,
+        entity_type: entity_type as string | undefined,
+        request_id: request_id as string | undefined,
+        search: search as string | undefined,
+        timeRangeHours: timeRangeHours ? Number(timeRangeHours) : 24,
+        limit: limit ? Number(limit) : 50,
+        offset: offset ? Number(offset) : 0,
+      });
+      return res.json({ success: true, logs });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // GET /api/admin/system-health/logs/:requestId: Correlated request detail
+  app.get('/api/admin/system-health/logs/:requestId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { requestId } = req.params;
+      const [log, authLog, auditLog] = await Promise.all([
+        fetchSystemLogs({ request_id: requestId, limit: 10 }),
+        fetchSystemLogs({ category: 'auth', request_id: requestId, limit: 10 }),
+        fetchAuditLogs({ request_id: requestId, limit: 10 }),
+      ]);
+      return res.json({
+        success: true,
+        logs: log,
+        auth_log: authLog,
+        audit_log: auditLog,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+   });
+
+  // GET /api/admin/system-health/retention: Get log retention config
+  app.get('/api/admin/system-health/retention', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const { data, error } = await admin
+        .from('system_log_retention')
+        .select('retention_days, updated_at')
+        .eq('id', 1)
+        .single();
+      if (error) throw error;
+      return res.json({ success: true, retention: data });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/admin/system-health/retention: Update log retention days
+  app.post('/api/admin/system-health/retention', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const { retentionDays } = req.body;
+      if (typeof retentionDays !== 'number' || retentionDays < 1 || retentionDays > 365) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'retentionDays must be a number between 1 and 365.' },
+        });
+      }
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const { error } = await admin
+        .from('system_log_retention')
+        .update({ retention_days: retentionDays, updated_at: new Date().toISOString() })
+        .eq('id', 1);
+      if (error) throw error;
+
+      auditAction(req.auth, 'log_retention_updated', {
+        entityType: 'system_log_retention',
+        requestId: req.requestId,
+        metadata: { retentionDays },
+      });
+
+      return res.json({ success: true, message: 'Log retention updated successfully.' });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
+  // POST /api/admin/system-health/prune: Trigger manual log cleanup
+  app.post('/api/admin/system-health/prune', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const { data: deletedCount, error } = await admin.rpc('prune_system_logs');
+      if (error) throw error;
+
+      auditAction(req.auth, 'logs_pruned', {
+        entityType: 'system_logs',
+        requestId: req.requestId,
+        metadata: { deletedCount },
+      });
+
+      return res.json({ success: true, deletedCount: deletedCount || 0 });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
     }
   });
 

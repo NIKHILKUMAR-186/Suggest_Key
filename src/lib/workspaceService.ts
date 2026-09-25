@@ -405,14 +405,10 @@ export async function saveWorkspaceAuthoritative(
 
   // 2. Call backend endpoint to keep server authoritative
   try {
-    const res = await fetch('/api/workspaces', {
+    const res = await apiFetch('/api/workspaces', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...payload,
-        userId,
-        role,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (res.ok) {

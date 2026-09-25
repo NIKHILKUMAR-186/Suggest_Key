@@ -4,6 +4,7 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { useAuth } from '@/src/context/AuthContext';
+import { apiFetch } from '@/src/lib/apiClient';
 
 interface Segment {
   id: string;
@@ -36,7 +37,7 @@ export const MentorSegmentsPage: React.FC = () => {
     if (!user?.id) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/mentor/segments?mentorId=${user.id}`);
+      const res = await apiFetch(`/api/mentor/segments?mentorId=${user.id}`);
       const data = await res.json();
       if (data.success) {
         setSegments(data.segments);
@@ -51,7 +52,7 @@ export const MentorSegmentsPage: React.FC = () => {
   const fetchAvailableSegments = useCallback(async () => {
     if (!user?.id) return;
     try {
-      const res = await fetch(`/api/mentor/available-segments?mentorId=${user.id}`);
+      const res = await apiFetch(`/api/mentor/available-segments?mentorId=${user.id}`);
       const data = await res.json();
       if (data.success) {
         setAvailableSegments(data.segments);
@@ -74,10 +75,10 @@ export const MentorSegmentsPage: React.FC = () => {
     setApplying(true);
     setApplyError('');
     try {
-      const res = await fetch('/api/mentor/segments/apply', {
+      const res = await apiFetch('/api/mentor/segments/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mentorId: user.id, segmentId: selectedSegmentToApply }),
+        body: JSON.stringify({ segmentId: selectedSegmentToApply }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to apply');

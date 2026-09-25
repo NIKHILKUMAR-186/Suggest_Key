@@ -5,7 +5,6 @@ import { AuthLayout, AuthEyebrow, AuthHeading, AuthBody } from '@/src/components
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { AlertCircle, Sparkles, UserPlus } from 'lucide-react';
-import type { UserRole } from '@/src/types/auth';
 
 export const SignUpPage: React.FC = () => {
   const { signUp, error, clearError, activeRole, isAuthenticated } = useAuth();
@@ -14,7 +13,6 @@ export const SignUpPage: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('seeker');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
@@ -35,7 +33,9 @@ export const SignUpPage: React.FC = () => {
     setFeedback(null);
     clearError();
 
-    const res = await signUp(email.trim(), password, fullName.trim(), role);
+    // Server-side normal signup always creates seeker role.
+    // Client-supplied role is never trusted.
+    const res = await signUp(email.trim(), password, fullName.trim(), 'seeker');
     setIsSubmitting(false);
 
     if (res.error) {
@@ -103,42 +103,24 @@ export const SignUpPage: React.FC = () => {
             className="auth-input"
           />
 
-          {/* Role Selection */}
-          <div className="space-y-2">
-            <label className="block text-xs font-semibold text-[var(--color-shell-text-muted)]">Account Type</label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setRole('seeker')}
-                className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
-                  role === 'seeker'
-                    ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-accent-soft)] ring-1 ring-[var(--color-shell-primary)]'
-                    : 'border-[var(--color-shell-border-strong)] hover:border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]'
-                }`}
-              >
-                <div className="font-semibold text-xs text-[var(--color-shell-text)]">Seeker</div>
-                <div className="text-[11px] text-[var(--color-shell-text-subtle)] mt-0.5">
-                  Discover mentors & book sessions
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setRole('mentor')}
-                className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
-                  role === 'mentor'
-                    ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-accent-soft)] ring-1 ring-[var(--color-shell-primary)]'
-                    : 'border-[var(--color-shell-border-strong)] hover:border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]'
-                }`}
-              >
-                <div className="font-semibold text-xs text-[var(--color-shell-text)]">Mentor</div>
-                <div className="text-[11px] text-[var(--color-shell-text-subtle)] mt-0.5">
-                  Offer gigs & conduct sessions
-                </div>
-              </button>
+          <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]/50 p-3.5 text-xs text-[var(--color-shell-text-muted)] space-y-1">
+            <div className="flex items-start gap-2">
+              <UserPlus className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)] shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-[var(--color-shell-text)]">Seeker Account</p>
+                <p>
+                  This signup creates a seeker account. To become a mentor, use the dedicated{' '}
+                  <button
+                    type="button"
+                    onClick={() => navigate('/mentor/signup')}
+                    className="font-medium text-[var(--color-shell-accent)] hover:underline cursor-pointer"
+                  >
+                    Mentor Signup
+                  </button>{' '}
+                  route instead.
+                </p>
+              </div>
             </div>
-            <p className="text-[10px] text-[var(--color-shell-text-subtle)] italic">
-              Administrator roles are assigned by platform administrators only.
-            </p>
           </div>
 
           <Button

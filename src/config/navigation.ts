@@ -6,10 +6,10 @@ import {
   Clock,
   LayoutDashboard,
   Users,
-  Award,
   Layers,
   CreditCard,
   FileText,
+  Activity,
 } from 'lucide-react';
 import type { RoleNavConfig, UserRole } from '@/src/types/navigation';
 
@@ -59,12 +59,12 @@ export const ROLE_NAVIGATION: Record<UserRole, RoleNavConfig> = {
     navItems: [
       { id: 'admin-dashboard', label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
       { id: 'admin-users', label: 'Users', href: '/admin/users', icon: Users },
-      { id: 'admin-mentors', label: 'Mentors', href: '/admin/mentors', icon: Award },
       { id: 'admin-segments', label: 'Segments', href: '/admin/segments', icon: Layers },
       { id: 'admin-bookings', label: 'Bookings', href: '/admin/bookings', icon: Calendar },
       { id: 'admin-workspaces', label: 'Workspaces', href: '/admin/workspaces', icon: FileText },
       { id: 'admin-payments', label: 'Payments', href: '/admin/payments', icon: CreditCard },
       { id: 'admin-notifications', label: 'Notifications', href: '/admin/notifications', icon: Bell },
+      { id: 'admin-system-health', label: 'System Health', href: '/admin/system-health', icon: Activity },
       { id: 'admin-settings', label: 'Settings', href: '/admin/settings', icon: Settings },
     ],
   },

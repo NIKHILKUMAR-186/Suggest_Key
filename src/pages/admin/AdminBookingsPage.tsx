@@ -55,12 +55,12 @@ export const AdminBookingsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
             Bookings Ledger
           </h1>
-          <p className="mt-1 text-xs text-zinc-500">
+          <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
             Authoritative state machine timeline of all 15-min holds, payments, and confirmations.
           </p>
         </div>
@@ -71,7 +71,7 @@ export const AdminBookingsPage: React.FC = () => {
             <span>Refresh Ledger</span>
           </Button>
 
-          <div className="flex flex-wrap items-center gap-1 bg-zinc-100 p-1 rounded-lg self-start text-xs">
+          <div className="flex flex-wrap items-center gap-1 bg-[var(--color-shell-bg-hover)] p-1 rounded-lg self-start text-xs">
             {[
               { id: 'ALL', label: 'ALL' },
               { id: 'OVERDUE_LINKS', label: `OVERDUE LINKS (${overdueCount})`, isAlert: overdueCount > 0 },
@@ -85,11 +85,11 @@ export const AdminBookingsPage: React.FC = () => {
                 className={`px-2.5 py-1 rounded-md font-medium text-[11px] transition-colors cursor-pointer flex items-center gap-1 ${
                   filterStatus === tab.id
                     ? tab.id === 'OVERDUE_LINKS'
-                      ? 'bg-amber-500 text-white font-bold shadow-xs'
-                      : 'bg-white text-zinc-900 shadow-xs font-bold'
+                      ? 'bg-[var(--color-shell-warning)] text-[var(--color-shell-text-contrast)] font-bold shadow-xs'
+                      : 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs font-bold'
                     : tab.isAlert
-                    ? 'text-amber-700 font-semibold hover:bg-amber-50'
-                    : 'text-zinc-600 hover:text-zinc-900'
+                    ? 'text-[var(--color-shell-warning)] font-semibold hover:bg-[var(--color-shell-warning-soft)]'
+                    : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
                 }`}
               >
                 {tab.isAlert && <AlertTriangle className="h-3 w-3 shrink-0" />}
@@ -102,14 +102,14 @@ export const AdminBookingsPage: React.FC = () => {
 
       {/* Overdue Links Admin Advisory */}
       {overdueCount > 0 && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex items-start justify-between gap-3 text-xs text-amber-950">
+        <div className="rounded-xl border border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-4 flex items-start justify-between gap-3 text-xs text-[var(--status-warning-strong)]">
           <div className="flex items-start gap-2.5">
-            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <AlertTriangle className="h-4 w-4 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
             <div>
               <span className="font-bold text-sm block">
                 {overdueCount} Overdue Mentor Meeting Link(s) Identified
               </span>
-              <p className="mt-0.5 text-zinc-700 leading-relaxed">
+              <p className="mt-0.5 text-[var(--color-shell-text-muted)] leading-relaxed">
                 Platform Rule: Recommended deadline is 2 hours before session. Missing the deadline does <strong>not</strong> automatically cancel the session. Admins can audit and send mentor reminders.
               </p>
             </div>
@@ -118,7 +118,7 @@ export const AdminBookingsPage: React.FC = () => {
           <Button
             size="sm"
             onClick={() => setFilterStatus('OVERDUE_LINKS')}
-            className="text-xs shrink-0 bg-amber-600 text-white hover:bg-amber-700"
+            className="text-xs shrink-0 bg-[var(--color-shell-warning)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-warning)]/90"
           >
             Filter Overdue
           </Button>
@@ -126,9 +126,9 @@ export const AdminBookingsPage: React.FC = () => {
       )}
 
       {/* Bookings Table */}
-      <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden shadow-xs">
-        <table className="w-full text-left text-xs text-zinc-600">
-          <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
+      <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] overflow-hidden shadow-xs">
+        <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
+          <thead className="bg-[var(--color-shell-bg-hover)]/70 border-b border-[var(--color-shell-border)] text-[var(--color-shell-text)] font-semibold uppercase tracking-wider text-[11px]">
             <tr>
               <th className="py-3 px-4">Booking Code</th>
               <th className="py-3 px-4">Seeker ➔ Mentor</th>
@@ -139,10 +139,10 @@ export const AdminBookingsPage: React.FC = () => {
               <th className="py-3 px-4 text-right">Audit</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-100">
+          <tbody className="divide-y divide-[var(--color-shell-border)]">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-zinc-400">
+                <td colSpan={7} className="py-8 text-center text-[var(--color-shell-text-subtle)]">
                   No bookings found matching filter "{filterStatus}".
                 </td>
               </tr>

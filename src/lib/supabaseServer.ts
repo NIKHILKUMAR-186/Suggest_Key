@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { UserRole } from '@/src/types/auth';
-import { logAuthEvent } from '@/src/lib/logger';
+import { logger } from '@/src/lib/logger';
 
 let supabaseAdmin: SupabaseClient | null = null;
 
@@ -200,7 +200,7 @@ export async function requireAuth(
     logger.auth('login_success', {
       requestId: req.requestId,
       userId: user.id,
-      role: roles.includes('admin') ? 'admin' : roles.includes('mentor') ? 'mentor' : roles.includes('seeker') ? 'seeker' : null,
+       role: roles.includes('admin') ? 'admin' : roles.includes('mentor') ? 'mentor' : roles.includes('seeker') ? 'seeker' : undefined,
       path,
       result: 'success',
     });
@@ -243,7 +243,7 @@ export async function requireAdmin(
     logger.auth('role_authorization_failure', {
       requestId: req.requestId,
       userId: req.auth.user.id,
-      role: req.auth.roles.includes('mentor') ? 'mentor' : req.auth.roles.includes('seeker') ? 'seeker' : null,
+      role: req.auth.roles.includes('mentor') ? 'mentor' : req.auth.roles.includes('seeker') ? 'seeker' : undefined,
       path: req.path || req.url || '',
       result: 'failure',
       reason: 'FORBIDDEN_ADMIN_REQUIRED',
@@ -278,10 +278,10 @@ export function requireRole(role: UserRole): (req: AuthRequest, res: Response, n
       logger.auth('role_authorization_failure', {
         requestId: req.requestId,
         userId: req.auth.user.id,
-        role: req.auth.roles.includes('mentor') ? 'mentor' : req.auth.roles.includes('seeker') ? 'seeker' : null,
-        path: req.path || req.url || '',
-        result: 'failure',
-        reason: `FORBIDDEN_ROLE_${role.toUpperCase()}`,
+      role: req.auth.roles.includes('mentor') ? 'mentor' : req.auth.roles.includes('seeker') ? 'seeker' : undefined,
+      path: req.path || req.url || '',
+      result: 'failure',
+      reason: `FORBIDDEN_ROLE_${role.toUpperCase()}`,
       });
       res.status(403).json({
         success: false,

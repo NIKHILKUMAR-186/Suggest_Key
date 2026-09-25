@@ -1,10 +1,10 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { randomBytes } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import type { SystemLog, SystemLogLevel, SystemLogCategory } from '@/src/types/systemLogs';
+import type { SystemLog, SystemLogLevel, SystemLogCategory, AuditLog } from '@/src/types/systemLogs';
 
 const REQUEST_ID_PREFIX = 'req_';
-const REQUEST_ID_BYTES = 3;
+const REQUEST_ID_BYTES = 8;
 
 let _adminClient: SupabaseClient | null = null;
 let _clientErrorEmitted = false;
@@ -30,6 +30,11 @@ export function generateRequestId(): string {
   return `${REQUEST_ID_PREFIX}${hex}`;
 }
 
+export function isValidRequestId(id: unknown): boolean {
+  if (typeof id !== 'string') return false;
+  return id.startsWith(REQUEST_ID_PREFIX) && id.length > REQUEST_ID_PREFIX.length;
+}
+
 const SENSITIVE_HEADERS = new Set([
   'authorization',
   'cookie',
@@ -49,7 +54,7 @@ const SENSITIVE_BODY_KEYS = new Set([
   'api_key',
   'apikey',
   'service_role_key',
-  'cardNumber',
+  'cardnumber',
   'cvv',
   'ssn',
   'proof_base64',
@@ -75,7 +80,7 @@ function sanitizeBody(body: any): Record<string, any> {
   for (const [key, value] of Object.entries(body)) {
     const lower = key.toLowerCase();
     if (SENSITIVE_BODY_KEYS.has(lower)) {
-      result[lower] = value ? '***redacted***' : undefined;
+      result[key] = value ? '***redacted***' : undefined;
     } else {
       result[key] = value;
     }
@@ -272,6 +277,7 @@ export async function logApiError(params: {
   userId?: string;
   role?: string;
   stack?: string;
+  metadata?: Record<string, any>;
 }): Promise<void> {
   await writeSystemLog({
     requestId: params.requestId,
@@ -284,7 +290,10 @@ export async function logApiError(params: {
     role: params.role,
     error_code: params.error_code,
     message: params.message,
-    metadata: params.stack ? { stack: sanitizeStack(params.stack) } : {},
+    metadata: {
+      ...(params.metadata || {}),
+      ...(params.stack ? { stack: sanitizeStack(params.stack) } : {}),
+    },
   });
 }
 
@@ -356,8 +365,13 @@ export async function fetchSystemLogs(options: {
     }
 
     query = query.order('created_at', { ascending: false });
-    if (options.limit) query = query.limit(options.limit);
-    if (options.offset) query = query.offset(options.offset);
+    if (options.offset) {
+      const from = options.offset;
+      const to = from + (options.limit ? options.limit : 1000) - 1;
+      query = query.range(from, to);
+    } else if (options.limit) {
+      query = query.limit(options.limit);
+    }
 
     const { data, error } = await query;
     if (error) throw error;
@@ -397,8 +411,13 @@ export async function fetchAuditLogs(options: {
     }
 
     query = query.order('created_at', { ascending: false });
-    if (options.limit) query = query.limit(options.limit);
-    if (options.offset) query = query.offset(options.offset);
+    if (options.offset) {
+      const from = options.offset;
+      const to = from + (options.limit ? options.limit : 1000) - 1;
+      query = query.range(from, to);
+    } else if (options.limit) {
+      query = query.limit(options.limit);
+    }
 
     const { data, error } = await query;
     if (error) throw error;
@@ -537,6 +556,65 @@ export async function fetchSystemHealthMetrics(): Promise<{
 
 let _requestIdInitialized = false;
 
+export const logger = {
+  auth: (
+    event: string,
+    options: {
+      requestId?: string;
+      userId?: string;
+      role?: string;
+      path?: string;
+      method?: string;
+      statusCode?: number;
+      result?: string;
+      reason?: string;
+    },
+  ): void => {
+    logAuthEvent({
+      requestId: options.requestId || '',
+      event,
+      userId: options.userId,
+      role: options.role,
+      path: options.path,
+      method: options.method,
+      statusCode: options.statusCode,
+      metadata:
+        options.result || options.reason
+          ? { result: options.result, reason: options.reason }
+          : undefined,
+    }).catch(() => {});
+  },
+
+  requestEnd: (
+    context: {
+      requestId?: string;
+      start?: number;
+      method?: string;
+      path?: string;
+      userId?: string | null;
+      role?: string | null;
+    },
+    statusCode: number,
+    errorCode?: string | null,
+    errorMessage?: string,
+    metadata?: Record<string, any>,
+  ): void => {
+    const durationMs = context.start ? Date.now() - context.start : 0;
+    logApiRequest({
+      requestId: context.requestId || '',
+      method: context.method || 'GET',
+      path: context.path || '',
+      statusCode,
+      durationMs,
+      userId: context.userId || undefined,
+      role: context.role || undefined,
+      error_code: errorCode || undefined,
+      error_message: errorMessage,
+      metadata,
+    }).catch(() => {});
+  },
+};
+
 export function requestIdMiddleware(req: RequestWithId, res: Response, next: NextFunction): void {
   if (!req.id) {
     req.id = generateRequestId();
@@ -552,7 +630,7 @@ export function requestLoggerMiddleware(req: RequestWithId, res: Response, next:
 
   const originalEnd = res.end.bind(res);
 
-  res.end = function (...args: any[]) {
+  res.end = function (...args: any[]): Response {
     const durationMs = Date.now() - startTime;
     const statusCode = res.statusCode;
     const method = req.method;
@@ -587,7 +665,7 @@ export function requestLoggerMiddleware(req: RequestWithId, res: Response, next:
       },
     }).catch(() => {});
 
-    originalEnd(...args);
+    return originalEnd(...args);
   };
 
   next();

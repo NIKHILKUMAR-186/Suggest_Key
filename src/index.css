@@ -47,6 +47,32 @@
     --color-shell-primary-hover: #5a30e0;
     --color-shell-primary-soft: rgba(102, 57, 243, 0.10);
 
+    /* Standard semantic aliases for shared components */
+    --background: var(--color-shell-bg);
+    --foreground: var(--color-shell-text);
+    --card: var(--color-shell-surface);
+    --card-foreground: var(--color-shell-text);
+    --popover: var(--color-shell-surface-elevated);
+    --popover-foreground: var(--color-shell-text);
+    --primary: var(--color-shell-primary);
+    --primary-foreground: var(--color-shell-text-contrast);
+    --secondary: var(--color-shell-bg);
+    --secondary-foreground: var(--color-shell-text);
+    --muted: var(--color-shell-bg-hover);
+    --muted-foreground: var(--color-shell-text-muted);
+    --accent: var(--color-shell-accent);
+    --accent-foreground: var(--color-shell-text-contrast);
+    --border: var(--color-shell-border);
+    --input: var(--color-shell-border-strong);
+    --ring: var(--color-shell-focus);
+    --surface: var(--color-shell-surface);
+    --surface-elevated: var(--color-shell-surface-elevated);
+    --surface-hover: var(--color-shell-surface-hover);
+    --success: var(--color-shell-success);
+    --warning: var(--color-shell-warning);
+    --destructive: var(--color-shell-error);
+    --info: var(--color-shell-info);
+
     /* Accent: blue */
     --color-shell-accent: #2563eb;
     --color-shell-accent-hover: #1d4ed8;

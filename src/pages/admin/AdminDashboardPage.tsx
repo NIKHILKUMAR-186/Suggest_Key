@@ -59,21 +59,21 @@ export const AdminDashboardPage: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header & Review State Toggle */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
             Operational Dashboard
           </h1>
-          <p className="mt-1 text-xs text-zinc-500">
+          <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
             Real-time platform ledger, payment queue, mentor approvals, and SLA compliance.
           </p>
         </div>
 
-        <div className="flex items-center gap-1 bg-zinc-100 p-1 rounded-lg self-start text-xs">
+        <div className="flex items-center gap-1 bg-[var(--color-shell-bg-hover)] p-1 rounded-lg self-start text-xs">
           <button
             onClick={() => setViewState('operational')}
             className={`px-2.5 py-1 rounded-md capitalize font-medium ${
-              viewState === 'operational' ? 'bg-white text-zinc-900 shadow-xs' : 'text-zinc-600'
+              viewState === 'operational' ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs' : 'text-[var(--color-shell-text-muted)]'
             }`}
           >
             Active Action Queues
@@ -81,7 +81,7 @@ export const AdminDashboardPage: React.FC = () => {
           <button
             onClick={() => setViewState('quiet')}
             className={`px-2.5 py-1 rounded-md capitalize font-medium ${
-              viewState === 'quiet' ? 'bg-white text-zinc-900 shadow-xs' : 'text-zinc-600'
+              viewState === 'quiet' ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs' : 'text-[var(--color-shell-text-muted)]'
             }`}
           >
             Zero Backlog State
@@ -93,18 +93,18 @@ export const AdminDashboardPage: React.FC = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {loading ? (
           [1, 2, 3, 4].map((i) => (
-            <div key={i} className="rounded-lg border border-zinc-200 bg-white p-4 animate-pulse">
+            <div key={i} className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 animate-pulse">
               <div className="flex items-center justify-between">
-                <div className="h-3 w-24 bg-zinc-200 rounded"></div>
-                <div className="h-4 w-16 bg-zinc-200 rounded"></div>
+                <div className="h-3 w-24 bg-[var(--color-shell-border)] rounded"></div>
+                <div className="h-4 w-16 bg-[var(--color-shell-border)] rounded"></div>
               </div>
-              <div className="mt-2 h-8 w-16 bg-zinc-200 rounded"></div>
-              <div className="mt-1 h-3 w-32 bg-zinc-200 rounded"></div>
+              <div className="mt-2 h-8 w-16 bg-[var(--color-shell-border)] rounded"></div>
+              <div className="mt-1 h-3 w-32 bg-[var(--color-shell-border)] rounded"></div>
             </div>
           ))
         ) : error ? (
           <>
-            <div className="col-span-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-center text-rose-600">
+            <div className="col-span-4 rounded-lg border border-[var(--color-shell-error)] bg-[var(--color-shell-error-soft)] p-4 text-center text-[var(--color-shell-error)]">
               <AlertTriangle className="h-6 w-6 mx-auto mb-2" />
               <p className="text-xs">{error}</p>
               <Button variant="outline" size="sm" onClick={fetchMetrics} className="mt-2">
@@ -116,56 +116,56 @@ export const AdminDashboardPage: React.FC = () => {
           <>
             <div
               onClick={() => navigate('/admin/payments')}
-              className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 cursor-pointer hover:border-amber-300 transition-colors"
+              className="rounded-lg border border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-4 cursor-pointer hover:border-[var(--color-shell-warning-border)] transition-colors"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-amber-900">Payments Pending Review</span>
+                <span className="text-xs font-semibold text-[var(--status-warning-strong)]">Payments Pending Review</span>
                 <Badge variant="warning" className="text-[10px]">Action Required</Badge>
               </div>
-              <div className="mt-2 text-2xl font-bold text-amber-950">
+              <div className="mt-2 text-2xl font-bold text-[var(--status-warning-strong)]">
                 {pendingPaymentsCount}
               </div>
-              <span className="text-[11px] text-amber-800">Manual QR receipts awaiting verification</span>
+              <span className="text-[11px] text-[var(--color-shell-warning)]">Manual QR receipts awaiting verification</span>
             </div>
 
             <div
-              onClick={() => navigate('/admin/mentors')}
-              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+              onClick={() => navigate('/admin/users')}
+              className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 cursor-pointer hover:border-[var(--color-shell-border-strong)] transition-colors"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-700">Pending Mentor Approvals</span>
-                <span className="text-xs text-zinc-400">Queue</span>
+                <span className="text-xs font-semibold text-[var(--color-shell-text)]">Pending Mentor Approvals</span>
+                <Badge variant="warning" className="text-[10px]">Queue</Badge>
               </div>
-              <div className="mt-2 text-2xl font-bold text-zinc-950">
+              <div className="mt-2 text-2xl font-bold text-[var(--color-shell-text)]">
                 {pendingApprovalsCount}
               </div>
-              <span className="text-[11px] text-zinc-500">Mentors awaiting segment authorization</span>
+              <span className="text-[11px] text-[var(--color-shell-text-muted)]">Mentor applications awaiting verification</span>
             </div>
 
             <div
               onClick={() => navigate('/admin/bookings')}
-              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+              className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 cursor-pointer hover:border-[var(--color-shell-border-strong)] transition-colors"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-700">Active Bookings Today</span>
+                <span className="text-xs font-semibold text-[var(--color-shell-text)]">Active Bookings Today</span>
                 <Badge variant="success" className="text-[10px]">Scheduled</Badge>
               </div>
-              <div className="mt-2 text-2xl font-bold text-zinc-950">
+              <div className="mt-2 text-2xl font-bold text-[var(--color-shell-text)]">
                 {todaysBookingsCount}
               </div>
-              <span className="text-[11px] text-zinc-500">Atomic slots locked & confirmed</span>
+              <span className="text-[11px] text-[var(--color-shell-text-muted)]">Atomic slots locked & confirmed</span>
             </div>
 
             <div
               onClick={() => navigate('/admin/segments')}
-              className="rounded-lg border border-zinc-200 bg-white p-4 cursor-pointer hover:border-zinc-300 transition-colors"
+              className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 cursor-pointer hover:border-[var(--color-shell-border-strong)] transition-colors"
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-700">Active Segments</span>
-                <span className="text-xs text-zinc-400">System</span>
+                <span className="text-xs font-semibold text-[var(--color-shell-text)]">Active Segments</span>
+                <span className="text-xs text-[var(--color-shell-text-subtle)]">System</span>
               </div>
-              <div className="mt-2 text-2xl font-bold text-zinc-950">{activeSegmentsCount}</div>
-              <span className="text-[11px] text-zinc-500">Highest priority: {defaultSegmentName}</span>
+              <div className="mt-2 text-2xl font-bold text-[var(--color-shell-text)]">{activeSegmentsCount}</div>
+              <span className="text-[11px] text-[var(--color-shell-text-muted)]">Highest priority: {defaultSegmentName}</span>
             </div>
           </>
         )}
@@ -174,11 +174,11 @@ export const AdminDashboardPage: React.FC = () => {
       {viewState === 'operational' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Urgent Payment Proofs Queue */}
-          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
               <div className="flex items-center gap-2">
-                <CreditCard className="h-4 w-4 text-amber-600" />
-                <h2 className="text-sm font-bold text-zinc-950">Pending Payment Verifications</h2>
+                <CreditCard className="h-4 w-4 text-[var(--color-shell-warning)]" />
+                <h2 className="text-sm font-bold text-[var(--color-shell-text)]">Pending Payment Verifications</h2>
               </div>
               <Button
                 onClick={() => navigate('/admin/payments')}
@@ -193,19 +193,19 @@ export const AdminDashboardPage: React.FC = () => {
 
             <div className="space-y-2.5">
               {metrics?.pendingPayments?.length === 0 ? (
-                <div className="text-center text-zinc-400 text-xs py-4">No pending payments</div>
+                <div className="text-center text-[var(--color-shell-text-subtle)] text-xs py-4">No pending payments</div>
               ) : (
                 metrics?.pendingPayments?.map((p) => (
                   <div
                     key={p.id}
-                    className="flex items-center justify-between p-3 rounded-lg border border-zinc-100 bg-zinc-50/70 text-xs"
+                    className="flex items-center justify-between p-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)] text-xs"
                   >
                     <div>
-                      <span className="font-bold text-zinc-900 block">{p.seeker} ➔ {p.mentor}</span>
-                      <span className="text-[11px] text-zinc-500">{p.id} · Submitted {p.time}</span>
+                      <span className="font-bold text-[var(--color-shell-text)] block">{p.seeker} ➔ {p.mentor}</span>
+                      <span className="text-[11px] text-[var(--color-shell-text-muted)]">{p.id} · Submitted {p.time}</span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="font-bold text-zinc-900">₹{p.amount}</span>
+                      <span className="font-bold text-[var(--color-shell-text)]">₹{p.amount}</span>
                       <Button
                         onClick={() => navigate('/admin/payments')}
                         size="sm"
@@ -221,21 +221,21 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
 
           {/* Missed Confirmation / SLA Audit Alert */}
-          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
               <div className="flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4 text-rose-600" />
-                <h2 className="text-sm font-bold text-zinc-950">Mentor SLA & Deadline Tracking</h2>
+                <ShieldAlert className="h-4 w-4 text-[var(--color-shell-error)]" />
+                <h2 className="text-sm font-bold text-[var(--color-shell-text)]">Mentor SLA & Deadline Tracking</h2>
               </div>
               <Badge variant="secondary" className="text-[10px]">Authoritative Log</Badge>
             </div>
 
-            <div className="p-3.5 rounded-lg border border-zinc-100 bg-zinc-50/70 text-xs space-y-1.5">
+            <div className="p-3.5 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)] text-xs space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="font-bold text-zinc-900">Recommended 2-Hour Deadline Compliance</span>
-                <span className="text-emerald-700 font-semibold">100% On-Time</span>
+                <span className="font-bold text-[var(--color-shell-text)]">Recommended 2-Hour Deadline Compliance</span>
+                <span className="text-[var(--color-shell-success)] font-semibold">100% On-Time</span>
               </div>
-              <p className="text-[11px] text-zinc-500 leading-relaxed">
+              <p className="text-[11px] text-[var(--color-shell-text-muted)] leading-relaxed">
                 Platform records missed 2-hour meeting link deadlines without cancelling bookings. No active deadline violations detected.
               </p>
             </div>
@@ -254,7 +254,7 @@ export const AdminDashboardPage: React.FC = () => {
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-dashed border-zinc-200 bg-zinc-50/50 p-12 text-center text-xs text-zinc-500">
+        <div className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)]/50 p-12 text-center text-xs text-[var(--color-shell-text-muted)]">
           Operational queues are empty. Platform is running in optimal state with zero backlog.
         </div>
       )}

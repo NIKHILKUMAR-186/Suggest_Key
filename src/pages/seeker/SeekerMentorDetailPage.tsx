@@ -184,7 +184,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
             `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`
           )
         }
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-950 transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         <span>Back to Mentors List</span>
@@ -193,7 +193,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
       {isLoading ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 space-y-4 shadow-xs">
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 space-y-4 shadow-xs">
               <div className="flex items-start gap-5">
                 <Skeleton variant="circular" className="h-20 w-20" />
                 <div className="flex-1 space-y-2">
@@ -204,7 +204,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
               </div>
             </div>
           </div>
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4">
+          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-32 w-full" />
             <Skeleton className="h-8 w-full" />
@@ -226,16 +226,16 @@ export const SeekerMentorDetailPage: React.FC = () => {
             transition={{ duration: 0.3, delay: 0.05 }}
             className="lg:col-span-2 space-y-6"
           >
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-6">
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-6">
               <div className="flex items-start gap-5">
                 {mentorData.avatar_url ? (
                   <img
                     src={mentorData.avatar_url}
                     alt={mentorData.full_name}
-                    className="h-20 w-20 rounded-full object-cover border border-zinc-200 shrink-0"
+                    className="h-20 w-20 rounded-full object-cover border border-[var(--color-shell-border)] shrink-0"
                   />
                 ) : (
-                  <div className="h-20 w-20 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-bold text-xl text-zinc-700 font-display shrink-0">
+                  <div className="h-20 w-20 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display shrink-0">
                     {mentorData.full_name
                       .split(' ')
                       .map((n) => n[0])
@@ -245,13 +245,13 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-xl font-bold text-zinc-950">
+                    <h1 className="text-xl font-bold text-[var(--color-shell-text)]">
                       {mentorData.full_name}
                     </h1>
                     {mentorData.is_featured && (
                       <Badge
                         variant="secondary"
-                        className="text-[10px] gap-0.5 bg-amber-50 text-amber-800 border-amber-200"
+                        className="text-[10px] gap-0.5 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30"
                       >
                         <Star className="h-3 w-3 fill-current" />
                         Featured
@@ -263,20 +263,20 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       </Badge>
                     )}
                   </div>
-                  <p className="text-xs text-zinc-500 mt-1">{mentorData.headline}</p>
+                  <p className="text-xs text-[var(--color-shell-text-muted)] mt-1">{mentorData.headline}</p>
                 </div>
               </div>
 
               {/* Timezone Info */}
-              <div className="flex items-center gap-2 text-xs text-zinc-600">
-                <Globe className="h-4 w-4 text-zinc-400" />
+              <div className="flex items-center gap-2 text-xs text-[var(--color-shell-text-muted)]">
+                <Globe className="h-4 w-4 text-[var(--color-shell-text-subtle)]" />
                 <span>Mentor Operating Timezone:</span>
-                <span className="font-medium text-zinc-900">{mentorData.timezone}</span>
+                <span className="font-medium text-[var(--color-shell-text)]">{mentorData.timezone}</span>
               </div>
 
               {/* About */}
               {mentorData.about && (
-                <p className="text-xs text-zinc-600 leading-relaxed">
+                <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">
                   {mentorData.about}
                 </p>
               )}
@@ -286,12 +286,12 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 {mentorData.languages.map((lang) => (
                   <span
                     key={lang}
-                    className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-zinc-50 text-zinc-700 border border-zinc-100"
+                    className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)]"
                   >
                     {lang}
                   </span>
                 ))}
-                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-zinc-50 text-zinc-700 border border-zinc-100 font-medium">
+                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)] font-medium">
                   {mentorData.experience_years}+ Years Experience
                 </span>
               </div>
@@ -301,39 +301,39 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.1 }}
-                className="rounded-2xl border border-amber-200 bg-amber-50/30 p-5 space-y-3"
+                className="rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/30 p-5 space-y-3"
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-amber-800">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-warning)]">
                     Active Gig Offer
                   </span>
-                  <Badge variant="secondary" className="text-[10px] border-amber-200 bg-amber-50 text-amber-900">
+                  <Badge variant="secondary" className="text-[10px] border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)]">
                     Segment: {mentorData.segment.name}
                   </Badge>
                 </div>
-                <h3 className="text-lg font-bold text-zinc-950">
+                <h3 className="text-lg font-bold text-[var(--color-shell-text)]">
                   {mentorData.gig.title}
                 </h3>
-                <p className="text-xs text-zinc-600 leading-relaxed">
+                <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">
                   {mentorData.gig.description}
                 </p>
                 <div className="flex items-center gap-6 pt-2 text-xs">
                   <div>
-                    <span className="text-zinc-400 block text-[11px]">Session Length</span>
-                    <span className="font-semibold text-zinc-950 flex items-center gap-1">
-                      <Clock className="h-3.5 w-3.5 text-zinc-500" />{' '}
+                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Session Length</span>
+                    <span className="font-semibold text-[var(--color-shell-text)] flex items-center gap-1">
+                      <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)]" />{' '}
                       {mentorData.gig.duration_minutes} Minutes
                     </span>
                   </div>
                   <div>
-                    <span className="text-zinc-400 block text-[11px]">Price</span>
-                    <span className="font-bold text-zinc-950 text-sm">
-                      ₹{mentorData.gig.price_inr} INR
+                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Price</span>
+                    <span className="font-bold text-[var(--color-shell-text)] text-sm">
+                      ?{mentorData.gig.price_inr} INR
                     </span>
                   </div>
                   <div>
-                    <span className="text-zinc-400 block text-[11px]">Hold Window</span>
-                    <span className="font-semibold text-amber-700 flex items-center gap-1">
+                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Hold Window</span>
+                    <span className="font-semibold text-[var(--color-shell-warning)] flex items-center gap-1">
                       <Lock className="h-3.5 w-3.5" /> 15 Min Lock
                     </span>
                   </div>
@@ -369,27 +369,27 @@ export const SeekerMentorDetailPage: React.FC = () => {
             transition={{ duration: 0.3, delay: 0.08 }}
             className="space-y-6"
           >
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-5 sticky top-20">
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5 sticky top-20">
               <div>
-                <h3 className="text-base font-bold text-zinc-950">Select Session Slot</h3>
-                <p className="text-xs text-zinc-500 mt-0.5">
+                <h3 className="text-base font-bold text-[var(--color-shell-text)]">Select Session Slot</h3>
+                <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
                   Dynamic slots calculated in {mentorData.timezone} and verified in UTC.
                 </p>
               </div>
 
               {/* Date Input */}
               <div>
-                <label className="block text-xs font-medium text-zinc-700 mb-1.5">
+                <label className="block text-xs font-medium text-[var(--color-shell-text-muted)] mb-1.5">
                   Session Date
                 </label>
-                <div className="flex items-center gap-2 bg-white rounded-xl border border-zinc-200 px-3 py-2.5 shadow-xs">
-                  <Calendar className="h-4 w-4 text-zinc-400" />
+                <div className="flex items-center gap-2 bg-[var(--color-shell-surface)] rounded-xl border border-[var(--color-shell-border)] px-3 py-2.5 shadow-xs">
+                  <Calendar className="h-4 w-4 text-[var(--color-shell-text-subtle)]" />
                   <input
                     type="date"
                     value={selectedDate}
                     min={new Date().toISOString().split('T')[0]}
                     onChange={(e) => setSelectedDate(e.target.value)}
-                    className="text-xs text-zinc-900 border-none bg-transparent focus:outline-none font-semibold cursor-pointer w-full"
+                    className="text-xs text-[var(--color-shell-text)] border-none bg-transparent focus:outline-none font-semibold cursor-pointer w-full"
                     aria-label="Select session date"
                   />
                 </div>
@@ -398,16 +398,16 @@ export const SeekerMentorDetailPage: React.FC = () => {
               {/* Dynamic Slots Grid */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-medium text-zinc-700">
+                  <label className="block text-xs font-medium text-[var(--color-shell-text-muted)]">
                     Slots on {formatDate(selectedDate)}
                   </label>
-                  <span className="text-[11px] text-zinc-400">
+                  <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
                     {mentorData.available_slots.length} available
                   </span>
                 </div>
 
                 {mentorData.all_slots.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 p-4 text-center text-xs text-zinc-500">
+                  <div className="rounded-lg border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-4 text-center text-xs text-[var(--color-shell-text-muted)]">
                     No operating slots or mentor has leave on this date.
                   </div>
                 ) : (
@@ -416,23 +416,23 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       const isSelected = selectedSlot?.id === s.id;
                       const timeLabel = `${formatLocalTimeLabel(
                         s.local_start_time
-                      )} – ${formatLocalTimeLabel(s.local_end_time)}`;
+                      )} � ${formatLocalTimeLabel(s.local_end_time)}`;
 
                       return (
                         <button
                           key={s.id}
                           disabled={!s.is_available}
                           onClick={() => setSelectedSlot(s)}
-                          className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+                          className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
                             s.status === 'PAST'
-                              ? 'border-zinc-100 bg-zinc-50 text-zinc-300 cursor-not-allowed line-through'
+                              ? 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-zinc-300 cursor-not-allowed line-through'
                               : s.status === 'BOOKED'
-                              ? 'border-zinc-100 bg-zinc-50 text-zinc-400 cursor-not-allowed'
+                              ? 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-subtle)] cursor-not-allowed'
                               : s.status === 'HELD'
-                              ? 'border-amber-100 bg-amber-50/50 text-amber-700 cursor-not-allowed'
+                              ? 'border-[var(--color-shell-warning)]/20 bg-[var(--color-shell-warning-soft)]/50 text-[var(--color-shell-warning)] cursor-not-allowed'
                               : isSelected
-                              ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-xs'
-                              : 'border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-zinc-50'
+                              ? 'border-amber-600 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] shadow-xs'
+                              : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:border-[var(--color-shell-border-strong)] hover:bg-[var(--color-shell-surface-elevated)]'
                           }`}
                         >
                           <span className="font-semibold text-[11px]">{timeLabel}</span>
@@ -450,7 +450,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     })}
                   </div>
                 )}
-                <p className="text-[10px] text-zinc-400 pt-1">
+                <p className="text-[10px] text-[var(--color-shell-text-subtle)] pt-1">
                   * Calculated dynamically from recurring schedule & date exceptions.
                 </p>
               </div>
@@ -460,11 +460,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 <motion.div
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="rounded-xl border border-rose-200 bg-rose-50/80 p-3 text-xs text-rose-700 flex items-start gap-2.5"
+                  className="rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)]/80 p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2.5"
                 >
-                  <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                  <AlertTriangle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" />
                   <div className="space-y-1">
-                    <p className="font-semibold text-rose-800">Booking Concurrency Alert</p>
+                    <p className="font-semibold text-[var(--color-shell-text)]">Booking Concurrency Alert</p>
                     <p>{bookingConflictError}</p>
                   </div>
                 </motion.div>
@@ -485,37 +485,37 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       </span>
                       <span>15-Minute Slot Hold Active</span>
                     </div>
-                    <Badge variant="outline" className="border-emerald-300 text-emerald-800 bg-white font-mono text-[11px]">
+                    <Badge variant="outline" className="border-emerald-300 text-emerald-800 bg-[var(--color-shell-surface)] font-mono text-[11px]">
                       {formatCountdown(holdSecondsRemaining)}
                     </Badge>
                   </div>
 
-                  <div className="rounded-lg bg-white border border-emerald-200 p-3 space-y-1.5 text-xs">
-                    <div className="flex justify-between text-zinc-600">
+                  <div className="rounded-lg bg-[var(--color-shell-surface)] border border-emerald-200 p-3 space-y-1.5 text-xs">
+                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
                       <span>Booking Code:</span>
-                      <span className="font-mono font-bold text-zinc-900">
+                      <span className="font-mono font-bold text-[var(--color-shell-text)]">
                         {activeBooking.booking_code}
                       </span>
                     </div>
-                    <div className="flex justify-between text-zinc-600">
+                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
                       <span>Status:</span>
                       <Badge variant="warning" className="text-[10px] py-0">
                         {activeBooking.status}
                       </Badge>
                     </div>
-                    <div className="flex justify-between text-zinc-600">
+                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
                       <span>Session Time:</span>
-                      <span className="font-medium text-zinc-900">
+                      <span className="font-medium text-[var(--color-shell-text)]">
                         {selectedSlot
-                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} – ${formatLocalTimeLabel(
+                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} � ${formatLocalTimeLabel(
                               selectedSlot.local_end_time
                             )}`
                           : ''}
                       </span>
                     </div>
-                    <div className="flex justify-between text-zinc-900 font-bold pt-1 border-t border-zinc-100">
+                    <div className="flex justify-between text-[var(--color-shell-text)] font-bold pt-1 border-t border-[var(--color-shell-border)]">
                       <span>Amount Payable:</span>
-                      <span>₹{activeBooking.amount_inr} INR</span>
+                      <span>?{activeBooking.amount_inr} INR</span>
                     </div>
                   </div>
 
@@ -539,26 +539,26 @@ export const SeekerMentorDetailPage: React.FC = () => {
               ) : (
                 <>
                   {/* Booking Summary Box */}
-                  <div className="border-t border-zinc-100 pt-4 space-y-2 text-xs">
-                    <div className="flex justify-between text-zinc-600">
+                  <div className="border-t border-[var(--color-shell-border)] pt-4 space-y-2 text-xs">
+                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
                       <span>Duration</span>
-                      <span className="font-medium text-zinc-900">
+                      <span className="font-medium text-[var(--color-shell-text)]">
                         {mentorData.gig.duration_minutes} minutes
                       </span>
                     </div>
-                    <div className="flex justify-between text-zinc-600">
+                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
                       <span>Selected Time</span>
-                      <span className="font-semibold text-zinc-900">
+                      <span className="font-semibold text-[var(--color-shell-text)]">
                         {selectedSlot
-                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} – ${formatLocalTimeLabel(
+                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} � ${formatLocalTimeLabel(
                               selectedSlot.local_end_time
                             )} (${mentorData.timezone})`
                           : 'Please select an available slot'}
                       </span>
                     </div>
-                    <div className="flex justify-between text-zinc-900 text-sm font-bold pt-1 border-t border-zinc-100">
+                    <div className="flex justify-between text-[var(--color-shell-text)] text-sm font-bold pt-1 border-t border-[var(--color-shell-border)]">
                       <span>Total Due</span>
-                      <span>₹{mentorData.gig.price_inr} INR</span>
+                      <span>?{mentorData.gig.price_inr} INR</span>
                     </div>
                   </div>
 
@@ -575,7 +575,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     </span>
                     <ArrowRight className="h-3.5 w-3.5" />
                   </Button>
-                  <p className="text-[11px] text-center text-zinc-400">
+                  <p className="text-[11px] text-center text-[var(--color-shell-text-subtle)]">
                     Holding this slot locks it in PostgreSQL for 15 minutes.
                   </p>
                 </>

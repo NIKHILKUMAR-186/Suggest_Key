@@ -66,17 +66,17 @@ export const SeekerBookingDetailPage: React.FC = () => {
     <div className="max-w-3xl mx-auto space-y-6">
       <button
         onClick={() => navigate('/seeker/bookings')}
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         <span>Back to My Bookings</span>
       </button>
 
       {loading ? (
-        <div className="rounded-xl border border-zinc-200 bg-white p-12 text-center space-y-3">
-          <Calendar className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
-          <h3 className="text-sm font-semibold text-zinc-900">Loading Booking Details...</h3>
-          <p className="text-xs text-zinc-500">Retrieving booking information from database.</p>
+        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-12 text-center space-y-3">
+          <Calendar className="h-8 w-8 text-[var(--color-shell-text-subtle)] mx-auto animate-spin" />
+          <h3 className="text-sm font-semibold text-[var(--color-shell-text)]">Loading Booking Details...</h3>
+          <p className="text-xs text-[var(--color-shell-text-muted)]">Retrieving booking information from database.</p>
         </div>
       ) : error || !booking ? (
         <EmptyState
@@ -88,15 +88,15 @@ export const SeekerBookingDetailPage: React.FC = () => {
         />
       ) : (
         <>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold text-zinc-950">Booking #{booking.booking_code}</h1>
+                <h1 className="text-2xl font-bold text-[var(--color-shell-text)]">Booking #{booking.booking_code}</h1>
                 <Badge variant={isConfirmed ? 'success' : booking.status === 'COMPLETED' ? 'secondary' : 'warning'}>
                   {booking.status}
                 </Badge>
               </div>
-              <p className="text-xs text-zinc-500 mt-0.5">
+              <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
                 {isConfirmed
                   ? `Confirmed by mentor ${booking.mentor?.full_name || 'Mentor'} · Meeting URL ${booking.meeting_url ? 'attached' : 'pending'}`
                   : `Status: ${booking.status} · Awaiting next action`}
@@ -115,8 +115,8 @@ export const SeekerBookingDetailPage: React.FC = () => {
             )}
           </div>
 
-          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 shadow-xs space-y-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
               Booking Lifecycle Progression
             </span>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
@@ -126,7 +126,7 @@ export const SeekerBookingDetailPage: React.FC = () => {
                   className={`p-2.5 rounded-lg ${
                     step.isComplete
                       ? 'bg-emerald-50 text-emerald-800 font-bold border border-emerald-200'
-                      : 'bg-zinc-100 text-zinc-600 font-medium'
+                      : 'bg-zinc-100 text-[var(--color-shell-text-muted)] font-medium'
                   }`}
                 >
                   {idx + 1}. {step.label}
@@ -136,54 +136,54 @@ export const SeekerBookingDetailPage: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4">
-              <h3 className="text-sm font-bold text-zinc-950 border-b border-zinc-100 pb-2">
+            <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
+              <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-2">
                 Session Details
               </h3>
               <div className="space-y-2.5 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Mentor:</span>
-                  <span className="font-semibold text-zinc-900">{booking.mentor?.full_name || 'Mentor'}</span>
+                  <span className="text-[var(--color-shell-text-muted)]">Mentor:</span>
+                  <span className="font-semibold text-[var(--color-shell-text)]">{booking.mentor?.full_name || 'Mentor'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Segment:</span>
-                  <span className="text-zinc-800">{booking.segment?.name || 'N/A'}</span>
+                  <span className="text-[var(--color-shell-text-muted)]">Segment:</span>
+                  <span className="text-[var(--color-shell-text)]">{booking.segment?.name || 'N/A'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Gig:</span>
-                  <span className="text-zinc-800">{booking.gig?.title || 'N/A'}</span>
+                  <span className="text-[var(--color-shell-text-muted)]">Gig:</span>
+                  <span className="text-[var(--color-shell-text)]">{booking.gig?.title || 'N/A'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Duration:</span>
-                  <span className="font-medium text-zinc-900">{booking.gig?.duration_minutes || 60} Minutes</span>
+                  <span className="text-[var(--color-shell-text-muted)]">Duration:</span>
+                  <span className="font-medium text-[var(--color-shell-text)]">{booking.gig?.duration_minutes || 60} Minutes</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Scheduled Time:</span>
-                  <span className="font-semibold text-zinc-900">
+                  <span className="text-[var(--color-shell-text-muted)]">Scheduled Time:</span>
+                  <span className="font-semibold text-[var(--color-shell-text)]">
                     {new Date(booking.start_time).toLocaleDateString('en-IN', {
                       weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
                     })} · {formatLocalTimeLabel(booking.start_time)} – {formatLocalTimeLabel(booking.end_time)} (IST)
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-zinc-500">Booking Ref:</span>
-                  <span className="font-mono text-zinc-800">#{booking.booking_code}</span>
+                  <span className="text-[var(--color-shell-text-muted)]">Booking Ref:</span>
+                  <span className="font-mono text-[var(--color-shell-text)]">#{booking.booking_code}</span>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-3 text-xs text-zinc-600">
-              <h3 className="text-sm font-bold text-zinc-950 border-b border-zinc-100 pb-2">
+            <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-3 text-xs text-[var(--color-shell-text-muted)]">
+              <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-2">
                 Policies & Actions
               </h3>
-              <div className="flex items-start gap-2 text-amber-800 bg-amber-50 p-3 rounded-lg border border-amber-200">
+              <div className="flex items-start gap-2 text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-3 rounded-lg border border-[var(--color-shell-warning)]/30">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
                   <strong>24-Hour Policy:</strong> Standard seeker cancellation or rescheduling is allowed only ≥ 24 hours prior to session start.
                 </span>
               </div>
 
-              <p className="text-[11px] text-zinc-400">
+              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
                 For emergency rescheduling within 24 hours, contact platform administration.
               </p>
 
@@ -191,13 +191,13 @@ export const SeekerBookingDetailPage: React.FC = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="w-full text-xs text-zinc-400 border-zinc-200 cursor-not-allowed"
+                  className="w-full text-xs text-[var(--color-shell-text-subtle)] border-[var(--color-shell-border)] cursor-not-allowed"
                   disabled
                 >
                   Cancel Session (Locked &lt; 24h)
                 </Button>
                 {!canCancel && (
-                  <p className="text-[10px] text-zinc-400 text-center">
+                  <p className="text-[10px] text-[var(--color-shell-text-subtle)] text-center">
                     {booking.status === 'MENTOR_PENDING'
                       ? 'Cancellation available after mentor confirmation and 24h before session.'
                       : booking.status === 'COMPLETED'

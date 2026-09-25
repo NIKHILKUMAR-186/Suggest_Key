@@ -310,6 +310,230 @@ export type { Profile, UserRoleRecord };
 // ----------------------------------------------------------------------
 // 13. SLOT GENERATION & DISCOVERY TYPES
 // ----------------------------------------------------------------------
+export type MentorApplicationStatus = 'draft' | 'pending_review' | 'approved' | 'rejected';
+
+export interface OnboardingStatus {
+  applicationStatus: MentorApplicationStatus | null;
+  hasApplication: boolean;
+  nextStep: string | null;
+}
+
+export interface MentorOnboardingData {
+  application: MentorApplication | null;
+  documents: MentorVerificationDocument[];
+  documentTypes: MentorDocumentType[];
+  mentorProfile?: {
+    id?: string;
+    headline?: string | null;
+    about?: string | null;
+    experience_years?: number | null;
+    is_approved?: boolean;
+    approval_status?: string | null;
+    is_active?: boolean;
+  } | null;
+  segments?: Array<{ segment_id: string; segment?: Segment | null }>;
+  auditLog: MentorApplicationAuditEntry[];
+  allRequiredDocsApproved: boolean;
+}
+
+export interface MentorApplication {
+  id: string;
+  user_id: string;
+  status: MentorApplicationStatus;
+  full_name: string;
+  bio: string;
+  timezone: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  rejection_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  profile?: Profile;
+}
+
+export type MentorDocumentStatus = 'pending' | 'approved' | 'rejected';
+
+export interface MentorDocumentType {
+  code: string;
+  label: string;
+  description: string | null;
+  is_required: boolean;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MentorVerificationDocument {
+  id: string;
+  application_id: string;
+  document_type: string;
+  storage_path: string;
+  original_filename: string;
+  mime_type: string;
+  size_bytes: number;
+  status: MentorDocumentStatus;
+  admin_note: string | null;
+  uploaded_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+  updated_at: string;
+  audit?: MentorApplicationAuditEntry[];
+}
+
+export type MentorAuditAction =
+  | 'created'
+  | 'updated'
+  | 'submitted'
+  | 'approved'
+  | 'rejected'
+  | 'resubmitted'
+  | 'document_uploaded'
+  | 'document_reviewed';
+
+export interface MentorApplicationAuditEntry {
+  id: string;
+  application_id: string;
+  action: MentorAuditAction;
+  admin_user_id: string | null;
+  rejection_reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  admin_user?: Profile;
+}
+
+// ----------------------------------------------------------------------
+// 13b. ADMIN MENTOR VERIFICATION QUEUE (GET /api/admin/mentor-applications)
+// ----------------------------------------------------------------------
+/**
+ * Applicant identity as returned by the admin queue endpoint.
+ *
+ * IMPORTANT: `mentor_applications` has TWO foreign keys to `profiles`
+ * (`user_id` -> applicant, `reviewed_by` -> admin). This type always describes
+ * the embed built through `mentor_applications_user_id_fkey`.
+ */
+export interface MentorApplicationApplicantProfile {
+  id: string;
+  full_name: string;
+  email: string;
+  avatar_url: string | null;
+}
+
+export interface MentorApplicationQueueDocument {
+  id: string;
+  document_type: string;
+  status: MentorDocumentStatus;
+  original_filename: string;
+  uploaded_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  admin_note: string | null;
+}
+
+export interface MentorApplicationQueueAuditEntry {
+  id: string;
+  application_id: string;
+  action: MentorAuditAction;
+  admin_user_id: string | null;
+  rejection_reason: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface MentorApplicationQueueItem {
+  id: string;
+  user_id: string;
+  status: MentorApplicationStatus;
+  full_name: string;
+  bio: string;
+  timezone: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  rejection_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  profile: MentorApplicationApplicantProfile | null;
+  documents: MentorApplicationQueueDocument[];
+  auditLog: MentorApplicationQueueAuditEntry[];
+}
+
+/**
+ * Row shape returned by the paginated list query - identical to the queue item
+ * without the audit trail, which is fetched separately and merged in.
+ */
+export type MentorApplicationQueueRow = Omit<MentorApplicationQueueItem, 'auditLog'>;
+
+/**
+ * Applicant profile columns returned by the detail endpoint (wider projection
+ * than the queue list, still resolved through the applicant foreign key).
+ */
+export interface MentorApplicationDetailApplicantProfile extends MentorApplicationApplicantProfile {
+  timezone: string;
+  created_at: string;
+}
+
+export interface MentorApplicationDocumentTypeRef {
+  code: string;
+  label: string;
+  description: string | null;
+  is_required: boolean;
+}
+
+export interface MentorApplicationDetailDocument extends MentorApplicationQueueDocument {
+  application_id: string;
+  storage_path: string;
+  mime_type: string;
+  size_bytes: number;
+  document_type_ref: MentorApplicationDocumentTypeRef | null;
+  download_url: string;
+}
+
+export interface MentorApplicationDetailAuditEntry extends MentorApplicationQueueAuditEntry {
+  admin_user: { id: string; full_name: string } | null;
+}
+
+export interface MentorApplicationDetailRow
+  extends Omit<MentorApplicationQueueItem, 'auditLog' | 'documents' | 'profile'> {
+  profile: MentorApplicationDetailApplicantProfile | null;
+  documents: MentorApplicationDetailDocument[];
+  auditLog: MentorApplicationDetailAuditEntry[];
+}
+
+export interface AdminMentorApplicationDetailResponse {
+  success: boolean;
+  application: MentorApplicationDetailRow;
+}
+
+export interface MentorApplicationStatusCountsPayload {
+  all: number;
+  draft: number;
+  pending_review: number;
+  approved: number;
+  rejected: number;
+}
+
+export interface MentorApplicationPaginationPayload {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
+}
+
+export interface AdminMentorApplicationsResponse {
+  success: boolean;
+  applications: MentorApplicationQueueItem[];
+  counts: MentorApplicationStatusCountsPayload;
+  pagination: MentorApplicationPaginationPayload;
+}
+
+// ----------------------------------------------------------------------
+// 14. SLOT GENERATION & DISCOVERY TYPES (continued)
+// ----------------------------------------------------------------------
 export type SlotStatus = 'AVAILABLE' | 'PAST' | 'BOOKED' | 'HELD';
 
 export interface GeneratedSlot {

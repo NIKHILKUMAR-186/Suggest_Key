@@ -218,7 +218,7 @@ export const LandingPage: React.FC = () => {
             <Button
               variant="outline"
               size="lg"
-              onClick={() => navigate('/auth/signup')}
+              onClick={() => navigate('/mentor/signup')}
               className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
             >
               Become a Mentor
@@ -403,7 +403,7 @@ export const LandingPage: React.FC = () => {
                 </ul>
                 <Button
                   size="md"
-                  onClick={() => navigate('/auth/signup')}
+                  onClick={() => navigate('/mentor/signup')}
                   className="mt-2 gap-2 text-sm bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-[var(--color-shell-text-contrast)] shadow-xs"
                 >
                   Become a Mentor
@@ -486,7 +486,7 @@ export const LandingPage: React.FC = () => {
             <Button
               variant="outline"
               size="lg"
-              onClick={() => navigate('/auth/signup')}
+              onClick={() => navigate('/mentor/signup')}
               className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
             >
               Become a Mentor
@@ -513,14 +513,20 @@ export const LandingPage: React.FC = () => {
                 { label: 'Privacy', href: '#' },
                 { label: 'Terms', href: '#' },
               ].map((item) => (
-                <button
-                  key={item.label}
-                 onClick={() => handleNavClick(item.href)}
-                  className="text-xs text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
-                >
-                  {item.label}
-                </button>
-              ))}
+              <button
+                key={item.label}
+                onClick={() => handleNavClick(item.href)}
+                className="text-xs text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+              >
+                {item.label}
+              </button>
+            ))}
+            <button
+              onClick={() => navigate('/mentor/signup')}
+              className="text-xs text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+            >
+              Become a Mentor
+            </button>
             </nav>
           </div>
           <div className="mt-8 pt-6 border-t border-[var(--color-shell-border)] text-center">

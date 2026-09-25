@@ -1,81 +1,40 @@
-import { getSupabaseAdmin } from './supabaseServer';
-import type { AuthRequest } from './supabaseServer';
+import type { User } from '@supabase/supabase-js';
+import type { UserRole } from '@/src/types/navigation';
+import { logAuditEvent } from '@/src/lib/logger';
 
-export type AuditAction =
-  | 'mentor_approved'
-  | 'mentor_rejected'
-  | 'mentor_activated'
-  | 'mentor_deactivated'
-  | 'segment_created'
-  | 'segment_edited'
-  | 'segment_priority_changed'
-  | 'segment_activated'
-  | 'segment_deactivated'
-  | 'payment_approved'
-  | 'payment_rejected'
-  | 'booking_cancelled'
-  | 'user_role_changed'
-  | 'user_role_assigned'
-  | 'user_role_revoked'
-  | 'workspace_published'
-  | 'workspace_saved'
-  | 'notification_dispatched'
-  | 'mentor_application_approved'
-  | 'mentor_application_rejected'
-  | 'mentor_document_reviewed'
-  | string;
+export interface AuthInfo {
+  user: { id: string; email?: string | null; aud?: string };
+  roles: UserRole[];
+}
 
-interface AuditParams {
-  actor: AuthRequest['auth'] | { user?: { id?: string } | null; roles?: string[] } | null;
-  action: AuditAction;
+export interface AuditActionOptions {
   entityType?: string;
   entityId?: string;
   requestId?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, any>;
 }
 
-function getActorInfo(actor: AuditParams['actor']): { userId: string | null; role: string | null } {
-  if (!actor?.user) return { userId: null, role: null };
-  const roles = Array.isArray(actor.roles) ? actor.roles : [];
-  const role = roles.includes('admin')
+export async function auditAction(
+  auth: AuthInfo | undefined,
+  action: string,
+  options: AuditActionOptions,
+): Promise<void> {
+  const userId = auth?.user?.id;
+  const role = auth?.roles?.includes('admin')
     ? 'admin'
-    : roles.includes('mentor')
+    : auth?.roles?.includes('mentor')
       ? 'mentor'
-      : roles.includes('seeker')
+      : auth?.roles?.includes('seeker')
         ? 'seeker'
-        : roles[0] || null;
-  return { userId: actor.user.id || null, role };
-}
+        : undefined;
 
-export async function writeAuditLog(params: AuditParams): Promise<void> {
-  const { userId, role } = getActorInfo(params.actor);
-  const admin = getSupabaseAdmin();
-  if (!admin) {
-    console.error('[Audit] Supabase admin client unavailable; audit entry not persisted');
-    return;
-  }
-  try {
-    const { error } = await admin.from('audit_logs').insert({
-      actor_user_id: userId,
-      actor_role: role,
-      action: params.action,
-      entity_type: params.entityType || null,
-      entity_id: params.entityId || null,
-      request_id: params.requestId || null,
-      metadata: params.metadata || {},
-    });
-    if (error) {
-      console.error('[Audit] Failed to insert audit log:', error.message);
-    }
-  } catch (err: any) {
-    console.error('[Audit] Exception writing audit log:', err?.message || err);
-  }
-}
-
-export function auditAction(
-  actor: AuditParams['actor'],
-  action: AuditAction,
-  overrides: Omit<AuditParams, 'actor' | 'action'> = {},
-) {
-  return writeAuditLog({ actor, action, ...overrides });
+  await logAuditEvent({
+    actorUserId: userId,
+    actorRole: role,
+    action,
+    entityType: options.entityType,
+    entityId: options.entityId,
+    requestId: options.requestId,
+    metadata: options.metadata,
+  }).catch(() => {});
 }

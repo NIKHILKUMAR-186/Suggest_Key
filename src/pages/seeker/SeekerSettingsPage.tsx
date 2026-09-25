@@ -65,16 +65,16 @@ export const SeekerSettingsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl font-display">
+        <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
           Account Settings
         </h1>
-        <p className="mt-1 text-sm text-zinc-500">
+        <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
           Manage your personal profile, local timezone, security credentials, and notifications.
         </p>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-zinc-200 gap-8 text-sm font-medium">
+      <div className="flex border-b border-[var(--color-shell-border)] gap-8 text-sm font-medium">
         {[
           { id: 'profile', label: 'Profile & Bio', icon: User },
           { id: 'security', label: 'Security & Auth', icon: Shield },
@@ -85,10 +85,10 @@ export const SeekerSettingsPage: React.FC = () => {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 pb-3 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 rounded-xs ${
+              className={`flex items-center gap-2 pb-3 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-xs ${
                 activeTab === tab.id
-                  ? 'border-b-2 border-amber-600 text-amber-900 font-bold'
-                  : 'text-zinc-500 hover:text-zinc-800'
+                  ? 'border-b-2 border-amber-600 text-[var(--color-shell-text)] font-bold'
+                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
               }`}
             >
               <Icon className="h-4 w-4" />
@@ -117,11 +117,11 @@ export const SeekerSettingsPage: React.FC = () => {
           onSubmit={handleSave}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-6"
+          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-6"
         >
-          <div className="flex items-center gap-5 border-b border-zinc-100 pb-6">
+          <div className="flex items-center gap-5 border-b border-[var(--color-shell-border)] pb-6">
             <div className="relative">
-              <div className="h-20 w-20 rounded-full bg-zinc-100 border border-zinc-200 flex items-center justify-center font-bold text-xl text-zinc-700 font-display">
+              <div className="h-20 w-20 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display">
                 {userInitials}
               </div>
               <button
@@ -133,8 +133,8 @@ export const SeekerSettingsPage: React.FC = () => {
               </button>
             </div>
             <div>
-              <h3 className="text-sm font-bold text-zinc-900">Profile Avatar</h3>
-              <p className="text-xs text-zinc-400 mt-0.5">
+              <h3 className="text-sm font-bold text-[var(--color-shell-text)]">Profile Avatar</h3>
+              <p className="text-xs text-[var(--color-shell-text-subtle)] mt-0.5">
                 PNG, JPG or WebP up to 2MB. Stored securely in profile bucket.
               </p>
             </div>
@@ -148,20 +148,20 @@ export const SeekerSettingsPage: React.FC = () => {
               placeholder="Your full name"
             />
             <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-zinc-700">
+              <label className="block text-xs font-medium text-[var(--color-shell-text-muted)]">
                 Local Timezone
               </label>
               <select
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
-                className="flex h-10 w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-amber-400 focus:outline-hidden focus:ring-2 focus:ring-amber-500/15"
+                className="flex h-10 w-full rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-sm text-[var(--color-shell-text)] focus:border-[var(--color-shell-accent)] focus:outline-hidden focus:ring-2 focus:ring-[var(--color-shell-accent)]/15"
               >
                 <option value="Asia/Kolkata">Asia/Kolkata (IST · UTC+5:30)</option>
                 <option value="America/New_York">America/New_York (EST · UTC-5:00)</option>
                 <option value="Europe/London">Europe/London (GMT · UTC+0:00)</option>
                 <option value="Asia/Singapore">Asia/Singapore (SGT · UTC+8:00)</option>
               </select>
-              <p className="text-[11px] text-zinc-400">
+              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
                 All booking slot selections are presented in your local timezone.
               </p>
             </div>
@@ -184,12 +184,12 @@ export const SeekerSettingsPage: React.FC = () => {
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-5"
+          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5"
         >
-          <h3 className="text-sm font-bold text-zinc-900 border-b border-zinc-100 pb-3">
+          <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
             Authentication & Security
           </h3>
-          <p className="text-xs text-zinc-600">
+          <p className="text-xs text-[var(--color-shell-text-muted)]">
             Authentication is managed via Supabase Auth. Passwords and credentials are never stored in plain text.
           </p>
           <div className="space-y-3 max-w-sm">
@@ -213,9 +213,9 @@ export const SeekerSettingsPage: React.FC = () => {
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4"
+          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4"
         >
-          <h3 className="text-sm font-bold text-zinc-900 border-b border-zinc-100 pb-3">
+          <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
             In-App Notification Preferences
           </h3>
           <div className="space-y-3 text-xs">
@@ -226,7 +226,7 @@ export const SeekerSettingsPage: React.FC = () => {
             ].map((item, i) => (
               <label
                 key={i}
-                className="flex items-start gap-3 p-3 rounded-lg border border-zinc-100 hover:bg-zinc-50 cursor-pointer"
+                className="flex items-start gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] hover:bg-[var(--color-shell-surface-elevated)] cursor-pointer"
               >
                 <input
                   type="checkbox"
@@ -234,8 +234,8 @@ export const SeekerSettingsPage: React.FC = () => {
                   className="mt-0.5 rounded border-zinc-300 focus:ring-amber-500"
                 />
                 <div>
-                  <span className="font-semibold text-zinc-900 block">{item.title}</span>
-                  <span className="text-zinc-500">{item.desc}</span>
+                  <span className="font-semibold text-[var(--color-shell-text)] block">{item.title}</span>
+                  <span className="text-[var(--color-shell-text-muted)]">{item.desc}</span>
                 </div>
               </label>
             ))}

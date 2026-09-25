@@ -28,6 +28,8 @@ import { SeekerSessionPage } from '@/src/pages/seeker/SeekerSessionPage';
 import { SeekerWorkspacePage } from '@/src/pages/seeker/SeekerWorkspacePage';
 
 // Mentor Pages
+import { MentorSignupPage } from '@/src/pages/mentor/MentorSignupPage';
+import { MentorVerificationPage } from '@/src/pages/mentor/MentorVerificationPage';
 import { MentorHomePage } from '@/src/pages/mentor/MentorHomePage';
 import { MentorBookingsPage } from '@/src/pages/mentor/MentorBookingsPage';
 import { MentorBookingDetailPage } from '@/src/pages/mentor/MentorBookingDetailPage';
@@ -41,12 +43,17 @@ import { MentorWorkspacePage } from '@/src/pages/mentor/MentorWorkspacePage';
 // Admin Pages
 import { AdminDashboardPage } from '@/src/pages/admin/AdminDashboardPage';
 import { AdminUsersPage } from '@/src/pages/admin/AdminUsersPage';
+import { AdminUserDetailPage } from '@/src/pages/admin/AdminUserDetailPage';
+import { AdminCreateUserPage } from '@/src/pages/admin/AdminCreateUserPage';
 import { AdminMentorsPage } from '@/src/pages/admin/AdminMentorsPage';
+import { AdminMentorVerificationPage } from '@/src/pages/admin/AdminMentorVerificationPage';
+import { AdminMentorVerificationDetailPage } from '@/src/pages/admin/AdminMentorVerificationDetailPage';
 import { AdminSegmentsPage } from '@/src/pages/admin/AdminSegmentsPage';
 import { AdminBookingsPage } from '@/src/pages/admin/AdminBookingsPage';
 import { AdminWorkspacesPage } from '@/src/pages/admin/AdminWorkspacesPage';
 import { AdminPaymentsPage } from '@/src/pages/admin/AdminPaymentsPage';
 import { AdminNotificationsPage } from '@/src/pages/admin/AdminNotificationsPage';
+import { AdminSystemHealthPage } from '@/src/pages/admin/AdminSystemHealthPage';
 import { AdminSettingsPage } from '@/src/pages/admin/AdminSettingsPage';
 
 export const Router: React.FC = () => {
@@ -82,18 +89,33 @@ export const Router: React.FC = () => {
     return <UnauthorizedPage />;
   }
 
+  // Mentor Signup (always accessible)
+  if (pathname === '/mentor/signup') {
+    return <MentorSignupPage />;
+  }
+
+  // Mentor Verification (accessible to mentors without auth in demo mode)
+  if (pathname === '/mentor/verification') {
+    return <MentorVerificationPage />;
+  }
+
   // 3. Admin Routes (Strictly Protected: 'admin' role required)
   if (pathname.startsWith('/admin')) {
     return (
       <ProtectedRoute allowedRoles={['admin']}>
         {(() => {
           if (pathname === '/admin/users') return <AdminUsersPage />;
+          if (pathname === '/admin/users/create') return <AdminCreateUserPage />;
+          if (pathname.startsWith('/admin/users/')) return <AdminUserDetailPage />;
+          if (pathname === '/admin/mentor-verification') return <AdminMentorVerificationPage />;
+          if (pathname.startsWith('/admin/mentor-verification/')) return <AdminMentorVerificationDetailPage />;
           if (pathname === '/admin/mentors') return <AdminMentorsPage />;
           if (pathname === '/admin/segments') return <AdminSegmentsPage />;
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
           if (pathname === '/admin/workspaces') return <AdminWorkspacesPage />;
           if (pathname === '/admin/payments') return <AdminPaymentsPage />;
           if (pathname === '/admin/notifications') return <AdminNotificationsPage />;
+          if (pathname === '/admin/system-health' || pathname === '/admin/system-health/logs' || pathname.startsWith('/admin/system-health/logs/')) return <AdminSystemHealthPage />;
           if (pathname === '/admin/settings') return <AdminSettingsPage />;
           return <AdminDashboardPage />;
         })()}

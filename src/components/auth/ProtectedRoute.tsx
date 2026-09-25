@@ -2,7 +2,8 @@ import React from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import type { UserRole } from '@/src/types/auth';
-import { ShieldAlert, LogIn, ArrowLeft, RefreshCw } from 'lucide-react';
+import type { MentorApplicationStatus } from '@/src/types/database';
+import { ShieldAlert, LogIn, ArrowLeft, RefreshCw, ShieldCheck } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 
 interface ProtectedRouteProps {
@@ -16,7 +17,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   allowedRoles,
   requireAuth = true,
 }) => {
-  const { user, roles, isAuthenticated, isLoading, activeRole } = useAuth();
+  const { user, roles, isAuthenticated, isLoading, activeRole, onboardingStatus } = useAuth();
   const { navigate, currentPath } = useNavigation();
 
   // 1. Loading State
@@ -29,40 +30,80 @@ return (
   );
 }
 
-// 2. Authentication Requirement Check
-if (requireAuth && !isAuthenticated) {
-  return (
-    <div className="max-w-md mx-auto my-12 p-6 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-xs text-center space-y-4">
-      <div className="h-12 w-12 rounded-full bg-[var(--color-shell-surface-elevated)] flex items-center justify-center mx-auto text-[var(--color-shell-accent)]">
-        <LogIn className="h-6 w-6" />
-      </div>
-      <div>
-        <h2 className="text-lg font-bold text-[var(--color-shell-text)]">Authentication Required</h2>
-        <p className="text-xs text-[var(--color-shell-text-muted)] mt-1 leading-relaxed">
-          You must be signed in with an authorized account to access this section ({currentPath}).
-        </p>
-      </div>
+  // 2. Authentication Requirement Check
+  if (requireAuth && !isAuthenticated) {
+    return (
+      <div className="max-w-md mx-auto my-12 p-6 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-xs text-center space-y-4">
+        <div className="h-12 w-12 rounded-full bg-[var(--color-shell-surface-elevated)] flex items-center justify-center mx-auto text-[var(--color-shell-accent)]">
+          <LogIn className="h-6 w-6" />
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-[var(--color-shell-text)]">Authentication Required</h2>
+          <p className="text-xs text-[var(--color-shell-text-muted)] mt-1 leading-relaxed">
+            You must be signed in with an authorized account to access this section ({currentPath}).
+          </p>
+        </div>
 
-      <div className="pt-2 flex flex-col sm:flex-row gap-2 justify-center">
-        <Button
-          size="md"
-          onClick={() => navigate('/auth/login')}
-          className="text-xs w-full sm:w-auto"
-        >
-          Sign In to Continue
-        </Button>
-        <Button
-          variant="outline"
-          size="md"
-          onClick={() => navigate('/seeker')}
-          className="text-xs w-full sm:w-auto"
-        >
-          Back to Public Home
-        </Button>
+        <div className="pt-2 flex flex-col sm:flex-row gap-2 justify-center">
+          <Button
+            size="md"
+            onClick={() => navigate('/auth/login')}
+            className="text-xs w-full sm:w-auto"
+          >
+            Sign In to Continue
+          </Button>
+          <Button
+            variant="outline"
+            size="md"
+            onClick={() => navigate('/seeker')}
+            className="text-xs w-full sm:w-auto"
+          >
+            Back to Public Home
+          </Button>
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
+
+  // 3. Mentor Onboarding Requirement Check
+  const isMentorRoute = currentPath.startsWith('/mentor');
+  const applicationStatus = onboardingStatus?.application?.status as MentorApplicationStatus | null;
+  const mentorProfileApproved = onboardingStatus?.mentorProfile?.is_approved === true
+    && onboardingStatus.mentorProfile.approval_status === 'approved'
+    && onboardingStatus.mentorProfile.is_active === true;
+  if (isAuthenticated && roles.includes('mentor') && applicationStatus !== 'approved' && !mentorProfileApproved && isMentorRoute && currentPath !== '/mentor/verification' && currentPath !== '/mentor') {
+    return (
+      <div className="max-w-md mx-auto my-12 p-6 rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] shadow-xs text-center space-y-4">
+        <div className="h-12 w-12 rounded-full bg-[var(--color-shell-warning-soft)] flex items-center justify-center mx-auto text-[var(--color-shell-warning)]">
+          <ShieldCheck className="h-6 w-6" />
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-[var(--color-shell-text)]">Mentor Verification Required</h2>
+          <p className="text-xs text-[var(--color-shell-text-muted)] mt-1 leading-relaxed">
+            Your mentor profile is awaiting verification. You must complete verification before accessing the mentor portal.
+          </p>
+        </div>
+
+        <div className="pt-2 flex flex-col sm:flex-row gap-2 justify-center">
+          <Button
+            size="md"
+            onClick={() => navigate('/mentor/verification')}
+            className="text-xs w-full sm:w-auto"
+          >
+            Complete Verification
+          </Button>
+          <Button
+            variant="outline"
+            size="md"
+            onClick={() => navigate('/seeker')}
+            className="text-xs w-full sm:w-auto"
+          >
+            Back to Seeker View
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
 // 3. Role Authorization Requirement Check (Server/Database Authority)
 if (allowedRoles && allowedRoles.length > 0) {

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { isSupabaseConfigured } from '@/src/lib/supabase';
 
 export const AuthCallback: React.FC = () => {
   const { navigate } = useNavigation();
@@ -13,15 +13,16 @@ export const AuthCallback: React.FC = () => {
       return;
     }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-      if (isAuthenticated && !isLoading) {
-        if (activeRole === 'admin') navigate('/admin');
-        else if (activeRole === 'mentor') navigate('/mentor');
-        else navigate('/seeker');
-      }
-    });
+    if (isLoading) return;
 
-    return () => subscription.unsubscribe();
+    if (!isAuthenticated) {
+      navigate('/auth/login');
+      return;
+    }
+
+    if (activeRole === 'admin') navigate('/admin');
+    else if (activeRole === 'mentor') navigate('/mentor');
+    else navigate('/seeker');
   }, [navigate, isAuthenticated, isLoading, activeRole]);
 
   return (

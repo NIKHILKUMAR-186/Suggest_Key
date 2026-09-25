@@ -170,14 +170,25 @@ export const SeekerHomePage: React.FC = () => {
   return (
     <div className="space-y-8">
       {/* Hero Section */}
-      <div className="space-y-6">
+      <div className="relative max-w-5xl mx-auto">
+        {/* Hero Visual - SVG Asset */}
+        <div className="absolute inset-0 -z-10 w-full h-full pointer-events-none overflow-hidden" aria-hidden="true">
+          <img
+            src="/assets/landing/seeker-hero.svg"
+            alt=""
+            className="w-full h-full object-cover"
+            aria-hidden="true"
+          />
+        </div>
+
+        <div className="relative space-y-6 item-center justify-center text-center max-w-3xl mx-auto pt-8 pb-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: [0.23, 1, 0.31, 1] }}
-          className="inline-flex items-center gap-2.5 rounded-full border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/80 px-4 py-1.5 text-xs font-semibold text-[var(--color-shell-warning)]"
+          className="justify-center items-center gap-2.5 rounded-full border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/80 px-4 py-1.5 text-xs font-semibold text-[var(--color-shell-warning)]  inline-flex shadow-xs"
         >
-          <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+          <Sparkles className="h-3.5 w-3.5 text-[var(--color-shell-warning)]" />
           <span>Verified 1:1 Mentorship Marketplace</span>
         </motion.div>
 
@@ -208,7 +219,7 @@ export const SeekerHomePage: React.FC = () => {
           transition={{ duration: 0.5, delay: 0.15, ease: [0.23, 1, 0.31, 1] }}
           className="relative max-w-3xl pt-4"
         >
-          <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-5 w-5 text-[var(--color-shell-text-subtle)]" />
+          <Search className="absolute  left-5 top-1/2 -translate-y-1/9 h-5 w-5 text-[var(--color-shell-text-subtle)]" />
           <input
             type="text"
             value={searchQuery}
@@ -219,6 +230,7 @@ export const SeekerHomePage: React.FC = () => {
           />
         </motion.div>
       </div>
+    </div>
 
       {/* Segment Selector */}
       <motion.div
@@ -227,14 +239,14 @@ export const SeekerHomePage: React.FC = () => {
         transition={{ duration: 0.4, delay: 0.2, ease: [0.23, 1, 0.31, 1] }}
       >
         {isLoadingSegments ? (
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-1 item-center justify-center text-center max-w-3xl mx-auto">
             <Skeleton className="h-10 w-40 rounded-full" />
             <Skeleton className="h-10 w-32 rounded-full" />
             <Skeleton className="h-10 w-36 rounded-full" />
           </div>
         ) : (
           <div
-            className="flex gap-2 overflow-x-auto pb-1 scrollbar-none"
+            className="flex gap-2 overflow-x-auto pb-1 scrollbar-none  item-center justify-center text-center max-w-3xl mx-auto"
             role="tablist"
             aria-label="Mentorship segments"
           >
@@ -267,8 +279,8 @@ export const SeekerHomePage: React.FC = () => {
         transition={{ duration: 0.4, delay: 0.25, ease: [0.23, 1, 0.31, 1] }}
         className="space-y-3"
       >
-        <h2 className="text-sm font-semibold text-[var(--color-shell-text-muted)]">When would you like to talk?</h2>
-        <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-sm  item-center justify-center text-center max-w-3xl mx-auto font-semibold text-[var(--color-shell-text-muted)]">When would you like to talk?</h2>
+        <div className="flex flex-wrap items-center gap-3 item-center justify-center text-center max-w-3xl mx-auto">
           <div className="flex items-center gap-1.5 bg-[var(--color-shell-surface)] rounded-xl border border-[var(--color-shell-border)] px-1.5 py-1 shadow-xs">
             {quickDates.map((d) => (
               <button
@@ -284,7 +296,7 @@ export const SeekerHomePage: React.FC = () => {
               </button>
             ))}
 
-            <div className="w-px h-5 bg-zinc-200 mx-1" />
+            <div className="w-px h-5 bg-[var(--color-shell-border)] mx-1" />
             <label className="sr-only" htmlFor="date-picker">Pick a date</label>
             <input
               id="date-picker"
@@ -297,9 +309,9 @@ export const SeekerHomePage: React.FC = () => {
             />
           </div>
 
-          <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
+          {/* <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
             Past dates disabled
-          </span>
+          </span> */}
         </div>
       </motion.div>
 
@@ -418,7 +430,7 @@ export const SeekerHomePage: React.FC = () => {
             <ShieldCheck className="h-4 w-4" />
             <span>Something went wrong</span>
           </div>
-          <p className="mt-1 text-rose-600">{error}</p>
+          <p className="mt-1 text-[var(--color-shell-error)]">{error}</p>
         </div>
       )}
 
@@ -457,7 +469,7 @@ export const SeekerHomePage: React.FC = () => {
           {featuredMentors.length > 0 && (
             <div className="space-y-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)] flex items-center gap-2">
-                <Star className="h-3 w-3 text-amber-500 fill-current" />
+                <Star className="h-3 w-3 text-[var(--color-shell-warning)] fill-current" />
                 <span>Featured Mentors</span>
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

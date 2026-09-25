@@ -70,7 +70,7 @@ export const SeekerPaymentPage: React.FC = () => {
       <div className="max-w-3xl mx-auto space-y-6">
         <button
           onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           <span>Back to Bookings</span>
@@ -91,15 +91,15 @@ export const SeekerPaymentPage: React.FC = () => {
       <div className="max-w-3xl mx-auto space-y-6">
         <button
           onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           <span>Back to Bookings</span>
         </button>
-        <div className="rounded-2xl border border-zinc-200 bg-white p-12 text-center space-y-3">
-          <Clock className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
-          <h3 className="text-sm font-semibold text-zinc-900">Loading Booking Details...</h3>
-          <p className="text-xs text-zinc-500">Retrieving booking and payment information.</p>
+        <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-12 text-center space-y-3">
+          <Clock className="h-8 w-8 text-[var(--color-shell-text-subtle)] mx-auto animate-spin" />
+          <h3 className="text-sm font-semibold text-[var(--color-shell-text)]">Loading Booking Details...</h3>
+          <p className="text-xs text-[var(--color-shell-text-muted)]">Retrieving booking and payment information.</p>
         </div>
       </div>
     );
@@ -110,7 +110,7 @@ export const SeekerPaymentPage: React.FC = () => {
       <div className="max-w-3xl mx-auto space-y-6">
         <button
           onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           <span>Back to Bookings</span>
@@ -128,23 +128,23 @@ export const SeekerPaymentPage: React.FC = () => {
     <div className="max-w-3xl mx-auto space-y-6">
       <button
         onClick={() => navigate('/seeker/bookings')}
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-500 hover:text-zinc-950 transition-colors p-1 -ml-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 cursor-pointer"
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors p-1 -ml-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 cursor-pointer"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         <span>Cancel & Back to Bookings</span>
       </button>
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 shadow-2xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/70 p-4 shadow-2xs">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-amber-900 shrink-0">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-[var(--color-shell-text)] shrink-0">
             <Clock className="h-5 w-5 animate-pulse" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-amber-950">Slot Hold Active</h2>
+              <h2 className="text-sm font-bold text-[var(--color-shell-text)]">Slot Hold Active</h2>
               <Badge variant="warning" className="text-[10px] font-bold">15-Min Lock</Badge>
             </div>
-            <p className="text-xs text-amber-900 mt-0.5 leading-relaxed">
+            <p className="text-xs text-[var(--color-shell-text)] mt-0.5 leading-relaxed">
               This slot is temporarily locked exclusively for you. If payment proof is not submitted within 15 minutes, the slot is automatically released.
             </p>
           </div>
@@ -162,65 +162,65 @@ export const SeekerPaymentPage: React.FC = () => {
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xs space-y-5">
-            <h2 className="text-base font-bold text-zinc-950 border-b border-zinc-100 pb-3 font-display">
+          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-2xs space-y-5">
+            <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 font-display">
               Booking Summary
             </h2>
             <div className="space-y-3 text-xs">
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Mentor:</span>
-                <span className="font-bold text-zinc-900">{booking.mentor?.full_name || 'Mentor'}</span>
+                <span className="text-[var(--color-shell-text-muted)]">Mentor:</span>
+                <span className="font-bold text-[var(--color-shell-text)]">{booking.mentor?.full_name || 'Mentor'}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Segment:</span>
-                <span className="font-semibold text-zinc-800">{booking.segment?.name || 'N/A'}</span>
+                <span className="text-[var(--color-shell-text-muted)]">Segment:</span>
+                <span className="font-semibold text-[var(--color-shell-text)]">{booking.segment?.name || 'N/A'}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Gig:</span>
-                <span className="font-semibold text-zinc-800">{booking.gig?.title || 'N/A'}</span>
+                <span className="text-[var(--color-shell-text-muted)]">Gig:</span>
+                <span className="font-semibold text-[var(--color-shell-text)]">{booking.gig?.title || 'N/A'}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Date & Time:</span>
-                <span className="font-semibold text-zinc-900">
+                <span className="text-[var(--color-shell-text-muted)]">Date & Time:</span>
+                <span className="font-semibold text-[var(--color-shell-text)]">
                   {new Date(booking.start_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })} ·{' '}
                   {formatLocalTimeLabel(booking.start_time).replace(' ', ' – ').replace('PM', 'PM (IST)')}
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-zinc-500">Duration:</span>
-                <span className="font-semibold text-zinc-800">{booking.gig?.duration_minutes || 60} Minutes</span>
+                <span className="text-[var(--color-shell-text-muted)]">Duration:</span>
+                <span className="font-semibold text-[var(--color-shell-text)]">{booking.gig?.duration_minutes || 60} Minutes</span>
               </div>
-              <div className="flex justify-between items-center border-t border-zinc-100 pt-3 text-sm font-bold text-zinc-950">
+              <div className="flex justify-between items-center border-t border-[var(--color-shell-border)] pt-3 text-sm font-bold text-[var(--color-shell-text)]">
                 <span>Amount Due:</span>
                 <span className="font-mono text-base">₹{(booking.amount_inr || booking.gig?.price_inr || 0)} INR</span>
               </div>
             </div>
 
-            <div className="rounded-xl bg-zinc-50 border border-zinc-200/80 p-3.5 text-[11px] text-zinc-600 space-y-1">
-              <span className="font-bold text-zinc-900 block">Payment Invariant Note:</span>
+            <div className="rounded-xl bg-[var(--color-shell-surface-elevated)] border border-[var(--color-shell-border)]/80 p-3.5 text-[11px] text-[var(--color-shell-text-muted)] space-y-1">
+              <span className="font-bold text-[var(--color-shell-text)] block">Payment Invariant Note:</span>
               <p className="leading-relaxed">
                 MVP uses Manual QR verification. The payment layer is provider-abstracted for future Razorpay integration without altering availability or booking state machines.
               </p>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xs space-y-5">
-            <h2 className="text-base font-bold text-zinc-950 border-b border-zinc-100 pb-3 font-display">
+          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-2xs space-y-5">
+            <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 font-display">
               Manual QR Payment (MVP)
             </h2>
 
-            <div className="flex flex-col items-center justify-center p-4 border border-zinc-200 rounded-xl bg-zinc-50 text-center space-y-2.5">
-              <div className="h-32 w-32 bg-white border border-zinc-300 rounded-xl flex items-center justify-center shadow-xs">
-                <QrCode className="h-20 w-20 text-zinc-900" />
+            <div className="flex flex-col items-center justify-center p-4 border border-[var(--color-shell-border)] rounded-xl bg-[var(--color-shell-surface-elevated)] text-center space-y-2.5">
+              <div className="h-32 w-32 bg-[var(--color-shell-surface)] border border-zinc-300 rounded-xl flex items-center justify-center shadow-xs">
+                <QrCode className="h-20 w-20 text-[var(--color-shell-text)]" />
               </div>
-              <span className="text-xs font-bold text-zinc-950">Scan via Any UPI App</span>
+              <span className="text-xs font-bold text-[var(--color-shell-text)]">Scan via Any UPI App</span>
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-mono text-zinc-700 bg-white border border-zinc-200 px-2.5 py-1 rounded-lg">
+                <span className="text-xs font-mono text-[var(--color-shell-text-muted)] bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] px-2.5 py-1 rounded-lg">
                   suggestkey@upi
                 </span>
                 <button
                   onClick={handleCopyUpi}
-                  className="p-1.5 text-zinc-500 hover:text-zinc-950 rounded-lg hover:bg-zinc-200/60 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+                  className="p-1.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-zinc-200/60 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
                   aria-label="Copy UPI ID"
                   title="Copy UPI ID"
                 >
@@ -238,7 +238,7 @@ export const SeekerPaymentPage: React.FC = () => {
             />
 
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-zinc-800">
+              <label className="block text-xs font-bold text-[var(--color-shell-text)]">
                 Upload Payment Screenshot
               </label>
               <div
@@ -254,14 +254,14 @@ export const SeekerPaymentPage: React.FC = () => {
                 className={`flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-xl transition-all cursor-pointer text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 ${
                   proofUploaded
                     ? 'border-emerald-500 bg-emerald-50/50 shadow-2xs'
-                    : 'border-zinc-200 hover:border-zinc-400 bg-zinc-50/50'
+                    : 'border-[var(--color-shell-border)] hover:border-zinc-400 bg-[var(--color-shell-surface-elevated)]/50'
                 }`}
               >
-                <Upload className={`h-5 w-5 mb-1.5 ${proofUploaded ? 'text-emerald-600' : 'text-zinc-400'}`} />
-                <span className="text-xs font-semibold text-zinc-900">
+                <Upload className={`h-5 w-5 mb-1.5 ${proofUploaded ? 'text-emerald-600' : 'text-[var(--color-shell-text-subtle)]'}`} />
+                <span className="text-xs font-semibold text-[var(--color-shell-text)]">
                   {proofUploaded ? 'payment_receipt_2026.png attached' : 'Click to select payment screenshot'}
                 </span>
-                <span className="text-[10px] text-zinc-400 mt-0.5">
+                <span className="text-[10px] text-[var(--color-shell-text-subtle)] mt-0.5">
                   Private bucket storage (payment-proofs)
                 </span>
               </div>

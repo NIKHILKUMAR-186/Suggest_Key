@@ -1,4 +1,5 @@
 import type { User, Session } from '@supabase/supabase-js';
+import type { MentorOnboardingData } from '@/src/types/database';
 
 export type UserRole = 'seeker' | 'mentor' | 'admin';
 
@@ -30,6 +31,7 @@ export interface AuthContextType {
   isConfigured: boolean;
   error: string | null;
   pendingEmail: string | null;
+  onboardingStatus: MentorOnboardingData | null;
   signInWithPassword: (email: string, password: string) => Promise<{ error: Error | null; role?: UserRole }>;
   signInWithGoogle: () => Promise<{ error: Error | null }>;
   signInWithDemoPersona: (persona: UserRole) => Promise<{ error: Error | null; role?: UserRole }>;

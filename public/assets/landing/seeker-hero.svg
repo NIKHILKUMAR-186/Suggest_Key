@@ -1,0 +1,277 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 560" width="1440" height="560" aria-hidden="true" role="img">
+  <defs>
+    <!-- Layer 1: Subtle background grid/noise -->
+    <pattern id="grid-pattern" width="80" height="80" patternUnits="userSpaceOnUse">
+      <path d="M80 0H0V80" fill="none" stroke="rgba(186,215,247,0.04)" stroke-width="0.5"/>
+    </pattern>
+    <filter id="noise-filter" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.02"/>
+      </feComponentTransfer>
+    </filter>
+
+    <!-- Layer 2: Large atmospheric glows -->
+    <radialGradient id="glow-left" cx="15%" cy="50%" r="55%" fx="15%" fy="50%">
+      <stop offset="0%" stop-color="#663af3" stop-opacity="0.18"/>
+      <stop offset="40%" stop-color="#663af3" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#663af3" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-right" cx="85%" cy="50%" r="55%" fx="85%" fy="50%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.15"/>
+      <stop offset="40%" stop-color="#60a5fa" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#60a5fa" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-center" cx="50%" cy="45%" r="35%" fx="50%" fy="45%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.12"/>
+      <stop offset="60%" stop-color="#8b5cf6" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-bottom-left" cx="10%" cy="90%" r="40%" fx="10%" fy="90%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-bottom-right" cx="90%" cy="90%" r="40%" fx="90%" fy="90%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Layer 3: Orbit/connection line gradients -->
+    <linearGradient id="orbit-gradient-1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#663af3" stop-opacity="0.3"/>
+      <stop offset="50%" stop-color="#60a5fa" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.2"/>
+    </linearGradient>
+    <linearGradient id="orbit-gradient-2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.25"/>
+      <stop offset="50%" stop-color="#8b5cf6" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#60a5fa" stop-opacity="0.18"/>
+    </linearGradient>
+    <linearGradient id="connection-gradient" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#663af3" stop-opacity="0.4"/>
+      <stop offset="30%" stop-color="#8b5cf6" stop-opacity="0.25"/>
+      <stop offset="50%" stop-color="#60a5fa" stop-opacity="0.3"/>
+      <stop offset="70%" stop-color="#a855f7" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.25"/>
+    </linearGradient>
+
+    <!-- Layer 4: Node gradients -->
+    <radialGradient id="node-mentor" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#f59e0b" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#d97706" stop-opacity="0.6"/>
+    </radialGradient>
+    <radialGradient id="node-seeker" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#3b82f6" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#2563eb" stop-opacity="0.6"/>
+    </radialGradient>
+    <radialGradient id="node-connection" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#10b981" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0.5"/>
+    </radialGradient>
+    <radialGradient id="node-insight" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="1"/>
+      <stop offset="60%" stop-color="#9333ea" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#7c3aed" stop-opacity="0.5"/>
+    </radialGradient>
+
+    <!-- Layer 5: Small luminous accents -->
+    <radialGradient id="spark-gradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="40%" stop-color="#fbbf24" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="particle-gradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#60a5fa" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Layer 6: Central focus glow -->
+    <radialGradient id="center-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.25"/>
+      <stop offset="40%" stop-color="#663af3" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#663af3" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Filters for glow effects -->
+    <filter id="soft-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="strong-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="20" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="node-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <!-- Path definitions for orbit lines -->
+    <path id="orbit-path-1" d="M120 280 Q200 180 400 200 Q550 220 720 280 Q850 330 1000 300 Q1150 270 1320 280" fill="none"/>
+    <path id="orbit-path-2" d="M120 340 Q220 400 400 380 Q550 360 720 340 Q850 300 1000 320 Q1150 340 1320 340" fill="none"/>
+    <path id="orbit-path-3" d="M80 420 Q180 480 350 460 Q500 440 720 420 Q880 400 1050 430 Q1200 460 1360 440" fill="none"/>
+    <path id="orbit-path-4" d="M1320 280 Q1150 220 1000 200 Q850 180 720 280 Q550 380 400 340 Q200 300 120 280" fill="none"/>
+
+    <!-- Abstract human silhouette paths -->
+    <path id="silhouette-mentor" d="M0 0 C-8 -12 -12 -28 -8 -40 C-4 -52 4 -60 12 -60 C20 -60 28 -52 32 -40 C36 -28 32 -12 24 0 C16 12 8 12 0 0 Z M0 -45 C-10 -45 -18 -38 -18 -28 C-18 -18 -10 -10 0 -10 C10 -10 18 -18 18 -28 C18 -38 10 -45 0 -45 Z" fill="currentColor"/>
+    <path id="silhouette-seeker" d="M0 0 C-7 -10 -10 -25 -7 -36 C-4 -48 3 -55 10 -55 C17 -55 24 -48 28 -36 C32 -24 28 -10 20 0 C12 10 6 10 0 0 Z M0 -40 C-8 -40 -14 -34 -14 -26 C-14 -18 -8 -10 0 -10 C8 -10 14 -18 14 -26 C14 -34 8 -40 0 -40 Z" fill="currentColor"/>
+
+    <!-- Conversation bubble path -->
+    <path id="bubble-path" d="M0 0 C-12 -4 -20 4 -20 16 C-20 28 -12 36 0 36 C12 36 20 28 20 16 C20 4 12 -4 0 0 Z M-8 36 L0 44 L8 36" fill="currentColor"/>
+
+    <!-- Calendar/clock motif path -->
+    <path id="calendar-path" d="M-10 -12 L-10 -8 L10 -8 L10 -12 Z M-12 -12 L12 -12 L12 12 L-12 12 L-12 -12 Z M-4 -4 L-4 4 L4 4 L4 -4 L-4 -4 Z M-4 -4 L-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Magnifying glass path -->
+    <path id="search-path" d="M-8 -8 L8 8 M-6 6 C-6 2 -2 -2 2 -2 C6 -2 10 2 10 6 C10 10 6 14 2 14 C-2 14 -6 10 -6 6 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Category nodes path -->
+    <path id="category-nodes" d="M0 0 C0 -8 8 -8 8 0 C8 8 0 8 0 0 Z M-20 -20 L20 20 M-20 20 L20 -20" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+  </defs>
+
+  <!-- Background base -->
+  <rect width="1440" height="560" fill="#05060f"/>
+
+  <!-- Layer 1: Subtle grid texture -->
+  <rect width="1440" height="560" fill="url(#grid-pattern)" filter="url(#noise-filter)" opacity="0.4"/>
+
+  <!-- Layer 2: Large atmospheric glows -->
+  <ellipse cx="180" cy="280" rx="500" ry="300" fill="url(#glow-left)" filter="url(#strong-glow)"/>
+  <ellipse cx="1260" cy="280" rx="500" ry="300" fill="url(#glow-right)" filter="url(#strong-glow)"/>
+  <ellipse cx="720" cy="220" rx="450" ry="220" fill="url(#glow-center)" filter="url(#strong-glow)"/>
+  <ellipse cx="100" cy="500" rx="350" ry="180" fill="url(#glow-bottom-left)" filter="url(#strong-glow)"/>
+  <ellipse cx="1340" cy="500" rx="350" ry="180" fill="url(#glow-bottom-right)" filter="url(#strong-glow)"/>
+
+  <!-- Layer 3: Orbit/connection lines -->
+  <g stroke-width="1.5" stroke-linecap="round" filter="url(#soft-glow)">
+    <use href="#orbit-path-1" stroke="url(#orbit-gradient-1)" stroke-dasharray="8 6" opacity="0.6"/>
+    <use href="#orbit-path-2" stroke="url(#orbit-gradient-2)" stroke-dasharray="6 8" opacity="0.5"/>
+    <use href="#orbit-path-3" stroke="url(#orbit-gradient-1)" stroke-dasharray="10 5" opacity="0.35"/>
+    <use href="#orbit-path-4" stroke="url(#orbit-gradient-2)" stroke-dasharray="5 10" opacity="0.3"/>
+  </g>
+
+  <!-- Central connection line -->
+  <path d="M380 280 Q520 260 720 280 Q920 300 1060 280" fill="none" stroke="url(#connection-gradient)" stroke-width="2" stroke-linecap="round" opacity="0.5" filter="url(#soft-glow)"/>
+
+  <!-- Layer 4: Abstract mentor/seeker nodes -->
+  <g filter="url(#node-glow)">
+    <!-- Left mentor cluster -->
+    <g transform="translate(180, 200)">
+      <circle r="28" fill="url(#node-mentor)" opacity="0.9"/>
+      <circle r="18" fill="url(#node-mentor)" opacity="0.5" transform="translate(-45, -35) scale(0.6)"/>
+      <circle r="14" fill="url(#node-connection)" opacity="0.7" transform="translate(50, -20) scale(0.5)"/>
+      <circle r="10" fill="url(#node-insight)" opacity="0.6" transform="translate(-30, 45) scale(0.4)"/>
+      <circle r="8" fill="url(#node-seeker)" opacity="0.5" transform="translate(60, 30) scale(0.35)"/>
+    </g>
+
+    <!-- Right mentor cluster -->
+    <g transform="translate(1260, 200)">
+      <circle r="28" fill="url(#node-mentor)" opacity="0.9"/>
+      <circle r="18" fill="url(#node-seeker)" opacity="0.5" transform="translate(45, -35) scale(0.6)"/>
+      <circle r="14" fill="url(#node-connection)" opacity="0.7" transform="translate(-50, -20) scale(0.5)"/>
+      <circle r="10" fill="url(#node-insight)" opacity="0.6" transform="translate(30, 45) scale(0.4)"/>
+      <circle r="8" fill="url(#node-seeker)" opacity="0.5" transform="translate(-60, 30) scale(0.35)"/>
+    </g>
+
+    <!-- Lower left seeker cluster -->
+    <g transform="translate(150, 420)">
+      <circle r="22" fill="url(#node-seeker)" opacity="0.85"/>
+      <circle r="14" fill="url(#node-mentor)" opacity="0.45" transform="translate(-35, 25) scale(0.55)"/>
+      <circle r="10" fill="url(#node-connection)" opacity="0.6" transform="translate(30, -20) scale(0.45)"/>
+      <circle r="7" fill="url(#node-insight)" opacity="0.5" transform="translate(-20, -35) scale(0.35)"/>
+    </g>
+
+    <!-- Lower right seeker cluster -->
+    <g transform="translate(1290, 420)">
+      <circle r="22" fill="url(#node-seeker)" opacity="0.85"/>
+      <circle r="14" fill="url(#node-mentor)" opacity="0.45" transform="translate(35, 25) scale(0.55)"/>
+      <circle r="10" fill="url(#node-connection)" opacity="0.6" transform="translate(-30, -20) scale(0.45)"/>
+      <circle r="7" fill="url(#node-insight)" opacity="0.5" transform="translate(20, -35) scale(0.35)"/>
+    </g>
+
+    <!-- Center connection nodes (subtle, keeping center calm) -->
+    <g transform="translate(580, 280)">
+      <circle r="16" fill="url(#node-connection)" opacity="0.4"/>
+      <circle r="10" fill="url(#node-insight)" opacity="0.3" transform="translate(-40, -15) scale(0.5)"/>
+      <circle r="8" fill="url(#node-mentor)" opacity="0.25" transform="translate(35, 20) scale(0.4)"/>
+    </g>
+    <g transform="translate(860, 280)">
+      <circle r="16" fill="url(#node-connection)" opacity="0.4"/>
+      <circle r="10" fill="url(#node-insight)" opacity="0.3" transform="translate(40, -15) scale(0.5)"/>
+      <circle r="8" fill="url(#node-seeker)" opacity="0.25" transform="translate(-35, 20) scale(0.4)"/>
+    </g>
+  </g>
+
+  <!-- Abstract silhouette figures at edges -->
+  <g opacity="0.15" fill="#fbbf24">
+    <use href="#silhouette-mentor" transform="translate(100, 300) scale(1.8)"/>
+    <use href="#silhouette-seeker" transform="translate(1340, 300) scale(-1.6, 1.6)"/>
+    <use href="#silhouette-mentor" transform="translate(120, 460) scale(1.2)" opacity="0.1"/>
+    <use href="#silhouette-seeker" transform="translate(1320, 460) scale(-1.2, 1.2)" opacity="0.1"/>
+  </g>
+
+  <!-- Abstract conversation bubbles (subtle) -->
+  <g opacity="0.08" fill="#60a5fa">
+    <use href="#bubble-path" transform="translate(200, 160) scale(1.4)"/>
+    <use href="#bubble-path" transform="translate(1240, 160) scale(-1.4, 1.4)"/>
+    <use href="#bubble-path" transform="translate(300, 480) scale(0.9)"/>
+    <use href="#bubble-path" transform="translate(1140, 480) scale(-0.9, 0.9)"/>
+  </g>
+
+  <!-- Calendar/availability motifs -->
+  <g opacity="0.06" stroke="#22d3ee" stroke-width="1.5" fill="none">
+    <use href="#calendar-path" transform="translate(180, 140) scale(1.2)"/>
+    <use href="#calendar-path" transform="translate(1260, 140) scale(1.2)"/>
+    <use href="#calendar-path" transform="translate(120, 500) scale(0.8)"/>
+    <use href="#calendar-path" transform="translate(1320, 500) scale(0.8)"/>
+  </g>
+
+  <!-- Search/magnifying glass motifs -->
+  <g opacity="0.05" stroke="#a855f7" stroke-width="1.5" fill="none">
+    <use href="#search-path" transform="translate(220, 120) scale(1)"/>
+    <use href="#search-path" transform="translate(1220, 120) scale(-1, 1)"/>
+  </g>
+
+  <!-- Category connected nodes -->
+  <g opacity="0.07" stroke="#34d399" stroke-width="1" fill="none">
+    <use href="#category-nodes" transform="translate(140, 260) scale(1.5)"/>
+    <use href="#category-nodes" transform="translate(1300, 260) scale(-1.5, 1.5)"/>
+    <use href="#category-nodes" transform="translate(180, 380) scale(1)"/>
+    <use href="#category-nodes" transform="translate(1260, 380) scale(-1, 1)"/>
+  </g>
+
+  <!-- Layer 5: Small luminous particles/accents -->
+  <g filter="url(#node-glow)">
+    <circle cx="200" cy="120" r="3" fill="url(#spark-gradient)" opacity="0.7"/>
+    <circle cx="320" cy="80" r="2" fill="url(#particle-gradient)" opacity="0.6"/>
+    <circle cx="120" cy="200" r="2.5" fill="url(#spark-gradient)" opacity="0.5"/>
+    <circle cx="400" cy="160" r="1.5" fill="url(#particle-gradient)" opacity="0.5"/>
+    <circle cx="1040" cy="120" r="3" fill="url(#spark-gradient)" opacity="0.7"/>
+    <circle cx="1120" cy="80" r="2" fill="url(#particle-gradient)" opacity="0.6"/>
+    <circle cx="1320" cy="200" r="2.5" fill="url(#spark-gradient)" opacity="0.5"/>
+    <circle cx="1040" cy="160" r="1.5" fill="url(#particle-gradient)" opacity="0.5"/>
+    <circle cx="180" cy="500" r="2" fill="url(#particle-gradient)" opacity="0.4"/>
+    <circle cx="300" cy="520" r="1.5" fill="url(#particle-gradient)" opacity="0.35"/>
+    <circle cx="1140" cy="500" r="2" fill="url(#particle-gradient)" opacity="0.4"/>
+    <circle cx="1260" cy="520" r="1.5" fill="url(#particle-gradient)" opacity="0.35"/>
+    <circle cx="580" cy="180" r="2" fill="url(#spark-gradient)" opacity="0.3"/>
+    <circle cx="860" cy="180" r="2" fill="url(#spark-gradient)" opacity="0.3"/>
+    <circle cx="650" cy="380" r="1.5" fill="url(#particle-gradient)" opacity="0.25"/>
+    <circle cx="790" cy="380" r="1.5" fill="url(#particle-gradient)" opacity="0.25"/>
+  </g>
+
+  <!-- Layer 6: Central focus glow (subtle, behind text area) -->
+  <ellipse cx="720" cy="200" rx="280" ry="140" fill="url(#center-glow)" filter="url(#strong-glow)" opacity="0.6"/>
+
+  <!-- Subtle flowing path suggestions (guidance lines) -->
+  <g fill="none" stroke-width="1" stroke-linecap="round" opacity="0.25">
+    <path d="M160 240 Q280 200 420 230 Q500 250 580 280" stroke="#663af3" stroke-dasharray="4 8"/>
+    <path d="M1280 240 Q1160 200 1020 230 Q940 250 860 280" stroke="#60a5fa" stroke-dasharray="4 8"/>
+    <path d="M160 360 Q280 390 420 370 Q500 350 580 340" stroke="#a855f7" stroke-dasharray="4 8"/>
+    <path d="M1280 360 Q1160 390 1020 370 Q940 350 860 340" stroke="#22d3ee" stroke-dasharray="4 8"/>
+  </g>
+</svg>

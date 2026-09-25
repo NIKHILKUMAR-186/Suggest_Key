@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import type { User, Session } from '@supabase/supabase-js';
 import type { Profile, UserRole, AuthContextType } from '@/src/types/auth';
 import { supabase, isSupabaseConfigured, fetchUserProfile, fetchUserRoles, upsertUserProfile } from '@/src/lib/supabase';
+import { apiFetch } from '@/src/lib/apiClient';
 
 const isDevMode = process.env.NODE_ENV !== 'production';
 
@@ -12,6 +13,9 @@ interface DemoAuthResponse {
     activeRole: UserRole;
     token: string;
   }
+
+
+import type { MentorOnboardingData } from '@/src/types/database';
 
 
 const DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth';
@@ -53,6 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [isConfigured] = useState<boolean>(isSupabaseConfigured());
+  const [onboardingStatus, setOnboardingStatus] = useState<MentorOnboardingData | null>(null);
 
   const setDemoAuth = (data: DemoAuthResponse) => {
     setUser(data.user as unknown as User);
@@ -490,12 +495,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(false);
   };
 
-  // Check if user has specific role
+   // Fetch mentor onboarding status
+  const fetchOnboardingStatus = useCallback(async () => {
+    if (!user) {
+      setOnboardingStatus(null);
+      return;
+    }
+
+    try {
+      const response = await apiFetch('/api/mentor/onboarding-status');
+      if (response.ok) {
+        const result = await response.json();
+        setOnboardingStatus(result.onboarding || null);
+      } else {
+        setOnboardingStatus(null);
+      }
+    } catch {
+      setOnboardingStatus(null);
+    }
+  }, [user]);
+
+const clearError = () => setError(null);
+
+// Fetch onboarding status when user changes
+useEffect(() => {
+  if (user && roles.includes('mentor')) {
+    fetchOnboardingStatus();
+  } else {
+    setOnboardingStatus(null);
+  }
+}, [user, roles, fetchOnboardingStatus]);
+
   const hasRole = useCallback((role: UserRole): boolean => {
     return roles.includes(role);
   }, [roles]);
-
-  const clearError = () => setError(null);
 
   return (
     <AuthContext.Provider
@@ -510,6 +543,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isConfigured,
         error,
         pendingEmail,
+        onboardingStatus,
         signInWithPassword,
         signInWithGoogle,
         signInWithDemoPersona,
