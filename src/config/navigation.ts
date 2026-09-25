@@ -6,6 +6,8 @@ import {
   Clock,
   LayoutDashboard,
   Users,
+  UserCog,
+  ShieldCheck,
   Layers,
   CreditCard,
   FileText,
@@ -59,6 +61,8 @@ export const ROLE_NAVIGATION: Record<UserRole, RoleNavConfig> = {
     navItems: [
       { id: 'admin-dashboard', label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
       { id: 'admin-users', label: 'Users', href: '/admin/users', icon: Users },
+      { id: 'admin-mentors', label: 'Mentors', href: '/admin/mentors', icon: UserCog },
+      { id: 'admin-mentor-verification', label: 'Mentor Verification', href: '/admin/mentor-verification', icon: ShieldCheck },
       { id: 'admin-segments', label: 'Segments', href: '/admin/segments', icon: Layers },
       { id: 'admin-bookings', label: 'Bookings', href: '/admin/bookings', icon: Calendar },
       { id: 'admin-workspaces', label: 'Workspaces', href: '/admin/workspaces', icon: FileText },

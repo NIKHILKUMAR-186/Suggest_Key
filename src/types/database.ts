@@ -561,6 +561,7 @@ export interface DiscoverableMentor {
   about: string | null;
   experience_years: number;
   languages: string[];
+  expertise: string[] | null;
   rating: number;
   review_count: number;
   session_count: number;
@@ -571,4 +572,39 @@ export interface DiscoverableMentor {
   available_slots: GeneratedSlot[]; // Valid future non-conflicting slots
   all_slots: GeneratedSlot[]; // All generated slots on selected date
   next_available_slot: GeneratedSlot | null;
+}
+
+/**
+ * A mentor eligible for seeker discovery (approved + active + not suspended +
+ * not deactivated) WITHOUT requiring a bookable slot on any date.
+ *
+ * This is deliberately a different shape from `DiscoverableMentor`: the
+ * "View All Mentors" directory must NOT depend on slot generation.
+ */
+export interface DirectoryMentor {
+  id: string;
+  full_name: string;
+  avatar_url: string | null;
+  timezone: string;
+  headline: string;
+  about: string | null;
+  experience_years: number;
+  languages: string[];
+  expertise: string[] | null;
+  rating: number;
+  review_count: number;
+  session_count: number;
+  is_featured: boolean;
+  segments: Segment[];
+  gigs: Gig[];
+  /** Lowest-priced active gig, used for the "from ₹X" label. Null when no active gig exists. */
+  starting_price_inr: number | null;
+}
+
+export interface DirectoryPagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  hasNextPage: boolean;
 }

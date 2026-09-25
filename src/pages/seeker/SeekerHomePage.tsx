@@ -7,18 +7,24 @@ import {
   ChevronDown,
   Star,
   X,
+  AlertCircle,
+  ArrowRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { PremiumMentorCard } from '@/src/components/seeker/PremiumMentorCard';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useAuth } from '@/src/context/AuthContext';
 import {
   fetchActiveSegments,
   getHighestPriorityActiveSegment,
   fetchDiscoverableMentors,
+  fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
+import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
@@ -32,10 +38,17 @@ const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
 
 export const SeekerHomePage: React.FC = () => {
   const { navigate } = useNavigation();
+  const { profile } = useAuth();
 
-  const [selectedDate, setSelectedDate] = useState<string>(() => {
-    return new Date().toISOString().split('T')[0];
-  });
+  // The seeker's own timezone drives "Today"/"Tomorrow". Falls back to UTC
+  // rather than the browser default so the value is reproducible.
+  const userTimezone = profile?.timezone || 'UTC';
+
+  const [today, setToday] = useState<string>(() =>
+    getDateStringInTimezone(new Date(), userTimezone)
+  );
+
+  const [selectedDate, setSelectedDate] = useState<string>(today);
 
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [languageFilter, setLanguageFilter] = useState<string>('all');
@@ -45,9 +58,34 @@ export const SeekerHomePage: React.FC = () => {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [mentors, setMentors] = useState<DiscoverableMentor[]>([]);
+  const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [isLoadingMentors, setIsLoadingMentors] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [mentorError, setMentorError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState<number>(0);
+
+  // Keep the calendar day in sync so the page is correct without a reload
+  // when it stays open past midnight.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setToday(getDateStringInTimezone(new Date(), userTimezone));
+    }, 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [userTimezone]);
+
+  // The language filter is populated from real mentor data, never a hardcoded list.
+  useEffect(() => {
+    let isMounted = true;
+    async function loadLanguages() {
+      const { languages } = await fetchEligibleLanguages();
+      if (isMounted) setEligibleLanguages(languages);
+    }
+    loadLanguages();
+    return () => {
+      isMounted = false;
+    };
+  }, [reloadToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -75,7 +113,7 @@ export const SeekerHomePage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [reloadToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -85,6 +123,7 @@ export const SeekerHomePage: React.FC = () => {
     }
     async function loadMentors() {
       setIsLoadingMentors(true);
+      setMentorError(null);
       try {
         const { mentors: discMentors, error: mentorErr } = await fetchDiscoverableMentors(
           selectedSegment!.id,
@@ -97,6 +136,9 @@ export const SeekerHomePage: React.FC = () => {
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading mentors:', err);
+          // A failed request must never be rendered as "0 mentors".
+          setMentors([]);
+          setMentorError('Unable to load mentors right now.');
         }
       } finally {
         if (isMounted) setIsLoadingMentors(false);
@@ -106,25 +148,28 @@ export const SeekerHomePage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [selectedSegment, selectedDate]);
+  }, [selectedSegment, selectedDate, reloadToken]);
 
   const availableLanguages = useMemo(() => {
-    const langs = new Set<string>();
+    const langs = new Set<string>(eligibleLanguages);
     mentors.forEach((m) => (m.languages || []).forEach((l) => langs.add(l)));
     return Array.from(langs).sort();
-  }, [mentors]);
+  }, [mentors, eligibleLanguages]);
 
   const filteredMentors = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return mentors.filter((m) => {
       if (query) {
+        // Searches only columns that actually exist in the database.
         const searchable = [
           m.full_name,
           m.headline,
+          m.about || '',
           m.segment?.name || '',
           m.gig.title,
           m.gig.description,
           ...(m.languages || []),
+          ...(m.expertise || []),
         ]
           .join(' ')
           .toLowerCase();
@@ -154,8 +199,8 @@ export const SeekerHomePage: React.FC = () => {
     setExperienceFilter('all');
   }, []);
 
-  const today = new Date().toISOString().split('T')[0];
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  // Derived from the live clock, never a hardcoded calendar date.
+  const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
 
   const quickDates = useMemo(() => {
     const dates = [{ label: 'Today', value: today }];
@@ -166,6 +211,14 @@ export const SeekerHomePage: React.FC = () => {
   const handleDateSelect = (dateValue: string) => {
     setSelectedDate(dateValue);
   };
+
+  const goToAllMentors = () => {
+    const params = new URLSearchParams();
+    if (selectedSegment) params.set('segmentId', selectedSegment.id);
+    navigate(`/mentors?${params.toString()}`);
+  };
+
+  const retryLoad = () => setReloadToken((t) => t + 1);
 
   return (
     <div className="space-y-8">
@@ -409,7 +462,7 @@ export const SeekerHomePage: React.FC = () => {
       </motion.div>
 
       {/* Results Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <h2 className="text-xl font-bold text-[var(--color-shell-text)]">Available Mentors</h2>
           {selectedSegment && (
@@ -418,12 +471,25 @@ export const SeekerHomePage: React.FC = () => {
             </Badge>
           )}
         </div>
-        <span className="text-xs text-[var(--color-shell-text-muted)]">
-          {isLoadingMentors ? '…' : `${filteredMentors.length} mentor${filteredMentors.length !== 1 ? 's' : ''}`}
-        </span>
+        <div className="flex items-center gap-3">
+          {isLoadingMentors || mentorError ? (
+            <Skeleton className="h-3 w-16" />
+          ) : (
+            <span className="text-xs text-[var(--color-shell-text-muted)]">
+              {filteredMentors.length} mentor{filteredMentors.length !== 1 ? 's' : ''}
+            </span>
+          )}
+          <button
+            onClick={goToAllMentors}
+            className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-md px-1 py-0.5"
+          >
+            <span>View All Mentors</span>
+            <ArrowRight className="h-3 w-3" />
+          </button>
+        </div>
       </div>
 
-      {/* Error */}
+      {/* Segment-level error */}
       {error && (
         <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)] shadow-xs">
           <div className="flex items-center gap-2 font-semibold">
@@ -431,6 +497,28 @@ export const SeekerHomePage: React.FC = () => {
             <span>Something went wrong</span>
           </div>
           <p className="mt-1 text-[var(--color-shell-error)]">{error}</p>
+          <Button onClick={retryLoad} variant="outline" size="sm" className="mt-3">
+            Try Again
+          </Button>
+        </div>
+      )}
+
+      {/* Mentor-level error - must never render as "0 mentors" */}
+      {mentorError && !error && (
+        <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)] shadow-xs">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertCircle className="h-4 w-4" />
+            <span>{mentorError}</span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button onClick={retryLoad} variant="outline" size="sm">
+              Try Again
+            </Button>
+            <Button onClick={goToAllMentors} variant="ghost" size="sm" className="gap-1">
+              <span>View All Mentors</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       )}
 
@@ -441,17 +529,17 @@ export const SeekerHomePage: React.FC = () => {
             <SkeletonCard key={i} />
           ))}
         </div>
-      ) : filteredMentors.length === 0 ? (
+      ) : mentorError ? null : filteredMentors.length === 0 ? (
         <EmptyState
           icon={Search}
           title="No Mentors Available"
           description={
-            searchQuery || languageFilter !== 'all' || experienceFilter !== 'all'
-              ? 'Try adjusting your search terms or clearing filters to discover more mentors.'
-              : `No approved mentors in ${selectedSegment?.name || 'selected segment'} have open slots for your selected date. Mentors with zero available slots are excluded to prevent dead ends.`
+            hasActiveFilters
+              ? 'No mentors match your current search or filters. Try broadening them, or browse all verified mentors.'
+              : `No mentors are available for this date. Try another date or browse all verified mentors.`
           }
-          actionLabel={hasActiveFilters ? 'Clear Filters' : undefined}
-          onAction={hasActiveFilters ? clearAllFilters : undefined}
+          actionLabel={hasActiveFilters ? 'Clear Filters' : 'View All Mentors'}
+          onAction={hasActiveFilters ? clearAllFilters : goToAllMentors}
         />
       ) : (
         <motion.div

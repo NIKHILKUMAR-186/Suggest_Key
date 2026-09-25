@@ -18,6 +18,7 @@ import { LandingPage } from '@/src/pages/public/LandingPage';
 // Seeker Pages
 import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
 import { SeekerMentorListPage } from '@/src/pages/seeker/SeekerMentorListPage';
+import { MentorDirectoryPage } from '@/src/pages/seeker/MentorDirectoryPage';
 import { SeekerMentorDetailPage } from '@/src/pages/seeker/SeekerMentorDetailPage';
 import { SeekerBookingsPage } from '@/src/pages/seeker/SeekerBookingsPage';
 import { SeekerBookingDetailPage } from '@/src/pages/seeker/SeekerBookingDetailPage';
@@ -49,6 +50,7 @@ import { AdminMentorsPage } from '@/src/pages/admin/AdminMentorsPage';
 import { AdminMentorVerificationPage } from '@/src/pages/admin/AdminMentorVerificationPage';
 import { AdminMentorVerificationDetailPage } from '@/src/pages/admin/AdminMentorVerificationDetailPage';
 import { AdminSegmentsPage } from '@/src/pages/admin/AdminSegmentsPage';
+import { AdminSegmentDetailPage } from '@/src/pages/admin/AdminSegmentDetailPage';
 import { AdminBookingsPage } from '@/src/pages/admin/AdminBookingsPage';
 import { AdminWorkspacesPage } from '@/src/pages/admin/AdminWorkspacesPage';
 import { AdminPaymentsPage } from '@/src/pages/admin/AdminPaymentsPage';
@@ -100,7 +102,7 @@ export const Router: React.FC = () => {
   }
 
   // 3. Admin Routes (Strictly Protected: 'admin' role required)
-  if (pathname.startsWith('/admin')) {
+if (pathname.startsWith('/admin')) {
     return (
       <ProtectedRoute allowedRoles={['admin']}>
         {(() => {
@@ -111,6 +113,7 @@ export const Router: React.FC = () => {
           if (pathname.startsWith('/admin/mentor-verification/')) return <AdminMentorVerificationDetailPage />;
           if (pathname === '/admin/mentors') return <AdminMentorsPage />;
           if (pathname === '/admin/segments') return <AdminSegmentsPage />;
+          if (pathname.startsWith('/admin/segments/')) return <AdminSegmentDetailPage />;
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
           if (pathname === '/admin/workspaces') return <AdminWorkspacesPage />;
           if (pathname === '/admin/payments') return <AdminPaymentsPage />;
@@ -123,7 +126,18 @@ export const Router: React.FC = () => {
     );
   }
 
-  // 4. Mentor Routes (Strictly Protected: 'mentor' or 'admin' role required)
+  // 4. Mentor Directory (seeker-facing "View All Mentors").
+  //    Must be matched BEFORE the `/mentor` role block below, because
+  //    '/mentors' is a prefix of '/mentor'.
+  if (pathname === '/mentors' || pathname.startsWith('/mentors/')) {
+    return (
+      <ProtectedRoute allowedRoles={['seeker', 'admin']}>
+        <MentorDirectoryPage />
+      </ProtectedRoute>
+    );
+  }
+
+  // 5. Mentor Routes (Strictly Protected: 'mentor' or 'admin' role required)
   if (pathname.startsWith('/mentor')) {
     return (
       <ProtectedRoute allowedRoles={['mentor', 'admin']}>

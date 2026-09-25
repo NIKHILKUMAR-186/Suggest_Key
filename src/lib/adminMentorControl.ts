@@ -29,6 +29,7 @@ export const MENTOR_ADMIN_AUDIT_ACTIONS = {
   SUSPENDED: 'MENTOR_SUSPENDED',
   REACTIVATED: 'MENTOR_REACTIVATED',
   PROFILE_UPDATED: 'MENTOR_PROFILE_UPDATED_BY_ADMIN',
+  SEGMENTS_UPDATED: 'MENTOR_SEGMENTS_UPDATED_BY_ADMIN',
   GIG_CREATED: 'MENTOR_GIG_CREATED_BY_ADMIN',
   GIG_UPDATED: 'MENTOR_GIG_UPDATED_BY_ADMIN',
   GIG_ARCHIVED: 'MENTOR_GIG_ARCHIVED_BY_ADMIN',
@@ -450,3 +451,81 @@ export function availableMentorStatusActions(state: MentorAccountState): MentorS
   if (state.isActive) return ['deactivate', 'suspend'];
   return state.isApproved ? ['activate', 'suspend'] : [];
 }
+
+// ---------------------------------------------------------------------------
+// Mentor creation source (public signup vs admin direct create)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a mentor joined the platform.
+ *
+ *  - public_signup: /mentor/signup -> application -> documents -> review
+ *  - admin_direct:  Admin -> Create User -> Mentor. Already approved and
+ *                   active on creation; no application or documents exist,
+ *                   and that is CORRECT, not an error state.
+ *  - unknown:       a legacy row with no creation-source evidence. Rendered as
+ *                   a neutral state; never guessed from a name or id.
+ */
+export const MENTOR_CREATION_SOURCES = ['public_signup', 'admin_direct', 'unknown'] as const;
+export type MentorCreationSource = (typeof MENTOR_CREATION_SOURCES)[number];
+
+export const MENTOR_CREATION_SOURCE_LABELS: Record<MentorCreationSource, string> = {
+  public_signup: 'Public Mentor Signup',
+  admin_direct: 'Admin Verified Mentor',
+  unknown: 'Source Unknown',
+};
+
+export function isMentorCreationSource(value: unknown): value is MentorCreationSource {
+  return (
+    typeof value === 'string' && (MENTOR_CREATION_SOURCES as readonly string[]).includes(value)
+  );
+}
+
+/** Evidence used to resolve the creation source, gathered from the database. */
+export interface MentorCreationEvidence {
+  /** `mentor_profiles.created_via` (null on legacy rows). */
+  createdVia?: string | null;
+  /** True when audit_logs holds a MENTOR_CREATED_BY_ADMIN event for this mentor. */
+  hasAdminCreationAudit?: boolean;
+  /** True when a mentor_applications row exists for this mentor. */
+  hasApplication?: boolean;
+}
+
+/**
+ * Resolve the creation source from real database evidence.
+ *
+ * Precedence is most-authoritative first:
+ *   1. the explicit `created_via` column
+ *   2. the MENTOR_CREATED_BY_ADMIN audit record
+ *   3. application presence
+ *   4. unknown - never guessed
+ *
+ * The audit trail is consulted BEFORE application presence so the answer does
+ * not depend solely on "does an application row exist", which would misreport
+ * an Admin-created mentor that later opened a draft application.
+ */
+export function resolveMentorCreationSource(
+  evidence: MentorCreationEvidence,
+): MentorCreationSource {
+  if (isMentorCreationSource(evidence.createdVia) && evidence.createdVia !== 'unknown') {
+    return evidence.createdVia;
+  }
+  if (evidence.hasAdminCreationAudit === true) return 'admin_direct';
+  if (evidence.hasApplication === true) return 'public_signup';
+  return 'unknown';
+}
+
+/**
+ * An Admin-created mentor is already verified by definition: the Admin's
+ * creation action IS the approval. Such a mentor legitimately has no
+ * application, so the UI must present "Admin Verified" rather than an error.
+ */
+export function isAdminCreatedMentor(source: MentorCreationSource): boolean {
+  return source === 'admin_direct';
+}
+
+/** Helper text shown for an Admin-created mentor. */
+export const ADMIN_CREATED_MENTOR_HELPER =
+  'This mentor was created directly by an administrator and is already verified. '
+  + 'No public verification application is required.';
+

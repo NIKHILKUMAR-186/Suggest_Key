@@ -1,26 +1,45 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { ShieldCheck, CheckCircle2, XCircle, Clock, Search, Filter, AlertTriangle, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { ShieldCheck, AlertTriangle, Loader2, Eye } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
-import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
+import { useNavigation } from '@/src/context/NavigationContext';
+import {
+  MENTOR_ACCOUNT_BADGE_LABELS,
+  deriveMentorAccountState,
+  mentorAccountBadge,
+  type MentorAccountBadge,
+} from '@/src/lib/adminMentorControl';
 
-interface MentorRecord {
-  id: string;
-  name: string;
-  email: string;
-  segmentName: string;
-  status: 'APPROVED' | 'PENDING' | 'REJECTED';
-  experienceYears: number;
-  bio: string;
-  appliedDate: string;
-  isApproved: boolean;
-  isActive: boolean;
-  profile?: any;
-  segments?: any[];
-  gigs?: any[];
-}
+/**
+ * Admin mentor directory.
+ *
+ * Every status shown here is derived from the values returned by
+ * GET /api/admin/mentors, which reads them from the database. Nothing is
+ * hardcoded and no status is assumed (prompt section 13).
+ */
+
+type FilterKey = 'ALL' | 'ACTIVE' | 'DEACTIVATED' | 'SUSPENDED' | 'PENDING';
+
+const FILTERS: Array<{ key: FilterKey; label: string }> = [
+  { key: 'ALL', label: 'All' },
+  { key: 'ACTIVE', label: 'Active' },
+  { key: 'DEACTIVATED', label: 'Deactivated' },
+  { key: 'SUSPENDED', label: 'Suspended' },
+  { key: 'PENDING', label: 'Pending Verification' },
+];
+
+const BADGE_VARIANT: Record<
+  MentorAccountBadge,
+  'success' | 'warning' | 'destructive' | 'secondary'
+> = {
+  active: 'success',
+  deactivated: 'secondary',
+  suspended: 'destructive',
+  suspended_lapsed: 'warning',
+  pending: 'warning',
+};
 
 interface ApiMentor {
   id: string;
@@ -33,15 +52,19 @@ interface ApiMentor {
   appliedDate: string;
   isApproved: boolean;
   isActive: boolean;
-  profile?: any;
-  segments?: any[];
-  gigs?: any[];
+  isSuspended: boolean;
+  isDeactivated: boolean;
+  isEligible: boolean;
+  approvalStatus: string | null;
+  accountStatus: string;
+  suspendedUntil: string | null;
+  suspensionReason: string | null;
 }
 
 export const AdminMentorsPage: React.FC = () => {
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'APPROVED'>('ALL');
-  const [selectedMentor, setSelectedMentor] = useState<MentorRecord | null>(null);
-  const [mentors, setMentors] = useState<MentorRecord[]>([]);
+  const { navigate } = useNavigation();
+  const [filter, setFilter] = useState<FilterKey>('ALL');
+  const [mentors, setMentors] = useState<ApiMentor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,75 +88,87 @@ export const AdminMentorsPage: React.FC = () => {
     fetchMentors();
   }, [fetchMentors]);
 
-  const handleApprove = async (id: string) => {
-    setSelectedMentor(null);
-    try {
-      const res = await apiFetch(`/api/admin/mentors/${id}/approve`, { method: 'PATCH' });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to approve mentor');
-      await fetchMentors();
-    } catch (err: any) {
-      console.error('Failed to approve mentor:', err);
-      alert('Failed to approve mentor: ' + err.message);
-    }
-  };
+  // Derive the badge from the stored columns, exactly as the detail page does.
+  const rows = useMemo(
+    () =>
+      mentors.map((mentor) => {
+        const state = deriveMentorAccountState({
+          approval_status: mentor.approvalStatus,
+          is_approved: mentor.isApproved,
+          is_active: mentor.isActive,
+          account_status: mentor.accountStatus,
+          suspended_until: mentor.suspendedUntil,
+        });
+        return { mentor, state, badge: mentorAccountBadge(state) };
+      }),
+    [mentors],
+  );
 
-  const handleReject = async (id: string) => {
-    setSelectedMentor(null);
-    try {
-      const res = await apiFetch(`/api/admin/mentors/${id}/reject`, { method: 'PATCH' });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to reject mentor');
-      await fetchMentors();
-    } catch (err: any) {
-      console.error('Failed to reject mentor:', err);
-      alert('Failed to reject mentor: ' + err.message);
-    }
-  };
+  const filtered = useMemo(
+    () =>
+      rows.filter(({ state }) => {
+        if (filter === 'ALL') return true;
+        if (filter === 'ACTIVE') return state.isEligible;
+        if (filter === 'DEACTIVATED') return state.isDeactivated;
+        if (filter === 'SUSPENDED') return state.isSuspended || state.isSuspensionLapsed;
+        return !state.isApproved;
+      }),
+    [rows, filter],
+  );
 
-  const filtered = mentors.filter((m) => {
-    if (filterStatus === 'ALL') return true;
-    return m.status === filterStatus;
-  });
+  const countFor = (key: FilterKey) =>
+    rows.filter(({ state }) => {
+      if (key === 'ALL') return true;
+      if (key === 'ACTIVE') return state.isEligible;
+      if (key === 'DEACTIVATED') return state.isDeactivated;
+      if (key === 'SUSPENDED') return state.isSuspended || state.isSuspensionLapsed;
+      return !state.isApproved;
+    }).length;
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
+      <div className="flex flex-col gap-4 border-b border-[var(--color-shell-border)] pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
-            Mentor Approvals & Segments
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
+            Mentors
           </h1>
-          <p className="mt-1 text-xs text-zinc-500">
-            Audit mentor segment applications. Only approved mentors appear in seeker search results.
+          <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
+            Full operational control over every mentor. Activate, deactivate, suspend or reactivate
+            at any time — no account ever needs to be recreated.
           </p>
         </div>
 
-        <div className="flex items-center gap-1.5 bg-zinc-100 p-1 rounded-lg self-start text-xs">
-          {(['ALL', 'PENDING', 'APPROVED'] as const).map((s) => (
+        <div className="flex flex-wrap items-center gap-1.5 self-start rounded-lg bg-[var(--color-shell-bg)] p-1 text-xs">
+          {FILTERS.map((option) => (
             <button
-              key={s}
-              onClick={() => setFilterStatus(s)}
-              className={`px-2.5 py-1 rounded-md capitalize font-medium ${
-                filterStatus === s ? 'bg-white text-zinc-900 shadow-xs' : 'text-zinc-600'
+              key={option.key}
+              type="button"
+              aria-pressed={filter === option.key}
+              onClick={() => setFilter(option.key)}
+              className={`cursor-pointer rounded-md px-2.5 py-1.5 font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] ${
+                filter === option.key
+                  ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-primary)] shadow-xs'
+                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
               }`}
             >
-              {s.toLowerCase()}
+              {option.label}
+              <span className="ml-1.5 opacity-60">{countFor(option.key)}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Mentor Table */}
-      <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden shadow-xs">
+      {/* Mentor table */}
+      <div className="overflow-hidden rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]">
         {loading ? (
           <div className="p-8 text-center">
-            <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
-            <p className="mt-2 text-xs text-zinc-500">Loading mentors...</p>
+            <Loader2 className="mx-auto h-8 w-8 animate-spin text-[var(--color-shell-text-subtle)]" />
+            <p className="mt-2 text-xs text-[var(--color-shell-text-muted)]">Loading mentors…</p>
           </div>
         ) : error ? (
-          <div className="p-6 text-center text-rose-600">
-            <AlertTriangle className="h-6 w-6 mx-auto mb-2" />
+          <div className="p-6 text-center text-[var(--color-shell-error)]">
+            <AlertTriangle className="mx-auto mb-2 h-6 w-6" />
             <p className="text-xs">{error}</p>
             <Button variant="outline" size="sm" onClick={fetchMentors} className="mt-2">
               Retry
@@ -142,57 +177,59 @@ export const AdminMentorsPage: React.FC = () => {
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={ShieldCheck}
-            title="No Mentors Found"
-            description={filterStatus === 'ALL' ? 'No mentor records found in the system.' : `No mentors with status "${filterStatus}".`}
+            title="No mentors found"
+            description={
+              filter === 'ALL'
+                ? 'No mentor records found in the system.'
+                : `No mentors match the "${FILTERS.find((f) => f.key === filter)?.label}" filter.`
+            }
           />
         ) : (
-          <table className="w-full text-left text-xs text-zinc-600">
-            <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
+          <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
+            <thead className="border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] text-[11px] font-semibold uppercase tracking-wider text-[var(--color-shell-text)]">
               <tr>
-                <th className="py-3 px-4">Mentor Profile</th>
-                <th className="py-3 px-4">Requested Segment</th>
-                <th className="py-3 px-4">Experience</th>
-                <th className="py-3 px-4">Applied</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4 text-right">Action</th>
+                <th className="px-4 py-3">Mentor</th>
+                <th className="px-4 py-3">Segment</th>
+                <th className="px-4 py-3">Experience</th>
+                <th className="px-4 py-3">Account</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {filtered.map((mentor) => (
-                <tr key={mentor.id} className="hover:bg-zinc-50/50 transition-colors">
-                  <td className="py-3 px-4">
-                    <span className="font-bold text-zinc-950 block">{mentor.name}</span>
-                    <span className="text-[11px] text-zinc-400 font-mono">{mentor.email}</span>
+            <tbody className="divide-y divide-[var(--color-shell-border)]">
+              {filtered.map(({ mentor, state, badge }) => (
+                <tr key={mentor.id} className="transition-colors hover:bg-[var(--color-shell-bg)]">
+                  <td className="px-4 py-3">
+                    <span className="block font-bold text-[var(--color-shell-text)]">{mentor.name}</span>
+                    <span className="font-mono text-[11px] text-[var(--color-shell-text-subtle)]">{mentor.email}</span>
                   </td>
-                  <td className="py-3 px-4">
-                    <Badge variant="secondary" className="text-[10px]">
-                      {mentor.segmentName}
-                    </Badge>
+                  <td className="px-4 py-3">
+                    <Badge variant="secondary" className="text-[10px]">{mentor.segmentName}</Badge>
                   </td>
-                  <td className="py-3 px-4">{mentor.experienceYears} Years</td>
-                  <td className="py-3 px-4 text-zinc-500">{mentor.appliedDate}</td>
-                  <td className="py-3 px-4">
-                    <Badge
-                      variant={
-                        mentor.status === 'APPROVED'
-                          ? 'success'
-                          : mentor.status === 'PENDING'
-                          ? 'warning'
-                          : 'destructive'
-                      }
-                      className="text-[10px]"
-                    >
-                      {mentor.status}
-                    </Badge>
+                  <td className="px-4 py-3">{mentor.experienceYears} yrs</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant={BADGE_VARIANT[badge]} className="text-[10px]">
+                        {MENTOR_ACCOUNT_BADGE_LABELS[badge]}
+                      </Badge>
+                      <Badge variant="outline" className="text-[10px]">
+                        {state.isEligible ? 'Discoverable' : 'Not discoverable'}
+                      </Badge>
+                    </div>
+                    {state.isSuspended && mentor.suspensionReason && (
+                      <p className="mt-1 max-w-[220px] truncate text-[10px] text-[var(--color-shell-text-subtle)]">
+                        {mentor.suspensionReason}
+                      </p>
+                    )}
                   </td>
-                  <td className="py-3 px-4 text-right">
+                  <td className="px-4 py-3 text-right">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="text-xs py-1 h-7"
-                      onClick={() => setSelectedMentor(mentor)}
+                      className="h-7 gap-1.5 py-1 text-xs"
+                      onClick={() => navigate(`/admin/mentors/${mentor.id}`)}
                     >
-                      Audit Details
+                      <Eye className="h-3.5 w-3.5" />
+                      <span>View Details</span>
                     </Button>
                   </td>
                 </tr>
@@ -202,53 +239,12 @@ export const AdminMentorsPage: React.FC = () => {
         )}
       </div>
 
-      {/* Review Modal */}
-      {selectedMentor && (
-        <Modal
-          isOpen={!!selectedMentor}
-          onClose={() => setSelectedMentor(null)}
-          title={`Review Mentor: ${selectedMentor.name}`}
-          description={`Application for segment: ${selectedMentor.segmentName}`}
-        >
-          <div className="space-y-4 pt-2 text-xs">
-            <div>
-              <span className="font-bold text-zinc-700 block">Professional Bio & Qualifications</span>
-              <p className="text-zinc-600 mt-1 leading-relaxed bg-zinc-50 p-3 rounded-lg border border-zinc-100">
-                {selectedMentor.bio || 'No bio provided.'}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 bg-zinc-50 p-3 rounded-lg">
-              <div>
-                <span className="text-zinc-400 block text-[11px]">Experience</span>
-                <span className="font-semibold text-zinc-900">{selectedMentor.experienceYears} Years</span>
-              </div>
-              <div>
-                <span className="text-zinc-400 block text-[11px]">Current Status</span>
-                <span className="font-semibold text-zinc-900">{selectedMentor.status}</span>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-zinc-100">
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-rose-700 border-rose-200 hover:bg-rose-50"
-                onClick={() => handleReject(selectedMentor.id)}
-              >
-                Reject Application
-              </Button>
-              <Button
-                size="sm"
-                className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                onClick={() => handleApprove(selectedMentor.id)}
-              >
-                Approve for {selectedMentor.segmentName}
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+        Mentors created by an Admin are approved and active immediately. Public mentor signups stay
+        in the verification queue until an Admin approves them.
+      </p>
     </div>
   );
 };
+
+

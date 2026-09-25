@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { UserRole } from '@/src/types/auth';
 import { logger } from '@/src/lib/logger';
+import { deriveMentorAccountState } from '@/src/lib/adminMentorControl';
 
 let supabaseAdmin: SupabaseClient | null = null;
 
@@ -295,3 +296,118 @@ export function requireRole(role: UserRole): (req: AuthRequest, res: Response, n
 }
 
 export type { AuthRequest };
+
+// ---------------------------------------------------------------------------
+// requireActiveMentor
+// ---------------------------------------------------------------------------
+// A deactivated or suspended mentor keeps full READ access to their own
+// history, but must not be able to perform normal operational actions through
+// the mentor UI (prompt sections 5 and 7):
+//   - create or modify operational availability
+//   - create or edit active gigs
+//   - receive new bookings
+//
+// This is a SERVER-SIDE gate reading the same columns the Admin writes, so the
+// UI cannot be bypassed by calling the API directly.
+//
+// The Admin role is deliberately exempt: prompt section 3 gives the Admin
+// permanent operational control over every mentor, including inactive ones.
+export async function requireActiveMentor(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.auth) {
+      res.status(401).json({
+        success: false,
+        error: { code: 'AUTH_REQUIRED', message: 'Authentication required.' },
+      });
+      return;
+    }
+
+    // Admins manage mentor resources through privileged operations and never
+    // need to be blocked here.
+    if (req.auth.roles.includes('admin')) {
+      next();
+      return;
+    }
+
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      // Without a configured service client the status cannot be proven, so
+      // fail closed rather than silently allowing the action.
+      res.status(503).json({
+        success: false,
+        error: { code: 'SERVICE_UNAVAILABLE', message: 'Mentor status cannot be verified right now.' },
+      });
+      return;
+    }
+
+    const userId = req.auth.user.id;
+
+    const [{ data: mentorProfile, error: mpErr }, { data: profile, error: profileErr }] = await Promise.all([
+      admin.from('mentor_profiles').select('approval_status, is_approved, is_active').eq('id', userId).maybeSingle(),
+      admin.from('profiles').select('account_status, suspended_until').eq('id', userId).maybeSingle(),
+    ]);
+
+    if (mpErr) throw mpErr;
+    if (profileErr) throw profileErr;
+
+    if (!mentorProfile) {
+      res.status(403).json({
+        success: false,
+        error: { code: 'MENTOR_PROFILE_NOT_FOUND', message: 'No mentor profile is associated with this account.' },
+      });
+      return;
+    }
+
+    const state = deriveMentorAccountState({
+      approval_status: mentorProfile.approval_status ?? null,
+      is_approved: mentorProfile.is_approved ?? null,
+      is_active: mentorProfile.is_active ?? null,
+      account_status: profile?.account_status ?? null,
+      suspended_until: profile?.suspended_until ?? null,
+    });
+
+    if (!state.canPerformOperationalActions) {
+      const reason = state.isSuspended
+        ? 'Your account is suspended.'
+        : state.isDeactivated
+          ? 'Your mentor account has been deactivated by an administrator.'
+          : 'Your mentor account is not active.';
+
+      logger.auth('mentor_operational_blocked', {
+        requestId: req.requestId,
+        userId,
+        role: 'mentor',
+        path: req.path || req.url || '',
+        result: 'failure',
+        reason: state.isSuspended ? 'ACCOUNT_SUSPENDED' : state.isDeactivated ? 'ACCOUNT_DEACTIVATED' : 'MENTOR_INACTIVE',
+      });
+
+      res.status(403).json({
+        success: false,
+        error: { code: 'MENTOR_ACCOUNT_NOT_ACTIVE', message: reason },
+      });
+      return;
+    }
+
+    next();
+  } catch (error) {
+    logger.auth('mentor_operational_check_failed', {
+      requestId: req.requestId,
+      userId: req.auth?.user?.id,
+      role: 'mentor',
+      path: req.path || req.url || '',
+      result: 'failure',
+      reason: 'STATUS_CHECK_FAILED',
+    });
+    console.error('[Auth] Failed to verify mentor operational status:', error);
+    res.status(500).json({
+      success: false,
+      error: { code: 'STATUS_CHECK_FAILED', message: 'Unable to verify the mentor account status.' },
+    });
+  }
+}
+

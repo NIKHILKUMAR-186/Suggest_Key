@@ -8,18 +8,23 @@ import {
   Star,
   X,
   ChevronDown,
+  AlertCircle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { PremiumMentorCard } from '@/src/components/seeker/PremiumMentorCard';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useAuth } from '@/src/context/AuthContext';
 import {
   fetchActiveSegments,
   getHighestPriorityActiveSegment,
   fetchDiscoverableMentors,
+  fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
+import { getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
@@ -33,6 +38,9 @@ const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
 
 export const SeekerMentorListPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const { profile } = useAuth();
+
+  const userTimezone = profile?.timezone || 'UTC';
 
   const searchParams = new URLSearchParams(
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
@@ -41,7 +49,7 @@ export const SeekerMentorListPage: React.FC = () => {
   const paramDate = searchParams.get('date') || '';
 
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    return paramDate || new Date().toISOString().split('T')[0];
+    return paramDate || getDateStringInTimezone(new Date(), userTimezone);
   });
 
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -52,9 +60,24 @@ export const SeekerMentorListPage: React.FC = () => {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
   const [mentors, setMentors] = useState<DiscoverableMentor[]>([]);
+  const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [isLoadingMentors, setIsLoadingMentors] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [mentorError, setMentorError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState<number>(0);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadLanguages() {
+      const { languages } = await fetchEligibleLanguages();
+      if (isMounted) setEligibleLanguages(languages);
+    }
+    loadLanguages();
+    return () => {
+      isMounted = false;
+    };
+  }, [reloadToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -82,7 +105,7 @@ export const SeekerMentorListPage: React.FC = () => {
     }
     loadSegments();
     return () => { isMounted = false; };
-  }, [paramSegmentId]);
+  }, [paramSegmentId, reloadToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -92,6 +115,7 @@ export const SeekerMentorListPage: React.FC = () => {
     }
     async function loadMentors() {
       setIsLoadingMentors(true);
+      setMentorError(null);
       try {
         const { mentors: discMentors, error: mentorErr } = await fetchDiscoverableMentors(
           selectedSegment!.id,
@@ -104,6 +128,8 @@ export const SeekerMentorListPage: React.FC = () => {
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading mentors:', err);
+          setMentors([]);
+          setMentorError('Unable to load mentors right now.');
         }
       } finally {
         if (isMounted) setIsLoadingMentors(false);
@@ -111,13 +137,13 @@ export const SeekerMentorListPage: React.FC = () => {
     }
     loadMentors();
     return () => { isMounted = false; };
-  }, [selectedSegment, selectedDate]);
+  }, [selectedSegment, selectedDate, reloadToken]);
 
   const availableLanguages = useMemo(() => {
-    const langs = new Set<string>();
+    const langs = new Set<string>(eligibleLanguages);
     mentors.forEach((m) => (m.languages || []).forEach((l) => langs.add(l)));
     return Array.from(langs).sort();
-  }, [mentors]);
+  }, [mentors, eligibleLanguages]);
 
   const filteredMentors = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -130,6 +156,7 @@ export const SeekerMentorListPage: React.FC = () => {
           m.gig.title,
           m.gig.description,
           ...(m.languages || []),
+          ...(m.expertise || []),
         ]
           .join(' ')
           .toLowerCase();
@@ -315,7 +342,7 @@ export const SeekerMentorListPage: React.FC = () => {
         <input
           type="date"
           value={selectedDate}
-          min={new Date().toISOString().split('T')[0]}
+          min={getDateStringInTimezone(new Date(), userTimezone)}
           onChange={(e) => setSelectedDate(e.target.value)}
           className="text-xs text-[var(--color-shell-text)] border border-[var(--color-shell-border-strong)] rounded-lg px-2 py-1 focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-500/15 cursor-pointer font-semibold"
           aria-label="Filter by appointment date"
@@ -357,22 +384,33 @@ export const SeekerMentorListPage: React.FC = () => {
       ) : null}
 
       {/* Error */}
-      {error && (
+      {(error || mentorError) && (
         <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)]">
           <div className="flex items-center gap-2 font-semibold">
-            <Shield className="h-4 w-4" />
-            <span>Error Loading Mentors</span>
+            <AlertCircle className="h-4 w-4" />
+            <span>{error || mentorError}</span>
           </div>
-          <p className="mt-1">{error}</p>
+          <Button
+            onClick={() => setReloadToken((t) => t + 1)}
+            variant="outline"
+            size="sm"
+            className="mt-3"
+          >
+            Try Again
+          </Button>
         </div>
       )}
 
       {/* Results Count */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-[var(--color-shell-text)]">Available Mentors</h2>
-        <span className="text-xs text-[var(--color-shell-text-muted)]">
-          {isLoadingMentors ? '…' : `${filteredMentors.length} mentor${filteredMentors.length !== 1 ? 's' : ''}`}
-        </span>
+        {isLoadingMentors || mentorError ? (
+          <Skeleton className="h-3 w-16" />
+        ) : (
+          <span className="text-xs text-[var(--color-shell-text-muted)]">
+            {filteredMentors.length} mentor{filteredMentors.length !== 1 ? 's' : ''}
+          </span>
+        )}
       </div>
 
       {/* Content */}
@@ -382,7 +420,7 @@ export const SeekerMentorListPage: React.FC = () => {
             <Skeleton key={i} className="h-60 w-full rounded-2xl" />
           ))}
         </div>
-      ) : filteredMentors.length === 0 && !error ? (
+      ) : mentorError ? null : filteredMentors.length === 0 ? (
         <EmptyState
           icon={Search}
           title="No Available Mentors Found"

@@ -89,6 +89,30 @@ export function formatDate(dateStr: string): string {
 }
 
 /**
+ * Returns the calendar date ('YYYY-MM-DD') that an instant falls on inside a given
+ * IANA timezone. Used so "Today" / "Tomorrow" reflect the user's configured
+ * timezone rather than UTC or the browser default.
+ */
+export function getDateStringInTimezone(date: Date, timeZone: string): string {
+  try {
+    return date.toLocaleDateString('en-CA', { timeZone });
+  } catch (err) {
+    console.warn(`Invalid timezone "${timeZone}", falling back to UTC`, err);
+    return date.toISOString().split('T')[0];
+  }
+}
+
+/**
+ * Shifts a 'YYYY-MM-DD' calendar date by whole days. Pure calendar arithmetic
+ * on the date string, so it is unaffected by UTC offsets and DST boundaries.
+ */
+export function addDaysToDateString(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return shifted.toISOString().split('T')[0];
+}
+
+/**
  * Returns day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday) for a date string (YYYY-MM-DD)
  */
 export function getDayOfWeekFromDateString(dateStr: string): number {

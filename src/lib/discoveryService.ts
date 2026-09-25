@@ -8,6 +8,8 @@ import {
   Booking,
   SlotHold,
   DiscoverableMentor,
+  DirectoryMentor,
+  DirectoryPagination,
   GeneratedSlot,
 } from '@/src/types/database';
 import { generateMentorSlots } from '@/src/lib/slotEngine';
@@ -90,19 +92,33 @@ export async function fetchDiscoverableMentors(
 
     const mentorIds = mentorSegments.map((ms: { mentor_id: string }) => ms.mentor_id);
 
-    // 3. Get approved mentor profiles and user profile
+    // 3. Get approved AND active mentor profiles and user profile.
+    //
+    //    A deactivated or suspended mentor must disappear from seeker
+    //    discovery IMMEDIATELY (prompt section 5), so this query filters on
+    //    is_active as well as is_approved. The old filter keyed off
+    //    is_approved alone, which let a deactivated mentor keep appearing.
+    //
+    //    `account_status` lives on `profiles` and is read through the joined
+    //    row: 'suspended' (and not yet lapsed) or 'deactivated' both remove the
+    //    mentor from the list.
     const { data: mentorProfiles, error: mpErr } = await supabase
       .from('mentor_profiles')
       .select('*, profile:profiles(*)')
       .in('id', mentorIds)
-      .eq('is_approved', true);
+      .eq('is_approved', true)
+      .eq('is_active', true);
 
     if (mpErr) throw mpErr;
-    if (!mentorProfiles || mentorProfiles.length === 0) {
+
+    const nowMs = currentUtcTime.getTime();
+    const operableProfiles = (mentorProfiles || []).filter((mp: any) => isMentorEligible(mp, nowMs));
+
+    if (operableProfiles.length === 0) {
       return { mentors: [], error: null };
     }
 
-    const approvedMentorIds = mentorProfiles.map((mp: { id: string }) => mp.id);
+    const approvedMentorIds = operableProfiles.map((mp: { id: string }) => mp.id);
 
     // 4. Get active gig for this segment (enforces exactly 1 active gig per mentor/segment)
     const { data: gigs, error: gigErr } = await supabase
@@ -158,7 +174,7 @@ export async function fetchDiscoverableMentors(
     // 9. Compute dynamic slots for each mentor and filter by discoverability invariant
     const discoverableMentors: DiscoverableMentor[] = [];
 
-    for (const mp of mentorProfiles) {
+    for (const mp of operableProfiles) {
       const gig = gigs.find((g: Gig) => g.mentor_id === mp.id);
       if (!gig) continue; // No active gig for this segment
 
@@ -206,6 +222,7 @@ export async function fetchDiscoverableMentors(
         about: mp.about,
         experience_years: mp.experience_years,
         languages: mp.languages || [],
+        expertise: mp.expertise || null,
         rating: Number(mp.rating) || 0,
         review_count: mp.review_count || 0,
         session_count: mp.session_count || 0,
@@ -224,6 +241,29 @@ export async function fetchDiscoverableMentors(
     console.error('Error fetching discoverable mentors from Supabase:', err);
     return { mentors: [], error: err };
   }
+}
+
+/**
+ * Shared mentor-eligibility rule used by BOTH discovery queries.
+ *
+ * "All Mentors"      = approved + active + not suspended + not deactivated
+ * "Available Mentors" = the same, PLUS segment/gig/valid-slot rules
+ *
+ * RLS already hides non-publicly-visible mentors through
+ * `mentor_is_publicly_visible()`, but the predicate is repeated here so the
+ * result set stays correct even if the query is executed with elevated rights.
+ */
+function isMentorEligible(profile: any, nowMs: number): boolean {
+  const accountStatus = profile?.profile?.account_status ?? 'active';
+  if (accountStatus === 'deactivated') return false;
+  if (accountStatus === 'suspended') {
+    const until = profile?.profile?.suspended_until;
+    if (!until) return false;
+    const untilMs = Date.parse(until);
+    if (Number.isNaN(untilMs) || untilMs <= nowMs) return false;
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -330,6 +370,7 @@ export async function fetchMentorDetail(
           about: mpData.about,
           experience_years: mpData.experience_years,
           languages: mpData.languages || [],
+          expertise: mpData.expertise || null,
           rating: Number(mpData.rating) || 0,
           review_count: mpData.review_count || 0,
           session_count: mpData.session_count || 0,
@@ -349,4 +390,259 @@ export async function fetchMentorDetail(
   }
 
   return { mentor: null, error: new Error('Mentor or gig not found') };
+}
+
+// --------------------------------------------------------------------------
+// 5. VIEW ALL MENTORS (directory) - deliberately NOT the same query as
+//    "Available Mentors". Bookability is NOT a requirement here.
+// --------------------------------------------------------------------------
+
+export interface AllMentorsQuery {
+  search?: string;
+  segmentId?: string | null;
+  language?: string | null;
+  minExperience?: number | null;
+  maxExperience?: number | null;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface AllMentorsResult {
+  mentors: DirectoryMentor[];
+  pagination: DirectoryPagination;
+  error: Error | null;
+}
+
+const EMPTY_PAGINATION: DirectoryPagination = {
+  page: 1,
+  pageSize: 12,
+  total: 0,
+  totalPages: 0,
+  hasNextPage: false,
+};
+
+/**
+ * 5. Fetch ALL eligible mentors for the "View All Mentors" directory.
+ *
+ * Eligibility (the ONLY gate):
+ *   approved + active + not suspended + not deactivated
+ *
+ * A mentor with zero bookable slots on any date is still returned, which is
+ * exactly how this differs from `fetchDiscoverableMentors`.
+ *
+ * The number of round-trips is constant (independent of the mentor count) so
+ * there is no N+1 pattern: two id-resolution queries when a search term is
+ * present, one paged query, then two batched joins for segments and gigs.
+ */
+export async function fetchAllMentors(
+  query: AllMentorsQuery = {},
+  currentUtcTime: Date = new Date()
+): Promise<AllMentorsResult> {
+  const page = Math.max(1, query.page || 1);
+  const pageSize = Math.min(50, Math.max(1, query.pageSize || 12));
+  const search = (query.search || '').trim();
+
+  if (!isSupabaseConfigured()) {
+    return { mentors: [], pagination: { ...EMPTY_PAGINATION, page, pageSize }, error: null };
+  }
+
+  try {
+    let allowedIds: string[] | null = null;
+
+    // 1. Resolve the search term against real database fields.
+    //    `profiles.full_name` lives in a different table than the rest, and
+    //    `expertise` is a text[] column that `ilike` cannot target, so the
+    //    OR-union is resolved with three id-only queries merged in memory.
+    if (search) {
+      const pattern = `%${search}%`;
+      const merged = new Set<string>();
+
+      const { data: nameMatches, error: nameErr } = await supabase
+        .from('profiles')
+        .select('id')
+        .ilike('full_name', pattern);
+      if (nameErr) throw nameErr;
+      (nameMatches || []).forEach((r: { id: string }) => merged.add(r.id));
+
+      const { data: textMatches, error: textErr } = await supabase
+        .from('mentor_profiles')
+        .select('id')
+        .or(`headline.ilike.${pattern},about.ilike.${pattern}`);
+      if (textErr) throw textErr;
+      (textMatches || []).forEach((r: { id: string }) => merged.add(r.id));
+
+      const { data: expertiseMatches, error: expertiseErr } = await supabase
+        .from('mentor_profiles')
+        .select('id')
+        .contains('expertise', [search]);
+      if (expertiseErr) throw expertiseErr;
+      (expertiseMatches || []).forEach((r: { id: string }) => merged.add(r.id));
+
+      allowedIds = Array.from(merged);
+      if (allowedIds.length === 0) {
+        return { mentors: [], pagination: { ...EMPTY_PAGINATION, page, pageSize }, error: null };
+      }
+    }
+
+    // 2. Paged, filtered query on the eligible mentor set.
+    let mentorQuery = supabase
+      .from('mentor_profiles')
+      .select('*, profile:profiles(id, full_name, avatar_url, timezone, account_status, suspended_until)', {
+        count: 'exact',
+      })
+      .eq('is_approved', true)
+      .eq('is_active', true)
+      .eq('approval_status', 'approved');
+
+    if (allowedIds) mentorQuery = mentorQuery.in('id', allowedIds);
+    if (query.language) mentorQuery = mentorQuery.contains('languages', [query.language]);
+    if (typeof query.minExperience === 'number') {
+      mentorQuery = mentorQuery.gte('experience_years', query.minExperience);
+    }
+    if (typeof query.maxExperience === 'number') {
+      mentorQuery = mentorQuery.lte('experience_years', query.maxExperience);
+    }
+
+    const from = (page - 1) * pageSize;
+    mentorQuery = mentorQuery
+      .order('is_featured', { ascending: false })
+      .order('rating', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    const { data: rows, error: rowsErr, count } = await mentorQuery;
+    if (rowsErr) throw rowsErr;
+
+    const nowMs = currentUtcTime.getTime();
+    const eligibleRows = (rows || []).filter((r: any) => isMentorEligible(r, nowMs));
+    const total = typeof count === 'number' ? count : eligibleRows.length;
+
+    const pagination: DirectoryPagination = {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+      hasNextPage: from + pageSize < total,
+    };
+
+    if (eligibleRows.length === 0) {
+      return { mentors: [], pagination, error: null };
+    }
+
+    const pageMentorIds = eligibleRows.map((r: { id: string }) => r.id);
+
+    // 3. Batched segment membership + segment definitions.
+    const { data: mentorSegments, error: msErr } = await supabase
+      .from('mentor_segments')
+      .select('mentor_id, segment_id')
+      .in('mentor_id', pageMentorIds);
+    if (msErr) throw msErr;
+
+    const segmentIds = Array.from(
+      new Set((mentorSegments || []).map((ms: { segment_id: string }) => ms.segment_id))
+    );
+
+    let segmentById = new Map<string, Segment>();
+    if (segmentIds.length > 0) {
+      const { data: segRows, error: segErr } = await supabase
+        .from('segments')
+        .select('*')
+        .in('id', segmentIds)
+        .eq('is_active', true);
+      if (segErr) throw segErr;
+      segmentById = new Map((segRows || []).map((s: Segment) => [s.id, s]));
+    }
+
+    // 4. Batched active gigs for the mentors on this page.
+    const { data: gigRows, error: gigErr } = await supabase
+      .from('gigs')
+      .select('*')
+      .in('mentor_id', pageMentorIds)
+      .eq('is_active', true);
+    if (gigErr) throw gigErr;
+
+    // 5. Optional segment filter applied after the batched segment join.
+    const matchesSegment = (mentorId: string) => {
+      if (!query.segmentId) return true;
+      return (mentorSegments || []).some(
+        (ms: { mentor_id: string; segment_id: string }) =>
+          ms.mentor_id === mentorId && ms.segment_id === query.segmentId
+      );
+    };
+
+    const mentors: DirectoryMentor[] = eligibleRows
+      .filter((mp: any) => matchesSegment(mp.id))
+      .map((mp: any) => {
+        const profile = mp.profile || {};
+        const segments = (mentorSegments || [])
+          .filter((ms: { mentor_id: string }) => ms.mentor_id === mp.id)
+          .map((ms: { segment_id: string }) => segmentById.get(ms.segment_id))
+          .filter((s): s is Segment => Boolean(s));
+
+        const gigs = (gigRows || []).filter((g: Gig) => g.mentor_id === mp.id);
+        const prices = gigs.map((g: Gig) => g.price_inr);
+
+        return {
+          id: mp.id,
+          full_name: profile.full_name || 'Mentor',
+          avatar_url: profile.avatar_url || null,
+          timezone: profile.timezone || 'Asia/Kolkata',
+          headline: mp.headline || '',
+          about: mp.about || null,
+          experience_years: mp.experience_years ?? 0,
+          languages: mp.languages || [],
+          expertise: mp.expertise || null,
+          rating: Number(mp.rating) || 0,
+          review_count: mp.review_count || 0,
+          session_count: mp.session_count || 0,
+          is_featured: !!mp.is_featured,
+          segments,
+          gigs,
+          starting_price_inr: prices.length > 0 ? Math.min(...prices) : null,
+        };
+      });
+
+    return { mentors, pagination, error: null };
+  } catch (err: any) {
+    console.error('Error fetching all mentors from Supabase:', err);
+    return {
+      mentors: [],
+      pagination: { ...EMPTY_PAGINATION, page, pageSize },
+      error: err,
+    };
+  }
+}
+
+/**
+ * 6. Collect the distinct languages spoken by every eligible mentor.
+ *
+ * Populates the language filter from real data instead of a hardcoded list.
+ */
+export async function fetchEligibleLanguages(): Promise<{ languages: string[]; error: Error | null }> {
+  if (!isSupabaseConfigured()) {
+    return { languages: [], error: null };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('mentor_profiles')
+      .select('languages')
+      .eq('is_approved', true)
+      .eq('is_active', true)
+      .eq('approval_status', 'approved');
+
+    if (error) throw error;
+
+    const langs = new Set<string>();
+    (data || []).forEach((row: { languages?: string[] | null }) => {
+      (row.languages || []).forEach((l) => {
+        if (l) langs.add(l);
+      });
+    });
+
+    return { languages: Array.from(langs).sort(), error: null };
+  } catch (err: any) {
+    console.error('Error fetching eligible languages from Supabase:', err);
+    return { languages: [], error: err };
+  }
 }
