@@ -66,6 +66,15 @@ import {
   type CreateUserFormValues,
 } from './src/lib/adminCreateUser';
 
+import {
+  ACCOUNT_STATUS_ACTION_SPECS,
+  assertAdminAccountSafety,
+  buildAccountStatusUpdate,
+  deriveAccountState,
+  parseAccountStatusAction,
+  validateAccountStatusAction,
+} from './src/lib/adminAccountControl';
+
 /**
  * Applicant embed for the admin mentor verification queue.
  *
@@ -326,6 +335,34 @@ async function startServer() {
 
       const admin = getSupabaseAdmin();
       if (admin) {
+        // A deactivated or suspended SEEKER must not be able to start new
+        // bookings (prompt section 4/5). Read from the same columns the Admin
+        // writes, so the gate cannot be bypassed by calling this endpoint
+        // directly. Existing bookings and payments are untouched.
+        const { data: seekerAccount, error: seekerAccountErr } = await admin
+          .from('profiles')
+          .select('account_status, suspended_until')
+          .eq('id', seekerId)
+          .maybeSingle();
+        if (seekerAccountErr) throw seekerAccountErr;
+
+        const seekerState = deriveAccountState({
+          account_status: seekerAccount?.account_status ?? null,
+          suspended_until: seekerAccount?.suspended_until ?? null,
+        });
+
+        if (!seekerState.canPerformOperationalActions) {
+          return res.status(403).json({
+            success: false,
+            error: {
+              code: seekerState.isSuspended ? 'SEEKER_ACCOUNT_SUSPENDED' : 'SEEKER_ACCOUNT_DEACTIVATED',
+              message: seekerState.isSuspended
+                ? 'Your account is suspended. New bookings are not possible until the suspension is lifted.'
+                : 'Your account has been deactivated. New bookings are not possible.',
+            },
+          });
+        }
+
         // A deactivated or suspended mentor must stop receiving new bookings
         // (prompt section 5). Checked server-side so it cannot be bypassed by
         // calling this endpoint directly.
@@ -967,6 +1004,212 @@ async function startServer() {
       return res.status(500).json({
         success: false,
         error: { code: 'SERVER_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Mentor API: Availability Management
+  // --------------------------------------------------------------------------
+  //
+  // The mentor-facing mirror of the admin availability endpoints below. The
+  // mentor is ALWAYS the authenticated caller: req.auth.user.id, never a
+  // client-supplied id, so a mentor can only ever read or write their own rows.
+
+  // GET /api/mentor/availability: The caller's own recurring windows, date
+  // exceptions, and their profile timezone.
+  app.get('/api/mentor/availability', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const mentorId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const [availabilityRes, exceptionsRes, profileRes] = await Promise.all([
+        admin.from('mentor_availability').select('*').eq('mentor_id', mentorId).order('day_of_week', { ascending: true }).order('start_time', { ascending: true }),
+        admin.from('mentor_availability_exceptions').select('*').eq('mentor_id', mentorId).order('exception_date', { ascending: true }),
+        admin.from('profiles').select('timezone').eq('id', mentorId).maybeSingle(),
+      ]);
+      if (availabilityRes.error) throw availabilityRes.error;
+      if (exceptionsRes.error) throw exceptionsRes.error;
+      if (profileRes.error) throw profileRes.error;
+
+      return res.json({
+        success: true,
+        availability: availabilityRes.data || [],
+        exceptions: exceptionsRes.data || [],
+        timezone: (profileRes.data as { timezone?: string | null } | null)?.timezone || 'Asia/Kolkata',
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/mentor/availability',
+        clientMessage: 'Unable to load availability.',
+      });
+    }
+  });
+
+  // PUT /api/mentor/availability
+  //
+  // Replaces the caller's recurring weekly windows. Same validation and
+  // replace-all semantics as the admin endpoint, but scoped to the caller and
+  // gated on requireActiveMentor (prompt section 5).
+  app.put('/api/mentor/availability', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      // Ownership is the caller's id, full stop.
+      const mentorId = req.auth!.user.id;
+
+      const { rules, timezone } = (req.body || {}) as { rules?: unknown; timezone?: unknown };
+      if (!Array.isArray(rules)) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array.' } });
+      }
+      if (rules.length > 50) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 50 recurring windows.' } });
+      }
+
+      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Kolkata';
+
+      const normalised = rules.map((rule, index) => {
+        const r = (rule || {}) as Record<string, unknown>;
+        const dayOfWeek = Number(r.dayOfWeek);
+        const startTime = typeof r.startTime === 'string' ? r.startTime : '';
+        const endTime = typeof r.endTime === 'string' ? r.endTime : '';
+        if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
+          return { error: `rules[${index}].dayOfWeek must be an integer 0-6.` };
+        }
+        if (!/^\d{2}:\d{2}(:\d{2})?$/.test(startTime) || !/^\d{2}:\d{2}(:\d{2})?$/.test(endTime)) {
+          return { error: `rules[${index}] times must be HH:MM.` };
+        }
+        if (startTime >= endTime) {
+          return { error: `rules[${index}] startTime must be earlier than endTime.` };
+        }
+        return {
+          value: {
+            mentor_id: mentorId,
+            day_of_week: dayOfWeek,
+            start_time: startTime,
+            end_time: endTime,
+            timezone: resolvedTimezone,
+            is_enabled: r.isEnabled === undefined ? true : r.isEnabled === true,
+          },
+        };
+      });
+
+      const failure = normalised.find((entry) => 'error' in entry);
+      if (failure && 'error' in failure) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
+      }
+
+      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+
+      // Replace-all semantics. Availability is operational, not historical, so
+      // rewriting the window set destroys no booking record.
+      const { error: clearErr } = await admin
+        .from('mentor_availability').delete().eq('mentor_id', mentorId);
+      if (clearErr) throw clearErr;
+
+      if (rows.length > 0) {
+        const { error: insertErr } = await admin.from('mentor_availability').insert(rows);
+        if (insertErr) throw insertErr;
+      }
+
+      auditAction(req.auth, MENTOR_ADMIN_AUDIT_ACTIONS.AVAILABILITY_UPDATED, {
+        entityType: 'mentor_availability',
+        entityId: mentorId,
+        requestId: req.requestId,
+        metadata: { mentorId, ruleCount: rows.length, timezone: resolvedTimezone },
+      });
+
+      return res.json({ success: true, message: 'Availability updated successfully.', ruleCount: rows.length });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'PUT /api/mentor/availability',
+        clientMessage: 'Unable to update availability.',
+      });
+    }
+  });
+
+  // PUT /api/mentor/availability/exceptions
+  //
+  // Replaces the caller's date exceptions. Same validation as the admin route.
+  app.put('/api/mentor/availability/exceptions', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      // Ownership is the caller's id, full stop.
+      const mentorId = req.auth!.user.id;
+
+      const { exceptions } = (req.body || {}) as { exceptions?: unknown };
+      if (!Array.isArray(exceptions)) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'exceptions must be an array.' } });
+      }
+      if (exceptions.length > 200) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 200 date exceptions.' } });
+      }
+
+      const normalised = exceptions.map((item, index) => {
+        const e = (item || {}) as Record<string, unknown>;
+        const exceptionDate = typeof e.exceptionDate === 'string' ? e.exceptionDate : '';
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(exceptionDate)) {
+          return { error: `exceptions[${index}].exceptionDate must be YYYY-MM-DD.` };
+        }
+        const isAvailable = e.isAvailable === true;
+        const startTime = typeof e.startTime === 'string' ? e.startTime : null;
+        const endTime = typeof e.endTime === 'string' ? e.endTime : null;
+        // Mirrors chk_exception_times: an available day needs a real window.
+        if (isAvailable && (!startTime || !endTime || startTime >= endTime)) {
+          return { error: `exceptions[${index}] needs a valid startTime/endTime window when isAvailable is true.` };
+        }
+        return {
+          value: {
+            mentor_id: mentorId,
+            exception_date: exceptionDate,
+            is_available: isAvailable,
+            start_time: isAvailable ? startTime : null,
+            end_time: isAvailable ? endTime : null,
+            reason: typeof e.reason === 'string' && e.reason.trim() ? e.reason.trim() : null,
+          },
+        };
+      });
+
+      const failure = normalised.find((entry) => 'error' in entry);
+      if (failure && 'error' in failure) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
+      }
+
+      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+
+      const { error: clearErr } = await admin
+        .from('mentor_availability_exceptions').delete().eq('mentor_id', mentorId);
+      if (clearErr) throw clearErr;
+
+      if (rows.length > 0) {
+        const { error: insertErr } = await admin.from('mentor_availability_exceptions').insert(rows);
+        if (insertErr) throw insertErr;
+      }
+
+      auditAction(req.auth, MENTOR_ADMIN_AUDIT_ACTIONS.AVAILABILITY_UPDATED, {
+        entityType: 'mentor_availability_exceptions',
+        entityId: mentorId,
+        requestId: req.requestId,
+        metadata: { mentorId, exceptionCount: rows.length },
+      });
+
+      return res.json({ success: true, message: 'Date exceptions updated successfully.', exceptionCount: rows.length });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'PUT /api/mentor/availability/exceptions',
+        clientMessage: 'Unable to update date exceptions.',
       });
     }
   });
@@ -3414,23 +3657,150 @@ async function startServer() {
         years_experience: mentorProfile.experience_years,
       } : null;
 
-      return res.json({ success: true, user: { profile, roles: (roles || []).map((entry: { role: string }) => entry.role), mentorProfile: transformedMentorProfile, application, documents: signedDocuments, segments: memberships || [] } });
+      // ---- Real operational counters for the overview cards -------------------
+      // Every number below is a live database count, never a computed guess.
+      const nowIso = new Date().toISOString();
+      const isAdminAccount = (roles || []).some((entry: { role: string }) => entry.role === 'admin');
+      const isActiveAccount = !['suspended', 'deactivated'].includes(String(profile.account_status || 'active'));
+
+      const [
+        { count: upcomingBookings },
+        { count: completedBookings },
+        { count: gigCount },
+        { count: activeGigCount },
+        { count: workspaceCount },
+        { count: notificationCount },
+        { count: unreadNotificationCount },
+      ] = await Promise.all([
+        admin.from('bookings').select('id', { count: 'exact', head: true })
+          .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`)
+          .in('status', ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'])
+          .gte('start_time', nowIso),
+        admin.from('bookings').select('id', { count: 'exact', head: true })
+          .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`)
+          .eq('status', 'COMPLETED'),
+        admin.from('gigs').select('id', { count: 'exact', head: true }).eq('mentor_id', userId),
+        admin.from('gigs').select('id', { count: 'exact', head: true }).eq('mentor_id', userId).eq('is_active', true),
+        admin.from('session_workspaces').select('id', { count: 'exact', head: true })
+          .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`),
+        admin.from('notifications').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+        admin.from('notifications').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('is_read', false),
+      ]);
+
+      // How many ADMIN accounts are currently active. The UI needs this to
+      // explain the "last active admin" protection before an Admin clicks.
+      const { data: adminRoleRows } = await admin.from('user_roles').select('user_id').eq('role', 'admin');
+      const adminIds = Array.from(new Set((adminRoleRows || []).map((r: { user_id: string }) => r.user_id)));
+      const { data: adminAccounts } = adminIds.length
+        ? await admin.from('profiles').select('id, account_status').in('id', adminIds)
+        : { data: [] as Array<{ id: string; account_status: string | null }> };
+      const activeAdminCount = (adminAccounts || []).filter(
+        (row) => !['suspended', 'deactivated'].includes(String(row.account_status || 'active')),
+      ).length;
+
+      // ---- Supabase Auth account-access state (invitation lifecycle) ---------
+      // Read through the admin client only. No password, hash or session token
+      // is ever returned to the browser.
+      let authState: {
+        invitationStatus: 'pending' | 'sent' | 'accepted';
+        createdAt: string | null;
+        invitedAt: string | null;
+        lastSignInAt: string | null;
+        emailConfirmedAt: string | null;
+        actionLink: string | null;
+      } | null = null;
+      try {
+        const { data: authUser } = await admin.auth.admin.getUserById(userId);
+        if (authUser?.user) {
+          const u = authUser.user as any;
+          const invitationStatus: 'pending' | 'sent' | 'accepted' = u.last_sign_in_at
+            ? 'accepted'
+            : u.invited_at
+              ? 'sent'
+              : 'pending';
+          authState = {
+            invitationStatus,
+            createdAt: u.created_at ?? null,
+            invitedAt: u.invited_at ?? null,
+            lastSignInAt: u.last_sign_in_at ?? null,
+            emailConfirmedAt: u.email_confirmed_at ?? null,
+            actionLink: null,
+          };
+        }
+      } catch (authErr) {
+        // Auth state is supplementary: the rest of the page is still real and
+        // usable, so this is logged rather than failed.
+        console.warn('[admin] Unable to read Supabase Auth state for user', userId, getErrorMessage(authErr));
+      }
+
+      return res.json({
+        success: true,
+        user: {
+          profile,
+          roles: (roles || []).map((entry: { role: string }) => entry.role),
+          mentorProfile: transformedMentorProfile,
+          application,
+          documents: signedDocuments,
+          segments: memberships || [],
+          auth: authState,
+          safety: {
+            isAdmin: isAdminAccount,
+            isActive: isActiveAccount,
+            activeAdminCount,
+          },
+          summary: {
+            upcomingBookings: upcomingBookings ?? 0,
+            completedBookings: completedBookings ?? 0,
+            gigs: gigCount ?? 0,
+            activeGigs: activeGigCount ?? 0,
+            segments: (memberships || []).length,
+            workspaces: workspaceCount ?? 0,
+            notifications: notificationCount ?? 0,
+            unreadNotifications: unreadNotificationCount ?? 0,
+          },
+        },
+      });
     } catch (err) {
       return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id', clientMessage: 'Unable to load user details.' });
     }
   });
 
-  // PATCH /api/admin/users/:id: Edit approved profile fields and mentor profile data.
+  // PATCH /api/admin/users/:id
+  //
+  // Admin edit access to the profile fields the REAL schema supports.
+  //   profiles:       full_name, timezone, phone
+  //   mentor_profiles (only for mentors): headline, about, experience_years
+  //
+  // `account_status` is NOT editable here: status changes go through
+  // PATCH /api/admin/users/:id/status so they are always validated, guarded
+  // and audited. `email` is also not editable here because the login identity
+  // lives in Supabase Auth, not in `profiles`; the email-change flow is a
+  // separate protected operation.
   app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
       const body = (req.body || {}) as Record<string, unknown>;
-      const profileUpdates: Record<string, string> = {};
+
+      const { data: existing, error: existingErr } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+      }
+
+      const profileUpdates: Record<string, string | null> = {};
       if (typeof body.fullName === 'string' && body.fullName.trim()) profileUpdates.full_name = body.fullName.trim();
       if (typeof body.timezone === 'string' && body.timezone.trim()) profileUpdates.timezone = body.timezone.trim();
-      // account_status column does not exist in profiles table; ignore if sent
+      // profiles.phone exists in the real schema. Clearing it is allowed.
+      if (typeof body.phone === 'string') profileUpdates.phone = body.phone.trim() || null;
 
       const mentorUpdates: Record<string, unknown> = {};
       if (typeof body.bio === 'string') mentorUpdates.about = body.bio.trim();
@@ -3451,10 +3821,584 @@ async function startServer() {
         if (error) throw error;
       }
 
-      auditAction(req.auth, 'admin_user_updated', { entityType: 'user', entityId: userId, requestId: req.requestId, metadata: { fields: [...Object.keys(profileUpdates), ...Object.keys(mentorUpdates)] } });
+      await auditAction(req.auth, 'USER_PROFILE_UPDATED', {
+        entityType: 'user',
+        entityId: userId,
+        requestId: req.requestId,
+        metadata: {
+          targetUserId: userId,
+          adminId: req.auth!.user.id,
+          fields: [...Object.keys(profileUpdates), ...Object.keys(mentorUpdates)],
+        },
+      });
       return res.json({ success: true, message: 'User updated successfully.' });
     } catch (err) {
       return respondWithServerError({ req, res, error: err, context: 'PATCH /api/admin/users/:id', clientMessage: 'Unable to update user.' });
+    }
+  });
+
+  // PATCH /api/admin/users/:id/status
+  //
+  // The single server-authorized entry point for Admin account control over ANY
+  // user (seeker, mentor or admin).
+  //   body: { action: 'activate' | 'deactivate' | 'suspend' | 'reactivate', reason?, suspendedUntil? }
+  //
+  // Guarantees:
+  //  - Admin-only, verified server-side from the caller's token.
+  //  - a STATUS CHANGE ONLY: profile, bookings, payments, workspaces,
+  //    notifications and audit rows are never deleted or modified.
+  //  - platform-critical Admin invariants are protected (no self-change, no
+  //    disabling the last active admin, no no-op writes).
+  //  - every transition is audited with admin id, target user id, action,
+  //    timestamp and reason.
+  app.patch('/api/admin/users/:id/status', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const body = (req.body || {}) as Record<string, unknown>;
+      const action = parseAccountStatusAction(body.action);
+      if (!action) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'action must be one of: activate, deactivate, suspend, reactivate.' },
+        });
+      }
+
+      const adminId = req.auth!.user.id;
+
+      const [{ data: profile, error: profileErr }, { data: roles, error: rolesErr }] = await Promise.all([
+        admin.from('profiles').select('id, account_status, suspended_until').eq('id', userId).maybeSingle(),
+        admin.from('user_roles').select('role').eq('user_id', userId),
+      ]);
+      if (profileErr) throw profileErr;
+      if (rolesErr) throw rolesErr;
+      if (!profile) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+      }
+
+      const targetRoles = (roles || []).map((entry: { role: string }) => entry.role);
+      const targetState = deriveAccountState({
+        account_status: profile.account_status ?? null,
+        suspended_until: profile.suspended_until ?? null,
+      });
+
+      const { data: adminRoleRows, error: adminRoleErr } = await admin
+        .from('user_roles')
+        .select('user_id')
+        .eq('role', 'admin');
+      if (adminRoleErr) throw adminRoleErr;
+      const adminIds = Array.from(new Set((adminRoleRows || []).map((r: { user_id: string }) => r.user_id)));
+      const { data: adminAccounts, error: adminAccountsErr } = adminIds.length
+        ? await admin.from('profiles').select('id, account_status').in('id', adminIds)
+        : { data: [] as Array<{ id: string; account_status: string | null }>, error: null };
+      if (adminAccountsErr) throw adminAccountsErr;
+      const activeAdminCount = (adminAccounts || []).filter(
+        (row) => !['suspended', 'deactivated'].includes(String(row.account_status || 'active')),
+      ).length;
+
+      const safety = assertAdminAccountSafety({
+        action,
+        adminId,
+        targetId: userId,
+        targetRoles,
+        activeAdminCount,
+        targetState,
+      });
+      if (!safety.allowed) {
+        return res.status(safety.code === 'LAST_ACTIVE_ADMIN' ? 409 : 400).json({
+          success: false,
+          error: { code: safety.code, message: safety.message },
+        });
+      }
+
+      const validation = validateAccountStatusAction({
+        action,
+        reason: body.reason,
+        suspendedUntil: body.suspendedUntil,
+      });
+      if (!validation.valid) {
+        return res.status(400).json({ success: false, error: { code: validation.code, message: validation.message } });
+      }
+
+      const update = buildAccountStatusUpdate({
+        action,
+        adminId,
+        reason: validation.reason,
+        suspendedUntil: validation.suspendedUntil,
+      });
+
+      const { error: writeErr } = await admin.from('profiles').update(update).eq('id', userId);
+      if (writeErr) throw writeErr;
+
+      await auditAction(req.auth, ACCOUNT_STATUS_ACTION_SPECS[action].auditAction, {
+        entityType: 'user',
+        entityId: userId,
+        requestId: req.requestId,
+        metadata: {
+          action,
+          adminId,
+          targetUserId: userId,
+          reason: validation.reason ?? null,
+          suspendedUntil: validation.suspendedUntil ?? null,
+          previousStatus: profile.account_status ?? null,
+          previousSuspendedUntil: profile.suspended_until ?? null,
+        },
+      });
+
+      const pastTense = action === 'activate'
+        ? 'activated'
+        : action === 'deactivate' ? 'deactivated' : action === 'suspend' ? 'suspended' : 'reactivated';
+
+      return res.json({
+        success: true,
+        message: `Account ${pastTense}.`,
+        action: ACCOUNT_STATUS_ACTION_SPECS[action].auditAction,
+        accountStatus: update.account_status,
+      });
+    } catch (err) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'PATCH /api/admin/users/:id/status',
+        clientMessage: 'Unable to update the account status.',
+      });
+    }
+  });
+
+  // GET /api/admin/users/:id/bookings
+  //
+  // Every booking this user participates in, as seeker or mentor, with the
+  // gig, segment, payment and workspace state attached. Read-only: the booking
+  // state machine is never bypassed from this page.
+  app.get('/api/admin/users/:id/bookings', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const { data: bookings, error: bookingsErr } = await admin
+        .from('bookings')
+        .select(`
+          *,
+          seeker:profiles!bookings_seeker_id_fkey(id, full_name, email),
+          mentor:profiles!bookings_mentor_id_fkey(id, full_name, email),
+          gig:gigs(id, title, duration_minutes, price_inr),
+          segment:segments(id, name, slug)
+        `)
+        .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`)
+        .order('start_time', { ascending: false });
+      if (bookingsErr) throw bookingsErr;
+
+      const bookingIds = (bookings || []).map((b: { id: string }) => b.id);
+      const [{ data: payments, error: paymentsErr }, { data: workspaces, error: workspacesErr }] = await Promise.all([
+        bookingIds.length ? admin.from('payments').select('*').in('booking_id', bookingIds) : Promise.resolve({ data: [], error: null }),
+        bookingIds.length ? admin.from('session_workspaces').select('id, booking_id, status, published_at').in('booking_id', bookingIds) : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (paymentsErr) throw paymentsErr;
+      if (workspacesErr) throw workspacesErr;
+
+      const paymentByBooking = new Map<string, any>((payments || []).map((p: any) => [p.booking_id, p]));
+      const workspaceByBooking = new Map<string, any>((workspaces || []).map((w: any) => [w.booking_id, w]));
+      const now = Date.now();
+
+      const rows = (bookings || []).map((booking: any) => {
+        const payment = paymentByBooking.get(booking.id);
+        const workspace = workspaceByBooking.get(booking.id);
+        return {
+          id: booking.id,
+          bookingCode: booking.booking_code,
+          startTime: booking.start_time,
+          endTime: booking.end_time,
+          status: booking.status,
+          amountInr: booking.amount_inr,
+          meetingUrl: booking.meeting_url,
+          cancellationReason: booking.cancellation_reason,
+          createdAt: booking.created_at,
+          isUpcoming: Date.parse(booking.start_time) >= now && !['CANCELLED', 'REJECTED', 'COMPLETED'].includes(booking.status),
+          seeker: booking.seeker ?? null,
+          mentor: booking.mentor ?? null,
+          gig: booking.gig ?? null,
+          segment: booking.segment ?? null,
+          payment: payment
+            ? { id: payment.id, status: payment.status, amountInr: payment.amount_inr, verifiedAt: payment.verified_at }
+            : null,
+          workspace: workspace ? { id: workspace.id, status: workspace.status, publishedAt: workspace.published_at } : null,
+        };
+      });
+
+      return res.json({
+        success: true,
+        bookings: rows,
+        upcoming: rows.filter((r: any) => r.isUpcoming),
+        completed: rows.filter((r: any) => r.status === 'COMPLETED'),
+        cancelled: rows.filter((r: any) => ['CANCELLED', 'REJECTED'].includes(r.status)),
+      });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id/bookings', clientMessage: 'Unable to load bookings.' });
+    }
+  });
+
+  // GET /api/admin/users/:id/payments
+  //
+  // Payment records for every booking this user is part of. Payment state is
+  // owned by the payment verification flow; nothing here can change it.
+  app.get('/api/admin/users/:id/payments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      // A payment belongs to a user when they are the payer (seeker_id) or the
+      // mentor of the booking it settles.
+      const { data: mentorBookings, error: mentorBookingsErr } = await admin
+        .from('bookings')
+        .select('id')
+        .eq('mentor_id', userId);
+      if (mentorBookingsErr) throw mentorBookingsErr;
+      const mentorBookingIds = (mentorBookings || []).map((b: { id: string }) => b.id);
+
+      const { data: payments, error: paymentsErr } = await admin
+        .from('payments')
+        .select('*')
+        .or(
+          [
+            `seeker_id.eq.${userId}`,
+            ...(mentorBookingIds.length ? mentorBookingIds.slice(0, 50).map((id) => `booking_id.eq.${id}`) : []),
+          ].join(','),
+        )
+        .order('created_at', { ascending: false });
+      if (paymentsErr) throw paymentsErr;
+
+      const bookingIds = Array.from(new Set((payments || []).map((p: { booking_id: string }) => p.booking_id)));
+      const { data: bookings, error: bookingsErr } = bookingIds.length
+        ? await admin
+            .from('bookings')
+            .select('id, booking_code, start_time, status, gig:gigs(id, title), segment:segments(id, name), mentor:profiles!bookings_mentor_id_fkey(id, full_name, email)')
+            .in('id', bookingIds)
+        : { data: [], error: null };
+      if (bookingsErr) throw bookingsErr;
+      const bookingMap = new Map<string, any>((bookings || []).map((b: any) => [b.id, b]));
+
+      const verifiedByIds = Array.from(new Set((payments || []).map((p: any) => p.verified_by).filter(Boolean)));
+      const { data: verifiers } = verifiedByIds.length
+        ? await admin.from('profiles').select('id, full_name, email').in('id', verifiedByIds)
+        : { data: [] as any[] };
+      const verifierMap = new Map<string, any>((verifiers || []).map((v: any) => [v.id, v]));
+
+      const rows = (payments || []).map((payment: any) => {
+        const booking = bookingMap.get(payment.booking_id);
+        return {
+          id: payment.id,
+          amountInr: payment.amount_inr,
+          currency: 'INR',
+          status: payment.status,
+          transactionReference: payment.transaction_reference,
+          hasProof: Boolean(payment.proof_storage_path),
+          verifiedAt: payment.verified_at,
+          verifiedBy: payment.verified_by
+            ? { id: payment.verified_by, name: verifierMap.get(payment.verified_by)?.full_name ?? null }
+            : null,
+          rejectionReason: payment.rejection_reason,
+          createdAt: payment.created_at,
+          booking: booking
+            ? {
+                id: booking.id,
+                bookingCode: booking.booking_code,
+                startTime: booking.start_time,
+                status: booking.status,
+                gigTitle: booking.gig?.title ?? null,
+                segmentName: booking.segment?.name ?? null,
+                mentor: booking.mentor ?? null,
+              }
+            : null,
+        };
+      });
+
+      return res.json({ success: true, payments: rows });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id/payments', clientMessage: 'Unable to load payments.' });
+    }
+  });
+
+  // GET /api/admin/users/:id/workspaces
+  app.get('/api/admin/users/:id/workspaces', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const { data: workspaces, error: workspacesErr } = await admin
+        .from('session_workspaces')
+        .select(`
+          id, booking_id, mentor_id, seeker_id, status, published_at, created_at, updated_at,
+          booking:bookings(id, booking_code, start_time, end_time, status, segment:segments(id, name)),
+          mentor:profiles!session_workspaces_mentor_id_fkey(id, full_name, email),
+          seeker:profiles!session_workspaces_seeker_id_fkey(id, full_name, email)
+        `)
+        .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`)
+        .order('created_at', { ascending: false });
+      if (workspacesErr) throw workspacesErr;
+
+      // Only workspace METADATA is returned. Mentor note content stays behind
+      // the existing workspace authorization model.
+      return res.json({
+        success: true,
+        workspaces: (workspaces || []).map((w: any) => ({
+          id: w.id,
+          bookingId: w.booking_id,
+          status: w.status,
+          publishedAt: w.published_at,
+          createdAt: w.created_at,
+          updatedAt: w.updated_at,
+          mentor: w.mentor ?? null,
+          seeker: w.seeker ?? null,
+          booking: w.booking ?? null,
+        })),
+      });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id/workspaces', clientMessage: 'Unable to load workspaces.' });
+    }
+  });
+
+  // GET /api/admin/users/:id/notifications
+  app.get('/api/admin/users/:id/notifications', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const { data: notifications, error: notifErr } = await admin
+        .from('notifications')
+        .select('id, type, event_type, title, message, link, is_read, read_at, created_at, entity_type, entity_id')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (notifErr) throw notifErr;
+
+      return res.json({
+        success: true,
+        notifications: notifications || [],
+      });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id/notifications', clientMessage: 'Unable to load notifications.' });
+    }
+  });
+
+  // POST /api/admin/users/:id/notifications
+  //
+  // Admin-triggered notification. Reuses the EXISTING notifications table - no
+  // second notification system is introduced.
+  app.post('/api/admin/users/:id/notifications', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const body = (req.body || {}) as Record<string, unknown>;
+      const title = typeof body.title === 'string' ? body.title.trim() : '';
+      const message = typeof body.message === 'string' ? body.message.trim() : '';
+      if (!title || !message) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A title and a message are required.' } });
+      }
+
+      const { data: profile, error: profileErr } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle();
+      if (profileErr) throw profileErr;
+      if (!profile) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+      }
+
+      const { data: inserted, error: insertErr } = await admin
+        .from('notifications')
+        .insert({
+          user_id: userId,
+          title,
+          message,
+          type: 'ADMIN',
+          event_type: 'ADMIN_MESSAGE',
+          entity_type: 'user',
+          entity_id: userId,
+          is_read: false,
+          metadata: { adminId: req.auth!.user.id },
+          created_at: new Date().toISOString(),
+        })
+        .select('id, created_at')
+        .single();
+      if (insertErr) throw insertErr;
+
+      await auditAction(req.auth, 'ADMIN_NOTIFICATION_SENT', {
+        entityType: 'user',
+        entityId: userId,
+        requestId: req.requestId,
+        metadata: { targetUserId: userId, adminId: req.auth!.user.id, notificationId: inserted?.id ?? null, title },
+      });
+
+      return res.status(201).json({ success: true, message: 'Notification sent.', notification: inserted });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'POST /api/admin/users/:id/notifications', clientMessage: 'Unable to send the notification.' });
+    }
+  });
+
+  // GET /api/admin/users/:id/audit
+  //
+  // Reuses the EXISTING audit_logs table. Entries match the user id, their
+  // child records (gigs, bookings, applications) or the user id recorded in
+  // the event metadata.
+  app.get('/api/admin/users/:id/audit', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const [{ data: gigs }, { data: bookings }, { data: application }] = await Promise.all([
+        admin.from('gigs').select('id').eq('mentor_id', userId),
+        admin.from('bookings').select('id').or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`),
+        admin.from('mentor_applications').select('id').eq('user_id', userId).maybeSingle(),
+      ]);
+
+      const childIds = [
+        ...(gigs || []).map((g: { id: string }) => g.id),
+        ...(bookings || []).map((b: { id: string }) => b.id),
+        ...(application?.id ? [application.id] : []),
+      ];
+      const orFilter = [userId, ...childIds].map((id) => `entity_id.eq.${id}`).join(',');
+
+      const { data: entries, error: auditErr } = await admin
+        .from('audit_logs')
+        .select('id, created_at, actor_user_id, actor_role, action, entity_type, entity_id, request_id, metadata')
+        .or(orFilter)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (auditErr) throw auditErr;
+
+      const relevant = (entries || []).filter((entry: any) => {
+        if (entry.entity_id === userId) return true;
+        const meta = entry.metadata || {};
+        return (meta.targetUserId ?? meta.userId ?? meta.mentorId ?? meta.mentor_id) === userId;
+      });
+
+      const actorIds = Array.from(new Set(relevant.map((e: any) => e.actor_user_id).filter(Boolean))) as string[];
+      const { data: actors } = actorIds.length
+        ? await admin.from('profiles').select('id, full_name, email').in('id', actorIds)
+        : { data: [] as any[] };
+      const actorMap = new Map<string, any>((actors || []).map((a: any) => [a.id, a]));
+
+      return res.json({
+        success: true,
+        entries: relevant.map((entry: any) => ({
+          id: entry.id,
+          createdAt: entry.created_at,
+          action: entry.action,
+          entityType: entry.entity_type,
+          entityId: entry.entity_id,
+          requestId: entry.request_id,
+          actorRole: entry.actor_role,
+          actor: entry.actor_user_id
+            ? {
+                id: entry.actor_user_id,
+                name: actorMap.get(entry.actor_user_id)?.full_name ?? null,
+                email: actorMap.get(entry.actor_user_id)?.email ?? null,
+              }
+            : null,
+          metadata: entry.metadata ?? null,
+        })),
+      });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'GET /api/admin/users/:id/audit', clientMessage: 'Unable to load the audit log.' });
+    }
+  });
+
+  // POST /api/admin/users/:id/password-reset
+  //
+  // Sends the account owner a Supabase Auth password-reset email.
+  //
+  // The Admin never sees, retrieves or stores a password. Only Supabase Auth
+  // holds credentials, and the reset link is delivered to the user's own inbox.
+  app.post('/api/admin/users/:id/password-reset', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const userId = req.params.id;
+      if (!UUID_PATTERN.test(userId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
+      }
+
+      const { data: profile, error: profileErr } = await admin
+        .from('profiles')
+        .select('id, email, full_name')
+        .eq('id', userId)
+        .maybeSingle();
+      if (profileErr) throw profileErr;
+      if (!profile) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found.' } });
+      }
+      if (!profile.email || !EMAIL_PATTERN.test(profile.email)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_EMAIL', message: 'This account has no usable email address.' } });
+      }
+
+      const appBaseUrl = process.env.APP_URL || process.env.APP_BASE_URL || process.env.VITE_APP_BASE_URL || process.env.PUBLIC_APP_URL;
+      if (!appBaseUrl) {
+        return res.status(503).json({
+          success: false,
+          error: { code: 'EMAIL_NOT_CONFIGURED', message: 'Unable to send password reset email: the application URL is not configured.' },
+        });
+      }
+
+      const { error: resetErr } = await admin.auth.admin.generateLink({
+        type: 'recovery',
+        email: profile.email,
+        options: { redirectTo: `${appBaseUrl.replace(/\/$/, '')}/auth/callback` },
+      });
+
+      if (resetErr) {
+        const info = describeSupabaseError(resetErr);
+        return res.status(502).json({
+          success: false,
+          error: { code: info.code, message: `Unable to send password reset email: ${info.message}` },
+        });
+      }
+
+      await auditAction(req.auth, 'PASSWORD_RESET_REQUESTED', {
+        entityType: 'user',
+        entityId: userId,
+        requestId: req.requestId,
+        metadata: { targetUserId: userId, adminId: req.auth!.user.id, email: profile.email },
+      });
+
+      return res.json({
+        success: true,
+        message: 'Password reset email sent to the account holder.',
+        email: profile.email,
+      });
+    } catch (err) {
+      return respondWithServerError({ req, res, error: err, context: 'POST /api/admin/users/:id/password-reset', clientMessage: 'Unable to send password reset email.' });
     }
   });
 

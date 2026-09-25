@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getLocalBookingEngineContext } from '@/src/lib/bookingService';
+import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
 import type {
   MentorAvailability,
   MentorAvailabilityException,
@@ -30,10 +30,20 @@ export function useMentorAvailability(mentorId: string | undefined): UseMentorAv
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(() => {
+  const refetch = useCallback(async () => {
     if (!mentorId) {
       setDays([]);
       setExceptions([]);
+      setTimezone('Asia/Kolkata');
+      setLoading(false);
+      return;
+    }
+
+    if (!isSupabaseConfigured()) {
+      setDays([]);
+      setExceptions([]);
+      setTimezone('Asia/Kolkata');
+      setLoading(false);
       return;
     }
 
@@ -41,20 +51,35 @@ export function useMentorAvailability(mentorId: string | undefined): UseMentorAv
     setError(null);
 
     try {
-      const db = getLocalBookingEngineContext();
+      const [{ data: availabilityRules, error: availError }, { data: dbExceptions, error: excError }, { data: profile, error: profileError }] = await Promise.all([
+        supabase
+          .from('mentor_availability')
+          .select('*')
+          .eq('mentor_id', mentorId)
+          .eq('is_enabled', true),
+        supabase
+          .from('mentor_availability_exceptions')
+          .select('*')
+          .eq('mentor_id', mentorId),
+        supabase
+          .from('profiles')
+          .select('timezone')
+          .eq('id', mentorId)
+          .maybeSingle(),
+      ]);
 
-      const availabilityRules = db.mentorAvailability.filter(
-        (a) => a.mentor_id === mentorId && a.is_enabled
-      );
+      if (availError) throw availError;
+      if (excError) throw excError;
+      if (profileError) throw profileError;
 
-      const dbExceptions = db.mentorAvailabilityExceptions.filter(
-        (e) => e.mentor_id === mentorId
-      );
+      if (profile?.timezone) {
+        setTimezone(profile.timezone);
+      }
 
-      setExceptions(dbExceptions);
+      setExceptions(dbExceptions || []);
 
       const daysList: AvailabilityDay[] = DAYS_OF_WEEK.map(({ name, index }) => {
-        const rulesForDay = availabilityRules.filter((a) => a.day_of_week === index);
+        const rulesForDay = (availabilityRules || []).filter((a) => a.day_of_week === index);
 
         const windows = rulesForDay.map((r) => ({
           start: r.start_time.slice(0, 5),
@@ -73,11 +98,6 @@ export function useMentorAvailability(mentorId: string | undefined): UseMentorAv
       });
 
       setDays(daysList);
-
-      const profileTz = db.profiles.find((p) => p.id === mentorId)?.timezone;
-      if (profileTz) {
-        setTimezone(profileTz);
-      }
     } catch (err: any) {
       setError(err.message || 'Failed to load availability');
     } finally {

@@ -16,7 +16,19 @@
  * Public mentor onboarding (self-signup -> verification -> admin approval) is
  * a SEPARATE flow and is deliberately not merged with Admin-created mentors
  * (prompt section 14 / TEST F).
+ *
+ * The `profiles.account_status` lifecycle itself is shared with the generic
+ * user Control Center and lives in `adminAccountControl.ts`, so a mentor and a
+ * seeker can never disagree about what a status action writes.
  */
+
+import {
+  buildAccountStatusUpdate,
+  deriveAccountState,
+  validateAccountStatusAction,
+  type AccountProfileStatusUpdate,
+  type AccountStatusAction,
+} from '@/src/lib/adminAccountControl';
 
 // ---------------------------------------------------------------------------
 // Audit actions (prompt section 12)
@@ -149,13 +161,6 @@ export interface MentorAccountState {
   canPerformOperationalActions: boolean;
 }
 
-function isSuspendedWindowElapsed(suspendedUntil: string | null | undefined, now: Date): boolean {
-  if (!suspendedUntil) return false;
-  const until = Date.parse(suspendedUntil);
-  if (Number.isNaN(until)) return false;
-  return now.getTime() >= until;
-}
-
 /**
  * Interpret database columns into a single account state.
  *
@@ -175,22 +180,19 @@ export function deriveMentorAccountState(
       : source.is_approved === true;
 
   const isActive = source.is_active === true;
+  const account = deriveAccountState(
+    { account_status: source.account_status, suspended_until: source.suspended_until },
+    now,
+  );
 
-  const accountStatus = (source.account_status ?? 'active').toString();
-  const suspendedByExpiry = accountStatus === 'suspended'
-    && isSuspendedWindowElapsed(source.suspended_until, now);
-  const isSuspended = accountStatus === 'suspended' && !suspendedByExpiry;
-  const isSuspensionLapsed = suspendedByExpiry;
-  const isDeactivated = accountStatus === 'deactivated';
-
-  const isEligible = isApproved && isActive && !isSuspended && !isDeactivated;
+  const isEligible = isApproved && isActive && account.isActive;
 
   return {
     isApproved,
     isActive,
-    isSuspended,
-    isSuspensionLapsed,
-    isDeactivated,
+    isSuspended: account.isSuspended,
+    isSuspensionLapsed: account.isSuspensionLapsed,
+    isDeactivated: account.isDeactivated,
     isEligible,
     canPerformOperationalActions: isEligible,
   };
@@ -206,15 +208,7 @@ export interface MentorStatusUpdate {
     is_active: boolean;
     updated_at: string;
   };
-  profile: {
-    account_status: 'active' | 'deactivated' | 'suspended';
-    suspended_at: string | null;
-    suspended_until: string | null;
-    suspension_reason: string | null;
-    suspended_by: string | null;
-    deactivated_at: string | null;
-    updated_at: string;
-  };
+  profile: AccountProfileStatusUpdate;
 }
 
 export interface BuildStatusUpdateInput {
@@ -236,30 +230,22 @@ export interface BuildStatusUpdateInput {
  * notification or audit record (prompt section 5).
  */
 export function buildMentorStatusUpdate(input: BuildStatusUpdateInput): MentorStatusUpdate {
-  const spec = MENTOR_STATUS_ACTION_SPECS[input.action];
-  const now = input.now ?? new Date();
-  const nowIso = now.toISOString();
-  const reason = input.reason?.trim() ? input.reason.trim() : null;
-  const suspendedUntil = spec.supportsSuspendedUntil && input.suspendedUntil
-    ? new Date(input.suspendedUntil).toISOString()
-    : null;
+  const nowIso = (input.now ?? new Date()).toISOString();
 
   return {
     mentorProfile: {
-      is_active: spec.isActive,
+      is_active: MENTOR_STATUS_ACTION_SPECS[input.action].isActive,
       updated_at: nowIso,
     },
-    profile: {
-      account_status: spec.accountStatus,
-      // Activation, deactivation and reactivation all clear the suspension
-      // markers. Historical suspension detail survives in audit_logs.
-      suspended_at: spec.accountStatus === 'suspended' ? nowIso : null,
-      suspended_until: spec.accountStatus === 'suspended' ? suspendedUntil : null,
-      suspension_reason: spec.accountStatus === 'suspended' ? reason : null,
-      suspended_by: spec.accountStatus === 'suspended' ? input.adminId : null,
-      deactivated_at: spec.accountStatus === 'deactivated' ? nowIso : null,
-      updated_at: nowIso,
-    },
+    // Shared with the generic user Control Center: one definition of the
+    // `profiles` writes, so a mentor and a seeker behave identically.
+    profile: buildAccountStatusUpdate({
+      action: input.action as AccountStatusAction,
+      adminId: input.adminId,
+      reason: input.reason,
+      suspendedUntil: input.suspendedUntil,
+      now: input.now,
+    }),
   };
 }
 
@@ -303,32 +289,16 @@ export function validateMentorStatusAction(input: {
     };
   }
 
-  const spec = MENTOR_STATUS_ACTION_SPECS[action];
-  const now = input.now ?? new Date();
-  const reason = typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim() : null;
-
-  if (spec.requiresReason && !reason) {
-    return { valid: false, code: 'REASON_REQUIRED', message: 'A reason is required for this action.' };
-  }
-
-  let suspendedUntil: string | null = null;
-  if (
-    spec.supportsSuspendedUntil
-    && input.suspendedUntil !== undefined
-    && input.suspendedUntil !== null
-    && input.suspendedUntil !== ''
-  ) {
-    if (typeof input.suspendedUntil !== 'string') {
-      return { valid: false, code: 'SUSPENDED_UNTIL_INVALID', message: 'suspendedUntil must be an ISO timestamp.' };
-    }
-    const parsed = Date.parse(input.suspendedUntil);
-    if (Number.isNaN(parsed)) {
-      return { valid: false, code: 'SUSPENDED_UNTIL_INVALID', message: 'suspendedUntil must be an ISO timestamp.' };
-    }
-    if (parsed <= now.getTime()) {
-      return { valid: false, code: 'SUSPENDED_UNTIL_IN_PAST', message: 'suspendedUntil must be in the future.' };
-    }
-    suspendedUntil = new Date(parsed).toISOString();
+  // Reason and suspension-window rules are the shared account rules, so a
+  // mentor and a seeker are validated identically.
+  const base = validateAccountStatusAction({
+    action,
+    reason: input.reason,
+    suspendedUntil: input.suspendedUntil,
+    now: input.now,
+  });
+  if (!base.valid) {
+    return { valid: false, code: base.code, message: base.message };
   }
 
   // Reactivating / activating requires the mentor to still be approved, so an
@@ -342,7 +312,7 @@ export function validateMentorStatusAction(input: {
     };
   }
 
-  return { valid: true, reason, suspendedUntil: suspendedUntil ?? null };
+  return { valid: true, reason: base.reason ?? null, suspendedUntil: base.suspendedUntil ?? null };
 }
 
 
