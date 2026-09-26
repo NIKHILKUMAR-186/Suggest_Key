@@ -102,7 +102,7 @@ export const AdminSidebar: React.FC = () => {
           <div className="px-2.5 py-1 text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase tracking-wider">
             Operations & Governance
           </div>
-          <nav className="space-y-0.5" aria-label="Admin Navigation">
+          <nav className="space-y-1" aria-label="Admin Navigation">
             {config.navItems.map((item) => {
               const Icon = item.icon;
               const isActive =
@@ -146,11 +146,11 @@ export const AdminSidebar: React.FC = () => {
       {/* Admin User Profile & Sign Out */}
       <div className="pt-4 border-t border-[var(--color-shell-border)] space-y-3">
         {/* Theme selection */}
-        <div className="flex items-center justify-between gap-3 px-1">
+        <div className="flex flex-col gap-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
             Theme
           </span>
-          <ThemeToggle variant="labeled" />
+          <ThemeToggle variant="labeled" buttonClassName="w-full" />
         </div>
 
         {/* User Card */}
@@ -162,7 +162,7 @@ export const AdminSidebar: React.FC = () => {
             <span className="text-xs font-bold text-[var(--color-shell-text)] truncate block">
               {profile?.full_name || 'Admin User'}
             </span>
-            <span className="text-[10px] text-[var(--color-shell-text-subtle)] truncate block">
+            <span className="text-xs text-[var(--color-shell-text-subtle)] truncate block">
               {user?.email || 'admin@suggestkey.com'}
             </span>
           </div>

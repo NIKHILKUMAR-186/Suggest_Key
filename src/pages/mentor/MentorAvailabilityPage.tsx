@@ -17,6 +17,7 @@ import { useAuth } from '@/src/context/AuthContext';
 import { apiFetch } from '@/src/lib/apiClient';
 import { cn } from '@/src/lib/utils';
 import { useMentorAvailability, type AvailabilityDay } from '@/src/hooks/mentor/useMentorAvailability';
+import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 import { MentorAvailabilitySchedule } from '@/src/components/mentor/MentorAvailabilitySchedule';
 import { MentorExceptionList } from '@/src/components/mentor/MentorExceptionList';
 import type { MentorAvailabilityException } from '@/src/types/database';
@@ -176,6 +177,24 @@ export const MentorAvailabilityPage: React.FC = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  /**
+   * Keep this view synchronised with the database.
+   *
+   * A save here is the single source of truth for seeker slots, so a change made
+   * in another tab or on another device must be reflected without a browser
+   * refresh. The subscription is scoped to this mentor and is torn down when the
+   * page unmounts.
+   */
+  const handleRemoteChange = useCallback(() => {
+    refetch();
+  }, [refetch]);
+
+  useAvailabilitySync({
+    mentorId: mentorId || null,
+    enabled: Boolean(mentorId),
+    onInvalidate: handleRemoteChange,
+  });
+
   const [editException, setEditException] = useState<MentorAvailabilityException | null>(null);
   const [exceptionForm, setExceptionForm] = useState<ExceptionFormData>(initialExceptionForm);
   const [isExceptionDialogOpen, setIsExceptionDialogOpen] = useState(false);
@@ -185,13 +204,21 @@ export const MentorAvailabilityPage: React.FC = () => {
 
   /** Last snapshot known to match the database, used for unsaved-change detection. */
   const savedSignature = useRef<string>('');
+  /**
+   * True while the form holds edits that are not in the database. A realtime
+   * refresh must not silently discard them, so the remote payload is held back
+   * until the mentor saves or resets.
+   */
+  const hasUnsavedEdits = useRef<boolean>(false);
 
   useEffect(() => {
+    if (hasUnsavedEdits.current) return;
     setDays(loadedDays);
     savedSignature.current = signatureOf(loadedDays, loadedExceptions);
   }, [loadedDays, loadedExceptions]);
 
   useEffect(() => {
+    if (hasUnsavedEdits.current) return;
     setExceptions(loadedExceptions);
   }, [loadedExceptions]);
 
@@ -200,6 +227,12 @@ export const MentorAvailabilityPage: React.FC = () => {
     [days, exceptions]
   );
   const isDirty = currentSignature !== savedSignature.current;
+
+  // Every local mutation flips the guard above so a realtime event cannot
+  // overwrite work in progress.
+  useEffect(() => {
+    hasUnsavedEdits.current = isDirty;
+  }, [isDirty]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -248,6 +281,8 @@ export const MentorAvailabilityPage: React.FC = () => {
   const handleReset = useCallback(() => {
     setDays(loadedDays);
     setExceptions(loadedExceptions);
+    savedSignature.current = signatureOf(loadedDays, loadedExceptions);
+    hasUnsavedEdits.current = false;
     setSaveStatus('idle');
     setSaveError(null);
   }, [loadedDays, loadedExceptions]);
@@ -372,6 +407,7 @@ export const MentorAvailabilityPage: React.FC = () => {
       }
 
       savedSignature.current = signatureOf(days, exceptions);
+      hasUnsavedEdits.current = false;
       setSaveStatus('success');
       refetch();
       setTimeout(() => setSaveStatus('idle'), 2500);

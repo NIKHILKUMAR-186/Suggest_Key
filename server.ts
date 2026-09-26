@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual, randomUUID } from 'crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
 import { createServer as createViteServer } from 'vite';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -14,10 +14,9 @@ import {
   transitionExpiredBookingsToCompleted,
   BookingEngineContext,
 } from './src/lib/bookingEngine';
-import { generateMentorSlots } from './src/lib/slotEngine';
+import { generateMentorSlots, addDaysToDateString } from './src/lib/slotEngine';
 import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingService';
 import {
-  getLocalWorkspaces,
   deriveSessionOverview,
 } from './src/lib/workspaceService';
 import {
@@ -27,13 +26,25 @@ import {
   requireActiveMentor,
   getSupabaseAdmin,
   createDemoToken,
+  isDemoAuthEnabled,
   type AuthRequest,
 } from './src/lib/supabaseServer';
 import { generateRequestId } from './src/lib/requestId';
 import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError, logger } from './src/lib/logger';
 import { auditAction } from './src/lib/auditLogger';
 import { POSTGREST_RELATIONSHIPS } from './src/lib/postgrestRelationships';
-import { describeSupabaseError, getErrorMessage, respondWithServerError, resolveHttpStatusForSupabaseError } from './src/lib/supabaseErrors';
+import {
+  PAYMENT_PROOF_BUCKET,
+  PAYMENT_PROOF_MAX_BYTES,
+  PAYMENT_STATUS_PENDING,
+  buildProofStoragePath,
+  decodeBase64Image,
+  isPayableBookingStatus,
+  normaliseTransactionReference,
+  validateProofFile,
+} from './src/lib/paymentProof';
+import { getAdminDashboardData } from './src/lib/adminDashboardData';
+import { GENERIC_ERROR_MESSAGE, describeSupabaseError, getErrorMessage, respondWithInternalError, respondWithServerError, resolveHttpStatusForSupabaseError, terminalErrorHandler } from './src/lib/supabaseErrors';
 import {
   MENTOR_APPLICATION_STATUSES,
   buildMentorApplicationPagination,
@@ -43,6 +54,7 @@ import {
   type MentorApplicationStatusCounts,
 } from './src/lib/mentorApplicationsQuery';
 import type {
+  GeneratedSlot,
   MentorApplicationDetailAuditEntry,
   MentorApplicationDetailDocument,
   MentorApplicationDetailRow,
@@ -77,6 +89,7 @@ import {
   validateAccountStatusAction,
 } from './src/lib/adminAccountControl';
 import { APP_CONFIG } from './src/config/app';
+import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -151,6 +164,139 @@ async function countActiveAdminAccounts(admin: SupabaseClient): Promise<number> 
         now,
       ).canPerformOperationalActions,
   ).length;
+}
+
+interface PaymentNotificationInput {
+  /** Recipients. `notifications.user_id` is NOT NULL, so each admin needs a row. */
+  userIds: string[];
+  title: string;
+  message: string;
+  type: 'BOOKING' | 'PAYMENT' | 'SESSION' | 'WORKSPACE' | 'SYSTEM';
+  eventType: string;
+  entityType: 'booking' | 'payment' | string;
+  entityId: string;
+  link: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Writes real rows into the existing `notifications` table.
+ *
+ * `notifications.user_id` is NOT NULL, so an "alert all admins" notification
+ * has to be materialised once per admin account — the `user_id: null` pattern
+ * used by some older admin-alert code is rejected by the live database.
+ *
+ * Failures are logged and swallowed on purpose: a payment that is already
+ * stored must not be reported as failed just because the notification could not
+ * be written.
+ */
+async function insertPaymentNotifications(
+  admin: SupabaseClient,
+  input: PaymentNotificationInput,
+): Promise<number> {
+  const recipients = Array.from(new Set(input.userIds.filter((id) => typeof id === 'string' && id)));
+  if (!recipients.length) return 0;
+
+  const rows = recipients.map((user_id) => ({
+    user_id,
+    title: input.title,
+    message: input.message,
+    type: input.type,
+    event_type: input.eventType,
+    entity_type: input.entityType,
+    entity_id: input.entityId,
+    link: input.link,
+    is_read: false,
+    metadata: input.metadata ?? {},
+  }));
+
+  const { error } = await admin.from('notifications').insert(rows);
+  if (error) {
+    console.error('Failed to write payment notifications:', error.message);
+    return 0;
+  }
+  return rows.length;
+}
+
+/** Active admin account ids, used to route the payment verification alert. */
+async function resolveActiveAdminIds(admin: SupabaseClient): Promise<string[]> {
+  const { data, error } = await admin.from('user_roles').select('user_id').eq('role', 'admin');
+  if (error) throw error;
+
+  const ids = Array.from(new Set((data || []).map((r: { user_id: string }) => r.user_id)));
+  if (!ids.length) return [];
+
+  const { data: accounts, error: accountsErr } = await admin
+    .from('profiles')
+    .select('id, account_status, suspended_until')
+    .in('id', ids);
+  if (accountsErr) throw accountsErr;
+
+  const now = new Date();
+  return (accounts || [])
+    .filter((row: { account_status?: string | null; suspended_until?: string | null }) =>
+      deriveAccountState(
+        { account_status: row.account_status ?? null, suspended_until: row.suspended_until ?? null },
+        now,
+      ).canPerformOperationalActions,
+    )
+    .map((row: { id: string }) => row.id);
+}
+
+/**
+ * Tells the seeker what an admin decided about their payment.
+ *
+ * The database function `review_payment` owns the state transition but writes
+ * no notification, so this fills that gap using the real payment/booking rows.
+ * A failure here is logged, never thrown: the admin's decision is already
+ * durably recorded and must not be reported as failed.
+ */
+async function notifyPaymentReviewed(
+  admin: SupabaseClient,
+  input: { paymentId: string; bookingId?: string | null; approved: boolean; rejectionReason?: string | null },
+): Promise<void> {
+  try {
+    const { data: payment, error } = await admin
+      .from('payments')
+      .select('id, booking_id, seeker_id, amount_inr, status, rejection_reason')
+      .eq('id', input.paymentId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!payment) return;
+
+    const bookingId = input.bookingId ?? payment.booking_id;
+    const { data: booking } = await admin
+      .from('bookings')
+      .select('id, booking_code')
+      .eq('id', bookingId)
+      .maybeSingle();
+
+    const bookingCode = booking?.booking_code ?? null;
+    const amountLabel = `₹${Number(payment.amount_inr ?? 0).toLocaleString('en-IN')}`;
+    const codeSuffix = bookingCode ? ` for booking ${bookingCode}` : '';
+
+    await insertPaymentNotifications(admin, {
+      userIds: [payment.seeker_id],
+      title: input.approved ? 'Payment verified' : 'Payment verification requires attention',
+      message: input.approved
+        ? `Your payment${codeSuffix} (${amountLabel}) has been verified. The mentor will now add the meeting link.`
+        : `Your payment proof${codeSuffix} (${amountLabel}) could not be verified${input.rejectionReason ? `: ${input.rejectionReason}` : '.'} Please submit a clearer payment reference and screenshot.`,
+      type: 'PAYMENT',
+      eventType: input.approved ? 'PAYMENT_APPROVED' : 'PAYMENT_REJECTED',
+      entityType: 'payment',
+      entityId: payment.id,
+      link: '/seeker/bookings',
+      metadata: {
+        bookingId,
+        bookingCode,
+        paymentId: payment.id,
+        amountInr: payment.amount_inr,
+        rejectionReason: input.rejectionReason ?? null,
+      },
+    });
+  } catch (notifyErr) {
+    console.error('Failed to notify seeker of payment review outcome:', notifyErr);
+  }
 }
 
 
@@ -284,9 +430,180 @@ async function loadSegmentGigs(
   return { gigs, error: null };
 }
 
+// ---------------------------------------------------------------------------
+// SINGLE AUTHORITATIVE SLOT ENGINE (server side)
+// ---------------------------------------------------------------------------
+//
+// `generateMentorSlots` is the only slot-generation implementation in the
+// project, and this helper is the only place that feeds it real data. It MUST be
+// called with the service-role client: the anon/authenticated RLS policies on
+// `bookings` and `slot_holds` are participant-scoped, so a browser reading those
+// tables directly only ever sees its own reservations and would happily offer a
+// slot another seeker has already taken.
+//
+// Every input the engine needs is loaded here, in one bounded round trip set:
+//   mentor timezone  <- profiles.timezone
+//   duration         <- gigs.duration_minutes of the ACTIVE gig (never a constant)
+//   schedule         <- mentor_availability
+//   exceptions       <- mentor_availability_exceptions for the requested date
+//   reservations     <- bookings (not CANCELLED/REJECTED)
+//   holds            <- slot_holds ACTIVE and not yet expired
+// `currentUtcTime` is the server clock, so a slot that has already started can
+// never be reported as bookable regardless of the caller's clock.
+
+export interface MentorSlotResult {
+  mentor_id: string;
+  timezone: string;
+  gig: {
+    id: string;
+    segment_id: string;
+    title: string;
+    duration_minutes: number;
+    price_inr: number;
+  } | null;
+  slots: GeneratedSlot[];
+  available_count: number;
+  /** Earliest still-blocking hold boundary, for a targeted revalidation timer. */
+  next_hold_expires_at: string | null;
+  /** Earliest not-yet-started slot boundary, for a targeted revalidation timer. */
+  next_slot_start_at: string | null;
+}
+
+async function computeMentorSlotsForDate(
+  admin: SupabaseClient,
+  params: { mentorIds: string[]; dateStr: string; segmentId?: string; now: Date }
+): Promise<{ results: Map<string, MentorSlotResult>; error: any | null }> {
+  const { mentorIds, dateStr, segmentId, now } = params;
+  const results = new Map<string, MentorSlotResult>();
+
+  if (mentorIds.length === 0) return { results, error: null };
+
+  // A generous UTC window around the requested calendar date. Overlap is
+  // re-checked by the engine on the exact instants, so this only has to be wide
+  // enough to never miss a row and narrow enough to stay cheap.
+  const windowStartIso = `${dateStr}T00:00:00.000Z`;
+  const windowEndIso = `${addDaysToDateString(dateStr, 2)}T00:00:00.000Z`;
+  const nowIso = now.toISOString();
+
+  const [profilesRes, availabilityRes, exceptionsRes, bookingsRes, holdsRes, gigsRes] =
+    await Promise.all([
+      admin
+        .from('profiles')
+        .select('id, timezone')
+        .in('id', mentorIds),
+      admin
+        .from('mentor_availability')
+        .select('*')
+        .in('mentor_id', mentorIds)
+        .eq('is_enabled', true),
+      admin
+        .from('mentor_availability_exceptions')
+        .select('*')
+        .in('mentor_id', mentorIds)
+        .eq('exception_date', dateStr),
+      admin
+        .from('bookings')
+        .select('*')
+        .in('mentor_id', mentorIds)
+        .not('status', 'in', '("CANCELLED","REJECTED")')
+        .lt('start_time', windowEndIso)
+        .gt('end_time', windowStartIso),
+      admin
+        .from('slot_holds')
+        .select('*')
+        .in('mentor_id', mentorIds)
+        .eq('status', 'ACTIVE')
+        .gt('expires_at', nowIso)
+        .lt('start_time', windowEndIso)
+        .gt('end_time', windowStartIso),
+      admin.from('gigs').select('*').in('mentor_id', mentorIds).eq('is_active', true),
+    ]);
+
+  for (const res of [profilesRes, availabilityRes, exceptionsRes, bookingsRes, holdsRes, gigsRes]) {
+    if (res.error) return { results, error: res.error };
+  }
+
+  const timezoneByMentor = new Map<string, string>(
+    (profilesRes.data || []).map((p: any) => [p.id as string, (p.timezone as string) || APP_CONFIG.DEFAULT_TIMEZONE])
+  );
+  const availabilityRows = availabilityRes.data || [];
+  const exceptionRows = exceptionsRes.data || [];
+  const bookingRows = bookingsRes.data || [];
+  const holdRows = holdsRes.data || [];
+  const activeGigs = (gigsRes.data || []).filter((g: any) => !segmentId || g.segment_id === segmentId);
+
+  for (const mentorId of mentorIds) {
+    const timezone = timezoneByMentor.get(mentorId) || APP_CONFIG.DEFAULT_TIMEZONE;
+    const gig = activeGigs.find((g: any) => g.mentor_id === mentorId) || null;
+
+    if (!gig) {
+      // No active offer for this segment: nothing is bookable, and saying so
+      // explicitly is better than returning an empty slot list that looks like
+      // "fully booked".
+      results.set(mentorId, {
+        mentor_id: mentorId,
+        timezone,
+        gig: null,
+        slots: [],
+        available_count: 0,
+        next_hold_expires_at: null,
+        next_slot_start_at: null,
+      });
+      continue;
+    }
+
+    const mentorHolds = holdRows.filter((h: any) => h.mentor_id === mentorId);
+    const slots = generateMentorSlots({
+      mentorId,
+      gigId: gig.id,
+      dateStr,
+      timezone,
+      durationMinutes: gig.duration_minutes,
+      recurringAvailability: availabilityRows.filter((a: any) => a.mentor_id === mentorId),
+      exceptions: exceptionRows.filter((e: any) => e.mentor_id === mentorId),
+      bookings: bookingRows.filter((b: any) => b.mentor_id === mentorId),
+      slotHolds: mentorHolds,
+      currentUtcTime: now,
+    });
+
+    const nowMs = now.getTime();
+    const holdExpiries = mentorHolds
+      .map((h: any) => new Date(h.expires_at).getTime())
+      .filter((ms: number) => Number.isFinite(ms) && ms > nowMs)
+      .sort((a: number, b: number) => a - b);
+    const upcomingStarts = slots
+      .map((s) => new Date(s.utc_start_time).getTime())
+      .filter((ms: number) => Number.isFinite(ms) && ms > nowMs)
+      .sort((a: number, b: number) => a - b);
+
+    results.set(mentorId, {
+      mentor_id: mentorId,
+      timezone,
+      gig: {
+        id: gig.id,
+        segment_id: gig.segment_id,
+        title: gig.title,
+        duration_minutes: gig.duration_minutes,
+        price_inr: gig.price_inr,
+      },
+      slots,
+      available_count: slots.filter((s) => s.is_available).length,
+      next_hold_expires_at: holdExpiries.length > 0 ? new Date(holdExpiries[0]).toISOString() : null,
+      next_slot_start_at: upcomingStarts.length > 0 ? new Date(upcomingStarts[0]).toISOString() : null,
+    });
+  }
+
+  return { results, error: null };
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
+
+  // Behind exactly one reverse proxy (the Vercel edge in production), so
+  // `req.ip` is the real client instead of the proxy's own address. Without
+  // this every visitor would share one rate-limit bucket.
+  app.set('trust proxy', 1);
 
   type DemoRole = 'seeker' | 'mentor' | 'admin';
 
@@ -361,7 +678,13 @@ async function startServer() {
     };
   };
 
-  app.use(express.json());
+  // A payment proof is an inline base64 screenshot capped at
+  // PAYMENT_PROOF_MAX_BYTES (5MB). base64 inflates that by ~4/3, so the JSON
+  // body limit must leave room for the encoded image plus the small metadata
+  // envelope. The cap is enforced precisely, per field, in the payment-proof
+  // route and by the bucket's own file_size_limit — this limit only stops a
+  // single oversized request from being buffered.
+  app.use(express.json({ limit: '8mb' }));
 
   // --------------------------------------------------------------------------
   // Request ID + Centralized Request Logging Middleware
@@ -434,6 +757,13 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
+  // API Rate Limiting
+  // --------------------------------------------------------------------------
+  // Mounted after the request-id and logging middleware so a rejected request
+  // still gets an X-Request-ID and shows up in the admin system logs.
+  app.use('/api', apiRateLimiter);
+
+  // --------------------------------------------------------------------------
   // API Routes
   // --------------------------------------------------------------------------
   app.get('/api/health', (req, res) => {
@@ -444,10 +774,14 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/demo-login', (req, res) => {
+  // POST /api/auth/demo-login
+  // Auth is unauthenticated by nature, so this is keyed on IP. 10/min stops
+  // credential and persona brute-forcing long before it is useful.
+  // Demo auth is opt-in: it is disabled in production AND requires an explicit,
+  // non-default DEMO_AUTH_SECRET so the hardcoded default can never be exploited.
+  app.post('/api/auth/demo-login', expensiveRouteLimiter, (req, res) => {
     res.set('Cache-Control', 'no-store');
-    // DEMO-ONLY: Demo login is explicitly disabled in production.
-    if (process.env.NODE_ENV === 'production' && process.env.ENABLE_DEMO_PERSONAS !== 'true') {
+    if (!isDemoAuthEnabled()) {
       return res.status(404).json({
         success: false,
         error: { code: 'DEMO_LOGIN_DISABLED', message: 'Demo login is unavailable.' },
@@ -459,12 +793,6 @@ async function startServer() {
 
     let account: DemoAccount | undefined;
     if (persona && Object.prototype.hasOwnProperty.call(demoAccounts, persona)) {
-      if (process.env.NODE_ENV === 'production' && process.env.ENABLE_DEMO_PERSONAS !== 'true') {
-        return res.status(404).json({
-          success: false,
-          error: { code: 'DEMO_LOGIN_DISABLED', message: 'Demo login is unavailable.' },
-        });
-      }
       account = demoAccounts[persona as DemoRole];
     } else if (email) {
       account = Object.values(demoAccounts).find(
@@ -486,7 +814,9 @@ async function startServer() {
   });
 
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
-  app.post('/api/bookings/hold', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+  // Expensive: the RPC takes a mentor row lock and writes a hold. The strict
+  // limiter sits after requireAuth so the bucket is per user, not per IP.
+  app.post('/api/bookings/hold', requireAuth, requireRole('seeker'), expensiveRouteLimiter, async (req: AuthRequest, res) => {
     try {
       const { mentorId, segmentId, gigId, startTime, endTime } = req.body;
       const seekerId = req.auth!.user.id;
@@ -579,6 +909,38 @@ async function startServer() {
           });
         }
 
+        // Real-time booking cutoff re-check, performed server-side immediately
+        // before the hold is attempted. A slot the browser rendered seconds ago
+        // may already be inside the cutoff, so the client is never trusted.
+        //
+        // The comparison is on absolute instants, so it is correct for whatever
+        // timezone the mentor is in and needs no zone to be named. The database
+        // function re-checks the same boundary under the mentor row lock, which
+        // is what actually makes the decision race-free; this early return just
+        // avoids a pointless RPC.
+        const requestedStartMs = new Date(startTime).getTime();
+        if (Number.isFinite(requestedStartMs)) {
+          const nowMs = Date.now();
+          if (requestedStartMs <= nowMs) {
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: 'PAST_SLOT_FORBIDDEN',
+                message: 'This slot can no longer be booked because it has already started.',
+              },
+            });
+          }
+          if (requestedStartMs - nowMs < APP_CONFIG.BOOKING_CUTOFF_MS) {
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: 'BOOKING_CUTOFF_REACHED',
+                message: `This slot can no longer be booked because it starts in less than ${APP_CONFIG.BOOKING_CUTOFF_MS / 60000} minutes.`,
+              },
+            });
+          }
+        }
+
         const { data, error } = await admin.rpc('create_booking_with_hold', {
           p_seeker_id: seekerId,
           p_mentor_id: mentorId,
@@ -589,16 +951,38 @@ async function startServer() {
         });
 
         if (error) {
+          // `create_booking_with_hold` refuses with a `code: X, <reason>` prefix.
+          // Extracting the code is what lets a lost race render as a clean
+          // "this slot was just taken" message instead of a generic failure, and
+          // what lets the correct HTTP status reach the client.
           const codeMatch = error.message.match(/code:\s*([A-Z0-9_]+)/i);
           const code = codeMatch?.[1]?.toUpperCase() || 'BOOKING_FAILED';
-          const status = ['SLOT_ALREADY_BOOKED', 'SLOT_HELD_BY_OTHER', 'BOOKING_CONFLICT'].includes(code)
+          const reasonMatch = error.message.match(/code:\s*[A-Z0-9_]+,\s*(.*)$/i);
+          const reason = (reasonMatch?.[1] || '').trim();
+
+          const conflictCodes = [
+            'SLOT_ALREADY_BOOKED',
+            'SLOT_HELD_BY_OTHER',
+            'BOOKING_CONFLICT',
+            'OUTSIDE_AVAILABILITY',
+            'OUTSIDE_EXCEPTION_HOURS',
+            'DATE_EXCEPTION_UNAVAILABLE',
+            'DURATION_MISMATCH',
+            'PAST_SLOT_FORBIDDEN',
+            'BOOKING_CUTOFF_REACHED',
+          ];
+
+          const status = conflictCodes.includes(code)
             ? 409
             : code === 'UNAUTHORIZED' || code === 'ROLE_NOT_SEEKER'
               ? 403
-              : 400;
+              : code === 'GIG_NOT_FOUND' || code === 'GIG_MISMATCH'
+                ? 404
+                : 400;
+
           return res.status(status).json({
             success: false,
-            error: { code, message: error.message },
+            error: { code, message: reason || GENERIC_ERROR_MESSAGE },
           });
         }
 
@@ -678,13 +1062,7 @@ async function startServer() {
       return res.status(201).json(result);
     } catch (err: any) {
       console.error('Unhandled booking error:', err);
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'INTERNAL_SERVER_ERROR',
-          message: err.message || 'An unexpected server error occurred.',
-        },
-      });
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/bookings' });
     }
   });
 
@@ -711,10 +1089,7 @@ async function startServer() {
 
       return res.json({ success: true, bookings: enriched });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -747,10 +1122,448 @@ async function startServer() {
       const enriched = enrichBooking(booking, db);
       return res.json({ success: true, booking: enriched });
     } catch (err: any) {
-      return res.status(500).json({
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // GET /api/seeker/bookings/:id: Get booking detail for the authenticated seeker.
+  //
+  // The payment page (/seeker/payment?bookingId=...) and the booking-detail
+  // page both rely on this endpoint. It enforces:
+  //   - booking must exist
+  //   - caller must be the seeker (booking.seeker_id == auth.uid())
+  //   - admin may inspect any booking
+  //
+  // This is the authoritative lookup for the seeker payment flow. Without it
+  // the payment page falls through to the in-memory dev DB, which never
+  // contains the real Supabase booking, producing "Booking Not Found".
+  app.get('/api/seeker/bookings/:id', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    try {
+      const bookingId = req.params.id;
+      const callerId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        const { data: booking, error: bookingErr } = await admin
+          .from('bookings')
+          .select(`
+            *,
+            seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+            mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+            gig:gigs(id, title, duration_minutes, price_inr, segment_id),
+            segment:segments(id, name, slug)
+          `)
+          .eq('id', bookingId)
+          .maybeSingle();
+
+        if (bookingErr) throw bookingErr;
+
+        if (!booking) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+          });
+        }
+
+        // Authorization: seeker must own the booking; admin may inspect any.
+        const isAdmin = req.auth!.roles.includes('admin');
+        if (!isAdmin && booking.seeker_id !== callerId) {
+          return res.status(403).json({
+            success: false,
+            error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'Forbidden: You are not authorized to view this booking.' },
+          });
+        }
+
+        // Fetch payment record if one exists
+        const { data: payment, error: paymentErr } = await admin
+          .from('payments')
+          .select('*')
+          .eq('booking_id', bookingId)
+          .maybeSingle();
+        if (paymentErr) throw paymentErr;
+
+        // Fetch hold details if present
+        let hold = null;
+        if (booking.hold_id) {
+          const { data: holdData, error: holdErr } = await admin
+            .from('slot_holds')
+            .select('*')
+            .eq('id', booking.hold_id)
+            .maybeSingle();
+          if (!holdErr) hold = holdData;
+        }
+
+        const enriched = {
+          ...booking,
+          gig: booking.gig || null,
+          segment: booking.segment || null,
+          seeker: booking.seeker || null,
+          mentor: booking.mentor || null,
+          payment: payment || null,
+          hold: hold || null,
+        };
+
+        return res.json({ success: true, booking: enriched });
+      }
+
+      // Fallback to in-memory dev DB
+      const db = getLocalBookingEngineContext();
+      const booking = db.bookings.find((b) => b.id === bookingId || b.booking_code === bookingId);
+      if (!booking) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+        });
+      }
+
+      if (booking.seeker_id !== callerId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'Forbidden: You are not authorized to view this booking.' },
+        });
+      }
+
+      const enriched = enrichBooking(booking, db);
+      return res.json({ success: true, booking: enriched });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // GET /api/seeker/bookings: List all bookings for the authenticated seeker.
+  //
+  // The My Bookings page relies on this endpoint. It enforces:
+  //   - caller must be authenticated and hold the seeker role (admin may inspect)
+  //   - only the caller's own bookings are returned
+  //   - payments are joined so the UI can render real payment state
+  app.get('/api/seeker/bookings', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    try {
+      const callerId = req.auth!.user.id;
+      const isAdmin = req.auth!.roles.includes('admin');
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        let query = admin
+          .from('bookings')
+          .select(`
+            *,
+            seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+            mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+            gig:gigs(id, title, duration_minutes, price_inr, segment_id),
+            segment:segments(id, name, slug)
+          `)
+          .order('start_time', { ascending: false });
+
+        if (!isAdmin) {
+          query = query.eq('seeker_id', callerId);
+        }
+
+        const { data: bookings, error: bookingsErr } = await query;
+        if (bookingsErr) throw bookingsErr;
+
+        // Fetch payments for all returned bookings
+        const bookingIds = (bookings || []).map((b: any) => b.id);
+        const { data: payments, error: paymentsErr } = bookingIds.length
+          ? await admin.from('payments').select('*').in('booking_id', bookingIds)
+          : { data: [], error: null };
+        if (paymentsErr) throw paymentsErr;
+
+        const paymentByBooking = new Map<string, any>();
+        for (const payment of payments || []) {
+          paymentByBooking.set(payment.booking_id, payment);
+        }
+
+        const enriched = (bookings || []).map((booking: any) => ({
+          ...booking,
+          gig: booking.gig || null,
+          segment: booking.segment || null,
+          seeker: booking.seeker || null,
+          mentor: booking.mentor || null,
+          payment: paymentByBooking.get(booking.id) || null,
+        }));
+
+        return res.json({ success: true, bookings: enriched });
+      }
+
+      // Fallback to in-memory dev DB
+      const db = getLocalBookingEngineContext();
+      const seekerIds = [callerId];
+      let matched = db.bookings.filter((b) => seekerIds.includes(b.seeker_id));
+      matched.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
+      return res.json({ success: true, bookings: matched.map((b) => enrichBooking(b, db)) });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Seeker Payment Proof Submission
+  // --------------------------------------------------------------------------
+  //
+  // POST /api/seeker/bookings/:id/payment-proof
+  //
+  // The seeker has already paid offline (manual QR) and is now handing the
+  // platform evidence of it. This is the ONLY writer of a `payments` row for a
+  // seeker, and it is entirely server-authoritative:
+  //
+  //   authenticated -> owns this booking -> booking is still payable
+  //   -> UTR and image both validate -> image stored -> payment upserted
+  //
+  // Nothing about the payment is taken from the request except the UTR and the
+  // image itself. The amount, the seeker, the booking and the storage key are
+  // all derived server-side, so a client cannot pay ₹1 for a ₹499 session.
+  app.post('/api/seeker/bookings/:id/payment-proof', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    const bookingId = req.params.id;
+    const callerId = req.auth!.user.id;
+
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' } });
+    }
+
+    // ---- 1. Input validation --------------------------------------------
+    const { transactionReference, fileName, mimeType, fileBase64 } = req.body ?? {};
+
+    const reference = normaliseTransactionReference(transactionReference);
+    if (!reference.ok) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'transactionReference', message: reference.message } });
+    }
+
+    const proof = validateProofFile({
+      name: typeof fileName === 'string' ? fileName : '',
+      type: typeof mimeType === 'string' ? mimeType : '',
+      // The real, decoded length is re-checked below; this is only a cheap
+      // pre-check so an oversized payload is rejected before it is decoded.
+      size: typeof req.body?.fileSize === 'number' ? req.body.fileSize : PAYMENT_PROOF_MAX_BYTES + 1,
+    });
+    if (!proof.ok) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: proof.message } });
+    }
+
+    if (typeof fileBase64 !== 'string' || !fileBase64) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'Select your payment screenshot.' } });
+    }
+
+    const imageBytes = decodeBase64Image(fileBase64);
+    if (!imageBytes) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That screenshot could not be read. Please select it again.' } });
+    }
+    // Authoritative size check on the decoded bytes, not a client-claimed number.
+    if (imageBytes.length > PAYMENT_PROOF_MAX_BYTES) {
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That image is too large. Please upload a screenshot under 5 MB.' } });
+    }
+
+    // ---- 2. Booking exists, is owned by the caller, and is payable -------
+    const { data: booking, error: bookingErr } = await admin
+      .from('bookings')
+      .select('id, booking_code, seeker_id, mentor_id, gig_id, amount_inr, status, start_time')
+      .eq('id', bookingId)
+      .maybeSingle();
+
+    if (bookingErr) {
+      return respondWithInternalError({ req, res, error: bookingErr, context: 'POST /api/seeker/bookings/:id/payment-proof' });
+    }
+    if (!booking) {
+      return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+    }
+    if (booking.seeker_id !== callerId) {
+      // The guard that stops one seeker submitting proof against another
+      // seeker's booking.
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to pay for this booking.' } });
+    }
+
+    if (!isPayableBookingStatus(booking.status)) {
+      return res.status(409).json({
         success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
+        error: {
+          code: 'BOOKING_NOT_PAYABLE',
+          message: `This booking is ${String(booking.status).replace(/_/g, ' ').toLowerCase()} and no longer accepts a payment proof.`,
+        },
       });
+    }
+
+    // ---- 3. An existing payment decides insert vs update -----------------
+    const { data: existingPayment, error: existingErr } = await admin
+      .from('payments')
+      .select('*')
+      .eq('booking_id', bookingId)
+      .maybeSingle();
+    if (existingErr) {
+      return respondWithInternalError({ req, res, error: existingErr, context: 'POST /api/seeker/bookings/:id/payment-proof (lookup)' });
+    }
+
+    if (existingPayment?.status === 'VERIFIED') {
+      // Already verified: report the real state instead of creating anything.
+      return res.status(409).json({
+        success: false,
+        error: { code: 'PAYMENT_ALREADY_VERIFIED', message: 'This payment has already been verified.' },
+        payment: existingPayment,
+      });
+    }
+
+    // ---- 4. Store the proof in the private bucket ------------------------
+    const storagePath = buildProofStoragePath(callerId, bookingId, fileName, randomUUID());
+    const { error: uploadErr } = await admin.storage
+      .from(PAYMENT_PROOF_BUCKET)
+      .upload(storagePath, imageBytes, { contentType: mimeType, upsert: false, cacheControl: '3600' });
+
+    if (uploadErr) {
+      console.error('Payment proof upload failed:', uploadErr.message);
+      return res.status(502).json({ success: false, error: { code: 'UPLOAD_FAILED', message: 'Payment screenshot upload failed. Please try again.' } });
+    }
+
+    // ---- 5. Upsert the payment record ------------------------------------
+    // `payments` has UNIQUE(booking_id), so this is naturally idempotent: a
+    // re-submission after a rejection updates the single existing row instead
+    // of inserting a duplicate.
+    const nowIso = new Date().toISOString();
+    const paymentRow = {
+      booking_id: booking.id,
+      seeker_id: booking.seeker_id,
+      // Server-derived: never the client-supplied amount.
+      amount_inr: booking.amount_inr,
+      status: PAYMENT_STATUS_PENDING,
+      proof_storage_path: storagePath,
+      transaction_reference: reference.value,
+      // A fresh submission clears a previous rejection and any stale verifier.
+      rejection_reason: null,
+      verified_by: null,
+      verified_at: null,
+      updated_at: nowIso,
+    };
+
+    const { data: payment, error: paymentErr } = await admin
+      .from('payments')
+      .upsert(paymentRow, { onConflict: 'booking_id' })
+      .select()
+      .single();
+
+    if (paymentErr) {
+      console.error('Failed to persist payment record:', paymentErr.message);
+      // The uploaded object is now orphaned; remove it so a failed submission
+      // leaves no unreferenced file in the private bucket.
+      try {
+        await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
+      } catch (cleanupErr) {
+        console.error('Failed to clean up orphaned proof upload:', cleanupErr);
+      }
+      return respondWithInternalError({ req, res, error: paymentErr, context: 'POST /api/seeker/bookings/:id/payment-proof (persist)' });
+    }
+
+    // ---- 6. Advance the booking into verification -------------------------
+    if (booking.status === 'PAYMENT_PENDING') {
+      const { error: advanceErr } = await admin
+        .from('bookings')
+        .update({ status: 'PENDING_VERIFICATION', updated_at: nowIso })
+        .eq('id', booking.id)
+        .eq('status', 'PAYMENT_PENDING');
+      if (advanceErr) {
+        // The payment itself is safely stored, so this is logged rather than
+        // thrown: the admin queue reads the payment, and My Bookings still
+        // shows a truthful payment state.
+        console.error('Failed to advance booking to PENDING_VERIFICATION:', advanceErr.message);
+      }
+    }
+
+    // ---- 7. Notify the seeker and the admin queue ------------------------
+    // Only a genuinely new submission raises the alert. A repeat click on an
+    // already-pending payment updates the row but must not spam a second
+    // notification; a re-submission after a rejection is a new review request
+    // and does notify.
+    const isNewReviewRequest = !existingPayment || existingPayment.status === 'REJECTED';
+    const amountLabel = `₹${Number(booking.amount_inr ?? 0).toLocaleString('en-IN')}`;
+    const notificationMetadata = {
+      bookingId: booking.id,
+      bookingCode: booking.booking_code,
+      paymentId: payment.id,
+      amountInr: booking.amount_inr,
+      transactionReference: reference.value,
+    };
+
+    if (isNewReviewRequest) {
+      await insertPaymentNotifications(admin, {
+        userIds: [booking.seeker_id],
+        title: 'Payment proof submitted',
+        message: `We received your payment reference and screenshot for booking ${booking.booking_code} (${amountLabel}). An admin will verify it shortly.`,
+        type: 'PAYMENT',
+        eventType: 'PAYMENT_SUBMITTED',
+        entityType: 'payment',
+        entityId: payment.id,
+        link: '/seeker/bookings',
+        metadata: notificationMetadata,
+      });
+
+      try {
+        const adminIds = await resolveActiveAdminIds(admin);
+        await insertPaymentNotifications(admin, {
+          userIds: adminIds,
+          title: 'Payment verification required',
+          message: `Payment proof submitted for booking ${booking.booking_code} (${amountLabel}). Reference ${reference.value}. Awaiting verification.`,
+          type: 'PAYMENT',
+          eventType: 'ADMIN_PAYMENT_PROOF_SUBMITTED',
+          entityType: 'payment',
+          entityId: payment.id,
+          link: '/admin/payments',
+          metadata: notificationMetadata,
+        });
+      } catch (adminNotifErr) {
+        console.error('Failed to raise admin payment verification alert:', adminNotifErr);
+      }
+    }
+
+    auditAction(req.auth, 'payment_proof_submitted', {
+      entityType: 'payment',
+      entityId: payment.id,
+      requestId: req.requestId,
+      metadata: { bookingId: booking.id, bookingCode: booking.booking_code, amountInr: booking.amount_inr },
+    });
+
+    return res.status(201).json({
+      success: true,
+      // The status is PENDING_VERIFICATION, never "paid": the money is not
+      // verified until an admin says so.
+      message: 'Payment proof submitted for verification.',
+      payment,
+      booking: { id: booking.id, booking_code: booking.booking_code, status: 'PENDING_VERIFICATION', amount_inr: booking.amount_inr },
+    });
+  });
+
+  // GET /api/seeker/bookings/:id/payment-proof
+  // Returns the real current payment state for a booking so the payment page
+  // can render the true status on load and after a refresh, instead of
+  // inferring one from "the user visited this page".
+  app.get('/api/seeker/bookings/:id/payment-proof', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    try {
+      const callerId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' } });
+      }
+
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('id, booking_code, seeker_id, status, amount_inr')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (bookingErr) throw bookingErr;
+
+      if (!booking) {
+        return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+      }
+      if (booking.seeker_id !== callerId) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to view this booking.' } });
+      }
+
+      const { data: payment, error: paymentErr } = await admin
+        .from('payments')
+        .select('*')
+        .eq('booking_id', booking.id)
+        .maybeSingle();
+      if (paymentErr) throw paymentErr;
+
+      return res.json({ success: true, payment: payment ?? null, booking });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/bookings/:id/payment-proof' });
     }
   });
 
@@ -815,10 +1628,7 @@ async function startServer() {
         message: result.message,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -835,9 +1645,80 @@ async function startServer() {
         bookings: enriched,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // GET /api/admin/bookings: Admin operational ledger of all bookings with full joins
+  app.get('/api/admin/bookings', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: bookings, error: bookingsErr } = await admin
+        .from('bookings')
+        .select(`
+          *,
+          seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+          mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+          gig:gigs(id, title, duration_minutes, price_inr, segment_id),
+          segment:segments(id, name, slug)
+        `)
+        .order('start_time', { ascending: true });
+
+      if (bookingsErr) throw bookingsErr;
+
+      // Get payment info for all bookings
+      const bookingIds = (bookings || []).map((b: any) => b.id);
+      const { data: payments, error: paymentsErr } = bookingIds.length
+        ? await admin.from('payments').select('*').in('booking_id', bookingIds)
+        : { data: [], error: null };
+      if (paymentsErr) throw paymentsErr;
+
+      const paymentByBooking = new Map<string, any>();
+      for (const payment of payments || []) {
+        paymentByBooking.set(payment.booking_id, payment);
+      }
+
+      // Calculate deadline info for each booking
+      const now = new Date();
+      const enrichedBookings = (bookings || []).map((booking: any) => {
+        const payment = paymentByBooking.get(booking.id);
+        const startTime = new Date(booking.start_time);
+        const deadlineMs = startTime.getTime() - 2 * 60 * 60 * 1000; // 2 hours before
+        const isOverdue = !booking.meeting_url && now.getTime() > deadlineMs && startTime > now;
+        const hoursUntilSession = Math.max(0, Math.round((startTime.getTime() - now.getTime()) / (1000 * 60 * 60)));
+
+        return {
+          ...booking,
+          payment: payment ? {
+            id: payment.id,
+            status: payment.status,
+            amount_inr: payment.amount_inr,
+            verified_at: payment.verified_at,
+            proof_storage_path: payment.proof_storage_path,
+            transaction_reference: payment.transaction_reference,
+          } : null,
+          deadlineInfo: {
+            deadlineUtc: new Date(deadlineMs).toISOString(),
+            isOverdue,
+            hoursUntilSession,
+            minutesUntilSession: Math.max(0, Math.round((startTime.getTime() - now.getTime()) / (1000 * 60))),
+          },
+        };
+      });
+
+      return res.json({
+        success: true,
+        bookings: enrichedBookings,
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/bookings',
+        clientMessage: 'Unable to load admin bookings.',
       });
     }
   });
@@ -892,10 +1773,7 @@ async function startServer() {
 
       return res.json({ success: true, segments });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -933,10 +1811,7 @@ async function startServer() {
 
       return res.json({ success: true, gigs: formattedGigs });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -993,10 +1868,7 @@ async function startServer() {
 
       return res.json({ success: true, gig });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1044,10 +1916,7 @@ async function startServer() {
 
       return res.json({ success: true, gig });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1085,23 +1954,16 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Gig deleted successfully.' });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
   // GET /api/mentor/available-segments: Get all active segments for mentor to apply
-  app.get('/api/mentor/available-segments', async (req, res) => {
+  // Requires authentication; the mentor is always the authenticated caller so a
+  // client-supplied mentorId can never be used to enumerate another mentor's segments.
+  app.get('/api/mentor/available-segments', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
-      const { mentorId } = req.query;
-      if (!mentorId || typeof mentorId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_MENTOR_ID', message: 'mentorId query parameter is required.' },
-        });
-      }
+      const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -1139,10 +2001,7 @@ async function startServer() {
 
       return res.json({ success: true, segments: availableSegments });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1212,10 +2071,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Segment application submitted for admin review.' });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1426,6 +2282,141 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
+  // GET /api/mentor-availability/slots
+  //
+  // The single authoritative slot endpoint used by every seeker surface.
+  //
+  //   ?mentorId=<uuid>&date=YYYY-MM-DD   -> one mentor
+  //   ?segmentId=<uuid>&date=YYYY-MM-DD   -> every active mentor in the segment
+  //
+  // Always JSON: 200 on success, 400 on a malformed request, 401 when the caller
+  // has no session, 404 when the mentor/segment does not exist, 500 on failure.
+  // The response carries the fully generated slot list with a real status
+  // (AVAILABLE / HELD / BOOKED / PAST) so the browser never computes
+  // availability itself and can never render a fake slot.
+  // --------------------------------------------------------------------------
+  app.get('/api/mentor-availability/slots', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({
+          success: false,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' },
+        });
+      }
+
+      const { mentorId, segmentId, date } = req.query as Record<string, string | undefined>;
+      const mentorIdRaw = (mentorId || '').trim();
+      const segmentIdRaw = (segmentId || '').trim();
+      const dateRaw = (date || '').trim();
+
+      // A shape check, not an RFC-4122 version check: seeded platform rows use
+      // nil-prefixed ids that a version-strict pattern would reject.
+      if (!UUID_SHAPE_PATTERN.test(mentorIdRaw) && !UUID_SHAPE_PATTERN.test(segmentIdRaw)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'A valid mentorId or segmentId query parameter is required.',
+          },
+        });
+      }
+
+      if (mentorIdRaw && segmentIdRaw) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Provide either mentorId or segmentId, not both.',
+          },
+        });
+      }
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'date must be a YYYY-MM-DD calendar date.' },
+        });
+      }
+
+      let mentorIds: string[] = [];
+
+      if (mentorIdRaw) {
+        const { data, error } = await admin
+          .from('mentor_profiles')
+          .select('id')
+          .eq('id', mentorIdRaw)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' },
+          });
+        }
+        mentorIds = [mentorIdRaw];
+      } else {
+        const { data, error } = await admin
+          .from('mentor_segments')
+          .select('mentor_id')
+          .eq('segment_id', segmentIdRaw);
+        if (error) throw error;
+
+        const segmentExists = await admin
+          .from('segments')
+          .select('id')
+          .eq('id', segmentIdRaw)
+          .maybeSingle();
+        if (segmentExists.error) throw segmentExists.error;
+        if (!segmentExists.data) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found.' },
+          });
+        }
+
+        mentorIds = Array.from(
+          new Set((data || []).map((row: { mentor_id: string }) => row.mentor_id).filter(Boolean))
+        );
+      }
+
+      if (mentorIds.length === 0) {
+        return res.json({
+          success: true,
+          date: dateRaw,
+          generated_at: new Date().toISOString(),
+          mentors: [],
+        });
+      }
+
+      const now = new Date();
+      const { results, error } = await computeMentorSlotsForDate(admin, {
+        mentorIds,
+        dateStr: dateRaw,
+        segmentId: segmentIdRaw || undefined,
+        now,
+      });
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        date: dateRaw,
+        generated_at: now.toISOString(),
+        mentors: mentorIds.map((id) => results.get(id)).filter(Boolean),
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'GET /api/mentor-availability/slots',
+        clientMessage: 'Unable to load availability.',
+      });
+    }
+  });
+
+  // --------------------------------------------------------------------------
   // Admin API: Mentors Management
   // --------------------------------------------------------------------------
 
@@ -1580,10 +2571,7 @@ async function startServer() {
       return res.json({ success: true, mentors });
     } catch (err: any) {
       console.error('Failed to fetch admin mentors:', err);
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1613,7 +2601,7 @@ async function startServer() {
       return res.json({ success: true, message: 'Mentor approved successfully.' });
     } catch (err: any) {
       console.error('Failed to approve mentor:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1643,7 +2631,7 @@ async function startServer() {
       return res.json({ success: true, message: 'Mentor rejected successfully.' });
     } catch (err: any) {
       console.error('Failed to reject mentor:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1715,7 +2703,7 @@ async function startServer() {
       return res.json({ success: true, message: `Mentor ${action === 'activate' ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
       console.error('Failed to toggle mentor active status:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -1961,7 +2949,7 @@ async function startServer() {
       return res.json({ success: true, mentors });
     } catch (err: any) {
       console.error('Failed to fetch eligible mentors:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3069,7 +4057,7 @@ async function startServer() {
       return res.json({ success: true, segments: segmentsWithCounts });
     } catch (err: any) {
       console.error('Failed to fetch admin segments:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3174,7 +4162,7 @@ async function startServer() {
       return res.status(201).json({ success: true, segment: data, message: 'Segment created successfully.' });
     } catch (err: any) {
       console.error('Failed to create segment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3250,7 +4238,7 @@ async function startServer() {
       return res.json({ success: true, segment: data, message: 'Segment updated successfully.' });
     } catch (err: any) {
       console.error('Failed to update segment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3283,7 +4271,7 @@ async function startServer() {
       return res.json({ success: true, segment: data, message: `Segment ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
       console.error('Failed to toggle segment active status:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3359,7 +4347,7 @@ async function startServer() {
       return res.json({ success: true, segments, message: `Segment priority moved ${direction}.` });
     } catch (err: any) {
       console.error('Failed to change segment priority:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3442,7 +4430,7 @@ async function startServer() {
       return res.status(201).json({ success: true, assignment: data, message: 'Mentor assigned to segment.' });
     } catch (err: any) {
       console.error('Failed to assign mentor to segment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3500,7 +4488,7 @@ async function startServer() {
       return res.json({ success: true, message: 'Mentor removed from segment.' });
     } catch (err: any) {
       console.error('Failed to remove mentor from segment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3583,7 +4571,7 @@ async function startServer() {
       return res.status(201).json({ success: true, gig: data, message: 'Gig created successfully.' });
     } catch (err: any) {
       console.error('Failed to create gig:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3649,7 +4637,7 @@ async function startServer() {
       return res.json({ success: true, gig: data, message: 'Gig updated successfully.' });
     } catch (err: any) {
       console.error('Failed to update gig:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3708,7 +4696,7 @@ async function startServer() {
       return res.json({ success: true, gig: data, message: `Gig ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
       console.error('Failed to toggle gig active status:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -3775,6 +4763,10 @@ async function startServer() {
   // so that Express can no longer shadow it with the `:id` parameter route.
 
   // GET /api/admin/mentors/:id/slots: Generate slots for mentor on date
+  //
+  // Admin view of the SAME engine the seeker surface uses. It delegates to
+  // `computeMentorSlotsForDate` so there is exactly one place that loads
+  // availability, exceptions, bookings and holds.
   app.get('/api/admin/mentors/:id/slots', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
@@ -3786,6 +4778,9 @@ async function startServer() {
 
       if (!date || !gigId) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'date and gigId query parameters are required.' } });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'date must be a YYYY-MM-DD calendar date.' } });
       }
 
       // Verify gig exists and belongs to mentor
@@ -3801,71 +4796,33 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Gig not found for this mentor.' } });
       }
 
-      // Fetch mentor profile for timezone
-      const { data: mentorProfile, error: mpErr } = await admin
-        .from('profiles')
-        .select('timezone')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (mpErr) throw mpErr;
-      const timezone = mentorProfile?.timezone || 'Asia/Kolkata';
-
-      // Fetch recurring availability
-      const { data: availability, error: availErr } = await admin
-        .from('mentor_availability')
-        .select('*')
-        .eq('mentor_id', id)
-        .eq('is_enabled', true);
-
-      if (availErr) throw availErr;
-
-      // Fetch exceptions
-      const { data: exceptions, error: excErr } = await admin
-        .from('mentor_availability_exceptions')
-        .select('*')
-        .eq('mentor_id', id);
-
-      if (excErr) throw excErr;
-
-      // Fetch bookings for this mentor (all gigs, mentor-level conflicts)
-      const { data: bookings, error: bookingsErr } = await admin
-        .from('bookings')
-        .select('*')
-        .eq('mentor_id', id)
-        .not('status', 'in', '("CANCELLED","REJECTED")');
-
-      if (bookingsErr) throw bookingsErr;
-
-      // Fetch active slot holds
-      const { data: slotHolds, error: holdsErr } = await admin
-        .from('slot_holds')
-        .select('*')
-        .eq('mentor_id', id)
-        .eq('status', 'ACTIVE')
-        .gt('expires_at', new Date().toISOString());
-
-      if (holdsErr) throw holdsErr;
-
-      // Generate slots using existing engine
-      const { generateMentorSlots } = await import('./src/lib/slotEngine');
-      const slots = generateMentorSlots({
-        mentorId: id,
-        gigId: gig.id,
-        dateStr: date as string,
-        timezone,
-        durationMinutes: gig.duration_minutes,
-        recurringAvailability: availability || [],
-        exceptions: exceptions || [],
-        bookings: bookings || [],
-        slotHolds: slotHolds || [],
-        currentUtcTime: new Date(),
+      const { results, error } = await computeMentorSlotsForDate(admin, {
+        mentorIds: [id],
+        dateStr: String(date),
+        segmentId: gig.segment_id,
+        now: new Date(),
       });
+      if (error) throw error;
 
-      return res.json({ success: true, slots, gig: { id: gig.id, title: gig.title, durationMinutes: gig.duration_minutes } });
+      const result = results.get(id);
+      if (!result || !result.gig) {
+        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      return res.json({
+        success: true,
+        slots: result.slots,
+        gig: { id: result.gig.id, title: result.gig.title, durationMinutes: result.gig.duration_minutes },
+      });
     } catch (err: any) {
       console.error('Failed to generate slots:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'GET /api/admin/mentors/:id/slots',
+        clientMessage: 'Unable to load availability.',
+      });
     }
   });
 
@@ -3940,7 +4897,7 @@ async function startServer() {
       return res.json({ success: true, users });
     } catch (err: any) {
       console.error('Failed to fetch admin users:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -4721,103 +5678,36 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
-  // Admin API: Dashboard Metrics
+  // Admin API: Operations Dashboard (Platform Operations Center)
   // --------------------------------------------------------------------------
 
-  // GET /api/admin/dashboard/metrics: Fetch real-time dashboard metrics
-  app.get('/api/admin/dashboard/metrics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  // GET /api/admin/dashboard/overview
+  //
+  // Single aggregated, database-driven payload for the Admin dashboard.
+  // Every metric is computed from live rows by `getAdminDashboardData`; there
+  // are no hardcoded business values, no demo fallbacks and no fabricated
+  // charts. Sections degrade independently so one failing query never blanks
+  // the whole console. Authorization is enforced by `requireAdmin` (server
+  // side) and the reads use the service-role client, so RLS is not bypassed
+  // from the browser's point of view — the browser never queries these tables
+  // directly.
+  app.get('/api/admin/dashboard/overview', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // Parallel queries for all metrics
-      const [
-        { count: totalMentors },
-        { count: totalSeekers },
-        { count: pendingApprovals },
-        { count: activeSegments },
-        { data: pendingPayments },
-        { data: todaysBookings },
-      ] = await Promise.all([
-        // Total mentors
-        admin.from('user_roles').select('*', { count: 'exact', head: true }).eq('role', 'mentor'),
-        // Total seekers
-        admin.from('user_roles').select('*', { count: 'exact', head: true }).eq('role', 'seeker'),
-        // Pending mentor approvals (mentors with is_approved = false)
-        admin.from('mentor_profiles').select('*', { count: 'exact', head: true }).eq('is_approved', false),
-        // Active segments
-        admin.from('segments').select('*', { count: 'exact', head: true }).eq('is_active', true),
-        // Pending payments
-        admin.from('payments').select('*').eq('status', 'PENDING_VERIFICATION').order('created_at', { ascending: false }).limit(10),
-        // Today's bookings
-        admin.from('bookings').select('*').gte('start_time', new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).lt('start_time', new Date(new Date().setHours(23, 59, 59, 999)).toISOString()),
-      ]);
-
-      // Format pending payments for dashboard
-      const formattedPayments = (pendingPayments || []).map((p: any) => ({
-        id: p.id,
-        bookingId: p.booking_id,
-        seeker: p.seeker_id, // will be resolved below
-        mentor: 'Mentor', // will be resolved below
-        amount: p.amount_inr,
-        time: new Date(p.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-      }));
-
-      // Resolve seeker/mentor names for payments
-      if (formattedPayments.length > 0) {
-        const bookingIds = formattedPayments.map((p: any) => p.bookingId);
-        const { data: bookings } = await admin
-          .from('bookings')
-          .select('id, seeker_id, mentor_id')
-          .in('id', bookingIds);
-
-        const seekerIds = [...new Set(bookings?.map((b: any) => b.seeker_id) || [])];
-        const mentorIds = [...new Set(bookings?.map((b: any) => b.mentor_id) || [])];
-
-        const [{ data: seekers }, { data: mentors }] = await Promise.all([
-          admin.from('profiles').select('id, full_name').in('id', seekerIds),
-          admin.from('profiles').select('id, full_name').in('id', mentorIds),
-        ]);
-
-        const seekerMap = new Map(seekers?.map((s: any) => [s.id, s.full_name]) || []);
-        const mentorMap = new Map(mentors?.map((m: any) => [m.id, m.full_name]) || []);
-
-        for (const payment of formattedPayments) {
-          const booking = bookings?.find((b: any) => b.id === payment.bookingId);
-          if (booking) {
-            payment.seeker = seekerMap.get(booking.seeker_id) || 'Unknown';
-            payment.mentor = mentorMap.get(booking.mentor_id) || 'Unknown';
-          }
-        }
-      }
-
-      // Get default active segment (lowest priority)
-      const { data: defaultSegment } = await admin
-        .from('segments')
-        .select('name')
-        .eq('is_active', true)
-        .order('priority', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      return res.json({
-        success: true,
-        metrics: {
-          totalMentors: totalMentors || 0,
-          totalSeekers: totalSeekers || 0,
-          pendingApprovals: pendingApprovals || 0,
-          activeSegments: activeSegments || 0,
-          pendingPaymentsCount: pendingPayments?.length || 0,
-          todaysBookingsCount: todaysBookings?.length || 0,
-          pendingPayments: formattedPayments,
-          defaultSegment: defaultSegment?.name || 'None',
-        },
+      const dashboard = await getAdminDashboardData(admin);
+      return res.json({ success: true, dashboard });
+    } catch (err) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'GET /api/admin/dashboard/overview',
+        clientMessage: 'Dashboard data is temporarily unavailable.',
       });
-    } catch (err: any) {
-      console.error('Failed to fetch dashboard metrics:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
     }
   });
 
@@ -4851,35 +5741,68 @@ async function startServer() {
 
       if (paymentsErr) throw paymentsErr;
 
-      // Get all unique seeker and mentor IDs
+      // Get all unique seeker, mentor and gig IDs referenced by these payments.
       const seekerIds = [...new Set((payments || []).map((p: any) => p.booking?.seeker_id).filter(Boolean))];
       const mentorIds = [...new Set((payments || []).map((p: any) => p.booking?.mentor_id).filter(Boolean))];
+      const gigIds = [...new Set((payments || []).map((p: any) => p.booking?.gig_id).filter(Boolean))];
 
-      // Fetch profiles for seekers and mentors
-      const [{ data: seekers }, { data: mentors }] = await Promise.all([
-        admin.from('profiles').select('id, full_name').in('id', seekerIds),
-        admin.from('profiles').select('id, full_name').in('id', mentorIds),
+      // Fetch the real names/titles. Nothing here is defaulted into a fake
+      // value: a name that cannot be resolved stays null and the UI says so.
+      const [seekerRes, mentorRes, gigRes] = await Promise.all([
+        seekerIds.length ? admin.from('profiles').select('id, full_name').in('id', seekerIds) : { data: [], error: null },
+        mentorIds.length ? admin.from('profiles').select('id, full_name').in('id', mentorIds) : { data: [], error: null },
+        gigIds.length ? admin.from('gigs').select('id, title').in('id', gigIds) : { data: [], error: null },
       ]);
 
-      const seekerMap = new Map(seekers?.map((s: any) => [s.id, s.full_name]) || []);
-      const mentorMap = new Map(mentors?.map((m: any) => [m.id, m.full_name]) || []);
+      const seekerMap = new Map((seekerRes.data || []).map((s: any) => [s.id, s.full_name]));
+      const mentorMap = new Map((mentorRes.data || []).map((m: any) => [m.id, m.full_name]));
+      const gigMap = new Map((gigRes.data || []).map((g: any) => [g.id, g.title]));
 
-      const formattedPayments = (payments || []).map((p: any) => ({
-        id: p.id,
-        bookingId: p.booking?.booking_code || p.booking_id,
-        seekerName: p.booking?.seeker_id ? seekerMap.get(p.booking.seeker_id) || 'Unknown' : 'Unknown',
-        mentorName: p.booking?.mentor_id ? mentorMap.get(p.booking.mentor_id) || 'Unknown' : 'Unknown',
-        amount: p.amount_inr,
-        submittedAt: p.created_at ? new Date(p.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : 'Unknown',
-        status: p.status,
-        proofUrl: p.proof_storage_path,
-        rejectionReason: p.rejection_reason,
-      }));
+      // A payment proof is sensitive: the bucket is private, so the admin gets
+      // a short-lived SIGNED url generated server-side. The raw storage path is
+      // never handed to the browser and is never made public.
+      const SIGNED_PROOF_TTL_SECONDS = 300;
+      const formattedPayments = await Promise.all(
+        (payments || []).map(async (p: any) => {
+          let proofUrl: string | null = null;
+          if (p.proof_storage_path) {
+            try {
+              const { data: signed, error: signedErr } = await admin.storage
+                .from(PAYMENT_PROOF_BUCKET)
+                .createSignedUrl(p.proof_storage_path, SIGNED_PROOF_TTL_SECONDS);
+              if (signedErr) {
+                console.error('Failed to sign payment proof:', signedErr.message);
+              } else {
+                proofUrl = signed?.signedUrl ?? null;
+              }
+            } catch (signErr) {
+              console.error('Failed to sign payment proof:', signErr);
+            }
+          }
+
+          return {
+            id: p.id,
+            bookingId: p.booking_id,
+            bookingCode: p.booking?.booking_code ?? null,
+            bookingStatus: p.booking?.status ?? null,
+            seekerName: p.booking?.seeker_id ? seekerMap.get(p.booking.seeker_id) ?? null : null,
+            mentorName: p.booking?.mentor_id ? mentorMap.get(p.booking.mentor_id) ?? null : null,
+            gigTitle: p.booking?.gig_id ? gigMap.get(p.booking.gig_id) ?? null : null,
+            amount: p.amount_inr,
+            transactionReference: p.transaction_reference ?? null,
+            submittedAt: p.created_at,
+            status: p.status,
+            proofUrl,
+            rejectionReason: p.rejection_reason,
+            verifiedAt: p.verified_at,
+          };
+        }),
+      );
 
       return res.json({ success: true, payments: formattedPayments });
     } catch (err: any) {
       console.error('Failed to fetch admin payments:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -4901,6 +5824,15 @@ async function startServer() {
 
       if (error) throw error;
 
+      // `review_payment` performs the real state transition (payment -> VERIFIED,
+      // booking -> MENTOR_PENDING) but writes NO notification, so the seeker is
+      // told here, from the real booking/payment rows.
+      await notifyPaymentReviewed(admin, {
+        paymentId: id,
+        bookingId: data?.booking_id,
+        approved: true,
+      });
+
       auditAction(req.auth, 'payment_approved', {
         entityType: 'payment',
         entityId: id,
@@ -4911,7 +5843,7 @@ async function startServer() {
       return res.json({ success: true, message: 'Payment approved successfully.' });
     } catch (err: any) {
       console.error('Failed to approve payment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -4934,6 +5866,18 @@ async function startServer() {
 
       if (error) throw error;
 
+      // The payment row and the booking status are already updated by the RPC;
+      // the proof itself is deliberately NOT deleted on rejection. Only the
+      // seeker notification has to be added here.
+      await notifyPaymentReviewed(admin, {
+        paymentId: id,
+        bookingId: data?.booking_id,
+        approved: false,
+        rejectionReason: typeof rejectionReason === 'string' && rejectionReason.trim()
+          ? rejectionReason.trim()
+          : null,
+      });
+
       auditAction(req.auth, 'payment_rejected', {
         entityType: 'payment',
         entityId: id,
@@ -4944,7 +5888,7 @@ async function startServer() {
       return res.json({ success: true, message: 'Payment rejected successfully.' });
     } catch (err: any) {
       console.error('Failed to reject payment:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -4952,22 +5896,55 @@ async function startServer() {
   // Phase 11: In-App Notifications Endpoints
   // --------------------------------------------------------------------------
 
-  // GET /api/notifications: Fetch in-app notifications for user
-  app.get('/api/notifications', (req, res) => {
+  // GET /api/notifications: Fetch in-app notifications for the authenticated caller.
+  // The caller may only ever read their own notifications; a client-supplied
+  // userId is ignored to prevent IDOR.
+  app.get('/api/notifications', requireAuth, async (req: AuthRequest, res) => {
     try {
-      const { userId, status, type, limit } = req.query;
-      if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_USER_ID', message: 'userId query parameter is required.' },
+      const { status, type, limit } = req.query;
+      const userId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        // Read the real `notifications` table. The in-memory dev store is only a
+        // fallback for running with no database configured, because serving it
+        // here would show fabricated notifications and hide the real ones a
+        // payment decision just wrote.
+        let query = admin
+          .from('notifications')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false });
+
+        if (status === 'unread') query = query.eq('is_read', false);
+        else if (status === 'read') query = query.eq('is_read', true);
+
+        if (type && typeof type === 'string' && type !== 'ALL') {
+          query = query.eq('type', type);
+        }
+
+        if (limit && !Number.isNaN(Number(limit))) {
+          query = query.limit(Math.min(Number(limit), 200));
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        const { count: unreadCount } = await admin
+          .from('notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('is_read', false);
+
+        return res.json({
+          success: true,
+          notifications: data || [],
+          unreadCount: unreadCount ?? 0,
         });
       }
 
       const db = getLocalBookingEngineContext();
-      
-      // Normalize user aliases
       const userIds = [userId];
-
       let list = (db.notifications || []).filter((n) => userIds.includes(n.user_id));
 
       if (status === 'unread') {
@@ -4995,19 +5972,26 @@ async function startServer() {
         unreadCount: totalUnread,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
-  // GET /api/notifications/unread-count: Quick unread count for badges
-  app.get('/api/notifications/unread-count', (req, res) => {
+  // GET /api/notifications/unread-count: Quick unread count for the authenticated caller
+  app.get('/api/notifications/unread-count', requireAuth, async (req: AuthRequest, res) => {
     try {
-      const { userId } = req.query;
-      if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({ success: false, error: 'userId is required' });
+      const userId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        // Counted from the real table so a payment notification is reflected in
+        // the badge as soon as it is written.
+        const { count, error } = await admin
+          .from('notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('is_read', false);
+        if (error) throw error;
+        return res.json({ success: true, count: count ?? 0 });
       }
 
       const db = getLocalBookingEngineContext();
@@ -5018,15 +6002,41 @@ async function startServer() {
 
       return res.json({ success: true, count });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: err.message });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
-  // PATCH /api/notifications/:id/read: Mark single notification as read
-  app.patch('/api/notifications/:id/read', (req, res) => {
+  // PATCH /api/notifications/:id/read: Mark single notification as read.
+  // The caller may only mark a notification they own as read.
+  app.patch('/api/notifications/:id/read', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { isRead = true } = req.body;
+      const userId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        // Scoped by user_id so a caller can only ever mark their own row, which
+        // is what makes a real payment notification readable.
+        const { data, error } = await admin
+          .from('notifications')
+          .update({ is_read: !!isRead, read_at: isRead ? new Date().toISOString() : null })
+          .eq('id', id)
+          .eq('user_id', userId)
+          .select()
+          .maybeSingle();
+        if (error) throw error;
+
+        if (!data) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'NOT_FOUND', message: 'Notification not found' },
+          });
+        }
+
+        return res.json({ success: true, notification: data });
+      }
+
       const db = getLocalBookingEngineContext();
 
       if (!db.notifications) db.notifications = [];
@@ -5039,27 +6049,37 @@ async function startServer() {
         });
       }
 
+      if (notif.user_id !== userId && !req.auth!.roles.includes('admin')) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'You can only mark your own notifications as read.' },
+        });
+      }
+
       notif.is_read = !!isRead;
       (notif as any).read_at = isRead ? new Date().toISOString() : null;
 
       return res.json({ success: true, notification: notif });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
-  // POST /api/notifications/mark-all-read: Mark all notifications as read for a user
-  app.post('/api/notifications/mark-all-read', (req, res) => {
+  // POST /api/notifications/mark-all-read: Mark all notifications as read for the authenticated caller
+  app.post('/api/notifications/mark-all-read', requireAuth, async (req: AuthRequest, res) => {
     try {
-      const { userId } = req.body;
-      if (!userId) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_USER_ID', message: 'userId is required' },
-        });
+      const userId = req.auth!.user.id;
+
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        const { data, error } = await admin
+          .from('notifications')
+          .update({ is_read: true, read_at: new Date().toISOString() })
+          .eq('user_id', userId)
+          .eq('is_read', false)
+          .select('id');
+        if (error) throw error;
+        return res.json({ success: true, updatedCount: (data || []).length });
       }
 
       const db = getLocalBookingEngineContext();
@@ -5079,10 +6099,7 @@ async function startServer() {
 
       return res.json({ success: true, updatedCount });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5142,10 +6159,7 @@ async function startServer() {
 
       return res.status(201).json({ success: true, notification: newNotif });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5158,28 +6172,20 @@ async function startServer() {
    app.get('/api/sessions/:bookingId/access', requireAuth, (req: AuthRequest, res) => {
      try {
        const { bookingId } = req.params;
-       const callerId = req.auth?.user?.id;
-       const userId = (callerId || req.query.userId) as string | undefined;
+       const userId = req.auth!.user.id;
        const currentTime = req.query.currentTime;
 
-       if (!userId || typeof userId !== 'string') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_USER_ID', message: 'userId query parameter is required.' },
-        });
-      }
+       const db = getLocalBookingEngineContext();
+       const currentUtcTime = currentTime && typeof currentTime === 'string' ? new Date(currentTime) : new Date();
 
-      const db = getLocalBookingEngineContext();
-      const currentUtcTime = currentTime && typeof currentTime === 'string' ? new Date(currentTime) : new Date();
-
-      const accessResult = validateSessionAccess(
-        {
-          bookingId,
-          userId,
-          currentUtcTime,
-        },
-        db
-      );
+       const accessResult = validateSessionAccess(
+         {
+           bookingId,
+           userId,
+           currentUtcTime,
+         },
+         db
+       );
 
       if (!accessResult.success) {
         const code = accessResult.error?.code;
@@ -5194,25 +6200,17 @@ async function startServer() {
 
       return res.json(accessResult);
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
   // POST /api/sessions/:bookingId/join: Authoritative join action triggered by Join Session button
-  app.post('/api/sessions/:bookingId/join', (req, res) => {
+  // Requires authentication; the caller's own id is used, never a client-supplied userId.
+  app.post('/api/sessions/:bookingId/join', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
-      const { userId, currentTime } = req.body;
-
-      if (!userId) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_USER_ID', message: 'userId is required in request body.' },
-        });
-      }
+      const { currentTime } = req.body;
+      const userId = req.auth!.user.id;
 
       const db = getLocalBookingEngineContext();
       const currentUtcTime = currentTime ? new Date(currentTime) : new Date();
@@ -5265,17 +6263,17 @@ async function startServer() {
         message: 'Join authorized. Proceeding to meeting.',
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
-  // POST /api/sessions/:bookingId/complete: Transition session/booking to COMPLETED
-  app.post('/api/sessions/:bookingId/complete', (req, res) => {
+  // POST /api/sessions/:bookingId/complete: Transition session/booking to COMPLETED.
+  // Requires authentication; only the booking's seeker, mentor, or an admin may conclude it.
+  app.post('/api/sessions/:bookingId/complete', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
+      const userId = req.auth!.user.id;
+      const isAdmin = req.auth!.roles.includes('admin');
       const db = getLocalBookingEngineContext();
       const booking = db.bookings.find(
         (b) => b.id === bookingId || b.booking_code.toUpperCase() === bookingId.toUpperCase()
@@ -5285,6 +6283,13 @@ async function startServer() {
         return res.status(404).json({
           success: false,
           error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+        });
+      }
+
+      if (!isAdmin && booking.seeker_id !== userId && booking.mentor_id !== userId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Only a session participant or administrator can mark this session complete.' },
         });
       }
 
@@ -5297,10 +6302,7 @@ async function startServer() {
         message: 'Booking marked as COMPLETED.',
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5309,16 +6311,36 @@ async function startServer() {
   // --------------------------------------------------------------------------
 
   // GET /api/workspaces/booking/:bookingId
-  app.get('/api/workspaces/booking/:bookingId', (req, res) => {
+  // Requires authentication; identity and role come from the verified token,
+  // never from client-supplied query params.
+  app.get('/api/workspaces/booking/:bookingId', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
-      const { userId, role } = req.query;
+      const userId = req.auth!.user.id;
+      const roles = req.auth!.roles;
+      const isMentor = roles.includes('mentor');
+      const isAdmin = roles.includes('admin');
+      const isSeeker = roles.includes('seeker');
 
-      const db = getLocalBookingEngineContext();
-      const booking = db.bookings.find(
-        (b) => b.id === bookingId || b.booking_code.toUpperCase() === bookingId.toUpperCase()
-      );
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
 
+      // Fetch booking with related data
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select(`
+          *,
+          seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+          mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+          gig:gigs(id, title, segment_id),
+          segment:segments(id, name, slug)
+        `)
+        .or(`id.eq.${bookingId},booking_code.eq.${bookingId}`)
+        .maybeSingle();
+
+      if (bookingErr) throw bookingErr;
       if (!booking) {
         return res.status(404).json({
           success: false,
@@ -5326,21 +6348,24 @@ async function startServer() {
         });
       }
 
-      // Authorization & Privacy check
-      const isMentor = (userId && booking.mentor_id === userId) || role === 'mentor';
-      const isAdmin = role === 'admin';
-      const isSeeker = (userId && booking.seeker_id === userId) || role === 'seeker';
-
-      if (!isMentor && !isAdmin && !isSeeker) {
+      // Authorization & Privacy check: only participants or admin may read.
+      if (!isAdmin && booking.seeker_id !== userId && booking.mentor_id !== userId) {
         return res.status(403).json({
           success: false,
           error: { code: 'FORBIDDEN', message: 'Unauthorized access to session workspace.' },
         });
       }
 
-      const workspaces = getLocalWorkspaces();
-      const ws = workspaces.find((w) => w.booking_id === booking.id);
-      const overview = deriveSessionOverview(booking);
+      // Fetch workspace from Supabase
+      const { data: ws, error: wsErr } = await admin
+        .from('session_workspaces')
+        .select('*')
+        .eq('booking_id', booking.id)
+        .maybeSingle();
+
+      if (wsErr) throw wsErr;
+
+      const overview = deriveSessionOverview(booking as any);
 
       if (!ws) {
         return res.json({
@@ -5373,27 +6398,23 @@ async function startServer() {
         },
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
   // POST /api/workspaces: Create or Save Workspace (Mentor & Admin)
-  app.post('/api/workspaces', (req, res) => {
+  // Requires authentication; admin role is derived from the verified token,
+  // never from a client-supplied body field.
+  app.post('/api/workspaces', requireAuth, async (req: AuthRequest, res) => {
     try {
       const {
         bookingId,
-        mentorId,
         mentorNotes,
         takeaways = [],
         suggestions = [],
         nextSteps = [],
         followUpRecommendation = null,
         publish = false,
-        userId,
-        role,
       } = req.body;
 
       if (!bookingId) {
@@ -5403,11 +6424,19 @@ async function startServer() {
         });
       }
 
-      const db = getLocalBookingEngineContext();
-      const booking = db.bookings.find(
-        (b) => b.id === bookingId || b.booking_code.toUpperCase() === bookingId.toUpperCase()
-      );
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
 
+      // Fetch booking
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('*')
+        .or(`id.eq.${bookingId},booking_code.eq.${bookingId}`)
+        .maybeSingle();
+
+      if (bookingErr) throw bookingErr;
       if (!booking) {
         return res.status(404).json({
           success: false,
@@ -5415,9 +6444,11 @@ async function startServer() {
         });
       }
 
-      // Authorization validation
-      const isAdmin = role === 'admin';
-      const isAssignedMentor = (userId && booking.mentor_id === userId) || (mentorId && booking.mentor_id === mentorId);
+      // Authorization validation: only the assigned mentor or an admin may
+      // create/update a workspace. Identity comes from the verified token.
+      const callerId = req.auth!.user.id;
+      const isAdmin = req.auth!.roles.includes('admin');
+      const isAssignedMentor = booking.mentor_id === callerId;
 
       if (!isAdmin && !isAssignedMentor) {
         return res.status(403).json({
@@ -5429,18 +6460,16 @@ async function startServer() {
         });
       }
 
-      const workspaces = getLocalWorkspaces();
-      let wsIndex = workspaces.findIndex((w) => w.booking_id === booking.id);
       const nowIso = new Date().toISOString();
-      const overview = deriveSessionOverview(booking);
+      const overview = deriveSessionOverview(booking as any);
       const status = publish ? 'PUBLISHED' : 'PENDING';
 
-      const updatedWorkspace = {
-        id: wsIndex >= 0 ? workspaces[wsIndex].id : `ws-${Date.now()}`,
+      // Upsert workspace in Supabase
+      const upsertRecord = {
         booking_id: booking.id,
         mentor_id: booking.mentor_id,
         seeker_id: booking.seeker_id,
-        status: status as 'PENDING' | 'PUBLISHED',
+        status,
         mentor_notes: mentorNotes || '',
         summary: mentorNotes || '',
         takeaways: Array.isArray(takeaways) ? takeaways : [],
@@ -5454,58 +6483,85 @@ async function startServer() {
             }))
           : [],
         follow_up_recommendation: followUpRecommendation || null,
-        resources: wsIndex >= 0 ? workspaces[wsIndex].resources : [],
-        published_at: publish ? nowIso : (wsIndex >= 0 ? workspaces[wsIndex].published_at : null),
-        created_at: wsIndex >= 0 ? workspaces[wsIndex].created_at : nowIso,
+        resources: [],
+        published_at: publish ? nowIso : null,
+        created_at: nowIso,
         updated_at: nowIso,
-        session_overview: overview,
       };
 
-      if (wsIndex >= 0) {
-        workspaces[wsIndex] = updatedWorkspace;
-      } else {
-        workspaces.push(updatedWorkspace);
-      }
+      const { data: wsData, error: upsertErr } = await admin
+        .from('session_workspaces')
+        .upsert(upsertRecord, { onConflict: 'booking_id' })
+        .select()
+        .single();
+
+      if (upsertErr) throw upsertErr;
 
       // In-app notification for Seeker if published
-      if (publish && db.notifications) {
-        const mentorProfile = db.profiles.find((p) => p.id === booking.mentor_id);
-        db.notifications.unshift({
-          id: `notif-ws-${Date.now()}`,
+      if (publish) {
+        const { error: notifErr } = await admin.from('notifications').insert({
           user_id: booking.seeker_id,
           title: 'Session Workspace Published',
-          message: `${mentorProfile?.full_name || 'Your mentor'} has published takeaways and recommendations for session ${booking.booking_code}.`,
+          message: `Your mentor has published takeaways and recommendations for session ${booking.booking_code}.`,
           type: 'WORKSPACE',
           link: `/seeker/workspace?bookingId=${booking.id}`,
           is_read: false,
-          created_at: nowIso,
         });
+        if (notifErr) console.warn('Failed to create notification:', notifErr.message);
       }
 
       return res.status(200).json({
         success: true,
-        workspace: updatedWorkspace,
+        workspace: {
+          ...wsData,
+          session_overview: overview,
+        },
         message: publish ? 'Workspace published to seeker successfully.' : 'Workspace saved as draft.',
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
   // GET /api/admin/workspaces: Operational Access
-  app.get('/api/admin/workspaces', requireAuth, requireAdmin, (req: AuthRequest, res) => {
+  app.get('/api/admin/workspaces', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
-      const db = getLocalBookingEngineContext();
-      const workspaces = getLocalWorkspaces();
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
 
-      const enriched = workspaces.map((ws) => {
-        const booking = db.bookings.find((b) => b.id === ws.booking_id);
+      const { data: workspaces, error: wsErr } = await admin
+        .from('session_workspaces')
+        .select(`
+          *,
+          booking:bookings (
+            id,
+            booking_code,
+            status,
+            start_time,
+            end_time,
+            amount_inr,
+            seeker_id,
+            mentor_id,
+            gig_id,
+            segment_id,
+            seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+            mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+            gig:gigs(id, title, segment_id),
+            segment:segments(id, name, slug)
+          )
+        `)
+        .order('updated_at', { ascending: false });
+
+      if (wsErr) throw wsErr;
+
+      const enriched = (workspaces || []).map((ws: any) => {
+        const booking = ws.booking;
+        const overview = booking ? deriveSessionOverview(booking as any) : undefined;
         return {
           ...ws,
-          session_overview: booking ? deriveSessionOverview(booking) : undefined,
+          session_overview: overview,
         };
       });
 
@@ -5514,10 +6570,7 @@ async function startServer() {
         workspaces: enriched,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5591,7 +6644,7 @@ async function startServer() {
         },
       });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5694,7 +6747,7 @@ async function startServer() {
 
       return res.json({ success: true, application });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5812,7 +6865,7 @@ async function startServer() {
 
       return res.json({ success: true, application: updatedApp });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5894,7 +6947,7 @@ async function startServer() {
 
       return res.json({ success: true, document });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7274,7 +8327,7 @@ async function startServer() {
       if (process.env.NODE_ENV !== 'production') {
         console.error('[MentorVerification] upload-url error:', err);
       }
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7288,10 +8341,7 @@ async function startServer() {
       const metrics = await fetchSystemHealthMetrics();
       return res.json({ success: true, metrics });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7314,10 +8364,7 @@ async function startServer() {
       });
       return res.json({ success: true, logs });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7341,10 +8388,7 @@ async function startServer() {
         : errors;
       return res.json({ success: true, errors: filtered });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7364,10 +8408,7 @@ async function startServer() {
       });
       return res.json({ success: true, logs });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7387,10 +8428,7 @@ async function startServer() {
       });
       return res.json({ success: true, logs });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7410,10 +8448,7 @@ async function startServer() {
         audit_log: auditLog,
       });
     } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: { code: 'SERVER_ERROR', message: err.message },
-      });
+      return respondWithInternalError({ req, res, error: err });
     }
    });
 
@@ -7432,7 +8467,7 @@ async function startServer() {
       if (error) throw error;
       return res.json({ success: true, retention: data });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7464,7 +8499,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Log retention updated successfully.' });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7486,7 +8521,7 @@ async function startServer() {
 
       return res.json({ success: true, deletedCount: deletedCount || 0 });
     } catch (err: any) {
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -7516,6 +8551,11 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // --------------------------------------------------------------------------
+  // Terminal Error Handler - MUST stay last
+  // --------------------------------------------------------------------------
+  app.use(terminalErrorHandler);
 
   // When deployed on Vercel, the Express app is exported as the serverless
   // function handler so Vercel can route /api/* requests to it. The rewrites

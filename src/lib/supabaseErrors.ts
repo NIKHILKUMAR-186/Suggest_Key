@@ -1,4 +1,4 @@
-import type { Response } from 'express';
+import type { ErrorRequestHandler, Response } from 'express';
 import { logApiError } from '@/src/lib/logger';
 
 /**
@@ -109,6 +109,13 @@ export interface ServerErrorRequest {
   auth?: { user?: { id?: string } | null; roles?: string[] } | null;
 }
 
+/**
+ * The single, user-facing message returned for ANY unexpected server failure.
+ * Deliberately vague: it must never embed a stack trace, a PostgREST/Postgres
+ * message, a constraint or column name, or any other internal detail.
+ */
+export const GENERIC_ERROR_MESSAGE = 'An unexpected error occurred';
+
 export interface RespondWithServerErrorOptions {
   req: ServerErrorRequest;
   res: Response;
@@ -154,3 +161,55 @@ export function respondWithServerError(options: RespondWithServerErrorOptions): 
     },
   });
 }
+
+export interface InternalErrorOptions {
+  req: ServerErrorRequest;
+  res: Response;
+  error: unknown;
+  /** Short label describing the operation, used only in the server log. */
+  context?: string;
+}
+
+/**
+ * The catch-all for unexpected failures. Always answers 500 with
+ * GENERIC_ERROR_MESSAGE and pushes the real diagnostic (code, message,
+ * details, hint, stack) to the server-side log together with the request id.
+ *
+ * Use this in `catch` blocks. Use `respondWithServerError` instead when the
+ * failure is an expected, user-correctable outcome that deserves a specific
+ * message and a non-500 status (duplicate email -> 409, and so on).
+ */
+export function respondWithInternalError(options: InternalErrorOptions): Response {
+  return respondWithServerError({
+    ...options,
+    clientMessage: GENERIC_ERROR_MESSAGE,
+    code: 'SERVER_ERROR',
+    status: 500,
+  });
+}
+
+/**
+ * Backstop for anything the per-route try/catch blocks did not catch: a throw
+ * from shared middleware, or from a route registered without try/catch. It
+ * guarantees /api/* always answers with the standard JSON envelope and never
+ * with a raw stack trace or database message, in any NODE_ENV.
+ *
+ * MUST be registered last, after every route.
+ *
+ * Note: Express 4 does NOT forward a rejected promise from an async handler, so
+ * async routes must still catch their own errors - this handler only sees
+ * errors that actually reach the stack.
+ */
+export const terminalErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  const isApi = req.path.startsWith('/api/');
+  if (!isApi && process.env.NODE_ENV !== 'production') {
+    // Keep the Vite/SPA dev error overlay working for non-API routes.
+    next(err);
+    return;
+  }
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  respondWithInternalError({ req, res, error: err });
+};

@@ -88,3 +88,51 @@ export interface RequestDetail {
   auth_log: SystemLog | null;
   audit_log: AuditLog | null;
 }
+
+export type ServiceStatus = 'operational' | 'degraded' | 'critical' | 'unknown';
+
+export interface TimelineBucket {
+  bucket: string;
+  requests: number;
+  errors4xx: number;
+  errors5xx: number;
+  latencyMs: number | null;
+}
+
+export interface Anomaly {
+  id: string;
+  severity: 'critical' | 'warning';
+  metric: string;
+  currentValue: number;
+  baselineValue: number;
+  percentChange: number;
+  firstDetected: string;
+  affectedEndpoint: string | null;
+  occurrenceCount: number;
+}
+
+export interface SystemHealthDashboard {
+  overview: {
+    totalRequests: number;
+    successfulRequests: number;
+    error4xx: number;
+    error5xx: number;
+    successRate: number;
+    errorRate: number;
+    averageLatencyMs: number;
+    p95LatencyMs: number | null;
+    slowRequests: number;
+    totalAuditEvents: number;
+  };
+  timeline: TimelineBucket[];
+  anomalies: Anomaly[];
+  topErrors: ErrorGroup[];
+  services: {
+    api: { status: ServiceStatus; detail: string };
+    database: { status: ServiceStatus; detail: string };
+    authentication: { status: ServiceStatus; detail: string };
+    storage: { status: ServiceStatus; detail: string };
+    notifications: { status: ServiceStatus; detail: string };
+  };
+  lastUpdated: string;
+}

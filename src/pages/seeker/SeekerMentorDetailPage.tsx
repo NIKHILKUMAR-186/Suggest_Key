@@ -21,6 +21,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchMentorDetail, fetchSegmentBySlug } from '@/src/lib/discoveryService';
+import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 import { getInitials } from '@/src/lib/avatar';
 import {
   createBookingWithHold,
@@ -38,6 +39,7 @@ import {
   formatDate,
   getDateStringInTimezone,
 } from '@/src/lib/slotEngine';
+import { BOOKING_CUTOFF_MINUTES } from '@/src/config/app';
 import { cn } from '@/src/lib/utils';
 
 const EASE = [0.23, 1, 0.31, 1] as const;
@@ -48,6 +50,45 @@ const SLOT_STATUS_COPY: Record<GeneratedSlot['status'], string> = {
   PAST: 'Past',
   BOOKED: 'Booked',
   HELD: 'On hold',
+  CLOSING_SOON: 'Closing',
+};
+
+/**
+ * Copy for the slot panel, derived only from real generated slots.
+ *
+ * `availability` is the count of genuinely selectable slots, and it is the same
+ * number rendered next to the heading and used for the empty-state decision — a
+ * page can no longer say "0 slots" while offering a selectable button, and it
+ * can no longer imply availability by listing times that are actually booked.
+ */
+const describeSlotPanel = (
+  availableCount: number,
+  totalGenerated: number,
+  isLoading: boolean,
+  hasLoadError: boolean
+): { headline: string; body: string } => {
+  if (isLoading) {
+    return { headline: 'Checking availability…', body: '' };
+  }
+  if (hasLoadError) {
+    return { headline: 'Unable to load availability.', body: '' };
+  }
+  if (availableCount > 0) {
+    return {
+      headline: `${availableCount} ${availableCount === 1 ? 'slot' : 'slots'}`,
+      body: '',
+    };
+  }
+  if (totalGenerated === 0) {
+    return {
+      headline: 'No available slots for this date.',
+      body: 'Choose another date to see open times.',
+    };
+  }
+  return {
+    headline: 'All available times are currently booked.',
+    body: 'Choose another date to see open times.',
+  };
 };
 
 /**
@@ -67,14 +108,25 @@ const describeBookingError = (code: string | undefined, message: string | undefi
   if (code === 'AUTH_REQUIRED' || code === 'AUTH_INVALID') {
     return 'Your session has expired. Sign in again to reserve this slot.';
   }
-  if (code === 'SLOT_ALREADY_BOOKED') {
-    return 'That slot has just been booked by someone else. Pick another time.';
+  if (code === 'SLOT_ALREADY_BOOKED' || code === 'SLOT_HELD_BY_OTHER' || code === 'BOOKING_CONFLICT') {
+    // The database decided the race; the browser never asserts success.
+    return 'This slot was just taken. Please choose another time.';
   }
-  if (code === 'SLOT_HELD_BY_OTHER') {
-    return 'That slot is currently on hold by another seeker. Pick another time or try again shortly.';
+  if (code === 'PAST_SLOT_FORBIDDEN') {
+    return 'That time has already passed. Please choose another time.';
   }
-  if (code === 'BOOKING_CONFLICT') {
-    return 'That time now conflicts with an existing booking. Pick another slot.';
+  if (code === 'BOOKING_CUTOFF_REACHED') {
+    return `This slot can no longer be booked because it starts in less than ${BOOKING_CUTOFF_MINUTES} minutes. Please choose another time.`;
+  }
+  if (code === 'DURATION_MISMATCH') {
+    return 'That session length no longer matches the active offer. Please choose another time.';
+  }
+  if (
+    code === 'OUTSIDE_AVAILABILITY' ||
+    code === 'OUTSIDE_EXCEPTION_HOURS' ||
+    code === 'DATE_EXCEPTION_UNAVAILABLE'
+  ) {
+    return "This time is no longer bookable because the mentor's availability changed. Please choose another time.";
   }
   if (code === 'MENTOR_NOT_BOOKABLE') {
     return 'This mentor is not currently accepting bookings. Browse other mentors in this segment.';
@@ -99,19 +151,28 @@ export const SeekerMentorDetailPage: React.FC = () => {
   // check on a slug-only link.
   const paramSegmentSlug = searchParams.get('segmentSlug') || '';
   const paramSegmentId = searchParams.get('segmentId') || '';
-  const paramDate = searchParams.get('date') || new Date().toISOString().split('T')[0];
+  const paramDate = searchParams.get('date') || '';
   const hasRequiredParams = Boolean(paramMentorId && (paramSegmentSlug || paramSegmentId));
 
   // "Today" follows the seeker's own configured timezone, matching the
-  // calendar the date picker shows.
+  // calendar the date picker shows. Deriving it with `toISOString()` would use
+  // the UTC date and shift the selected day for anyone east or west of UTC.
   const userTimezone = profile?.timezone || 'UTC';
   const today = getDateStringInTimezone(new Date(), userTimezone);
 
-  const [selectedDate, setSelectedDate] = useState<string>(paramDate);
+  const [selectedDate, setSelectedDate] = useState<string>(paramDate || today);
   const [mentorData, setMentorData] = useState<DiscoverableMentor | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<GeneratedSlot | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Slot data is refreshed independently of the mentor's profile, so the two
+  // never share a single "loading" flag. Without this split a background
+  // revalidation would blank the whole page, and a still-loading slot list
+  // would be rendered as "0 slots".
+  const [isSlotsLoading, setIsSlotsLoading] = useState<boolean>(true);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Earliest instant at which availability changes with no database write.
+  const [nextBoundaryAt, setNextBoundaryAt] = useState<string | null>(null);
   // Resolved internal segment UUID (slug → UUID) used by API calls.
   const [resolvedSegmentId, setResolvedSegmentId] = useState<string>('');
 
@@ -150,23 +211,82 @@ export const SeekerMentorDetailPage: React.FC = () => {
   // error banner on this page.
   const [bookingError, setBookingError] = useState<string | null>(null);
 
-  const reloadMentorSlots = useCallback(async () => {
-    if (!resolvedSegmentId) return;
-    try {
-      const { mentor } = await fetchMentorDetail(paramMentorId, resolvedSegmentId, selectedDate);
-      if (mentor) {
-        setMentorData(mentor);
-        if (selectedSlot && !mentor.all_slots.find((s) => s.id === selectedSlot.id)) {
-          setSelectedSlot(null);
-        }
+  /**
+   * The single loader for this page. Every path into fresh availability goes
+   * through here: the first render, a date change, a realtime event, an expired
+   * hold, a failed reservation, and the conservative revalidation tick.
+   *
+   * Slots are never assembled here. `fetchMentorDetail` returns what the server
+   * generated from the live tables, and the only client-side decision is whether
+   * the current selection is still bookable.
+   */
+  const loadMentor = useCallback(
+    async (opts: { initial?: boolean } = {}) => {
+      if (!hasRequiredParams || !resolvedSegmentId) {
+        setIsLoading(false);
+        setIsSlotsLoading(false);
+        setError('Select a mentor and segment to view availability.');
+        return;
       }
-    } catch {
-      // A background refresh failure must not clear a good render or invent an
-      // error; the next explicit action will surface any real problem.
-    }
-  }, [paramMentorId, resolvedSegmentId, selectedDate, selectedSlot]);
 
-  // Live 15-minute countdown.
+      if (opts.initial) {
+        setIsLoading(true);
+        setError(null);
+      }
+      setIsSlotsLoading(true);
+      setSlotsError(null);
+
+      try {
+        const { mentor, error: err } = await fetchMentorDetail(
+          paramMentorId,
+          resolvedSegmentId,
+          selectedDate
+        );
+        if (err) throw err;
+
+        setMentorData(mentor);
+        setNextBoundaryAt(mentor?.next_hold_expires_at ?? mentor?.next_slot_start_at ?? null);
+
+        // Keep the selection only if it is still a real, selectable slot on the
+        // freshly generated list. A slot that just became BOOKED, HELD or PAST
+        // is dropped rather than left highlighted.
+        setSelectedSlot((prev) => {
+          if (!prev) return mentor?.available_slots?.[0] ?? null;
+          const stillBookable = mentor?.all_slots?.find(
+            (s) => s.id === prev.id && s.is_available
+          );
+          return stillBookable ?? mentor?.available_slots?.[0] ?? null;
+        });
+      } catch (e: any) {
+        const message = e?.message || 'Unable to load availability.';
+        if (opts.initial) {
+          setError(message);
+        } else {
+          // A background refresh must not destroy a good render, but the seeker
+          // has to know the times on screen may be stale.
+          setSlotsError(message);
+        }
+      } finally {
+        setIsLoading(false);
+        setIsSlotsLoading(false);
+      }
+    },
+    [hasRequiredParams, resolvedSegmentId, paramMentorId, selectedDate]
+  );
+
+  const reloadMentorSlots = useCallback(() => loadMentor(), [loadMentor]);
+
+  // Realtime + conservative revalidation. Scoped to this mentor, and torn down
+  // when the mentor changes, the date changes, or the page unmounts.
+  useAvailabilitySync({
+    mentorId: paramMentorId || null,
+    enabled: hasRequiredParams && Boolean(resolvedSegmentId),
+    nextBoundaryAt,
+    onInvalidate: reloadMentorSlots,
+  });
+
+  // Live 15-minute countdown. The hold countdown is a UI affordance only: the
+  // authoritative expiry is `slot_holds.expires_at`, enforced by the database.
   useEffect(() => {
     if (!activeHold || holdSecondsRemaining <= 0) return;
 
@@ -205,6 +325,8 @@ export const SeekerMentorDetailPage: React.FC = () => {
         endTime: selectedSlot.utc_end_time,
       });
 
+      // Only a successful database transaction may change what the UI claims.
+      // A click is never treated as a booking.
       if (!result.success || !result.booking || !result.hold) {
         setBookingError(describeBookingError(result.error?.code, result.error?.message));
         await reloadMentorSlots();
@@ -224,40 +346,8 @@ export const SeekerMentorDetailPage: React.FC = () => {
   };
 
   useEffect(() => {
-    let isMounted = true;
-    async function load() {
-      if (!hasRequiredParams || !resolvedSegmentId) {
-        setIsLoading(false);
-        setError('Select a mentor and segment to view availability.');
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-      try {
-        const { mentor, error: err } = await fetchMentorDetail(
-          paramMentorId,
-          resolvedSegmentId,
-          selectedDate
-        );
-        if (err) throw err;
-        if (isMounted) {
-          setMentorData(mentor);
-          const firstAvailable = mentor?.available_slots?.[0] ?? null;
-          setSelectedSlot(firstAvailable);
-        }
-      } catch (e: any) {
-        if (isMounted) setError(e.message || 'Failed to load mentor details');
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    }
-
-    load();
-    return () => {
-      isMounted = false;
-    };
-  }, [paramMentorId, resolvedSegmentId, selectedDate]);
+    loadMentor({ initial: true });
+  }, [loadMentor]);
 
   // ---------------------------------------------------------------------------
   // Derived display values — every one of them comes from the loaded mentor.
@@ -274,6 +364,26 @@ export const SeekerMentorDetailPage: React.FC = () => {
       )
     : '';
   const canReserve = Boolean(selectedSlot?.is_available) && !isReserving && !activeHold;
+
+  // The headline number and the empty state are derived from the SAME real slot
+  // list, so "N slots" can never disagree with the buttons underneath it.
+  const slotPanel = describeSlotPanel(
+    availableSlots.length,
+    allSlots.length,
+    isSlotsLoading,
+    Boolean(slotsError)
+  );
+  const hasSelectableSlot = availableSlots.length > 0;
+
+  // "Choose another date" focuses the real date input instead of navigating
+  // away, so the seeker can retry the same mentor one day later.
+  const focusDatePicker = useCallback(() => {
+    const input = document.getElementById('session-date');
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+      input.showPicker?.();
+    }
+  }, []);
 
   // SegmentMentorsSection links here as `/seeker/mentors?segmentSlug=...`, so
   // prefer the slug for the back link and only fall back to the segment UUID.
@@ -492,13 +602,17 @@ export const SeekerMentorDetailPage: React.FC = () => {
               </dl>
             </section>
 
-            {/* ---- Availability summary ---- */}
+              {/* ---- Availability summary ---- */}
             <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
               <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
                 Availability
               </h2>
               <p className="mt-2.5 text-[14px] leading-relaxed text-[var(--color-shell-text-muted)]">
-                {availableSlots.length > 0 ? (
+                {isSlotsLoading ? (
+                  <>Checking availability for {formatShortDate(selectedDate) || formatDate(selectedDate)}…</>
+                ) : slotsError ? (
+                  <>We could not confirm availability for {formatShortDate(selectedDate) || formatDate(selectedDate)}. The times below may be out of date.</>
+                ) : hasSelectableSlot ? (
                   <>
                     {mentorData.full_name} has{' '}
                     <span className="font-semibold text-[var(--color-shell-text)]">
@@ -566,19 +680,82 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
                     Available times
                   </span>
-                  <span className="text-[12px] text-[var(--color-shell-text-muted)]">
-                    {availableSlots.length} {availableSlots.length === 1 ? 'slot' : 'slots'}
+                  <span
+                    aria-live="polite"
+                    className="text-[12px] text-[var(--color-shell-text-muted)]"
+                  >
+                    {isSlotsLoading ? 'Checking…' : slotsError ? 'Unavailable' : slotPanel.headline}
                   </span>
                 </div>
 
-                {allSlots.length === 0 ? (
-                  <p className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center text-[13px] text-[var(--color-shell-text-muted)]">
-                    No operating hours on this date. Choose another day to see open times.
-                  </p>
-                ) : (
+                {isSlotsLoading ? (
+                  <div className="mt-2.5 grid grid-cols-2 gap-2" aria-hidden="true">
+                    {[0, 1, 2, 3].map((i) => (
+                      <Skeleton key={i} className="h-[52px] w-full" />
+                    ))}
+                  </div>
+                ) : slotsError ? (
+                  // Never a fake slot: an explicit failure with a retry.
+                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
+                    <p className="text-[13px] font-medium text-[var(--color-shell-text-muted)]">
+                      Unable to load availability.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => reloadMentorSlots()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : allSlots.length === 0 ? (
+                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
+                    <p className="text-[13px] font-medium text-[var(--color-shell-text)]">
+                      No available slots for this date.
+                    </p>
+                    <p className="mt-1 text-[12px] text-[var(--color-shell-text-muted)]">
+                      {mentorData.full_name} has no operating hours on this day.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => focusDatePicker()}
+                    >
+                      Choose another date
+                    </Button>
+                  </div>
+                ) : !hasSelectableSlot ? (
+                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
+                    <p className="text-[13px] font-medium text-[var(--color-shell-text)]">
+                      All available times are currently booked.
+                    </p>
+                    <p className="mt-1 text-[12px] text-[var(--color-shell-text-muted)]">
+                      The times below are shown for context and cannot be selected.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => focusDatePicker()}
+                    >
+                      Choose another date
+                    </Button>
+                  </div>
+                ) : null}
+
+                {/* Only a real generated list is ever rendered — there is no
+                    fallback, demo or default slot array anywhere on this page. */}
+                {!isSlotsLoading && !slotsError && allSlots.length > 0 && (
                   <ul className="mt-2.5 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
                     {allSlots.map((slot) => {
                       const isSelected = selectedSlot?.id === slot.id;
+                      // Only AVAILABLE is selectable. HELD is not BOOKED and is
+                      // never presented as bookable.
                       const isDisabled = !slot.is_available;
 
                       return (
@@ -587,6 +764,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                             type="button"
                             disabled={isDisabled}
                             aria-pressed={isSelected}
+                            aria-label={`${formatLocalTimeLabel(slot.local_start_time)} — ${SLOT_STATUS_COPY[slot.status]}`}
                             onClick={() => {
                               setSelectedSlot(slot);
                               setBookingError(null);
@@ -620,7 +798,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   </ul>
                 )}
               </div>
-
               {/* ---- Contextual error: only after a real failure ---- */}
               {bookingError && (
                 <div
@@ -736,6 +913,10 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <p className="mt-2.5 text-center text-[11px] leading-relaxed text-[var(--color-shell-text-subtle)]">
                     Reserving locks this time in the database for 15 minutes while you complete
                     payment.
+                  </p>
+                  <p className="mt-1.5 text-center text-[11px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                    Bookings are available until {BOOKING_CUTOFF_MINUTES} minutes before the
+                    session.
                   </p>
                 </>
               )}

@@ -9,26 +9,30 @@ import { apiFetch } from '@/src/lib/apiClient';
 interface PaymentItem {
   id: string;
   bookingId: string;
-  seekerName: string;
-  mentorName: string;
+  bookingCode: string | null;
+  bookingStatus: string | null;
+  seekerName: string | null;
+  mentorName: string | null;
+  gigTitle: string | null;
   amount: number;
-  submittedAt: string;
+  /** Raw ISO timestamp straight from the payments table. */
+  submittedAt: string | null;
   status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
-  proofUrl: string;
-  rejectionReason?: string;
+  transactionReference: string | null;
+  /** Short-lived server-signed URL for the private proof. Null when unavailable. */
+  proofUrl: string | null;
+  rejectionReason: string | null;
+  verifiedAt: string | null;
 }
 
-interface ApiPayment {
-  id: string;
-  bookingId: string;
-  seekerName: string;
-  mentorName: string;
-  amount: number;
-  submittedAt: string;
-  status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
-  proofUrl: string;
-  rejectionReason?: string;
-}
+/** Renders a stored timestamp, or an explicit "—" when the column is null. */
+const formatSubmittedAt = (value: string | null): string => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? '—'
+    : date.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+};
 
 export const AdminPaymentsPage: React.FC = () => {
   const [selectedPayment, setSelectedPayment] = useState<PaymentItem | null>(null);
@@ -75,10 +79,14 @@ export const AdminPaymentsPage: React.FC = () => {
     setSelectedPayment(null);
     setIsRejecting(false);
     try {
+      // The reason is optional in the database. When the admin leaves it blank
+      // nothing is stored, and the seeker is told the proof simply could not be
+      // verified — rather than being told a reason they never chose.
+      const body = rejectReason.trim() ? { rejectionReason: rejectReason.trim() } : {};
       const res = await apiFetch(`/api/admin/payments/${id}/reject`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rejectionReason: rejectReason || 'Invalid transaction screenshot' }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to reject payment');
@@ -141,9 +149,10 @@ export const AdminPaymentsPage: React.FC = () => {
           <table className="w-full text-left text-xs text-zinc-600">
             <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
               <tr>
-                <th className="py-3 px-4">Payment / Booking</th>
+                <th className="py-3 px-4">Booking / Gig</th>
                 <th className="py-3 px-4">Seeker</th>
                 <th className="py-3 px-4">Mentor</th>
+                <th className="py-3 px-4">Reference</th>
                 <th className="py-3 px-4">Amount</th>
                 <th className="py-3 px-4">Submitted</th>
                 <th className="py-3 px-4">Status</th>
@@ -154,13 +163,14 @@ export const AdminPaymentsPage: React.FC = () => {
               {payments.map((p) => (
                 <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
                   <td className="py-3 px-4 font-mono">
-                    <span className="font-bold text-zinc-950 block">{p.id}</span>
-                    <span className="text-[11px] text-zinc-400">{p.bookingId}</span>
+                    <span className="font-bold text-zinc-950 block">{p.bookingCode || p.bookingId}</span>
+                    <span className="text-[11px] text-zinc-400">{p.gigTitle || 'Gig unavailable'}</span>
                   </td>
-                  <td className="py-3 px-4 font-semibold text-zinc-900">{p.seekerName}</td>
-                  <td className="py-3 px-4">{p.mentorName}</td>
+                  <td className="py-3 px-4 font-semibold text-zinc-900">{p.seekerName || '—'}</td>
+                  <td className="py-3 px-4">{p.mentorName || '—'}</td>
+                  <td className="py-3 px-4 font-mono text-zinc-700">{p.transactionReference || '—'}</td>
                   <td className="py-3 px-4 font-bold text-zinc-950">₹{p.amount}</td>
-                  <td className="py-3 px-4 text-zinc-500">{p.submittedAt}</td>
+                  <td className="py-3 px-4 text-zinc-500">{formatSubmittedAt(p.submittedAt)}</td>
                   <td className="py-3 px-4">
                     <Badge
                       variant={
@@ -201,35 +211,63 @@ export const AdminPaymentsPage: React.FC = () => {
         <Modal
           isOpen={!!selectedPayment}
           onClose={() => setSelectedPayment(null)}
-          title={`Payment Verification: ${selectedPayment.id}`}
-          description={`Booking ${selectedPayment.bookingId} · ${selectedPayment.seekerName} ➔ ${selectedPayment.mentorName}`}
+          title={`Payment Verification: ${selectedPayment.bookingCode || selectedPayment.bookingId}`}
+          description={`${selectedPayment.seekerName || 'Unknown seeker'} → ${selectedPayment.mentorName || 'Unknown mentor'} · submitted ${formatSubmittedAt(selectedPayment.submittedAt)}`}
         >
           <div className="space-y-4 pt-2 text-xs">
             {/* Payment Details */}
             <div className="grid grid-cols-2 gap-3 bg-zinc-50 p-3 rounded-lg">
               <div>
-                <span className="text-zinc-400 block text-[11px]">Amount Claimed</span>
-                <span className="text-base font-bold text-zinc-950">₹{selectedPayment.amount} INR</span>
+                <span className="text-zinc-400 block text-[11px]">Amount Paid</span>
+                <span className="text-base font-bold text-zinc-950">₹{selectedPayment.amount}</span>
               </div>
               <div>
                 <span className="text-zinc-400 block text-[11px]">Status</span>
                 <Badge variant="secondary">{selectedPayment.status}</Badge>
+              </div>
+              <div className="col-span-2">
+                <span className="text-zinc-400 block text-[11px]">Transaction Reference</span>
+                <span className="font-mono text-sm font-semibold text-zinc-950">
+                  {selectedPayment.transactionReference || 'Not provided'}
+                </span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-zinc-400 block text-[11px]">Gig</span>
+                <span className="text-xs font-medium text-zinc-900">{selectedPayment.gigTitle || '—'}</span>
               </div>
             </div>
 
             {/* Proof Screenshot Inspection Box */}
             <div className="space-y-1.5">
               <span className="font-semibold text-zinc-700 block">Uploaded Transaction Screenshot</span>
-              <div className="rounded-lg border border-zinc-200 bg-zinc-100 p-8 flex flex-col items-center justify-center text-center space-y-2">
-                <FileImage className="h-10 w-10 text-zinc-400" />
-                <span className="font-mono text-xs text-zinc-800 font-medium">
-                  {selectedPayment.proofUrl}
-                </span>
-                <span className="text-[11px] text-zinc-500">
-                  Stored in private Supabase bucket: payment-proofs
-                </span>
-              </div>
+              {selectedPayment.proofUrl ? (
+                <>
+                  <img
+                    src={selectedPayment.proofUrl}
+                    alt={`Payment proof for booking ${selectedPayment.bookingCode || selectedPayment.bookingId}`}
+                    className="w-full max-h-[420px] object-contain rounded-lg border border-zinc-200 bg-zinc-100"
+                  />
+                  <span className="text-[11px] text-zinc-500">
+                    Served via a short-lived signed URL from the private Supabase bucket <code className="font-mono">payment-proofs</code>.
+                  </span>
+                </>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 flex flex-col items-center justify-center text-center space-y-2">
+                  <FileImage className="h-8 w-8 text-amber-500" />
+                  <span className="text-xs font-semibold text-amber-900">Payment proof is not available</span>
+                  <span className="text-[11px] text-amber-700">
+                    No image is stored for this payment, or the signed link could not be generated.
+                  </span>
+                </div>
+              )}
             </div>
+
+            {selectedPayment.rejectionReason && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+                <span className="font-semibold block">Rejection reason</span>
+                <span>{selectedPayment.rejectionReason}</span>
+              </div>
+            )}
 
             {isRejecting ? (
               <div className="space-y-2 pt-2 border-t border-zinc-100">

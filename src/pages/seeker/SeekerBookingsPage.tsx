@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck } from 'lucide-react';
+import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -7,7 +7,40 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
-import { BookingStatus } from '@/src/types/database';
+import { usePaymentSync } from '@/src/hooks/seeker/usePaymentSync';
+import type { BookingStatus, Payment } from '@/src/types/database';
+
+/**
+ * Maps a stored payment status to the label My Bookings shows.
+ *
+ * The label is derived from the `payments` row only. It never depends on
+ * whether the user happened to open the payment page, so a refresh or an
+ * admin decision always yields the true state.
+ */
+const paymentStateLabel = (payment: Payment | null | undefined): string | null => {
+  if (!payment) return null;
+  switch (payment.status) {
+    case 'VERIFIED':
+      return 'Payment verified';
+    case 'REJECTED':
+      return 'Payment action required';
+    default:
+      return 'Payment pending verification';
+  }
+};
+
+const paymentStateTone = (payment: Payment | null | undefined): string => {
+  if (!payment) return '';
+  switch (payment.status) {
+    case 'VERIFIED':
+      return 'bg-emerald-50 text-emerald-800 border-emerald-200';
+    case 'REJECTED':
+      return 'bg-rose-50 text-rose-800 border-rose-200';
+    default:
+      return 'bg-sky-50 text-sky-800 border-sky-200';
+  }
+};
+
 
 export const SeekerBookingsPage: React.FC = () => {
   const { navigate } = useNavigation();
@@ -18,6 +51,21 @@ export const SeekerBookingsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const seekerId = user?.id;
+
+  // A silent refetch used by the payment sync: it must not blank the list or
+  // raise the skeleton, otherwise an admin's approval would make the whole
+  // page flash while the seeker is reading it.
+  const refreshBookings = useCallback(async () => {
+    if (!seekerId) return;
+    try {
+      const data = await fetchSeekerBookings(seekerId);
+      setBookings(data);
+      setError(null);
+    } catch {
+      // Keep the previously rendered data rather than replacing a working list
+      // with an error because a background refresh failed.
+    }
+  }, [seekerId]);
 
   const loadBookings = useCallback(async () => {
     if (!seekerId) return;
@@ -32,6 +80,9 @@ export const SeekerBookingsPage: React.FC = () => {
       setLoading(false);
     }
   }, [seekerId]);
+
+  // Reflects an admin's approve/reject decision without a manual reload.
+  usePaymentSync({ seekerId, onInvalidate: refreshBookings });
 
   useEffect(() => {
     loadBookings();
@@ -185,6 +236,15 @@ export const SeekerBookingsPage: React.FC = () => {
                       Meeting unlocks at T-5 minutes
                     </span>
                   )}
+                  {/* Payment state comes straight from the joined payments row. */}
+                  {paymentStateLabel(booking.payment) && (
+                    <span
+                      className={`inline-flex items-center gap-1.5 text-[11px] font-semibold border px-2.5 py-1 rounded-full ${paymentStateTone(booking.payment)}`}
+                    >
+                      <CreditCard className="h-3 w-3" aria-hidden="true" />
+                      {paymentStateLabel(booking.payment)}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -224,6 +284,19 @@ export const SeekerBookingsPage: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-2.5">
+                    {/* Only offered while the booking can actually accept a proof. */}
+                    {(booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING_VERIFICATION') && (
+                      <Button
+                        onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
+                        size="sm"
+                        className="gap-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                      >
+                        <CreditCard className="h-3.5 w-3.5" />
+                        <span>
+                          {booking.status === 'PAYMENT_PENDING' ? 'Pay now' : 'View payment status'}
+                        </span>
+                      </Button>
+                    )}
                     <Button
                       onClick={() =>
                         navigate(`/seeker/booking-detail?bookingId=${booking.id}`)

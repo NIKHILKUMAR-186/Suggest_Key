@@ -13,6 +13,7 @@ export interface ThemeToggleProps {
   /** Visual style: compact icon button (default) or full labeled button */
   variant?: 'icon' | 'labeled';
   className?: string;
+  buttonClassName?: string;
 }
 
 /**
@@ -20,7 +21,7 @@ export interface ThemeToggleProps {
  * (landing header, auth pages, seeker/mentor top navigation, admin sidebar,
  * and every mobile menu). Uses the Light / Dark / System menu UX.
  */
-export const ThemeToggle: React.FC<ThemeToggleProps> = ({ variant = 'icon', className }) => {
+export const ThemeToggle: React.FC<ThemeToggleProps> = ({ variant = 'icon', className, buttonClassName }) => {
   const { mode, theme, setMode } = useTheme();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -66,7 +67,8 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({ variant = 'icon', clas
           'hover:bg-[var(--color-shell-surface-hover)] hover:text-[var(--color-shell-text)]',
           'transition-colors cursor-pointer select-none',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-shell-bg)]',
-          variant === 'icon' ? 'h-9 w-9' : 'h-9 gap-2 px-3 text-xs font-medium'
+          variant === 'icon' ? 'h-9 w-9' : 'h-9 gap-2 px-3 text-xs font-medium',
+          buttonClassName
         )}
       >
         <ActiveIcon className="h-4 w-4 shrink-0" aria-hidden="true" />

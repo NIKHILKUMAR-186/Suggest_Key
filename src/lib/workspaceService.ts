@@ -1,5 +1,6 @@
 import { apiFetch } from './apiClient';
 import { supabase, isSupabaseConfigured } from './supabase';
+import { getLocalBookingEngineContext } from './bookingService';
 import {
   SessionWorkspace,
   WorkspaceStatus,
@@ -8,114 +9,11 @@ import {
   SessionOverviewData,
   Booking,
 } from '@/src/types/database';
-import { getLocalBookingEngineContext } from './bookingService';
 
 const isDevMode = process.env.NODE_ENV !== 'production';
 
-// ponytail: localWorkspaces is dev-only preview data.
-// Production must use real Supabase data; this fallback is only used when
-// isSupabaseConfigured() is false and the app is running in local preview mode.
-let localWorkspaces: SessionWorkspace[] = [
-  {
-    id: 'ws-ended-03',
-    booking_id: 'bk-session-ended',
-    mentor_id: 'usr-8802',
-    seeker_id: 'usr-8801',
-    status: 'PUBLISHED',
-    mentor_notes:
-      'Great dialogue on identifying conversational friction points and setting boundaries with emotional clarity. Aman demonstrated high self-awareness and willingness to adopt structured conversational pause techniques.',
-    summary:
-      'Great dialogue on identifying conversational friction points and setting boundaries with emotional clarity.',
-    takeaways: [
-      'Distinguish between the underlying emotion and the reactive behavior during tense discussions.',
-      'Implement a 2-minute cooling off rule before answering emotionally charged messages.',
-      'Express personal needs using "I feel" rather than accusatory "You always" statements.',
-    ],
-    suggestions: [
-      'Read Chapter 3 of "Nonviolent Communication" by Marshall Rosenberg.',
-      'Practice weekly active-listening check-ins for 15 minutes without electronic distractions.',
-      'Maintain an emotional trigger journal whenever conversational stress spikes.',
-    ],
-    next_steps: [
-      {
-        id: 'ns-1',
-        text: 'Log three instances of conversational friction in notes with root cause observations',
-        due_date: 'In 7 days',
-        completed: false,
-      },
-      {
-        id: 'ns-2',
-        text: 'Review boundary script rehearsal before high-stakes family or work conversation',
-        due_date: 'In 14 days',
-        completed: false,
-      },
-      {
-        id: 'ns-3',
-        text: 'Assess communication log in follow-up session',
-        due_date: 'Optional',
-        completed: false,
-      },
-    ],
-    action_items: [
-      { id: 'act-1', text: 'Log 3 communication triggers', completed: false },
-      { id: 'act-2', text: 'Practice 2-minute cooling off pause', completed: true },
-    ],
-    follow_up_recommendation: {
-      recommended: true,
-      timeframe: '2-3 weeks',
-      topic: 'Boundary Reinforcement & Regulation Review',
-      notes:
-        'A follow-up session after two weeks of practicing active listening will allow us to assess emotional regulation progress and fine-tune response tactics.',
-    },
-    resources: [
-      {
-        title: 'Nonviolent Communication Primer',
-        url: 'https://example.com/resources/nvc-guide.pdf',
-        type: 'DOCUMENT',
-      },
-      {
-        title: 'Emotional De-escalation Checklist',
-        url: 'https://example.com/tools/deescalation',
-        type: 'TOOL',
-      },
-    ],
-    published_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-    created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-    updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'ws-9021',
-    booking_id: 'bk-9021',
-    mentor_id: 'usr-8802',
-    seeker_id: 'usr-8801',
-    status: 'PENDING',
-    mentor_notes: 'Drafting session summary for pre-session consultation goals...',
-    summary: 'Drafting session summary...',
-    takeaways: ['Establish baseline relationship trust indicators.'],
-    suggestions: ['Review mutual expectation sheet.'],
-    next_steps: [
-      {
-        id: 'ns-9021-1',
-        text: 'Complete relationship assessment checklist prior to scheduled consultation',
-        due_date: 'Before session',
-        completed: false,
-      },
-    ],
-    action_items: [],
-    follow_up_recommendation: null,
-    resources: [],
-    published_at: null,
-    created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    updated_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
-  },
-];
-
-/**
- * Returns current local workspaces list.
- */
-export function getLocalWorkspaces(): SessionWorkspace[] {
-  return localWorkspaces;
-}
+// Dev-only in-memory workspace storage (only used when Supabase is not configured and in dev mode)
+let localWorkspaces: SessionWorkspace[] = [];
 
 /**
  * Derives sanitized session overview data without exposing unrelated private details.
@@ -489,11 +387,32 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
     try {
       const { data, error } = await supabase
         .from('session_workspaces')
-        .select('*')
+        .select(`
+          *,
+          booking:bookings (
+            id,
+            booking_code,
+            status,
+            start_time,
+            end_time,
+            amount_inr,
+            seeker_id,
+            mentor_id,
+            gig_id,
+            segment_id,
+            seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+            mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+            gig:gigs(id, title, segment_id),
+            segment:segments(id, name, slug)
+          )
+        `)
         .order('updated_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
         return data.map((d: any) => {
+          const booking = d.booking;
+          const overview = booking ? deriveSessionOverview(booking as unknown as Booking) : undefined;
+          
           return {
             id: d.id,
             booking_id: d.booking_id,
@@ -511,7 +430,7 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
             published_at: d.published_at || null,
             created_at: d.created_at,
             updated_at: d.updated_at,
-            session_overview: undefined,
+            session_overview: overview,
           };
         });
       }
@@ -520,13 +439,15 @@ export async function fetchAdminWorkspacesAuthoritative(): Promise<SessionWorksp
     }
   }
 
-  // Fallback to local (DEV ONLY)
+  // Fallback - production must use real Supabase data
   if (!isDevMode) {
     return [];
   }
 
+  // Dev-only fallback using local in-memory data
   const db = getLocalBookingEngineContext();
-  return localWorkspaces.map((ws) => {
+  
+  return localWorkspaces.map((ws: SessionWorkspace) => {
     const booking = db.bookings.find((b) => b.id === ws.booking_id);
     return {
       ...ws,

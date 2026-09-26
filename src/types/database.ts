@@ -534,7 +534,7 @@ export interface AdminMentorApplicationsResponse {
 // ----------------------------------------------------------------------
 // 14. SLOT GENERATION & DISCOVERY TYPES (continued)
 // ----------------------------------------------------------------------
-export type SlotStatus = 'AVAILABLE' | 'PAST' | 'BOOKED' | 'HELD';
+export type SlotStatus = 'AVAILABLE' | 'PAST' | 'BOOKED' | 'HELD' | 'CLOSING_SOON';
 
 export interface GeneratedSlot {
   id: string; // Deterministic identifier `${mentorId}_${utcStartTime}`
@@ -549,7 +549,12 @@ export interface GeneratedSlot {
   timezone: string;
   status: SlotStatus;
   is_available: boolean;
-  conflict_reason?: 'PAST' | 'BOOKING_CONFLICT' | 'HOLD_CONFLICT' | 'EXCEPTION';
+  conflict_reason?:
+    | 'PAST'
+    | 'BOOKING_CONFLICT'
+    | 'HOLD_CONFLICT'
+    | 'EXCEPTION'
+    | 'BOOKING_CUTOFF';
 }
 
 export interface DiscoverableMentor {
@@ -572,6 +577,15 @@ export interface DiscoverableMentor {
   available_slots: GeneratedSlot[]; // Valid future non-conflicting slots
   all_slots: GeneratedSlot[]; // All generated slots on selected date
   next_available_slot: GeneratedSlot | null;
+  /**
+   * Server-computed instants at which availability is guaranteed to change with
+   * no accompanying database write (an expiring hold, a slot reaching its start
+   * time). Optional: absent when the caller did not ask the server for them.
+   */
+  next_hold_expires_at?: string | null;
+  next_slot_start_at?: string | null;
+  /** When the server generated this slot list, for staleness reasoning. */
+  availability_generated_at?: string;
 }
 
 /**

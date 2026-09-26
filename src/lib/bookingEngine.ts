@@ -282,6 +282,26 @@ export async function executeAtomicBookingWithHold(
     }
 
     // ------------------------------------------------------------------------
+    // 8b. BOOKING CUTOFF
+    //
+    // A slot stays reservable only until the cutoff before its actual start.
+    // `startTime` is the absolute instant the slot engine resolved from the
+    // mentor's own timezone, so this subtraction is timezone-correct for any
+    // mentor without hardcoding a zone. The old 2-hour advance restriction is
+    // gone: it never belonged here, and the mentor meeting-link deadline below
+    // is an operational rule that must not block booking creation.
+    // ------------------------------------------------------------------------
+    if (startMs - currentUtcTime.getTime() < APP_CONFIG.BOOKING_CUTOFF_MS) {
+      return {
+        success: false,
+        error: {
+          code: 'BOOKING_CUTOFF_REACHED',
+          message: `This slot can no longer be booked because it starts in less than ${APP_CONFIG.BOOKING_CUTOFF_MS / 60000} minutes.`,
+        },
+      };
+    }
+
+    // ------------------------------------------------------------------------
     // 9. RECURRING MENTOR AVAILABILITY & 10. DATE EXCEPTIONS
     // ------------------------------------------------------------------------
     const exception = db.mentorAvailabilityExceptions.find(

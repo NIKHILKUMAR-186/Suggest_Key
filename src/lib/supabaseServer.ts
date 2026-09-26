@@ -17,7 +17,16 @@ export interface DemoTokenClaims {
 
 const DEMO_TOKEN_PREFIX = 'skdemo.';
 const DEMO_TOKEN_TTL_SECONDS = 24 * 60 * 60;
-const DEMO_TOKEN_SECRET = process.env.DEMO_AUTH_SECRET || 'suggest-key-development-only';
+// Demo auth is opt-in. A missing/empty/placeholder secret disables it entirely,
+// even in non-production, so a hardcoded default can never be exploited to
+// forge admin tokens in a deployed-but-not-labeled- production environment.
+const DEMO_TOKEN_SECRET = process.env.DEMO_AUTH_SECRET || '';
+const FORBIDDEN_DEFAULT_SECRET = 'suggest-key-development-only';
+
+export function isDemoAuthEnabled(): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  return Boolean(DEMO_TOKEN_SECRET) && DEMO_TOKEN_SECRET !== FORBIDDEN_DEFAULT_SECRET;
+}
 
 const encodeBase64Url = (value: Buffer): string =>
   value.toString('base64url');
@@ -34,7 +43,7 @@ export function createDemoToken(claims: Omit<DemoTokenClaims, 'iat' | 'exp'>): s
 }
 
 export function verifyDemoToken(token: string): DemoTokenClaims | null {
-  if (!token.startsWith(DEMO_TOKEN_PREFIX) || process.env.NODE_ENV === 'production') {
+  if (!isDemoAuthEnabled() || !token.startsWith(DEMO_TOKEN_PREFIX)) {
     return null;
   }
 
@@ -120,7 +129,7 @@ export async function requireAuth(
     return;
   }
 
-  const demoClaims = process.env.NODE_ENV !== 'production' ? verifyDemoToken(token) : null;
+  const demoClaims = isDemoAuthEnabled() ? verifyDemoToken(token) : null;
   if (demoClaims) {
     req.auth = {
       user: {

@@ -6,6 +6,7 @@ import {
   Booking,
   SlotHold,
 } from '@/src/types/database';
+import { APP_CONFIG } from '@/src/config/app';
 
 /**
  * Calculates timezone offset in milliseconds between UTC and the specified IANA timezone
@@ -347,6 +348,15 @@ export function generateMentorSlots(options: SlotEngineOptions): GeneratedSlot[]
         status = 'PAST';
         isAvailable = false;
         conflictReason = 'PAST';
+      }
+      // 1b. Booking cutoff: a slot may only be reserved until the cutoff
+      //     before its actual start. `slotUtcStart` is an absolute instant
+      //     resolved from the mentor's own timezone, so this comparison is
+      //     already correct for any mentor timezone without hardcoding one.
+      else if (slotUtcStartMs - nowMs < APP_CONFIG.BOOKING_CUTOFF_MS) {
+        status = 'CLOSING_SOON';
+        isAvailable = false;
+        conflictReason = 'BOOKING_CUTOFF';
       }
       // 2. Booking conflict check
       else {

@@ -1,19 +1,103 @@
-import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+﻿import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { apiFetch } from '@/src/lib/apiClient';
 import {
   Segment,
   MentorProfile,
   Gig,
-  MentorAvailability,
-  MentorAvailabilityException,
-  Booking,
-  SlotHold,
   DiscoverableMentor,
   DirectoryMentor,
   DirectoryPagination,
   GeneratedSlot,
 } from '@/src/types/database';
-import { generateMentorSlots } from '@/src/lib/slotEngine';
 import { deriveAccountState } from '@/src/lib/adminAccountControl';
+
+/**
+ * Shape returned by `GET /api/mentor-availability/slots` for one mentor.
+ * Mirrors the server's `MentorSlotResult`.
+ */
+export interface MentorSlotResponse {
+  mentor_id: string;
+  timezone: string;
+  gig: {
+    id: string;
+    segment_id: string;
+    title: string;
+    duration_minutes: number;
+    price_inr: number;
+  } | null;
+  slots: GeneratedSlot[];
+  available_count: number;
+  next_hold_expires_at: string | null;
+  next_slot_start_at: string | null;
+}
+
+export interface MentorSlotsResult {
+  generated_at: string;
+  byMentorId: Map<string, MentorSlotResponse>;
+}
+
+/**
+ * THE single client entry point for slot availability.
+ *
+ * Slots are never generated in the browser and never copied into component
+ * state: they are produced by the server from the live `mentor_availability`,
+ * `mentor_availability_exceptions`, `gigs`, `bookings` and `slot_holds` tables.
+ * That matters because the RLS policies on `bookings` and `slot_holds` are
+ * participant-scoped â€” a client query would only ever see the caller's own
+ * reservations and would offer slots that are already taken.
+ *
+ * There is no fallback slot list. If the request fails the caller receives an
+ * error and must render an error state, never invented times.
+ */
+export async function fetchMentorSlots(
+  query: { mentorId: string } | { segmentId: string },
+  dateStr: string
+): Promise<{ data: MentorSlotsResult | null; error: Error | null }> {
+  if (!isSupabaseConfigured()) {
+    return { data: null, error: new Error('Supabase is not configured') };
+  }
+
+  const params = new URLSearchParams({ date: dateStr });
+  if ('mentorId' in query) {
+    params.set('mentorId', query.mentorId);
+  } else {
+    params.set('segmentId', query.segmentId);
+  }
+
+  let res: Response;
+  try {
+    res = await apiFetch(`/api/mentor-availability/slots?${params.toString()}`);
+  } catch {
+    return { data: null, error: new Error('Unable to reach the availability service.') };
+  }
+
+  let payload: any = null;
+  try {
+    payload = await res.json();
+  } catch {
+    return { data: null, error: new Error('Availability service returned a malformed response.') };
+  }
+
+  if (!res.ok || !payload?.success) {
+    return {
+      data: null,
+      error: new Error(payload?.error?.message || 'Unable to load availability.'),
+    };
+  }
+
+  const byMentorId = new Map<string, MentorSlotResponse>();
+  for (const entry of payload.mentors || []) {
+    if (entry?.mentor_id) byMentorId.set(entry.mentor_id, entry as MentorSlotResponse);
+  }
+
+  return {
+    data: {
+      generated_at: payload.generated_at || new Date().toISOString(),
+      byMentorId,
+    },
+    error: null,
+  };
+}
 
 /**
  * 1. Fetch all active segments ordered by priority (priority 1 = highest priority).
@@ -164,50 +248,20 @@ export async function fetchDiscoverableMentors(
       return { mentors: [], error: null };
     }
 
-    // 5. Fetch availability rules for these mentors
-    const { data: availRules, error: availErr } = await supabase
-      .from('mentor_availability')
-      .select('*')
-      .in('mentor_id', approvedMentorIds)
-      .eq('is_enabled', true);
+    // 5. Slot availability comes from the server, which is the only principal
+    //    that can read every booking and hold for these mentors. The browser
+    //    cannot do this itself: RLS scopes `bookings` and `slot_holds` to the
+    //    participants of a reservation, so a client-side query returns only the
+    //    caller's own rows and would advertise slots other seekers already own.
+    const { data: slotData, error: slotErr } = await fetchMentorSlots({ segmentId }, dateStr);
+    if (slotErr) throw slotErr;
 
-    if (availErr) throw availErr;
-
-    // 6. Fetch date exceptions for this specific target date
-    const { data: exceptions, error: excErr } = await supabase
-      .from('mentor_availability_exceptions')
-      .select('*')
-      .in('mentor_id', approvedMentorIds)
-      .eq('exception_date', dateStr);
-
-    if (excErr) throw excErr;
-
-    // 7. Fetch all active bookings for these mentors (global mentor availability)
-    const { data: bookings, error: bookErr } = await supabase
-      .from('bookings')
-      .select('*')
-      .in('mentor_id', approvedMentorIds)
-      .not('status', 'in', '("CANCELLED","REJECTED")');
-
-    if (bookErr) throw bookErr;
-
-    // 8. Fetch active slot holds (global mentor availability)
-    const nowIso = currentUtcTime.toISOString();
-    const { data: holds, error: holdErr } = await supabase
-      .from('slot_holds')
-      .select('*')
-      .in('mentor_id', approvedMentorIds)
-      .eq('status', 'ACTIVE')
-      .gt('expires_at', nowIso);
-
-    if (holdErr) throw holdErr;
-
-    // 9. Compute dynamic slots for each mentor and filter by discoverability invariant
+    // 6. Compute the discovery invariant from the authoritative slot list.
     const discoverableMentors: DiscoverableMentor[] = [];
 
     for (const mp of operableProfiles) {
-      const gig = gigs.find((g: Gig) => g.mentor_id === mp.id);
-      if (!gig) continue; // No active gig for this segment
+      const slotResult = slotData?.byMentorId.get(mp.id);
+      if (!slotResult?.gig) continue; // No active gig for this segment
 
       // A mentor is only presentable with their real identity row. The
       // previous code substituted a fabricated `{ full_name: 'Mentor' }`
@@ -222,26 +276,7 @@ export async function fetchDiscoverableMentors(
         continue;
       }
 
-      const mentorTz = profile.timezone || 'Asia/Kolkata';
-
-      const mentorAvail = (availRules || []).filter((a: MentorAvailability) => a.mentor_id === mp.id);
-      const mentorExceptions = (exceptions || []).filter((e: MentorAvailabilityException) => e.mentor_id === mp.id);
-      const mentorBookings = (bookings || []).filter((b: Booking) => b.mentor_id === mp.id);
-      const mentorHolds = (holds || []).filter((h: SlotHold) => h.mentor_id === mp.id);
-
-      const allSlots = generateMentorSlots({
-        mentorId: mp.id,
-        gigId: gig.id,
-        dateStr,
-        timezone: mentorTz,
-        durationMinutes: gig.duration_minutes,
-        recurringAvailability: mentorAvail,
-        exceptions: mentorExceptions,
-        bookings: mentorBookings,
-        slotHolds: mentorHolds,
-        currentUtcTime,
-      });
-
+      const allSlots = slotResult.slots;
       const availableSlots = allSlots.filter((s) => s.is_available);
 
       // DISCOVERABILITY INVARIANT: Must have >= 1 valid slot on selected date!
@@ -253,7 +288,7 @@ export async function fetchDiscoverableMentors(
         id: mp.id,
         full_name: profile.full_name,
         avatar_url: profile.avatar_url,
-        timezone: mentorTz,
+        timezone: slotResult.timezone,
         headline: mp.headline,
         about: mp.about,
         experience_years: mp.experience_years,
@@ -265,10 +300,13 @@ export async function fetchDiscoverableMentors(
         is_approved: mp.is_approved,
         is_featured: mp.is_featured,
         segment: segmentData as Segment,
-        gig,
+        gig: slotResult.gig as unknown as Gig,
         available_slots: availableSlots,
         all_slots: allSlots,
         next_available_slot: availableSlots[0] || null,
+        next_hold_expires_at: slotResult.next_hold_expires_at,
+        next_slot_start_at: slotResult.next_slot_start_at,
+        availability_generated_at: slotData?.generated_at,
       });
     }
 
@@ -308,6 +346,16 @@ function isMentorEligible(profile: any, nowMs: number): boolean {
 
 /**
  * 4. Fetch specific mentor detail with all slots for a given date and segment.
+ *
+ * The slot list is produced by the server (`GET /api/mentor-availability/slots`),
+ * never by this browser context, and the page keeps only the returned value — no
+ * copied list of times is ever stored client-side. Switching `dateStr` re-runs
+ * this call, so a new date always reflects the mentor's live schedule, their
+ * bookings and any active holds.
+ *
+ * Unlike the discovery list, a mentor with zero bookable slots on this date is
+ * still returned: the detail page must be able to explain that and offer
+ * "Choose another date".
  */
 export async function fetchMentorDetail(
   mentorId: string,
@@ -315,123 +363,84 @@ export async function fetchMentorDetail(
   dateStr: string,
   currentUtcTime: Date = new Date()
 ): Promise<{ mentor: DiscoverableMentor | null; error: Error | null }> {
-  // Fetch discoverable mentors for the segment & date
-  const { mentors, error } = await fetchDiscoverableMentors(segmentId, dateStr, currentUtcTime);
-  if (error) return { mentor: null, error };
-
-  const matched = mentors.find((m) => m.id === mentorId);
-  if (matched) {
-    return { mentor: matched, error: null };
-  }
-
-  // If mentor is not in discoverable list (e.g. all slots booked on this date),
-  // still load profile info for the detail view so user can select a different date!
   if (!isSupabaseConfigured()) {
-    return { mentor: null, error: new Error('Supabase not configured') };
+    return { mentor: null, error: new Error('Supabase is not configured') };
   }
 
   try {
-    const { data: segmentData } = await supabase
-      .from('segments')
-      .select('*')
-      .eq('id', segmentId)
-      .maybeSingle();
-
-    const { data: mpData } = await supabase
-      .from('mentor_profiles')
-      .select('*, profile:profiles(*)')
-      .eq('id', mentorId)
-      .maybeSingle();
-
-    const { data: gigData } = await supabase
-      .from('gigs')
-      .select('*')
-      .eq('mentor_id', mentorId)
-      .eq('segment_id', segmentId)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (segmentData && mpData && gigData) {
-      // Same rule as the discovery list: never invent an identity. Without a
-      // readable `profiles` row there is no real mentor to show.
-      const profile = mpData.profile;
-      if (!profile?.full_name) {
-        console.warn(
-          `[discovery] Mentor detail unavailable for ${mentorId}: profiles row is not readable.`
-        );
-        return { mentor: null, error: null };
-      }
-
-      const { data: availRules } = await supabase
-        .from('mentor_availability')
+    const [segmentRes, mentorRes, slotsRes] = await Promise.all([
+      supabase
+        .from('segments')
         .select('*')
-        .eq('mentor_id', mentorId)
-        .eq('is_enabled', true);
+        .eq('id', segmentId)
+        .maybeSingle(),
+      supabase
+        .from('mentor_profiles')
+        .select('*, profile:profiles(*)')
+        .eq('id', mentorId)
+        .maybeSingle(),
+      fetchMentorSlots({ mentorId, segmentId }, dateStr),
+    ]);
 
-      const { data: exceptions } = await supabase
-        .from('mentor_availability_exceptions')
-        .select('*')
-        .eq('mentor_id', mentorId)
-        .eq('exception_date', dateStr);
+    if (segmentRes.error) throw segmentRes.error;
+    if (mentorRes.error) throw mentorRes.error;
+    if (slotsRes.error) throw slotsRes.error;
 
-      const { data: bookings } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('mentor_id', mentorId)
-        .not('status', 'in', '("CANCELLED","REJECTED")');
+    const segmentData = segmentRes.data as Segment | null;
+    const mpData = mentorRes.data as any;
+    const slotResult = slotsRes.data?.byMentorId.get(mentorId) || null;
 
-      const { data: holds } = await supabase
-        .from('slot_holds')
-        .select('*')
-        .eq('mentor_id', mentorId)
-        .eq('status', 'ACTIVE')
-        .gt('expires_at', currentUtcTime.toISOString());
-
-      const allSlots = generateMentorSlots({
-        mentorId,
-        gigId: gigData.id,
-        dateStr,
-        timezone: profile.timezone || 'Asia/Kolkata',
-        durationMinutes: gigData.duration_minutes,
-        recurringAvailability: availRules || [],
-        exceptions: exceptions || [],
-        bookings: bookings || [],
-        slotHolds: holds || [],
-        currentUtcTime,
-      });
-
-      const availableSlots = allSlots.filter((s) => s.is_available);
-
-      return {
-        mentor: {
-          id: mentorId,
-          full_name: profile.full_name,
-          avatar_url: profile.avatar_url,
-          timezone: profile.timezone || 'Asia/Kolkata',
-          headline: mpData.headline,
-          about: mpData.about,
-          experience_years: mpData.experience_years,
-          languages: mpData.languages || [],
-          expertise: mpData.expertise || null,
-          rating: Number(mpData.rating) || 0,
-          review_count: mpData.review_count || 0,
-          session_count: mpData.session_count || 0,
-          is_approved: mpData.is_approved,
-          is_featured: mpData.is_featured,
-          segment: segmentData as Segment,
-          gig: gigData as Gig,
-          available_slots: availableSlots,
-          all_slots: allSlots,
-          next_available_slot: availableSlots[0] || null,
-        },
-        error: null,
-      };
+    if (!segmentData || !mpData || !slotResult?.gig) {
+      return { mentor: null, error: null };
     }
-  } catch (err: any) {
-    console.error('Error fetching mentor detail from Supabase:', err);
-  }
 
-  return { mentor: null, error: new Error('Mentor or gig not found') };
+    // Same rule as the discovery list: never invent an identity. Without a
+    // readable `profiles` row there is no real mentor to show.
+    const profile = mpData.profile;
+    if (!profile?.full_name) {
+      console.warn(
+        `[discovery] Mentor detail unavailable for ${mentorId}: profiles row is not readable.`
+      );
+      return { mentor: null, error: null };
+    }
+
+    const allSlots = slotResult.slots;
+    const availableSlots = allSlots.filter((s) => s.is_available);
+
+    return {
+      mentor: {
+        id: mentorId,
+        full_name: profile.full_name,
+        avatar_url: profile.avatar_url,
+        timezone: slotResult.timezone,
+        headline: mpData.headline,
+        about: mpData.about,
+        experience_years: mpData.experience_years,
+        languages: mpData.languages || [],
+        expertise: mpData.expertise || null,
+        rating: Number(mpData.rating) || 0,
+        review_count: mpData.review_count || 0,
+        session_count: mpData.session_count || 0,
+        is_approved: mpData.is_approved,
+        is_featured: mpData.is_featured,
+        segment: segmentData,
+        gig: slotResult.gig as unknown as Gig,
+        available_slots: availableSlots,
+        all_slots: allSlots,
+        next_available_slot: availableSlots[0] || null,
+        next_hold_expires_at: slotResult.next_hold_expires_at,
+        next_slot_start_at: slotResult.next_slot_start_at,
+        availability_generated_at: slotsRes.data?.generated_at,
+      },
+      error: null,
+    };
+  } catch (err: any) {
+    console.error('Error fetching mentor detail:', err);
+    return {
+      mentor: null,
+      error: new Error(err?.message || 'Unable to load availability.'),
+    };
+  }
 }
 
 // --------------------------------------------------------------------------

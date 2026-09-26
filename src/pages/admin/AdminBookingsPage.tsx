@@ -4,27 +4,80 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
-import { getLocalBookingEngineContext, enrichBooking, EnrichedBookingRecord } from '@/src/lib/bookingService';
-import { getOverdueBookings } from '@/src/lib/bookingEngine';
+import { apiFetch } from '@/src/lib/apiClient';
+import { APP_CONFIG } from '@/src/config/app';
+
+interface EnrichedBookingRecord {
+  id: string;
+  booking_code: string;
+  mentor_id: string;
+  seeker_id: string;
+  gig_id: string;
+  segment_id: string;
+  hold_id: string | null;
+  start_time: string;
+  end_time: string;
+  seeker_timezone: string;
+  mentor_timezone: string;
+  amount_inr: number;
+  status: string;
+  meeting_url: string | null;
+  cancellation_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  seeker?: { id: string; full_name: string; email: string; timezone: string } | null;
+  mentor?: { id: string; full_name: string; email: string; timezone: string } | null;
+  gig?: { id: string; title: string; duration_minutes: number; price_inr: number; segment_id: string } | null;
+  segment?: { id: string; name: string; slug: string } | null;
+  payment?: {
+    id: string;
+    status: string;
+    amount_inr: number;
+    verified_at: string | null;
+    proof_storage_path: string | null;
+    transaction_reference: string | null;
+  } | null;
+  deadlineInfo?: {
+    deadlineUtc: string;
+    isOverdue: boolean;
+    hoursUntilSession: number;
+    minutesUntilSession: number;
+  };
+}
 
 export const AdminBookingsPage: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [selectedBooking, setSelectedBooking] = useState<EnrichedBookingRecord | null>(null);
   const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
   const [overdueCount, setOverdueCount] = useState<number>(0);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const loadBookings = () => {
+  const loadBookings = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const db = getLocalBookingEngineContext();
-      const enriched = db.bookings.map((b) => enrichBooking(b, db));
+      const res = await apiFetch('/api/admin/bookings');
+      if (!res.ok) throw new Error('Failed to fetch bookings');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to load bookings');
+
+      const enriched: EnrichedBookingRecord[] = data.bookings || [];
       // Sort by start_time asc
       enriched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
       setBookings(enriched);
 
-      const overdue = getOverdueBookings(db);
+      const overdue = enriched.filter((b) => b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue);
       setOverdueCount(overdue.length);
     } catch (err) {
       console.error('Failed to load admin bookings:', err);
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'The bookings ledger could not be loaded.'
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -40,14 +93,19 @@ export const AdminBookingsPage: React.FC = () => {
     return b.status === filterStatus;
   });
 
-  const formatScheduledTime = (isoString: string) => {
+  /**
+   * Renders a UTC instant in the MENTOR's own timezone, which the booking row
+   * stores in `mentor_timezone`. The platform default is only a fallback for a
+   * row that somehow has no recorded zone; a zone is never invented per render.
+   */
+  const formatScheduledTime = (isoString: string, timeZone?: string | null) => {
+    const zone = timeZone || APP_CONFIG.DEFAULT_TIMEZONE;
     try {
-      const d = new Date(isoString);
-      return d.toLocaleString('en-IN', {
+      return new Date(isoString).toLocaleString('en-IN', {
         dateStyle: 'medium',
         timeStyle: 'short',
-        timeZone: 'Asia/Kolkata',
-      }) + ' IST';
+        timeZone: zone,
+      });
     } catch {
       return isoString;
     }
@@ -102,52 +160,72 @@ export const AdminBookingsPage: React.FC = () => {
 
       {/* Overdue Links Admin Advisory */}
       {overdueCount > 0 && (
-        <div className="rounded-xl border border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-4 flex items-start justify-between gap-3 text-xs text-[var(--status-warning-strong)]">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="h-4 w-4 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
-            <div>
-              <span className="font-bold text-sm block">
-                {overdueCount} Overdue Mentor Meeting Link(s) Identified
-              </span>
-              <p className="mt-0.5 text-[var(--color-shell-text-muted)] leading-relaxed">
-                Platform Rule: Recommended deadline is 2 hours before session. Missing the deadline does <strong>not</strong> automatically cancel the session. Admins can audit and send mentor reminders.
-              </p>
+        <>
+          <div className="rounded-xl border border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-4 flex items-start justify-between gap-3 text-xs text-[var(--status-warning-strong)]">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-sm block">
+                  {overdueCount} Overdue Mentor Meeting Link(s) Identified
+                </span>
+                <p className="mt-0.5 text-[var(--color-shell-text-muted)] leading-relaxed">
+                  Platform Rule: Recommended deadline is 2 hours before session. Missing the deadline does <strong>not</strong> automatically cancel the session. Admins can audit and send mentor reminders.
+                </p>
+              </div>
             </div>
-          </div>
 
-          <Button
-            size="sm"
-            onClick={() => setFilterStatus('OVERDUE_LINKS')}
-            className="text-xs shrink-0 bg-[var(--color-shell-warning)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-warning)]/90"
-          >
-            Filter Overdue
-          </Button>
-        </div>
+            <Button
+              size="sm"
+              onClick={() => setFilterStatus('OVERDUE_LINKS')}
+              className="text-xs shrink-0 bg-[var(--color-shell-warning)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-warning)]/90"
+            >
+              Filter Overdue
+            </Button>
+          </div>
+        </>
       )}
 
-      {/* Bookings Table */}
-      <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] overflow-hidden shadow-xs">
-        <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
-          <thead className="bg-[var(--color-shell-bg-hover)]/70 border-b border-[var(--color-shell-border)] text-[var(--color-shell-text)] font-semibold uppercase tracking-wider text-[11px]">
-            <tr>
-              <th className="py-3 px-4">Booking Code</th>
-              <th className="py-3 px-4">Seeker ➔ Mentor</th>
-              <th className="py-3 px-4">Scheduled Time</th>
-              <th className="py-3 px-4">Status</th>
-              <th className="py-3 px-4">Meeting Link Deadline</th>
-              <th className="py-3 px-4">Payment</th>
-              <th className="py-3 px-4 text-right">Audit</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--color-shell-border)]">
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="py-8 text-center text-[var(--color-shell-text-subtle)]">
-                  No bookings found matching filter "{filterStatus}".
-                </td>
-              </tr>
-            ) : (
-              filtered.map((b) => {
+      {loading ? (
+        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-12 text-center space-y-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-2 border-[var(--color-shell-primary)] border-t-transparent mx-auto" />
+          <p className="text-xs text-[var(--color-shell-text-muted)]">Loading operational ledger...</p>
+        </div>
+      ) : error ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-center space-y-2">
+          <AlertCircle className="h-6 w-6 text-rose-600 mx-auto" />
+          <p className="text-xs text-rose-900">{error}</p>
+          <p className="text-[11px] text-rose-700">
+            The ledger is unavailable. No booking data is being shown, and no value below is a placeholder.
+          </p>
+          <Button size="sm" variant="outline" onClick={loadBookings} className="text-xs">
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Bookings Table */}
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] overflow-hidden shadow-xs">
+            <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
+              <thead className="bg-[var(--color-shell-bg-hover)]/70 border-b border-[var(--color-shell-border)] text-[var(--color-shell-text)] font-semibold uppercase tracking-wider text-[11px]">
+                <tr>
+                  <th className="py-3 px-4">Booking Code</th>
+                  <th className="py-3 px-4">Seeker ➔ Mentor</th>
+                  <th className="py-3 px-4">Scheduled Time</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">Meeting Link Deadline</th>
+                  <th className="py-3 px-4">Payment</th>
+                  <th className="py-3 px-4 text-right">Audit</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--color-shell-border)]">
+                {filtered.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-[var(--color-shell-text-subtle)]">
+                      No bookings found matching filter "{filterStatus}".
+                    </td>
+                  </tr>
+                ) : (
+                  filtered.map((b) => {
                 const isOverdue = b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue;
                 const hoursLeft = b.deadlineInfo?.hoursUntilSession;
 
@@ -168,7 +246,7 @@ export const AdminBookingsPage: React.FC = () => {
                       <span className="text-[11px] text-zinc-400">Mentor: {b.mentor_id}</span>
                     </td>
                     <td className="py-3 px-4 text-zinc-700">
-                      {formatScheduledTime(b.start_time)}
+                      {formatScheduledTime(b.start_time, b.mentor_timezone)}
                     </td>
                     <td className="py-3 px-4">
                       <Badge
@@ -254,7 +332,7 @@ export const AdminBookingsPage: React.FC = () => {
               <div>
                 <span className="text-zinc-400 block text-[11px]">Scheduled Start</span>
                 <span className="text-zinc-800">
-                  {formatScheduledTime(selectedBooking.start_time)}
+                  {formatScheduledTime(selectedBooking.start_time, selectedBooking.mentor_timezone)}
                 </span>
               </div>
               <div>
@@ -312,6 +390,8 @@ export const AdminBookingsPage: React.FC = () => {
             </div>
           </div>
         </Modal>
+      )}
+        </>
       )}
     </div>
   );
