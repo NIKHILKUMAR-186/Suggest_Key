@@ -718,7 +718,7 @@ async function computeMentorSlotsForDate(
 const SESSION_BOOKING_SELECT = `
   id, booking_code, mentor_id, seeker_id, gig_id, segment_id, hold_id,
   start_time, end_time, seeker_timezone, mentor_timezone, amount_inr,
-  status, meeting_url, cancellation_reason, created_at, updated_at,
+  status, meeting_url, actual_ended_at, cancellation_reason, created_at, updated_at,
   gig:gigs(id, title),
   seeker:profiles!bookings_seeker_id_fkey(id, full_name, timezone),
   mentor:profiles!bookings_mentor_id_fkey(id, full_name, timezone)
@@ -777,10 +777,12 @@ async function loadAuthoritativeSessionBooking(
     mentor_id: row.mentor_id,
     seeker_id: row.seeker_id,
     gig_id: row.gig_id,
+    segment_id: row.segment_id,
     start_time: row.start_time,
     end_time: row.end_time,
     status: row.status,
     meeting_url: row.meeting_url ?? null,
+    actual_ended_at: row.actual_ended_at ?? null,
     cancellation_reason: row.cancellation_reason ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -7014,12 +7016,13 @@ async function startServer() {
     }
   });
 
-  // POST /api/sessions/:bookingId/complete: Transition a booking to COMPLETED.
+  // POST /api/sessions/:bookingId/complete: End a CONFIRMED session by mentor (or admin).
   //
   // Four things are checked server-side, all of them from trusted state:
   //   1. authentication, and the caller id comes from the verified token;
-  //   2. the caller is the booking's seeker, its mentor, or an admin
-  //      (admin from `user_roles`, which `requireAuth` already resolved);
+  //   2. the caller is the booking's mentor or an admin
+  //      (admin from `user_roles`, which `requireAuth` already resolved).
+  //      Seekers cannot end a session - the room is the mentor's responsibility.
   //   3. the booking is in a state that can legitimately conclude - only a
   //      CONFIRMED session can be completed, so a PAYMENT_PENDING,
   //      PENDING_VERIFICATION, MENTOR_PENDING, CANCELLED or REJECTED booking
@@ -7029,12 +7032,14 @@ async function startServer() {
   //
   // The write is a conditional UPDATE scoped to the still-CONFIRMED row, so two
   // concurrent completions cannot double-apply, and it lands in Postgres rather
-  // than in a process-local object.
+  // than in a process-local object. It records `actual_ended_at` so the
+  // meeting URL is irrevocably revoked from seekers immediately.
   app.post('/api/sessions/:bookingId/complete', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
       const userId = req.auth!.user.id;
       const isAdmin = req.auth!.roles.includes('admin');
+      const isMentor = req.auth!.roles.includes('mentor');
 
       const supabase = getSupabaseAdmin();
       if (!supabase) {
@@ -7055,11 +7060,12 @@ async function startServer() {
       }
 
       const booking = loaded.booking;
-      const isParticipant = booking.seeker_id === userId || booking.mentor_id === userId;
+      const isBookingMentor = booking.mentor_id === userId;
 
-      // Same refusal for "not yours" and "does not exist", so booking ids
-      // cannot be enumerated through this endpoint.
-      if (!isAdmin && !isParticipant) {
+      // Only the booking's mentor or an admin may end the session.
+      // A seeker hitting this is refused with the same 404 as a non-existent
+      // booking so that role probing is not possible.
+      if (!isAdmin && !isBookingMentor) {
         return res.status(404).json({
           success: false,
           error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
@@ -7099,7 +7105,7 @@ async function startServer() {
       const nowIso = new Date().toISOString();
       const { data: updated, error: updateErr } = await supabase
         .from('bookings')
-        .update({ status: 'COMPLETED', updated_at: nowIso })
+        .update({ status: 'COMPLETED', actual_ended_at: nowIso, updated_at: nowIso })
         .eq('id', booking.id)
         .eq('status', 'CONFIRMED')
         .select('id, booking_code, status, updated_at')
@@ -7114,6 +7120,20 @@ async function startServer() {
           error: { code: 'BOOKING_STATE_CHANGED', message: 'The booking changed state and was not completed.' },
         });
       }
+
+      // Notify the seeker that the session has ended.
+      await supabase.from('notifications').insert({
+        user_id: booking.seeker_id,
+        title: 'Session Ended',
+        message: `Your mentor has ended session ${booking.booking_code}. The meeting link has been deactivated.`,
+        type: 'SESSION',
+        event_type: 'SESSION_COMPLETED',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: `/seeker/bookings?bookingId=${booking.id}`,
+        is_read: false,
+        created_at: nowIso,
+      });
 
       auditAction(req.auth, 'session_completed', {
         entityType: 'booking',

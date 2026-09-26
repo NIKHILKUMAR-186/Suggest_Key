@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Calendar, Clock, Video, FileText, AlertCircle, ShieldCheck, XCircle, AlertTriangle, Trash2, RotateCcw, Info } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, Video, FileText, AlertCircle, ShieldCheck, XCircle, AlertTriangle, Trash2, RotateCcw, Info, Lock } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { useAuth } from '@/src/context/AuthContext';
+import { fetchBookingDetail, fetchSessionAccess, EnrichedBookingRecord, SessionAccessState } from '@/src/lib/bookingService';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { BookingStatus } from '@/src/types/database';
@@ -29,6 +30,11 @@ export const SeekerBookingDetailPage: React.FC = () => {
   const [cancellationReason, setCancellationReason] = useState('');
   const [showCancelModal, setShowCancelModal] = useState(false);
 
+  const { user } = useAuth();
+  const userId = user?.id;
+  const [sessionAccessState, setSessionAccessState] = useState<SessionAccessState | null>(null);
+  const [sessionAccessLoading, setSessionAccessLoading] = useState(false);
+
   const loadBooking = async () => {
     if (!bookingId) {
       setLoading(false);
@@ -40,6 +46,17 @@ export const SeekerBookingDetailPage: React.FC = () => {
     try {
       const data = await fetchBookingDetail(bookingId);
       setBooking(data);
+      if (data && userId && data.status === 'CONFIRMED') {
+        setSessionAccessLoading(true);
+        try {
+          const accessData = await fetchSessionAccess(bookingId, userId);
+          setSessionAccessState(accessData.accessState);
+        } catch {
+          setSessionAccessState(null);
+        } finally {
+          setSessionAccessLoading(false);
+        }
+      }
     } catch (err: any) {
       setError(toUserMessage(err, 'Failed to load booking details.'));
     } finally {
@@ -172,13 +189,52 @@ export const SeekerBookingDetailPage: React.FC = () => {
 
             <div className="flex flex-wrap items-center gap-2">
               {isConfirmed && (
+                <>
+                  {sessionAccessState === 'T5_WINDOW' || sessionAccessState === 'IN_PROGRESS' ? (
+                    <Button
+                      onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                      size="sm"
+                      className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    >
+                      <Video className="h-3.5 w-3.5" />
+                      <span>Join Session Room</span>
+                    </Button>
+                  ) : sessionAccessState === 'ENDED' || sessionAccessState === 'COMPLETED' ? (
+                    <Button
+                      onClick={() => navigate(`/seeker/workspace?bookingId=${booking.id}`)}
+                      size="sm"
+                      className="gap-1.5 text-xs bg-zinc-700 hover:bg-zinc-800 text-white"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      <span>Open Session Workspace</span>
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 text-xs cursor-not-allowed opacity-60"
+                      disabled
+                    >
+                      <Lock className="h-3.5 w-3.5" />
+                      <span>Join Locked (Opens at T-5)</span>
+                    </Button>
+                  )}
+                  {sessionAccessState === 'BEFORE_T5' && !sessionAccessLoading && (
+                    <span className="text-[10px] text-[var(--color-shell-text-muted)]">
+                      Link unlocks 5 minutes before session start
+                    </span>
+                  )}
+                </>
+              )}
+              {booking.status === 'COMPLETED' && (
                 <Button
-                  onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                  onClick={() => navigate(`/seeker/workspace?bookingId=${booking.id}`)}
                   size="sm"
-                  className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                  className="gap-1.5 text-xs bg-zinc-700 hover:bg-zinc-800 text-white"
                 >
-                  <Video className="h-3.5 w-3.5" />
-                  <span>Join Session Room</span>
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Open Session Workspace</span>
                 </Button>
               )}
               {isPaymentPending && (

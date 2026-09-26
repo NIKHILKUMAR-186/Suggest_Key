@@ -45,6 +45,7 @@ export interface MeetingUrlCarrier {
   start_time?: string | null;
   end_time?: string | null;
   meeting_url?: string | null;
+  actual_ended_at?: string | null;
 }
 
 /**
@@ -85,6 +86,9 @@ export function redactMeetingUrlForParticipant<
 >(booking: T, options: { isAdmin: boolean; isMentor: boolean; now?: Date }): T {
   if (options.isAdmin || options.isMentor) return booking;
   if (!booking.meeting_url) return booking;
+  // Once the mentor has manually ended the session the link is irrevocably
+  // revoked, regardless of the T-5 window.
+  if (booking.actual_ended_at) return { ...booking, meeting_url: null };
   if (isInsideSessionAccessWindow(booking, options.now)) return booking;
   return { ...booking, meeting_url: null };
 }

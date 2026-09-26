@@ -165,7 +165,7 @@ export async function fetchWorkspaceByBooking(
 
   // 3. Fallback to local in-memory engine (DEV ONLY)
   if (!isDevMode) {
-    return { workspace: null, error: null };
+    return { workspace: null, error: new Error('Workspace service is unavailable without a backend connection.'), isPending: false };
   }
 
   const db = getLocalBookingEngineContext();
@@ -212,96 +212,14 @@ export interface SaveWorkspacePayload {
 
 /**
  * Mentor or Admin creates, edits, and saves a session workspace.
+ * Uses the authoritative server API endpoint to ensure consistency.
  */
 export async function saveWorkspaceAuthoritative(
   payload: SaveWorkspacePayload,
   userId: string,
   role: string
 ): Promise<{ success: boolean; workspace?: SessionWorkspace; error?: { message: string } }> {
-  // Authorization validation - fetch booking from Supabase if configured
-  let booking: Booking | null = null;
-
-  if (isSupabaseConfigured()) {
-    try {
-      const { data: bookingData, error: bookingErr } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('id', payload.booking_id)
-        .maybeSingle();
-      if (!bookingErr && bookingData) {
-        booking = bookingData as Booking;
-      }
-    } catch (err: any) {
-      console.warn('Failed to fetch booking for authorization check:', err.message);
-    }
-  }
-
-  if (!booking && isDevMode) {
-    // Dev-only fallback to local DB
-    const db = getLocalBookingEngineContext();
-    booking = db.bookings.find((b) => b.id === payload.booking_id) || null;
-  }
-
-  if (!booking) {
-    return { success: false, error: { message: 'Referenced booking does not exist.' } };
-  }
-
-  if (role !== 'admin' && booking.mentor_id !== userId) {
-    return {
-      success: false,
-      error: { message: 'Unauthorized. Only the assigned mentor or an admin can manage this workspace.' },
-    };
-  }
-
-  const nowIso = new Date().toISOString();
-  const status: WorkspaceStatus = payload.publish ? 'PUBLISHED' : 'PENDING';
-  const publishedAt = payload.publish ? nowIso : null;
-
-  // 1. Try real Supabase upsert if configured
-  if (isSupabaseConfigured()) {
-    try {
-      const upsertRecord = {
-        booking_id: payload.booking_id,
-        mentor_id: payload.mentor_id,
-        seeker_id: booking.seeker_id,
-        status,
-        mentor_notes: payload.mentor_notes,
-        summary: payload.mentor_notes,
-        takeaways: payload.takeaways,
-        suggestions: payload.suggestions,
-        next_steps: payload.next_steps,
-        follow_up_recommendation: payload.follow_up_recommendation || null,
-        published_at: publishedAt,
-        updated_at: nowIso,
-      };
-
-      const { data, error } = await supabase
-        .from('session_workspaces')
-        .upsert(upsertRecord, { onConflict: 'booking_id' })
-        .select()
-        .single();
-
-      if (error) {
-        console.warn('Supabase upsert warning, syncing with local server:', error.message);
-      } else if (data) {
-        // Also dispatch in-app notification if published
-        if (payload.publish) {
-          await supabase.from('notifications').insert({
-            user_id: booking.seeker_id,
-            title: 'Session Workspace Ready',
-            message: `Your mentor has published takeaways and recommendations for session ${booking.booking_code}.`,
-            type: 'WORKSPACE',
-            link: `/seeker/workspace?bookingId=${booking.id}`,
-            is_read: false,
-          });
-        }
-      }
-    } catch (err: any) {
-      console.warn('Supabase error during workspace save:', err.message);
-    }
-  }
-
-  // 2. Call backend endpoint to keep server authoritative
+  // Call backend endpoint - server is the single source of truth
   try {
     const res = await apiFetch('/api/workspaces', {
       method: 'POST',
@@ -314,68 +232,96 @@ export async function saveWorkspaceAuthoritative(
       if (json.success && json.workspace) {
         return { success: true, workspace: json.workspace };
       }
+      return { success: false, error: { message: json.error?.message || 'Failed to save workspace.' } };
     }
-  } catch (err) {
-    // Continue to local sync
-  }
 
-  // 3. In-memory update (DEV ONLY)
-  if (!isDevMode) {
-    return {
-      success: false,
-      error: { message: 'Workspace service is unavailable without a backend connection.' },
+    // Handle non-OK responses
+    let errorMessage = 'Failed to save workspace.';
+    try {
+      const json = await res.json();
+      errorMessage = json.error?.message || errorMessage;
+    } catch {
+      // Use default error message
+    }
+    return { success: false, error: { message: errorMessage } };
+  } catch (err: any) {
+    // Network or unexpected error
+    if (!isDevMode) {
+      return {
+        success: false,
+        error: { message: 'Workspace service is unavailable without a backend connection.' },
+      };
+    }
+
+    // Dev-only fallback to local in-memory engine
+    let booking: Booking | null = null;
+    const db = getLocalBookingEngineContext();
+    booking = db.bookings.find((b) => b.id === payload.booking_id) || null;
+
+    if (!booking) {
+      return { success: false, error: { message: 'Referenced booking does not exist.' } };
+    }
+
+    if (role !== 'admin' && booking.mentor_id !== userId) {
+      return {
+        success: false,
+        error: { message: 'Unauthorized. Only the assigned mentor or an admin can manage this workspace.' },
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    const status: WorkspaceStatus = payload.publish ? 'PUBLISHED' : 'PENDING';
+    const publishedAt = payload.publish ? nowIso : null;
+
+    let existingIndex = localWorkspaces.findIndex((w) => w.booking_id === payload.booking_id);
+    const overview = deriveSessionOverview(booking);
+
+    const updatedRecord: SessionWorkspace = {
+      id: existingIndex >= 0 ? localWorkspaces[existingIndex].id : `ws-${Date.now()}`,
+      booking_id: payload.booking_id,
+      mentor_id: payload.mentor_id,
+      seeker_id: booking.seeker_id,
+      status,
+      mentor_notes: payload.mentor_notes,
+      summary: payload.mentor_notes,
+      takeaways: payload.takeaways,
+      suggestions: payload.suggestions,
+      next_steps: payload.next_steps,
+      action_items: payload.next_steps.map((ns) => ({
+        id: ns.id,
+        text: ns.text,
+        completed: !!ns.completed,
+      })),
+      follow_up_recommendation: payload.follow_up_recommendation || null,
+      resources: existingIndex >= 0 ? localWorkspaces[existingIndex].resources : [],
+      published_at: publishedAt || (existingIndex >= 0 ? localWorkspaces[existingIndex].published_at : null),
+      created_at: existingIndex >= 0 ? localWorkspaces[existingIndex].created_at : nowIso,
+      updated_at: nowIso,
+      session_overview: overview,
     };
+
+    if (existingIndex >= 0) {
+      localWorkspaces[existingIndex] = updatedRecord;
+    } else {
+      localWorkspaces.push(updatedRecord);
+    }
+
+    // Add notification to local db if published
+    if (payload.publish && db.notifications) {
+      db.notifications.unshift({
+        id: `notif-ws-${Date.now()}`,
+        user_id: booking.seeker_id,
+        title: 'Session Workspace Ready',
+        message: `Your mentor has published takeaways and recommendations for session ${booking.booking_code}.`,
+        type: 'WORKSPACE',
+        link: `/seeker/workspace?bookingId=${booking.id}`,
+        is_read: false,
+        created_at: nowIso,
+      });
+    }
+
+    return { success: true, workspace: updatedRecord };
   }
-
-  const db = getLocalBookingEngineContext();
-  let existingIndex = localWorkspaces.findIndex((w) => w.booking_id === payload.booking_id);
-  const overview = deriveSessionOverview(booking);
-
-  const updatedRecord: SessionWorkspace = {
-    id: existingIndex >= 0 ? localWorkspaces[existingIndex].id : `ws-${Date.now()}`,
-    booking_id: payload.booking_id,
-    mentor_id: payload.mentor_id,
-    seeker_id: booking.seeker_id,
-    status,
-    mentor_notes: payload.mentor_notes,
-    summary: payload.mentor_notes,
-    takeaways: payload.takeaways,
-    suggestions: payload.suggestions,
-    next_steps: payload.next_steps,
-    action_items: payload.next_steps.map((ns) => ({
-      id: ns.id,
-      text: ns.text,
-      completed: !!ns.completed,
-    })),
-    follow_up_recommendation: payload.follow_up_recommendation || null,
-    resources: existingIndex >= 0 ? localWorkspaces[existingIndex].resources : [],
-    published_at: publishedAt || (existingIndex >= 0 ? localWorkspaces[existingIndex].published_at : null),
-    created_at: existingIndex >= 0 ? localWorkspaces[existingIndex].created_at : nowIso,
-    updated_at: nowIso,
-    session_overview: overview,
-  };
-
-  if (existingIndex >= 0) {
-    localWorkspaces[existingIndex] = updatedRecord;
-  } else {
-    localWorkspaces.push(updatedRecord);
-  }
-
-  // Add notification to local db if published
-  if (payload.publish && db.notifications) {
-    db.notifications.unshift({
-      id: `notif-ws-${Date.now()}`,
-      user_id: booking.seeker_id,
-      title: 'Session Workspace Ready',
-      message: `Your mentor has published takeaways and recommendations for session ${booking.booking_code}.`,
-      type: 'WORKSPACE',
-      link: `/seeker/workspace?bookingId=${booking.id}`,
-      is_read: false,
-      created_at: nowIso,
-    });
-  }
-
-  return { success: true, workspace: updatedRecord };
 }
 
 /**

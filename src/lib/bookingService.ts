@@ -377,27 +377,29 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-          status: 'MENTOR_PENDING',
-          meeting_url: null,
-          cancellation_reason: null,
-          created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-        },
-        {
-          id: 'bk-9022',
-          booking_code: 'BK-9022',
-          mentor_id: 'usr-8802',
-          seeker_id: 'usr-seeker-demo',
-          gig_id: 'gig-car-rahul',
-          segment_id: 'seg-car-03',
-          hold_id: 'hold-9022',
-          start_time: new Date(Date.now() + 75 * 60 * 1000).toISOString(), // 75 mins: Overdue (<2h)!
-          end_time: new Date(Date.now() + 120 * 60 * 1000).toISOString(),
-          seeker_timezone: 'Asia/Kolkata',
-          mentor_timezone: 'Asia/Kolkata',
-          amount_inr: 1299,
-          status: 'MENTOR_PENDING',
-          meeting_url: null,
+           status: 'MENTOR_PENDING',
+           meeting_url: null,
+           actual_ended_at: null,
+           cancellation_reason: null,
+           created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+           updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+         },
+         {
+           id: 'bk-9022',
+           booking_code: 'BK-9022',
+           mentor_id: 'usr-8802',
+           seeker_id: 'usr-seeker-demo',
+           gig_id: 'gig-car-rahul',
+           segment_id: 'seg-car-03',
+           hold_id: 'hold-9022',
+           start_time: new Date(Date.now() + 75 * 60 * 1000).toISOString(), // 75 mins: Overdue (<2h)!
+           end_time: new Date(Date.now() + 120 * 60 * 1000).toISOString(),
+           seeker_timezone: 'Asia/Kolkata',
+           mentor_timezone: 'Asia/Kolkata',
+           amount_inr: 1299,
+           status: 'MENTOR_PENDING',
+           meeting_url: null,
+           actual_ended_at: null,
           cancellation_reason: null,
           created_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
@@ -415,12 +417,13 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-          status: 'CONFIRMED',
-          meeting_url: 'https://meet.google.com/hrc-qjtv-zsk',
-          cancellation_reason: null,
-          created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-          updated_at: new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString(),
-        },
+           status: 'CONFIRMED',
+           meeting_url: 'https://meet.google.com/hrc-qjtv-zsk',
+           actual_ended_at: null,
+           cancellation_reason: null,
+           created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+           updated_at: new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString(),
+         },
         // Phase 9 Test Booking 1: In T-5 early arrival window (starts in 3 minutes)
         {
           id: 'bk-session-soon',
@@ -435,8 +438,9 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-          status: 'CONFIRMED',
-          meeting_url: 'https://meet.google.com/early-access-room',
+           status: 'CONFIRMED',
+           meeting_url: 'https://meet.google.com/early-access-room',
+           actual_ended_at: null,
           cancellation_reason: null,
           created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
@@ -455,8 +459,9 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-          status: 'CONFIRMED',
-          meeting_url: 'https://meet.google.com/live-session-room',
+           status: 'CONFIRMED',
+           meeting_url: 'https://meet.google.com/live-session-room',
+           actual_ended_at: null,
           cancellation_reason: null,
           created_at: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
@@ -475,11 +480,33 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-          status: 'COMPLETED',
-          meeting_url: 'https://meet.google.com/past-session-room',
+           status: 'COMPLETED',
+           meeting_url: 'https://meet.google.com/past-session-room',
+           actual_ended_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
           cancellation_reason: null,
           created_at: new Date(Date.now() - 180 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+        },
+        // Phase 22 Test Booking: Mentor ended session early (actual_ended_at before end_time)
+        {
+          id: 'bk-session-ended-early',
+          booking_code: 'BK-ENDED-04',
+          mentor_id: 'usr-8802',
+          seeker_id: 'usr-8801',
+          gig_id: 'gig-rel-rahul',
+          segment_id: 'seg-rel-01',
+          hold_id: null,
+          start_time: new Date(Date.now() - 30 * 60 * 1000).toISOString(), // Started 30 mins ago
+          end_time: new Date(Date.now() + 30 * 60 * 1000).toISOString(),   // Scheduled to end in 30 mins
+          seeker_timezone: 'Asia/Kolkata',
+          mentor_timezone: 'Asia/Kolkata',
+          amount_inr: 999,
+          status: 'COMPLETED',
+          meeting_url: 'https://meet.google.com/early-ended-room',
+          actual_ended_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // Ended 10 mins ago, 20 mins before scheduled end
+          cancellation_reason: null,
+          created_at: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
+          updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
         },
       ],
       slotHolds: [],
@@ -658,6 +685,19 @@ export function getLocalBookingEngineContext(): BookingEngineContext {
           link: '/seeker/workspace?bookingId=bk-session-ended',
           is_read: false,
           created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+        },
+        {
+          id: 'notif-seeker-12',
+          user_id: 'usr-8801',
+          title: 'Session Ended Early',
+          message: 'Your mentor has ended session BK-ENDED-04 early. The meeting link has been deactivated.',
+          type: 'SESSION',
+          event_type: 'SESSION_COMPLETED',
+          entity_type: 'booking',
+          entity_id: 'bk-session-ended-early',
+          link: '/seeker/bookings?bookingId=bk-session-ended-early',
+          is_read: false,
+          created_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
         },
         {
           id: 'notif-seeker-11',
@@ -1218,7 +1258,8 @@ export async function joinSessionRequest(
 }
 
 /**
- * Explicitly marks a session as COMPLETED after conclusion.
+ * Explicitly marks a session as COMPLETED after conclusion by the mentor.
+ * In dev/local mode this also records actual_ended_at on the in-memory fixture.
  */
 export async function markSessionCompleted(bookingId: string): Promise<boolean> {
   try {
@@ -1240,9 +1281,37 @@ export async function markSessionCompleted(bookingId: string): Promise<boolean> 
   const b = db.bookings.find((item) => item.id === bookingId || item.booking_code.toUpperCase() === bookingId.toUpperCase());
   if (b) {
     b.status = 'COMPLETED';
+    b.actual_ended_at = new Date().toISOString();
     b.updated_at = new Date().toISOString();
     return true;
   }
   return false;
+}
+
+/**
+ * Mentor-initiated End Session action. Delegates to the same server endpoint
+ * as `markSessionCompleted`, but is named to reflect the mentor workflow and
+ * returns a richer result for UI consumption.
+ */
+export async function endSessionByMentor(bookingId: string): Promise<{ success: boolean; booking?: { id: string; booking_code: string; status: string }; error?: { code: string; message: string } }> {
+  try {
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      return { success: true, booking: data.booking };
+    }
+    return {
+      success: false,
+      error: data.error || { code: 'END_SESSION_FAILED', message: 'Failed to end session.' },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: { code: 'NO_BACKEND', message: err?.message || 'Session service is unavailable.' },
+    };
+  }
 }
 

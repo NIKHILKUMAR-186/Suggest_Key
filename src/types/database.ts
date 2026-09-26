@@ -152,8 +152,9 @@ export interface Booking {
   seeker_timezone: string;
   mentor_timezone: string;
   amount_inr: number;
-  status: BookingStatus;
+   status: BookingStatus;
   meeting_url: string | null;
+  actual_ended_at: string | null;
   cancellation_reason: string | null;
   created_at: string;
   updated_at: string;

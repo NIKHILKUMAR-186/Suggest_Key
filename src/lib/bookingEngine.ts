@@ -451,9 +451,10 @@ export async function executeAtomicBookingWithHold(
       seeker_timezone: seekerTz,
       mentor_timezone: mentorTz,
       amount_inr: gig.price_inr,
-      status: 'PAYMENT_PENDING',
-      meeting_url: null,
-      cancellation_reason: null,
+     status: 'PAYMENT_PENDING',
+     meeting_url: null,
+     actual_ended_at: null,
+     cancellation_reason: null,
       created_at: currentUtcTime.toISOString(),
       updated_at: currentUtcTime.toISOString(),
       gig,
@@ -738,6 +739,7 @@ export type SessionAccessState =
   | 'BEFORE_T5' // now < start_time - 5 mins: link hidden, join denied
   | 'T5_WINDOW' // start_time - 5 mins <= now < start_time: link visible, pre-session join allowed
   | 'IN_PROGRESS' // start_time <= now < end_time: link visible, join allowed
+  | 'ENDED' // mentor manually ended the session before scheduled end_time
   | 'COMPLETED'; // now >= end_time: join denied, link hidden, transitioned to COMPLETED
 
 export interface SessionAccessRequest {
@@ -1011,16 +1013,25 @@ export function validateSessionAccess(
   // CASE 1: At or after session end (now >= end_time)
   // "At or after session end: join denied"
   // "After end_time: booking/session should transition appropriately toward COMPLETED."
+  // Also catches status === 'COMPLETED' (incl. manual end).
   if (nowMs >= endMs || booking.status === 'COMPLETED') {
     if (booking.status !== 'COMPLETED') {
       booking.status = 'COMPLETED';
       booking.updated_at = now.toISOString();
     }
 
+    // Distinguish a mentor manual end (actual_ended_at recorded) that occurred
+    // *before* the scheduled end_time from a natural completion.
+    const endedAtMs = booking.actual_ended_at
+      ? new Date(booking.actual_ended_at).getTime()
+      : 0;
+    const endedBeforeScheduledEnd =
+      Number.isFinite(endedAtMs) && endedAtMs > 0 && endedAtMs < endMs;
+
     return {
       success: true,
       canJoin: false,
-      accessState: 'COMPLETED',
+      accessState: endedBeforeScheduledEnd ? 'ENDED' : 'COMPLETED',
       meetingUrl: null, // Strictly hidden / inactive
       sessionTitle,
       mentorName,
@@ -1035,10 +1046,14 @@ export function validateSessionAccess(
       secondsUntilEnd: 0,
       bookingStatus: 'COMPLETED',
       bookingCode: booking.booking_code,
-      message: 'Session has concluded. Thank you for participating.',
+      message: endedBeforeScheduledEnd
+        ? 'Session was ended early by the mentor. Joining is no longer permitted.'
+        : 'Session has concluded. Thank you for participating.',
       error: {
         code: 'SESSION_ENDED',
-        message: 'This session has already ended. Joining is no longer permitted.',
+        message: endedBeforeScheduledEnd
+          ? 'This session was ended early by the mentor. Joining is no longer permitted.'
+          : 'This session has already ended. Joining is no longer permitted.',
       },
     };
   }

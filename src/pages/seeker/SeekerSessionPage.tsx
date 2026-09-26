@@ -194,6 +194,7 @@ export const SeekerSessionPage: React.FC = () => {
   const isBeforeT5 = accessState === 'BEFORE_T5';
   const isT5Window = accessState === 'T5_WINDOW';
   const isInProgress = accessState === 'IN_PROGRESS';
+  const isEnded = accessState === 'ENDED';
   const isCompleted = accessState === 'COMPLETED';
 
   const t5Countdown = formatCountdown(secondsUntilT5);
@@ -238,6 +239,8 @@ export const SeekerSessionPage: React.FC = () => {
                 ? 'success'
                 : isT5Window
                 ? 'warning'
+                : isEnded
+                ? 'destructive'
                 : isCompleted
                 ? 'secondary'
                 : 'outline'
@@ -248,6 +251,8 @@ export const SeekerSessionPage: React.FC = () => {
               ? '● LIVE IN PROGRESS'
               : isT5Window
               ? 'EARLY ACCESS WINDOW'
+              : isEnded
+              ? 'ENDED EARLY'
               : isCompleted
               ? 'COMPLETED'
               : 'UPCOMING (LOCKED)'}
@@ -567,25 +572,31 @@ export const SeekerSessionPage: React.FC = () => {
         )}
 
         {/* ------------------------------------------------------------------ */}
-        {/* STATE 4: COMPLETED / ENDED (Join Denied & Link Expired)           */}
+        {/* STATE 4: ENDED (mentor ended early) & STATE 5: COMPLETED (natural) */}
         {/* ------------------------------------------------------------------ */}
-        {isCompleted && (
+        {(isEnded || isCompleted) && (
           <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-6 sm:p-8 space-y-6 text-center sm:text-left">
             <div className="flex flex-col sm:flex-row items-center gap-4">
-              <div className="h-12 w-12 rounded-full bg-zinc-200 text-[var(--color-shell-text-muted)] flex items-center justify-center shrink-0">
-                <Check className="h-6 w-6 text-[var(--color-shell-text)]" />
+              <div className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 ${
+                isEnded
+                  ? 'bg-[var(--color-shell-error-soft)] text-[var(--color-shell-error)]'
+                  : 'bg-zinc-200 text-[var(--color-shell-text-muted)]'
+              }`}>
+                {isEnded ? <AlertCircle className="h-6 w-6" /> : <Check className="h-6 w-6 text-[var(--color-shell-text)]" />}
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-center sm:justify-start gap-2">
-                  <Badge variant="secondary" className="text-xs font-semibold">
-                    STATUS: COMPLETED
+                  <Badge variant={isEnded ? 'destructive' : 'secondary'} className="text-xs font-semibold">
+                    STATUS: {isEnded ? 'ENDED EARLY' : 'COMPLETED'}
                   </Badge>
                 </div>
                 <h2 className="text-lg font-bold text-[var(--color-shell-text)]">
-                  Session Has Concluded
+                  {isEnded ? 'Session Ended Early' : 'Session Has Concluded'}
                 </h2>
                 <p className="text-xs text-[var(--color-shell-text-muted)] max-w-lg">
-                  Scheduled time has ended. The meeting link has been deactivated, and joining is permanently closed per server policy.
+                  {isEnded
+                    ? 'Your mentor has ended this session before the scheduled end time. The meeting link has been deactivated, and joining is permanently closed per server policy.'
+                    : 'Scheduled time has ended. The meeting link has been deactivated, and joining is permanently closed per server policy.'}
                 </p>
               </div>
             </div>
@@ -630,10 +641,12 @@ export const SeekerSessionPage: React.FC = () => {
                 className="w-full sm:w-auto px-6 text-xs bg-zinc-200 text-[var(--color-shell-text-muted)] cursor-not-allowed opacity-70"
                 size="md"
               >
-                <span>Join Denied (Session Ended)</span>
+                <span>{isEnded ? 'Join Denied (Ended Early)' : 'Join Denied (Session Ended)'}</span>
               </Button>
               <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
-                End time elapsed at {sessionAccess?.endTime ? new Date(sessionAccess.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}.
+                {isEnded
+                  ? `Session was ended by mentor at ${sessionAccess?.currentServerTime ? new Date(sessionAccess.currentServerTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}.`
+                  : `End time elapsed at ${sessionAccess?.endTime ? new Date(sessionAccess.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}.`}
               </span>
             </div>
           </div>

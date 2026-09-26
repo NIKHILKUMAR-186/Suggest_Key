@@ -28,6 +28,7 @@ import { formatInr } from '@/src/lib/seekerFormat';
 import {
   fetchBookingDetail,
   confirmMentorBooking,
+  endSessionByMentor,
   EnrichedBookingRecord,
 } from '@/src/lib/bookingService';
 import { validateMeetingUrl } from '@/src/lib/bookingEngine';
@@ -63,6 +64,8 @@ export const MentorBookingDetailPage: React.FC = () => {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [feedbackSuccess, setFeedbackSuccess] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [ending, setEnding] = useState(false);
 
   const mentorId = user?.id;
 
@@ -105,6 +108,41 @@ export const MentorBookingDetailPage: React.FC = () => {
       setUrlError(validation.error || 'Invalid meeting URL.');
     } else {
       setUrlError('');
+    }
+  };
+
+  const handleEndSession = async () => {
+    if (!booking || ending) return;
+    setEnding(true);
+    setFeedbackError(null);
+    setFeedbackSuccess(null);
+    try {
+      const result = await endSessionByMentor(booking.id);
+      if (result.success) {
+        setBooking((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'COMPLETED',
+                actual_ended_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }
+            : null
+        );
+        setFeedbackSuccess('Session ended. The seeker has been notified.');
+        setShowEndModal(false);
+        toast.success('Session ended and seeker notified.', { title: 'Session Ended' });
+      } else {
+        const message = result.error?.message || 'Failed to end session.';
+        setFeedbackError(message);
+        toast.error(message, { title: 'End Session Failed' });
+      }
+    } catch (err: unknown) {
+      const message = toUserMessage(err, 'Failed to end session. Please try again.');
+      setFeedbackError(message);
+      toast.error(message, { title: 'End Session Failed' });
+    } finally {
+      setEnding(false);
     }
   };
 
@@ -380,6 +418,143 @@ export const MentorBookingDetailPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Session Status & End Session Action */}
+      {isConfirmed && (
+        (() => {
+          const nowMs = Date.now();
+          const startMs = new Date(booking.start_time).getTime();
+          const endMs = new Date(booking.end_time).getTime();
+          const hasStarted = Number.isFinite(startMs) && nowMs >= startMs;
+          const hasEnded = !!booking.actual_ended_at;
+          const isLive = hasStarted && !hasEnded && Number.isFinite(endMs) && nowMs < endMs;
+
+          return (
+            <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
+              <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-2">
+                <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
+                  <Clock className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
+                  Session Lifecycle
+                </h3>
+                <Badge variant={isLive ? 'success' : hasEnded ? 'secondary' : 'warning'}>
+                  {isLive ? '● LIVE IN PROGRESS' : hasEnded ? 'ENDED' : 'SCHEDULED'}
+                </Badge>
+              </div>
+
+              {isLive ? (
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs">
+                  <div className="space-y-1">
+                    <p className="font-semibold text-[var(--color-shell-text)]">
+                      The session is currently in progress.
+                    </p>
+                    <p className="text-[var(--color-shell-text-muted)]">
+                      Ending the session now will deactivate the meeting link for the seeker and mark this booking as COMPLETED.
+                    </p>
+                  </div>
+                  <Button
+                    id="btn-end-session"
+                    onClick={() => setShowEndModal(true)}
+                    variant="destructive"
+                    size="sm"
+                    className="gap-1.5 text-xs shrink-0"
+                  >
+                    <Video className="h-3.5 w-3.5" />
+                    <span>End Session</span>
+                  </Button>
+                </div>
+              ) : hasEnded ? (
+                <div className="flex items-start gap-3 text-xs">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--color-shell-success)] shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-semibold text-[var(--color-shell-text)]">Session Concluded</p>
+                    <p className="text-[var(--color-shell-text-muted)]">
+                      This session was ended on{' '}
+                      {booking.actual_ended_at
+                        ? new Date(booking.actual_ended_at).toLocaleDateString('en-IN', {
+                            weekday: 'short',
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: true,
+                          })
+                        : '—'}
+                      . The meeting link is deactivated and the seeker has been notified.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-3 text-xs">
+                  <Clock className="h-4 w-4 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-semibold text-[var(--color-shell-text)]">Session Scheduled</p>
+                    <p className="text-[var(--color-shell-text-muted)]">
+                      The session has not started yet. The "End Session" action will become available once the session is in progress.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()
+      )}
+
+      {/* End Session Confirmation Modal */}
+      <div
+        className={`fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 ${showEndModal ? 'block' : 'hidden'}`}
+        onClick={() => setShowEndModal(false)}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="end-session-modal-title"
+      >
+        <div
+          className="w-full max-w-md rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xl space-y-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-[var(--color-shell-error-soft)] flex items-center justify-center text-[var(--color-shell-error)] shrink-0">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 id="end-session-modal-title" className="text-lg font-bold text-[var(--color-shell-text)]">
+                End Session?
+              </h2>
+              <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
+                This will permanently deactivate the meeting link for the seeker and mark booking #{booking?.booking_code} as COMPLETED.
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/50 p-3 text-xs">
+            <div className="flex items-start gap-2 text-[var(--color-shell-warning)]">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <span>This action cannot be undone. The seeker will be notified that the session has ended.</span>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button
+              onClick={() => setShowEndModal(false)}
+              variant="outline"
+              size="sm"
+              className="flex-1"
+            >
+              Keep Session Open
+            </Button>
+            <Button
+              onClick={handleEndSession}
+              variant="destructive"
+              size="sm"
+              isLoading={ending}
+              loadingText="Ending..."
+              className="flex-1"
+            >
+              End Session
+            </Button>
+          </div>
+        </div>
+      </div>
 
       {/* 2-Column Info Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

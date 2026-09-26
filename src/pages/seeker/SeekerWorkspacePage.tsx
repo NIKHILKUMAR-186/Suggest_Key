@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -64,13 +64,25 @@ export const SeekerWorkspacePage: React.FC = () => {
 
         setCompletedBookings(completed);
 
-        // Determine initial selected booking
+        // Determine initial selected booking - prefer exact match from URL
         let target = completed.find((b: EnrichedBookingRecord) => b.id === queryBookingId || b.booking_code === queryBookingId);
-        if (!target && completed.length > 0) {
-          target = completed[0];
-        }
-
-        if (target) {
+        
+        // If URL bookingId doesn't match a completed booking, still use it for workspace fetch
+        // but don't fall back to a different booking's workspace
+        if (!target) {
+          // Check if the booking exists but isn't completed yet
+          const anyBooking = bookings.find((b: EnrichedBookingRecord) => b.id === queryBookingId || b.booking_code === queryBookingId);
+          if (anyBooking) {
+            // Booking exists but not completed - use it for workspace fetch anyway
+            setSelectedBookingId(anyBooking.id);
+            setSelectedBooking(anyBooking);
+          } else if (completed.length > 0) {
+            // No matching booking at all - fall back to first completed for UI selector only
+            target = completed[0];
+            setSelectedBookingId(target.id);
+            setSelectedBooking(target);
+          }
+        } else {
           setSelectedBookingId(target.id);
           setSelectedBooking(target);
         }
@@ -86,7 +98,7 @@ export const SeekerWorkspacePage: React.FC = () => {
   }, [seekerId, queryBookingId]);
 
   // 2. Fetch workspace for chosen booking
-  const loadWorkspace = async (bookingId: string) => {
+  const loadWorkspace = useCallback(async (bookingId: string) => {
     if (!bookingId || !seekerId) return;
 
     setLoading(true);
@@ -120,15 +132,32 @@ export const SeekerWorkspacePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [seekerId]);
 
   useEffect(() => {
     if (selectedBookingId) {
       const b = completedBookings.find((item) => item.id === selectedBookingId);
       if (b) setSelectedBooking(b);
+      // Always fetch workspace for the selected booking ID, regardless of completion status
       loadWorkspace(selectedBookingId);
+    } else if (queryBookingId) {
+      // Fallback: if no selectedBookingId but we have a queryBookingId, try to fetch workspace directly
+      loadWorkspace(queryBookingId);
     }
-  }, [selectedBookingId, completedBookings]);
+  }, [selectedBookingId, completedBookings, queryBookingId, loadWorkspace]);
+
+  // Refetch workspace when window gains focus (e.g., after clicking notification)
+  useEffect(() => {
+    const handleFocus = () => {
+      const targetBookingId = selectedBookingId || queryBookingId;
+      if (targetBookingId) {
+        loadWorkspace(targetBookingId);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [loadWorkspace, selectedBookingId, queryBookingId]);
 
   const toggleStepCompleted = (stepId: string) => {
     setCompletedSteps((prev) => ({
