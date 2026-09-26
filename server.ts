@@ -3668,6 +3668,7 @@ async function startServer() {
         { count: completedBookings },
         { count: gigCount },
         { count: activeGigCount },
+        { count: paymentCount },
         { count: workspaceCount },
         { count: notificationCount },
         { count: unreadNotificationCount },
@@ -3681,6 +3682,7 @@ async function startServer() {
           .eq('status', 'COMPLETED'),
         admin.from('gigs').select('id', { count: 'exact', head: true }).eq('mentor_id', userId),
         admin.from('gigs').select('id', { count: 'exact', head: true }).eq('mentor_id', userId).eq('is_active', true),
+        admin.from('payments').select('id', { count: 'exact', head: true }).eq('seeker_id', userId),
         admin.from('session_workspaces').select('id', { count: 'exact', head: true })
           .or(`seeker_id.eq.${userId},mentor_id.eq.${userId}`),
         admin.from('notifications').select('id', { count: 'exact', head: true }).eq('user_id', userId),
@@ -3753,6 +3755,7 @@ async function startServer() {
             completedBookings: completedBookings ?? 0,
             gigs: gigCount ?? 0,
             activeGigs: activeGigCount ?? 0,
+            payments: paymentCount ?? 0,
             segments: (memberships || []).length,
             workspaces: workspaceCount ?? 0,
             notifications: notificationCount ?? 0,
@@ -7181,7 +7184,7 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (process.env.VERCEL !== '1') {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -7189,9 +7192,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
-  });
+  // When deployed on Vercel, the Express app is exported as the serverless
+  // function handler so Vercel can route /api/* requests to it. The rewrites
+  // in vercel.json send /api/(.*) to this function, and /(.*) to index.html.
+  // app.listen() is only used for local/standalone development.
+  if (process.env.VERCEL === '1') {
+    (module as any).exports = app;
+  } else {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
 startServer();

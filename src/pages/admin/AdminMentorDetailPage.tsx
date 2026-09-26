@@ -18,6 +18,8 @@ import {
   Pencil,
   Trash2,
   Download,
+  KeyRound,
+  Mail,
   ShieldCheck,
 } from 'lucide-react';
 import { Badge } from '@/src/components/ui/Badge';
@@ -198,6 +200,63 @@ export interface AdminSegmentOption {
   priority: number;
 }
 
+/**
+ * Shapes returned by the user-scoped control endpoints
+ * (GET /api/admin/users/:id/payments | /workspaces | /notifications).
+ *
+ * A mentor is also a user account, so the Mentor Control Center reuses these
+ * instead of duplicating a parallel query path.
+ */
+export interface AdminControlPayment {
+  id: string;
+  amountInr: number;
+  currency: string;
+  status: string;
+  transactionReference: string | null;
+  hasProof: boolean;
+  verifiedAt: string | null;
+  rejectionReason: string | null;
+  createdAt: string;
+  booking: {
+    id: string;
+    bookingCode: string;
+    startTime: string;
+    status: string;
+    gigTitle: string | null;
+    segmentName: string | null;
+    mentor: { id: string; full_name: string | null; email: string | null } | null;
+  } | null;
+}
+
+export interface AdminControlWorkspace {
+  id: string;
+  bookingId: string;
+  status: string;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  mentor: { id: string; full_name: string | null; email: string | null } | null;
+  seeker: { id: string; full_name: string | null; email: string | null } | null;
+  booking: {
+    id: string;
+    booking_code: string;
+    start_time: string;
+    end_time: string;
+    status: string;
+    segment: { id: string; name: string } | null;
+  } | null;
+}
+
+export interface AdminControlNotification {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+}
+
 
 
 function BackLink({ onClick }: { onClick: () => void }) {
@@ -298,6 +357,18 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
         {label}
       </dt>
       <dd className="mt-0.5 text-xs text-[var(--color-shell-text)] break-words">{value}</dd>
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-shell-text-subtle)]">
+        {label}
+      </p>
+      <p className="mt-1 text-2xl font-bold tracking-tight text-[var(--color-shell-text)]">{value}</p>
+      {hint && <p className="mt-0.5 text-[11px] text-[var(--color-shell-text-subtle)]">{hint}</p>}
     </div>
   );
 }
@@ -547,6 +618,19 @@ export const AdminMentorDetailPage: React.FC = () => {
   const [auditEntries, setAuditEntries] = useState<AdminMentorAuditEntry[] | null>(null);
   const [segments, setSegments] = useState<AdminSegmentOption[]>([]);
 
+  // Payments, workspaces and notifications. A mentor is a user, so these reuse
+  // the same Admin-gated user endpoints rather than a parallel data path.
+  const [payments, setPayments] = useState<AdminControlPayment[] | null>(null);
+  const [workspaces, setWorkspaces] = useState<AdminControlWorkspace[] | null>(null);
+  const [notifications, setNotifications] = useState<AdminControlNotification[] | null>(null);
+
+  // Account-access actions
+  const [accountBusy, setAccountBusy] = useState<null | 'reset' | 'invite'>(null);
+  const [accountNotice, setAccountNotice] = useState<{ tone: 'ok' | 'error'; message: string } | null>(null);
+
+  // Archive confirmation
+  const [pendingArchive, setPendingArchive] = useState<AdminMentorDetail['gigs'][number] | null>(null);
+
   // Editable resource state (null = closed).
   const [editingProfile, setEditingProfile] = useState(false);
   const [segmentEditorOpen, setSegmentEditorOpen] = useState(false);
@@ -592,15 +676,74 @@ export const AdminMentorDetailPage: React.FC = () => {
     }
   }, []);
 
+  // A generic loader for the user-scoped control endpoints. Every one of them is
+  // Admin-gated server-side, so nothing here is UI-only state.
+  const loadUserScoped = useCallback(
+    async (resource: 'payments' | 'workspaces' | 'notifications') => {
+      setTabError(null);
+      try {
+        const res = await apiFetch(`/api/admin/users/${encodeURIComponent(mentorId)}/${resource}`);
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error?.message || `Unable to load ${resource}.`);
+        if (resource === 'payments') setPayments(data.payments || []);
+        if (resource === 'workspaces') setWorkspaces(data.workspaces || []);
+        if (resource === 'notifications') setNotifications(data.notifications || []);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : `Unable to load ${resource}.`;
+        setTabError(message);
+        if (resource === 'payments') setPayments([]);
+        if (resource === 'workspaces') setWorkspaces([]);
+        if (resource === 'notifications') setNotifications([]);
+      }
+    },
+    [mentorId],
+  );
+
   useEffect(() => {
     loadSegments();
   }, [loadSegments]);
 
-  // Load the section the Admin is actually looking at.
+  // Load the section the Admin is actually looking at. Bookings are also
+  // loaded up front because the overview card counts upcoming sessions.
   useEffect(() => {
-    if (activeTab === 'bookings' && bookings === null) loadBookings();
+    if (bookings === null) loadBookings();
+    if (activeTab === 'payments' && payments === null) loadUserScoped('payments');
+    if (activeTab === 'workspaces' && workspaces === null) loadUserScoped('workspaces');
+    if (activeTab === 'notifications' && notifications === null) loadUserScoped('notifications');
     if (activeTab === 'audit' && auditEntries === null) loadAudit();
-  }, [activeTab, bookings, auditEntries, loadBookings, loadAudit]);
+  }, [activeTab, bookings, payments, workspaces, notifications, auditEntries, loadBookings, loadUserScoped, loadAudit]);
+
+  // Account-access actions. Supabase Auth holds the credentials: the Admin
+  // never sees a password, only triggers the standard secure email flow.
+  const runAccountAction = async (kind: 'reset' | 'invite') => {
+    setAccountBusy(kind);
+    setAccountNotice(null);
+    try {
+      const path = kind === 'reset' ? 'password-reset' : 'resend-invite';
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(mentorId)}/${path}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        // The resend-invite endpoint reports a real delivery outcome rather
+        // than a bare failure, so surface it verbatim.
+        const delivery = data?.emailDelivery?.status;
+        const message = delivery === 'not_sent'
+          ? 'The account exists but the email could not be sent due to rate limiting. Please try again later.'
+          : delivery === 'failed'
+            ? 'The account exists but email delivery failed. Please try again later.'
+            : data.error?.message || 'Unable to complete the request.';
+        setAccountNotice({ tone: 'error', message });
+        return;
+      }
+      setAccountNotice({ tone: 'ok', message: data.message || 'Done.' });
+    } catch (err) {
+      setAccountNotice({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Unable to complete the request.',
+      });
+    } finally {
+      setAccountBusy(null);
+    }
+  };
 
   // Seed every editor from the LOADED database row, so a form never shows a
   // stale or invented value.
@@ -724,12 +867,15 @@ export const AdminMentorDetailPage: React.FC = () => {
       isActive ? 'Gig activated.' : 'Gig deactivated.',
     );
 
-  const archiveGig = (gig: AdminMentorDetail['gigs'][number]) =>
-    mutate(
-      `/api/admin/mentors/gigs/${encodeURIComponent(gig.id)}/archive`,
+  const confirmArchiveGig = async () => {
+    if (!pendingArchive) return;
+    const ok = await mutate(
+      `/api/admin/mentors/gigs/${encodeURIComponent(pendingArchive.id)}/archive`,
       { method: 'PATCH' },
       'Gig archived. Booking history is preserved.',
     );
+    if (ok) setPendingArchive(null);
+  };
 
   const saveAvailability = async () => {
     const okRules = await mutate(
@@ -868,6 +1014,26 @@ export const AdminMentorDetailPage: React.FC = () => {
               <Pencil className="h-3.5 w-3.5" />
               <span>Edit Profile</span>
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              isLoading={accountBusy === 'reset'}
+              onClick={() => runAccountAction('reset')}
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>Send Password Reset</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              isLoading={accountBusy === 'invite'}
+              onClick={() => runAccountAction('invite')}
+            >
+              <Mail className="h-3.5 w-3.5" />
+              <span>Resend Invitation</span>
+            </Button>
             {availableActions.map((action) => (
               <Button
                 key={action}
@@ -894,6 +1060,23 @@ export const AdminMentorDetailPage: React.FC = () => {
         </div>
       )}
 
+      {accountNotice && (
+        <div
+          className={
+            accountNotice.tone === 'ok'
+              ? 'flex items-start gap-2 rounded-lg border border-[var(--color-shell-success-border)] bg-[var(--color-shell-success-soft)] p-3 text-xs text-[var(--color-shell-success)]'
+              : 'flex items-start gap-2 rounded-lg border border-[var(--color-shell-error)] bg-[var(--color-shell-error-soft)] p-3 text-xs text-[var(--color-shell-error)]'
+          }
+        >
+          {accountNotice.tone === 'ok' ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          )}
+          <span>{accountNotice.message}</span>
+        </div>
+      )}
+
       {/* ============ TABS (prompt section 6 / 21) ============ */}
       <ControlTabs
         tabs={[
@@ -904,6 +1087,9 @@ export const AdminMentorDetailPage: React.FC = () => {
           { id: 'gigs', label: 'Gigs', count: mentor.gigs.length },
           { id: 'availability', label: 'Availability' },
           { id: 'bookings', label: 'Bookings', count: bookings?.length },
+          { id: 'payments', label: 'Payments', count: payments?.length },
+          { id: 'workspaces', label: 'Workspaces', count: workspaces?.length },
+          { id: 'notifications', label: 'Notifications', count: notifications?.length },
           { id: 'account', label: 'Account Status' },
           { id: 'audit', label: 'Audit Log', count: auditEntries?.length },
         ]}
@@ -924,6 +1110,27 @@ export const AdminMentorDetailPage: React.FC = () => {
               </span>
             </div>
           )}
+          {/* Live summary cards. Every value below is derived from the loaded
+              database payload - no number on this page is hardcoded. */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <SummaryCard
+              label="Active Gigs"
+              value={mentor.gigs.filter((g) => g.isActive).length}
+              hint={`${mentor.gigs.length} total`}
+            />
+            <SummaryCard label="Assigned Segments" value={mentor.segments.length} />
+            <SummaryCard
+              label="Upcoming Bookings"
+              value={bookings === null ? '—' : bookings.filter((b) => b.isUpcoming).length}
+              hint="Open the Bookings tab"
+            />
+            <SummaryCard
+              label="Available Days"
+              value={new Set(mentor.availability.filter((rule) => rule.isEnabled).map((rule) => rule.dayOfWeek)).size}
+              hint="Days with recurring hours"
+            />
+            <SummaryCard label="Account Status" value={MENTOR_ACCOUNT_BADGE_LABELS[badge]} />
+          </div>
           <Section title="At a glance">
             <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Field label="Role" value={mentor.roles.includes('mentor') ? 'Mentor' : mentor.roles.join(', ')} />
@@ -1118,7 +1325,7 @@ export const AdminMentorDetailPage: React.FC = () => {
                     <Button size="sm" variant="outline" className="h-7 py-1 text-[11px]" isLoading={busy} onClick={() => setGigActive(gig, !gig.isActive)}>
                       {gig.isActive ? 'Deactivate' : 'Activate'}
                     </Button>
-                    <Button size="sm" variant="outline" className="h-7 gap-1 py-1 text-[11px]" isLoading={busy} onClick={() => archiveGig(gig)}>
+                    <Button size="sm" variant="outline" className="h-7 gap-1 py-1 text-[11px]" isLoading={busy} onClick={() => { setActionError(null); setPendingArchive(gig); }}>
                       <Trash2 className="h-3 w-3" /> Archive
                     </Button>
                   </div>
@@ -1229,6 +1436,127 @@ export const AdminMentorDetailPage: React.FC = () => {
           <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
             Deactivating or suspending a mentor never removes booking or payment history.
           </p>
+        </Section>
+      )}
+
+      {activeTab === 'payments' && (
+        <Section
+          title="Payments"
+          action={<Button size="sm" variant="outline" onClick={() => loadUserScoped('payments')}>Refresh</Button>}
+        >
+          {payments === null ? (
+            <LoadingState message="Loading payments…" />
+          ) : payments.length === 0 ? (
+            <p className="text-xs text-[var(--color-shell-text-subtle)]">No payment records for this mentor&apos;s bookings.</p>
+          ) : (
+            <ul className="space-y-2">
+              {payments.map((payment) => (
+                <li key={payment.id} className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] p-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--color-shell-text)]">₹{payment.amountInr} {payment.currency}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant={payment.status === 'VERIFIED' ? 'success' : payment.status === 'REJECTED' ? 'destructive' : 'warning'} className="text-[10px]">
+                        {payment.status}
+                      </Badge>
+                      <Badge variant="outline" className="text-[10px]">
+                        Verification: {payment.verifiedAt ? 'verified' : 'pending'}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-[var(--color-shell-text-muted)] sm:grid-cols-3">
+                    <span>Booking: {payment.booking?.bookingCode || '—'}</span>
+                    <span>Booking status: {payment.booking?.status || '—'}</span>
+                    <span>Segment: {payment.booking?.segmentName || '—'}</span>
+                    <span>Gig: {payment.booking?.gigTitle || '—'}</span>
+                    <span>Reference: {payment.transactionReference || '—'}</span>
+                    <span>Created: {formatDate(payment.createdAt, true)}</span>
+                  </div>
+                  {payment.rejectionReason && (
+                    <p className="mt-1.5 text-[11px] text-[var(--color-shell-error)]">Rejection reason: {payment.rejectionReason}</p>
+                  )}
+                  <p className="mt-1 text-[11px] text-[var(--color-shell-text-subtle)]">
+                    Payment proof: {payment.hasProof ? 'uploaded (private storage)' : 'not uploaded'}. Storage paths and secrets are never exposed.
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+            Payment status is owned by the payment verification flow and cannot be edited from this page.
+          </p>
+        </Section>
+      )}
+
+      {activeTab === 'workspaces' && (
+        <Section
+          title="Workspaces / Session History"
+          action={<Button size="sm" variant="outline" onClick={() => loadUserScoped('workspaces')}>Refresh</Button>}
+        >
+          {workspaces === null ? (
+            <LoadingState message="Loading workspaces…" />
+          ) : workspaces.length === 0 ? (
+            <p className="text-xs text-[var(--color-shell-text-subtle)]">No session workspaces for this mentor.</p>
+          ) : (
+            <ul className="space-y-2">
+              {workspaces.map((workspace) => (
+                <li key={workspace.id} className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] p-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono font-semibold text-[var(--color-shell-text)]">
+                      {workspace.booking?.booking_code || workspace.bookingId}
+                    </span>
+                    <Badge variant={workspace.status === 'PUBLISHED' ? 'success' : 'secondary'} className="text-[10px]">
+                      {workspace.status}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-[var(--color-shell-text-muted)] sm:grid-cols-3">
+                    <span>Seeker: {workspace.seeker?.full_name || workspace.seeker?.email || '—'}</span>
+                    <span>Segment: {workspace.booking?.segment?.name || '—'}</span>
+                    <span>Session: {formatDate(workspace.booking?.start_time, true)}</span>
+                    <span>Booking status: {workspace.booking?.status || '—'}</span>
+                    <span>Published: {formatDate(workspace.publishedAt, true)}</span>
+                    <span>Created: {formatDate(workspace.createdAt, true)}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+            Workspace metadata only. Mentor note content stays behind the existing workspace authorization model.
+          </p>
+        </Section>
+      )}
+
+      {activeTab === 'notifications' && (
+        <Section
+          title="Notifications"
+          action={<Button size="sm" variant="outline" onClick={() => loadUserScoped('notifications')}>Refresh</Button>}
+        >
+          {notifications === null ? (
+            <LoadingState message="Loading notifications…" />
+          ) : notifications.length === 0 ? (
+            <p className="text-xs text-[var(--color-shell-text-subtle)]">No notifications for this account.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {notifications.map((notification) => (
+                <li key={notification.id} className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] p-2.5 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-[var(--color-shell-text)]">{notification.title}</span>
+                    <div className="flex gap-1.5">
+                      <Badge variant="outline" className="text-[10px]">{notification.type}</Badge>
+                      <Badge variant={notification.is_read ? 'secondary' : 'warning'} className="text-[10px]">
+                        {notification.is_read ? 'Read' : 'Unread'}
+                      </Badge>
+                    </div>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--color-shell-text-muted)]">{notification.message}</p>
+                  <p className="mt-0.5 text-[11px] text-[var(--color-shell-text-subtle)]">
+                    {formatDate(notification.created_at, true)}
+                    {notification.read_at ? ` · read ${formatDate(notification.read_at, true)}` : ''}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
         </Section>
       )}
 
@@ -1357,6 +1685,29 @@ export const AdminMentorDetailPage: React.FC = () => {
             >
               Confirm
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ---- Archive gig confirmation ---- */}
+      <Modal
+        isOpen={pendingArchive !== null}
+        onClose={() => { if (!busy) setPendingArchive(null); }}
+        title="Archive gig"
+        description="Archiving hides the gig from discovery. Existing bookings, payments and history are preserved."
+      >
+        <div className="space-y-3 pt-1">
+          {pendingArchive && (
+            <p className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] p-3 text-xs text-[var(--color-shell-text-muted)]">
+              <span className="font-semibold text-[var(--color-shell-text)]">{pendingArchive.title}</span>
+              <br />
+              {pendingArchive.segmentName || '—'} · ₹{pendingArchive.priceInr} INR · {pendingArchive.durationMinutes} min
+            </p>
+          )}
+          {actionError && <InlineError message={actionError} />}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="outline" onClick={() => setPendingArchive(null)} disabled={busy}>Cancel</Button>
+            <Button size="sm" variant="destructive" isLoading={busy} onClick={confirmArchiveGig}>Archive gig</Button>
           </div>
         </div>
       </Modal>

@@ -59,7 +59,7 @@ export const AvailableMentorsHeader: React.FC<AvailableMentorsHeaderProps> = ({
         <button
           type="button"
           onClick={onViewAll}
-          className="group inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-1 py-0.5 text-xs font-semibold text-[var(--color-shell-primary)] transition-colors duration-150 hover:text-[var(--color-shell-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
+          className="group inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-1 py-0.5 text-xs font-semibold text-[var(--color-shell-primary)] transition-colors duration-150 hover:text-[var(--color-shell-primary-hover)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
         >
           <span>View all mentors</span>
           <ArrowRight

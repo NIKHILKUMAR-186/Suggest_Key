@@ -76,7 +76,7 @@ export const EmptyMentorState: React.FC<EmptyMentorStateProps> = ({
             type="button"
             onClick={action.onClick}
             className={cn(
-              'inline-flex min-h-[42px] cursor-pointer items-center justify-center gap-2 rounded-xl px-4 text-[13px] font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-shell-bg)]',
+              'inline-flex min-h-[42px] cursor-pointer items-center justify-center gap-2 rounded-xl px-4 text-[13px] font-semibold transition-all duration-150 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2',
               action.variant === 'outline'
                 ? 'border border-[var(--color-shell-border-strong)] bg-transparent text-[var(--color-shell-text-muted)] hover:border-[var(--color-shell-primary)]/50 hover:text-[var(--color-shell-text)]'
                 : 'bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)] shadow-[var(--shadow-md)] hover:bg-[var(--color-shell-primary-hover)] active:scale-[0.98]'

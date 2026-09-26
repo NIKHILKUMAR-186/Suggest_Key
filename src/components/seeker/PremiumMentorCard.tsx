@@ -215,14 +215,14 @@ export const PremiumMentorCard: React.FC<PremiumMentorCardProps> = ({
             <button
               type="button"
               onClick={() => navigate(detailPath)}
-              className="inline-flex min-h-[40px] flex-1 cursor-pointer items-center justify-center rounded-xl border border-[var(--color-shell-border-strong)] px-3.5 text-[12.5px] font-semibold text-[var(--color-shell-text-muted)] transition-colors duration-150 hover:border-[var(--color-shell-primary)]/50 hover:text-[var(--color-shell-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] sm:flex-none"
+              className="inline-flex min-h-[40px] flex-1 cursor-pointer items-center justify-center rounded-xl border border-[var(--color-shell-border-strong)] px-3.5 text-[12.5px] font-semibold text-[var(--color-shell-text-muted)] transition-colors duration-150 hover:border-[var(--color-shell-primary)]/50 hover:text-[var(--color-shell-text)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2 sm:flex-none"
             >
               View profile
             </button>
             <button
               type="button"
               onClick={() => navigate(detailPath)}
-              className="inline-flex min-h-[40px] flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[var(--color-shell-primary)] px-4 text-[12.5px] font-semibold text-[var(--color-shell-text-contrast)] shadow-[var(--shadow-sm)] transition-all duration-150 hover:bg-[var(--color-shell-primary-hover)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-shell-bg)] sm:flex-none"
+              className="inline-flex min-h-[40px] flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[var(--color-shell-primary)] px-4 text-[12.5px] font-semibold text-[var(--color-shell-text-contrast)] shadow-[var(--shadow-sm)] transition-all duration-150 hover:bg-[var(--color-shell-primary-hover)] active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2 sm:flex-none"
             >
               <span>Book</span>
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />

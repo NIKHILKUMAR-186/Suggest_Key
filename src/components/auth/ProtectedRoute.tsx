@@ -20,11 +20,6 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   const { user, roles, isAuthenticated, isLoading, activeRole, onboardingStatus } = useAuth();
   const { navigate, currentPath } = useNavigation();
 
-  // TEMP-PREVIEW-BYPASS
-  if (typeof window !== 'undefined' && window.location.search.includes('__preview=1')) {
-    return <>{children}</>;
-  }
-
   // 1. Loading State
   if (isLoading) {
 return (

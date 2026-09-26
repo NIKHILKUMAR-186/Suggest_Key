@@ -893,6 +893,12 @@
 .seeker-segment[data-selected='true']:hover {
   color: #ffffff;
 }
+/* Focus ring is drawn with `outline` so it is never clobbered by the
+   selected-state box-shadow above. */
+.seeker-segment:focus-visible {
+  outline: 2px solid var(--color-shell-focus);
+  outline-offset: 2px;
+}
 
 /* Date chip */
 .seeker-date-chip {

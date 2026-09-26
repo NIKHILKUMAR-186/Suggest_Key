@@ -78,29 +78,29 @@ export const TopNavigation: React.FC = () => {
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]/95 backdrop-blur-md transition-shadow">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-40 w-full border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]/80 shadow-[0_1px_0_rgba(186,215,247,0.04),0_10px_30px_-24px_rgba(0,0,0,0.9)] backdrop-blur-xl backdrop-saturate-150">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:h-[68px] sm:px-6 lg:px-8">
         {/* Brand & Logo */}
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-4 sm:gap-7">
           <button
             onClick={() => handleNavClick(config.navItems[0].href)}
-            className="flex items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-lg p-1 transition-transform active:scale-[0.98] cursor-pointer"
+            className="flex cursor-pointer items-center gap-3 rounded-xl p-1 text-left transition-transform duration-150 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-white font-bold text-base shadow-xs ring-1 ring-[var(--color-shell-primary)]/50">
-              <span className="text-xs font-bold">SK</span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-gradient-to-br from-[var(--color-shell-primary)] to-[var(--color-shell-accent)] font-bold text-white shadow-[var(--shadow-sm)] ring-1 ring-inset ring-white/25">
+              <span className="text-[13px] font-bold tracking-tight">SK</span>
             </div>
             <div>
-              <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)] block leading-tight font-display">
+              <span className="block font-display text-[17px] font-bold leading-tight tracking-[-0.02em] text-[var(--color-shell-text)]">
                 Suggest Key
               </span>
-              <span className="text-[10px] font-semibold tracking-wide uppercase text-[var(--color-shell-text-muted)]">
+              <span className="mt-0.5 block rounded-md bg-[var(--color-shell-primary-soft)] px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.16em] text-[var(--color-shell-primary)]">
                 {config.label}
               </span>
             </div>
           </button>
 
           {/* Desktop Nav Links */}
-          <nav className="hidden md:flex items-center gap-1" aria-label="Main Navigation">
+          <nav className="hidden items-center gap-1 md:flex" aria-label="Main Navigation">
             {config.navItems.map((item) => {
               const Icon = item.icon;
               const isActive =
@@ -113,20 +113,28 @@ export const TopNavigation: React.FC = () => {
                   onClick={() => handleNavClick(item.href)}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg transition-all relative cursor-pointer',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
+                    'group relative flex min-h-[40px] cursor-pointer items-center gap-2 rounded-full px-4 text-[13px] font-medium transition-all duration-200',
+                    'focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2',
                     isActive
-                      ? 'bg-[var(--color-shell-primary)] text-white font-semibold shadow-xs'
-                      : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface)] hover:text-[var(--color-shell-text)]'
+                      ? 'bg-[var(--color-shell-primary)] font-semibold text-white shadow-[0_8px_20px_-10px_rgba(102,57,243,0.9)]'
+                      : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-primary-soft)] hover:text-[var(--color-shell-text)]'
                   )}
                 >
-                  <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-white' : 'text-[var(--color-shell-text-muted)]')} />
+                  <Icon
+                    className={cn(
+                      'h-4 w-4 shrink-0 transition-colors duration-200',
+                      isActive ? 'text-white' : 'text-[var(--color-shell-text-subtle)] group-hover:text-[var(--color-shell-primary)]'
+                    )}
+                    aria-hidden="true"
+                  />
                   <span>{item.label}</span>
                   {item.badge !== undefined && (
                     <span
                       className={cn(
-                        'ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full transition-colors',
-                        isActive ? 'bg-white/20 text-white' : 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
+                        'ml-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums transition-colors',
+                        isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
                       )}
                     >
                       {item.badge}
@@ -147,20 +155,20 @@ export const TopNavigation: React.FC = () => {
                 onClick={() => setUserDropdownOpen(!userDropdownOpen)}
                 aria-expanded={userDropdownOpen}
                 aria-haspopup="menu"
-                className="flex items-center gap-2 px-2 py-1 rounded-xl hover:bg-[var(--color-shell-surface)] border border-transparent hover:border-[var(--color-shell-border)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+                className="flex cursor-pointer items-center gap-2.5 rounded-full border border-transparent py-1 pl-1 pr-2.5 transition-colors duration-150 hover:border-[var(--color-shell-border)] hover:bg-[var(--color-shell-surface)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
               >
-                <div className="h-8 w-8 rounded-full bg-[var(--color-shell-primary)] text-white flex items-center justify-center text-xs font-bold shadow-2xs ring-1 ring-[var(--color-shell-primary)]/50">
-                  {profile?.full_name?.charAt(0) || user?.email?.charAt(0)?.toUpperCase() || 'U'}
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--color-shell-primary)] to-[var(--color-shell-accent)] text-[12px] font-bold text-white shadow-[var(--shadow-sm)] ring-2 ring-[var(--color-shell-bg)]">
+                  {(profile?.full_name || user?.email || 'U').slice(0, 1).toUpperCase()}
                 </div>
-                <div className="text-left hidden lg:block">
-                  <span className="text-xs font-bold text-[var(--color-shell-text)] block leading-tight">
+                <div className="hidden text-left lg:block">
+                  <span className="block max-w-[150px] truncate text-[13px] font-bold leading-tight text-[var(--color-shell-text)]">
                     {profile?.full_name || 'User'}
                   </span>
-                  <span className="text-[10px] text-[var(--color-shell-text-muted)] block leading-none truncate max-w-[140px]">
+                  <span className="block max-w-[150px] truncate text-[11px] leading-none text-[var(--color-shell-text-subtle)]">
                     {user?.email}
                   </span>
                 </div>
-                <ChevronDown className={cn('h-3.5 w-3.5 text-[var(--color-shell-text-muted)] transition-transform duration-150 hidden lg:block', userDropdownOpen && 'rotate-180')} />
+                <ChevronDown className={cn('hidden h-3.5 w-3.5 text-[var(--color-shell-text-muted)] transition-transform duration-200 lg:block', userDropdownOpen && 'rotate-180')} />
               </button>
 
               <AnimatePresence>
@@ -170,19 +178,19 @@ export const TopNavigation: React.FC = () => {
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: 4 }}
                     transition={{ duration: 0.15, ease: 'easeOut' }}
-                    className="absolute right-0 mt-2 w-60 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-2 shadow-xl z-50 space-y-1"
+                    className="absolute right-0 z-50 mt-2.5 w-64 space-y-1 rounded-2xl border border-[var(--seeker-panel-border)] bg-[var(--color-shell-surface-elevated)] p-2 shadow-[var(--shadow-xl)]"
                     role="menu"
                   >
-                    <div className="px-3 py-2.5 border-b border-[var(--color-shell-border)]">
-                      <p className="text-xs font-bold text-[var(--color-shell-text)] truncate">
+                    <div className="rounded-xl bg-[var(--color-shell-primary-soft)] px-3 py-2.5">
+                      <p className="truncate text-[13px] font-bold text-[var(--color-shell-text)]">
                         {profile?.full_name || 'User'}
                       </p>
-                      <p className="text-[11px] text-[var(--color-shell-text-muted)] truncate mt-0.5">{user?.email}</p>
-                      <div className="flex gap-1.5 mt-2 flex-wrap">
+                      <p className="mt-0.5 truncate text-[11px] text-[var(--color-shell-text-muted)]">{user?.email}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
                         {roles.map((r) => (
                           <span
                             key={r}
-                            className="px-2 py-0.5 rounded-md bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-accent)] text-[10px] font-bold uppercase tracking-wider"
+                            className="rounded-md bg-[var(--color-shell-surface-elevated)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--color-shell-primary)]"
                           >
                             {r}
                           </span>
@@ -196,7 +204,7 @@ export const TopNavigation: React.FC = () => {
                         setUserDropdownOpen(false);
                       }}
                       role="menuitem"
-                      className="w-full text-left px-3 py-2 text-xs text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)] rounded-lg transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+                      className="w-full cursor-pointer rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-[var(--color-shell-text-muted)] transition-colors hover:bg-[var(--color-shell-bg-hover)] hover:text-[var(--color-shell-text)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
                     >
                       Account Settings
                     </button>
@@ -204,7 +212,7 @@ export const TopNavigation: React.FC = () => {
                     <button
                       onClick={handleSignOut}
                       role="menuitem"
-                      className="w-full text-left px-3 py-2 text-xs text-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)] rounded-lg transition-colors flex items-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-error)]"
+                      className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-[var(--color-shell-error)] transition-colors hover:bg-[var(--color-shell-error-soft)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-error)] focus-visible:outline-offset-2"
                     >
                       <LogOut className="h-3.5 w-3.5" />
                       <span>Sign Out</span>
@@ -244,7 +252,7 @@ export const TopNavigation: React.FC = () => {
           )}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] cursor-pointer"
+            className="p-2.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] transition-colors focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2 cursor-pointer"
             aria-label="Toggle Navigation"
             aria-expanded={mobileMenuOpen}
           >
@@ -256,14 +264,14 @@ export const TopNavigation: React.FC = () => {
       {/* Mobile Drawer Menu with AnimatePresence & Backdrop */}
       <AnimatePresence>
         {mobileMenuOpen && (
-          <div className="fixed inset-0 top-16 z-50 md:hidden flex flex-col">
+            <div className="fixed inset-0 top-16 z-50 flex flex-col sm:top-[68px] md:hidden">
             {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.15 }}
-              className="fixed inset-0 top-16 bg-black/60 backdrop-blur-xs"
+              className="fixed inset-0 top-16 bg-black/70 backdrop-blur-sm sm:top-[68px]"
               onClick={() => setMobileMenuOpen(false)}
             />
 
@@ -273,7 +281,7 @@ export const TopNavigation: React.FC = () => {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.18, ease: 'easeOut' }}
-              className="relative w-full max-h-[calc(100vh-4rem)] overflow-y-auto border-b border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-5 pt-3 pb-8 shadow-2xl space-y-4"
+              className="relative max-h-[calc(100vh-4rem)] space-y-4 overflow-y-auto rounded-b-none border-b border-[var(--seeker-panel-border)] bg-[var(--color-shell-surface)] px-5 pb-8 pt-3 shadow-2xl sm:max-h-[calc(100vh-4.25rem)]"
             >
               {/* Header inside mobile drawer */}
               <div className="py-2 flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
@@ -300,11 +308,11 @@ export const TopNavigation: React.FC = () => {
                       key={item.id}
                       onClick={() => handleNavClick(item.href)}
                       className={cn(
-                        'flex w-full items-center gap-3 px-3.5 py-3 text-sm font-medium rounded-xl transition-all text-left cursor-pointer min-h-[44px]',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
+                        'flex min-h-[48px] w-full cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3 text-left text-sm font-medium transition-all duration-150',
+                        'focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2',
                         isActive
-                          ? 'bg-[var(--color-shell-primary)] text-white font-semibold shadow-xs'
-                          : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)]'
+                          ? 'bg-[var(--color-shell-primary)] font-semibold text-white shadow-[0_8px_20px_-10px_rgba(102,57,243,0.9)]'
+                          : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-primary-soft)] hover:text-[var(--color-shell-text)]'
                       )}
                     >
                       <Icon className={cn('h-5 w-5 shrink-0', isActive ? 'text-white' : 'text-[var(--color-shell-text-muted)]')} />

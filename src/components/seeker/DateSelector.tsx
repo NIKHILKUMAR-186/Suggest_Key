@@ -65,7 +65,7 @@ export const DateSelector: React.FC<DateSelectorProps> = ({
               onClick={() => onSelect(d.value)}
               aria-pressed={isSelected}
               data-selected={isSelected}
-              className="seeker-date-chip focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
+              className="seeker-date-chip focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
             >
               {isSelected && <Check className="h-3.5 w-3.5 text-[var(--color-shell-primary)]" aria-hidden="true" />}
               <span>{d.label}</span>

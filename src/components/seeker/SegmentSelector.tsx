@@ -58,7 +58,7 @@ export const SegmentSelector: React.FC<SegmentSelectorProps> = ({
             aria-selected={isSelected}
             onClick={() => onSelect(seg)}
             data-selected={isSelected}
-            className="seeker-segment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-shell-bg)]"
+            className="seeker-segment"
           >
             {isSelected && <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
             <span>{seg.name}</span>

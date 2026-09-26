@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Check, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
@@ -24,7 +24,7 @@ export interface FilterBarProps {
 }
 
 const triggerBase =
-  'inline-flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-[13px] font-semibold transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]';
+  'inline-flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-[13px] font-semibold transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2';
 
 /**
  * Compact filter row that sits directly above the results section.
@@ -45,6 +45,22 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onClearFilters,
   className,
 }) => {
+  const languageTriggerRef = useRef<HTMLButtonElement>(null);
+
+  // Escape closes the language menu and returns focus to its trigger.
+  useEffect(() => {
+    if (!languageMenuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onLanguageMenuClose();
+        languageTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [languageMenuOpen, onLanguageMenuClose]);
+
   return (
     <div className={cn('flex flex-wrap items-center gap-2.5', className)}>
       <span className="hidden text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)] sm:inline">
@@ -54,6 +70,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
       {/* Language */}
       <div className="relative">
         <button
+          ref={languageTriggerRef}
           type="button"
           onClick={onLanguageMenuToggle}
           aria-haspopup="listbox"

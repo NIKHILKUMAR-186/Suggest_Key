@@ -47,6 +47,7 @@ import { AdminUsersPage } from '@/src/pages/admin/AdminUsersPage';
 import { AdminUserDetailPage } from '@/src/pages/admin/AdminUserDetailPage';
 import { AdminCreateUserPage } from '@/src/pages/admin/AdminCreateUserPage';
 import { AdminMentorsPage } from '@/src/pages/admin/AdminMentorsPage';
+import { AdminMentorDetailPage } from '@/src/pages/admin/AdminMentorDetailPage';
 import { AdminMentorVerificationPage } from '@/src/pages/admin/AdminMentorVerificationPage';
 import { AdminMentorVerificationDetailPage } from '@/src/pages/admin/AdminMentorVerificationDetailPage';
 import { AdminSegmentsPage } from '@/src/pages/admin/AdminSegmentsPage';
@@ -112,6 +113,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/admin/mentor-verification') return <AdminMentorVerificationPage />;
           if (pathname.startsWith('/admin/mentor-verification/')) return <AdminMentorVerificationDetailPage />;
           if (pathname === '/admin/mentors') return <AdminMentorsPage />;
+          if (pathname.startsWith('/admin/mentors/')) return <AdminMentorDetailPage />;
           if (pathname === '/admin/segments') return <AdminSegmentsPage />;
           if (pathname.startsWith('/admin/segments/')) return <AdminSegmentDetailPage />;
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
