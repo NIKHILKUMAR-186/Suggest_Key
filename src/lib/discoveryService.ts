@@ -40,6 +40,36 @@ export async function fetchActiveSegments(): Promise<{ segments: Segment[]; erro
 }
 
 /**
+ * 1b. Resolves a public segment slug (e.g. "career-advisor") to the internal
+ * UUID the backend queries require. Used by pages that receive a slug in the
+ * URL and need to call UUID-keyed service functions.
+ */
+export async function fetchSegmentBySlug(slug: string): Promise<Segment | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('segments')
+      .select('*')
+      .eq('slug', slug)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error fetching segment by slug from Supabase:', error);
+      return null;
+    }
+
+    return (data as Segment) || null;
+  } catch (err: any) {
+    console.error('Error fetching segment by slug from Supabase:', err);
+    return null;
+  }
+}
+
+/**
  * 2. Selects the highest-priority active segment (lowest priority number, e.g. 1).
  */
 export function getHighestPriorityActiveSegment(segments: Segment[]): Segment | null {
@@ -179,13 +209,18 @@ export async function fetchDiscoverableMentors(
       const gig = gigs.find((g: Gig) => g.mentor_id === mp.id);
       if (!gig) continue; // No active gig for this segment
 
-      const profile = mp.profile || {
-        id: mp.id,
-        full_name: 'Mentor',
-        email: '',
-        timezone: 'Asia/Kolkata',
-        avatar_url: null,
-      };
+      // A mentor is only presentable with their real identity row. The
+      // previous code substituted a fabricated `{ full_name: 'Mentor' }`
+      // object when the embed was unreadable, which put invented business
+      // data in front of seekers. A mentor whose profile cannot be read is
+      // skipped instead.
+      const profile = mp.profile;
+      if (!profile?.full_name) {
+        console.warn(
+          `[discovery] Skipping mentor ${mp.id}: profiles row is not readable, so no real name is available.`
+        );
+        continue;
+      }
 
       const mentorTz = profile.timezone || 'Asia/Kolkata';
 
@@ -317,13 +352,15 @@ export async function fetchMentorDetail(
       .maybeSingle();
 
     if (segmentData && mpData && gigData) {
-      const profile = mpData.profile || {
-        id: mpData.id,
-        full_name: 'Mentor',
-        email: '',
-        timezone: 'Asia/Kolkata',
-        avatar_url: null,
-      };
+      // Same rule as the discovery list: never invent an identity. Without a
+      // readable `profiles` row there is no real mentor to show.
+      const profile = mpData.profile;
+      if (!profile?.full_name) {
+        console.warn(
+          `[discovery] Mentor detail unavailable for ${mentorId}: profiles row is not readable.`
+        );
+        return { mentor: null, error: null };
+      }
 
       const { data: availRules } = await supabase
         .from('mentor_availability')

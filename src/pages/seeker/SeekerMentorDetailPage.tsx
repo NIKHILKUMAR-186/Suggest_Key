@@ -20,7 +20,8 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
-import { fetchMentorDetail } from '@/src/lib/discoveryService';
+import { fetchMentorDetail, fetchSegmentBySlug } from '@/src/lib/discoveryService';
+import { getInitials } from '@/src/lib/avatar';
 import {
   createBookingWithHold,
   calculateRemainingHoldSeconds,
@@ -92,9 +93,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
   const paramMentorId = searchParams.get('mentorId') || '';
+  // The mentor cards link here with the human-readable segment slug, while
+  // older/hand-built links may still carry the segment UUID. Both identify
+  // the same segment, so accept either rather than failing the required-param
+  // check on a slug-only link.
+  const paramSegmentSlug = searchParams.get('segmentSlug') || '';
   const paramSegmentId = searchParams.get('segmentId') || '';
   const paramDate = searchParams.get('date') || new Date().toISOString().split('T')[0];
-  const hasRequiredParams = Boolean(paramMentorId && paramSegmentId);
+  const hasRequiredParams = Boolean(paramMentorId && (paramSegmentSlug || paramSegmentId));
 
   // "Today" follows the seeker's own configured timezone, matching the
   // calendar the date picker shows.
@@ -106,6 +112,35 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [selectedSlot, setSelectedSlot] = useState<GeneratedSlot | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  // Resolved internal segment UUID (slug → UUID) used by API calls.
+  const [resolvedSegmentId, setResolvedSegmentId] = useState<string>('');
+
+  // Resolve the public segment slug to the internal UUID the backend requires.
+  useEffect(() => {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const slugOrId = paramSegmentSlug || paramSegmentId;
+
+    if (!slugOrId) {
+      setResolvedSegmentId('');
+      return;
+    }
+
+    // A UUID can be used directly — supports both slug URLs and legacy UUID links.
+    if (uuidRegex.test(slugOrId)) {
+      setResolvedSegmentId(slugOrId);
+      return;
+    }
+
+    // Otherwise resolve the human-readable slug to a UUID via the API.
+    if (paramSegmentSlug) {
+      fetchSegmentBySlug(paramSegmentSlug).then((segment) => {
+        setResolvedSegmentId(segment?.id || '');
+      });
+    } else {
+      setResolvedSegmentId(paramSegmentId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramSegmentSlug, paramSegmentId]);
 
   const [isReserving, setIsReserving] = useState<boolean>(false);
   const [activeBooking, setActiveBooking] = useState<Booking | null>(null);
@@ -116,8 +151,9 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [bookingError, setBookingError] = useState<string | null>(null);
 
   const reloadMentorSlots = useCallback(async () => {
+    if (!resolvedSegmentId) return;
     try {
-      const { mentor } = await fetchMentorDetail(paramMentorId, paramSegmentId, selectedDate);
+      const { mentor } = await fetchMentorDetail(paramMentorId, resolvedSegmentId, selectedDate);
       if (mentor) {
         setMentorData(mentor);
         if (selectedSlot && !mentor.all_slots.find((s) => s.id === selectedSlot.id)) {
@@ -128,7 +164,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
       // A background refresh failure must not clear a good render or invent an
       // error; the next explicit action will surface any real problem.
     }
-  }, [paramMentorId, paramSegmentId, selectedDate, selectedSlot]);
+  }, [paramMentorId, resolvedSegmentId, selectedDate, selectedSlot]);
 
   // Live 15-minute countdown.
   useEffect(() => {
@@ -190,7 +226,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     async function load() {
-      if (!hasRequiredParams) {
+      if (!hasRequiredParams || !resolvedSegmentId) {
         setIsLoading(false);
         setError('Select a mentor and segment to view availability.');
         return;
@@ -201,7 +237,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
       try {
         const { mentor, error: err } = await fetchMentorDetail(
           paramMentorId,
-          paramSegmentId,
+          resolvedSegmentId,
           selectedDate
         );
         if (err) throw err;
@@ -221,7 +257,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [paramMentorId, paramSegmentId, selectedDate]);
+  }, [paramMentorId, resolvedSegmentId, selectedDate]);
 
   // ---------------------------------------------------------------------------
   // Derived display values — every one of them comes from the loaded mentor.
@@ -239,7 +275,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
     : '';
   const canReserve = Boolean(selectedSlot?.is_available) && !isReserving && !activeHold;
 
-  const backPath = `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`;
+  // SegmentMentorsSection links here as `/seeker/mentors?segmentSlug=...`, so
+  // prefer the slug for the back link and only fall back to the segment UUID.
+  const backPath = paramSegmentSlug
+    ? `/seeker/mentors?segmentSlug=${encodeURIComponent(paramSegmentSlug)}&date=${selectedDate}`
+    : `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`;
 
   return (
     <motion.div
@@ -286,7 +326,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
             title="Mentor not found"
             description="We could not find this mentor with an active session in the selected segment."
             actionLabel="Back to mentors"
-            onAction={() => navigate('/seeker/mentors')}
+            onAction={() => navigate(backPath)}
           />
         </div>
       ) : (
@@ -308,13 +348,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     aria-label={`${mentorData.full_name} profile photo placeholder`}
                     className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-2xl font-bold text-[var(--color-shell-text-muted)] sm:h-24 sm:w-24"
                   >
-                    {(mentorData.full_name || 'M')
-                      .split(' ')
-                      .filter(Boolean)
-                      .map((n) => n[0])
-                      .join('')
-                      .slice(0, 2)
-                      .toUpperCase()}
+                    {getInitials(mentorData.full_name)}
                   </div>
                 )}
 

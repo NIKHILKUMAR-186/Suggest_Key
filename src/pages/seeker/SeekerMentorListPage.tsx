@@ -40,7 +40,7 @@ export const SeekerMentorListPage: React.FC = () => {
   const searchParams = new URLSearchParams(
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
-  const paramSegmentId = searchParams.get('segmentId') || '';
+  const paramSegmentSlug = searchParams.get('segmentSlug') || '';
   const paramDate = searchParams.get('date') || '';
 
   const [selectedDate, setSelectedDate] = useState<string>(() => {
@@ -82,13 +82,13 @@ export const SeekerMentorListPage: React.FC = () => {
       try {
         const { segments: activeSegs, error: segErr } = await fetchActiveSegments();
         if (segErr) throw segErr;
-        if (isMounted) {
-          setSegments(activeSegs);
-          const matched =
-            activeSegs.find((s) => s.id === paramSegmentId || s.slug === paramSegmentId) ||
-            getHighestPriorityActiveSegment(activeSegs);
-          setSelectedSegment(matched || null);
-        }
+          if (isMounted) {
+            setSegments(activeSegs);
+            const matched =
+              activeSegs.find((s) => s.slug === paramSegmentSlug) ||
+              getHighestPriorityActiveSegment(activeSegs);
+            setSelectedSegment(matched || null);
+          }
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading segments:', err);
@@ -100,7 +100,7 @@ export const SeekerMentorListPage: React.FC = () => {
     }
     loadSegments();
     return () => { isMounted = false; };
-  }, [paramSegmentId, reloadToken]);
+  }, [paramSegmentSlug, reloadToken]);
 
   useEffect(() => {
     let isMounted = true;

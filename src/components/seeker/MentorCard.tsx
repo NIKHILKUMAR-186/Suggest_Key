@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { formatInr, formatNextAvailableLabel } from '@/src/lib/seekerFormat';
+import { getInitials } from '@/src/lib/avatar';
 import type { DiscoverableMentor, DirectoryMentor, GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
 
@@ -34,8 +35,8 @@ export type MentorCardVariant = 'availability' | 'discovery';
 export interface MentorCardProps {
   variant: MentorCardVariant;
   navigate: (path: string) => void;
-  /** Segment used to build the mentor detail route. */
-  segmentId: string;
+  /** Segment slug (human-readable) used to build the mentor detail route. */
+  segmentSlug: string;
   /** The real selected date, forwarded to the detail page's date picker. */
   selectedDate: string;
   /**
@@ -51,23 +52,7 @@ export interface MentorCardProps {
   className?: string;
 }
 
-/** Real initials fallback, used only when a mentor has no avatar. */
-export const getMentorInitials = (fullName: string): string =>
-  (fullName || '')
-    .split(' ')
-    .filter(Boolean)
-    .map((n) => n[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase() || 'M';
-
-/**
- * Circular mentor avatar.
- *
- * Sized with responsive Tailwind classes rather than absolute or negative
- * offsets, and given `shrink-0` inside a flex row, so it can never be clipped
- * by the card or overlap the identity block at any width.
- */
+/** Local card avatar using the shared getInitials utility. */
 const MentorAvatar: React.FC<{ name: string; avatarUrl: string | null }> = ({
   name,
   avatarUrl,
@@ -95,7 +80,7 @@ const MentorAvatar: React.FC<{ name: string; avatarUrl: string | null }> = ({
       role="img"
       aria-label={`${name} profile photo placeholder`}
     >
-      {getMentorInitials(name)}
+      {getInitials(name)}
     </div>
   );
 };
@@ -146,7 +131,7 @@ const FeaturedBadge: React.FC = () => (
 export const MentorCard: React.FC<MentorCardProps> = ({
   variant,
   navigate,
-  segmentId,
+  segmentSlug,
   selectedDate,
   today,
   availableMentor,
@@ -182,7 +167,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
   const expertiseList = (expertise || []).filter(Boolean);
   const languageList = (languages || []).filter(Boolean);
 
-  const detailPath = `/seeker/mentor-detail?mentorId=${id}&segmentId=${segmentId}&date=${selectedDate}`;
+  const detailPath = `/seeker/mentor-detail?mentorId=${id}&segmentSlug=${segmentSlug}&date=${selectedDate}`;
 
   // Guards against rendering a fabricated "0.0" rating for an unrated mentor.
   const hasRating = Number(rating) > 0 && (reviewCount || 0) > 0;

@@ -215,7 +215,7 @@ export const SeekerHomePage: React.FC = () => {
 
   const goToAllMentors = () => {
     const params = new URLSearchParams();
-    if (selectedSegment) params.set('segmentId', selectedSegment.id);
+    if (selectedSegment) params.set('segmentSlug', selectedSegment.slug);
     navigate(`/mentors?${params.toString()}`);
   };
 

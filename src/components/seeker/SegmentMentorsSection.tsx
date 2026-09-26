@@ -114,7 +114,7 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
           {hasDirectoryRoute && !error && (
             <button
               type="button"
-              onClick={() => navigate(`/mentors?segmentId=${segment!.id}`)}
+              onClick={() => navigate(`/mentors?segmentSlug=${segment!.slug}`)}
               className="group inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-4 text-[13px] font-semibold text-[var(--color-shell-text)] transition-colors duration-150 hover:border-[var(--color-shell-primary)]/50 hover:bg-[var(--color-shell-surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
             >
               <span>View all</span>
@@ -169,7 +169,7 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
               key={mentor.id}
               variant="discovery"
               directoryMentor={mentor}
-              segmentId={segment!.id}
+              segmentSlug={segment!.slug}
               selectedDate={selectedDate}
               today={today}
               navigate={navigate}

@@ -1,7 +1,6 @@
 import React from 'react';
+import { CalendarClock, CalendarX2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { Badge } from '@/src/components/ui/Badge';
-import { Button } from '@/src/components/ui/Button';
 import { motion } from 'motion/react';
 import type { MentorAvailabilityException } from '@/src/types/database';
 
@@ -14,14 +13,71 @@ export interface MentorExceptionListProps {
   className?: string;
 }
 
+/** Parses a `YYYY-MM-DD` string as a calendar date (never a UTC instant). */
+const parseDate = (dateStr: string) => new Date(`${dateStr}T00:00:00`);
+
+const todayISO = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+    now.getDate()
+  ).padStart(2, '0')}`;
+};
+
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/** Deterministic `26 Sep 2026` — avoids locale-dependent month abbreviations. */
 const formatDate = (dateStr: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) return dateStr;
+  const [, year, month, day] = match;
+  return `${day} ${MONTHS[Number(month) - 1] ?? month} ${year}`;
+};
+
+const formatWeekday = (dateStr: string) => {
   try {
-    const d = new Date(dateStr + 'T00:00:00');
-    return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    return parseDate(dateStr).toLocaleDateString('en-GB', { weekday: 'long' });
   } catch {
-    return dateStr;
+    return '';
   }
 };
+
+const ActionButton: React.FC<{
+  onClick: () => void;
+  label: string;
+  srLabel: string;
+  danger?: boolean;
+  icon: React.ReactNode;
+}> = ({ onClick, label, srLabel, danger, icon }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-label={srLabel}
+    className={cn(
+      'inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold',
+      'text-[var(--color-shell-text-muted)] transition-colors',
+      danger
+        ? 'hover:bg-[var(--color-shell-error-soft)] hover:text-[var(--color-shell-error)]'
+        : 'hover:bg-[var(--color-shell-bg-hover)] hover:text-[var(--color-shell-text)]',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2'
+    )}
+  >
+    {icon}
+    <span>{label}</span>
+  </button>
+);
 
 export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
   exceptions,
@@ -31,103 +87,160 @@ export const MentorExceptionList: React.FC<MentorExceptionListProps> = ({
   onRemove,
   className,
 }) => {
+  const today = todayISO();
   const upcoming = exceptions
-    .filter((e) => new Date(e.exception_date + 'T00:00:00') >= new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00'))
-    .sort((a, b) => new Date(a.exception_date).getTime() - new Date(b.exception_date).getTime());
+    .filter((e) => e.exception_date >= today)
+    .sort((a, b) => a.exception_date.localeCompare(b.exception_date));
+  const pastCount = exceptions.length - upcoming.length;
 
   return (
-    <div className={cn('space-y-4', className)}>
-      <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
-        <div>
-          <h2 className="text-base font-bold text-[var(--color-shell-text)]">Date Exceptions</h2>
-          <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
-            Date-specific overrides take precedence over recurring hours.
+    <div className={cn('flex flex-col gap-4', className)}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold tracking-tight text-[var(--color-shell-text)]">
+            Date exceptions
+          </h2>
+          <p className="mt-1 text-xs leading-relaxed text-[var(--color-shell-text-muted)]">
+            Override your recurring schedule for specific dates. Times use{' '}
+            <span className="font-mono text-[var(--color-shell-text)]">{timezone}</span>.
           </p>
         </div>
         {onAdd && (
-          <Button size="sm" variant="outline" onClick={onAdd} className="text-xs gap-1.5">
-            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Add Override
-          </Button>
+          <button
+            type="button"
+            onClick={onAdd}
+            className={cn(
+              'inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-3 text-xs font-semibold',
+              'text-[var(--color-shell-text)] transition-colors',
+              'hover:border-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-soft)] hover:text-[var(--color-shell-primary)]',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2'
+            )}
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Add exception</span>
+          </button>
         )}
       </div>
-
       {upcoming.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 p-6 text-center">
-          <p className="text-xs text-[var(--color-shell-text-muted)]">
-            No upcoming date exceptions. Your recurring schedule applies.
+        <div className="rounded-2xl border border-dashed border-[var(--color-shell-border-strong)] px-5 py-7 text-center">
+          <CalendarClock
+            className="mx-auto h-7 w-7 text-[var(--color-shell-text-subtle)]"
+            aria-hidden="true"
+          />
+          <p className="mt-3 text-sm font-semibold text-[var(--color-shell-text)]">
+            No date exceptions
           </p>
+          <p className="mx-auto mt-1 max-w-[28ch] text-xs leading-relaxed text-[var(--color-shell-text-muted)]">
+            Your recurring schedule is currently used for all dates.
+          </p>
+          {onAdd && (
+            <button
+              type="button"
+              onClick={onAdd}
+              className={cn(
+                'mt-4 inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-[var(--color-shell-primary)] px-3.5 text-xs font-semibold',
+                'text-[var(--color-shell-primary)] transition-colors hover:bg-[var(--color-shell-primary-soft)]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2'
+              )}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Add date exception</span>
+            </button>
+          )}
         </div>
       ) : (
-        <div className="space-y-2">
-          {upcoming.map((ex) => (
-            <motion.div
-              key={ex.id}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex items-center justify-between gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="flex flex-col items-center justify-center h-10 w-10 rounded-lg bg-[var(--color-shell-surface-elevated)] shrink-0">
-                  <span className="text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase">
-                    {formatDate(ex.exception_date).split(' ')[0]}
+        <ul className="space-y-2.5">
+          {upcoming.map((ex) => {
+            const hasCustomHours = Boolean(ex.is_available && ex.start_time && ex.end_time);
+            return (
+              <motion.li
+                key={ex.id}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18 }}
+                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-4 shadow-xs"
+              >
+                <div className="flex items-start gap-3">
+                  <span
+                    className={cn(
+                      'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border',
+                      hasCustomHours
+                        ? 'border-[color-mix(in_srgb,var(--color-shell-primary)_28%,transparent)] bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-primary)]'
+                        : 'border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] text-[var(--color-shell-text-subtle)]'
+                    )}
+                    aria-hidden="true"
+                  >
+                    {hasCustomHours ? (
+                      <CalendarClock className="h-5 w-5" />
+                    ) : (
+                      <CalendarX2 className="h-5 w-5" />
+                    )}
                   </span>
-                  <span className="text-sm font-bold text-[var(--color-shell-text)] leading-none">
-                    {formatDate(ex.exception_date).split(' ')[1].replace(',', '')}
-                  </span>
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-[var(--color-shell-text)]">
+
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-shell-text-subtle)]">
+                      {formatWeekday(ex.exception_date)}
+                    </p>
+                    <p className="mt-0.5 text-sm font-bold tracking-tight text-[var(--color-shell-text)]">
                       {formatDate(ex.exception_date)}
-                    </span>
-                    <Badge
-                      variant={ex.is_available ? 'success' : 'destructive'}
-                      className="text-[10px]"
+                    </p>
+                    <p
+                      className={cn(
+                        'mt-2 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold',
+                        hasCustomHours
+                          ? 'border-[color-mix(in_srgb,var(--color-shell-primary)_28%,transparent)] bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-primary)]'
+                          : 'border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] text-[var(--color-shell-text-muted)]'
+                      )}
                     >
-                      {ex.is_available ? 'Custom Hours' : 'Unavailable'}
-                    </Badge>
+                      {hasCustomHours ? 'Custom hours' : 'Unavailable'}
+                    </p>
+                    <p className="mt-2 text-xs font-medium text-[var(--color-shell-text-muted)]">
+                      {hasCustomHours ? (
+                        <span className="font-mono tabular-nums">
+                          {ex.start_time?.slice(0, 5)} – {ex.end_time?.slice(0, 5)}
+                        </span>
+                      ) : (
+                        'No sessions bookable on this date'
+                      )}
+                    </p>
+                    {ex.reason && (
+                      <p className="mt-1 text-xs italic text-[var(--color-shell-text-subtle)]">
+                        {ex.reason}
+                      </p>
+                    )}
                   </div>
-                  <p className="text-[11px] text-[var(--color-shell-text-muted)]">
-                    {ex.is_available && ex.start_time && ex.end_time
-                      ? `${ex.start_time.slice(0, 5)} – ${ex.end_time.slice(0, 5)}`
-                      : ex.reason || 'All-day unavailable'}
-                  </p>
                 </div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {onEdit && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => onEdit(ex)}
-                    className="h-7 w-7 p-0"
-                    aria-label="Edit exception"
-                  >
-                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
-                    </svg>
-                  </Button>
-                )}
-                {onRemove && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => onRemove(ex)}
-                    className="h-7 w-7 p-0 text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-error)]"
-                    aria-label="Remove exception"
-                  >
-                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-9 0v14a2 2 0 002 2h6a2 2 0 002-2V6" />
-                    </svg>
-                  </Button>
-                )}
-              </div>
-            </motion.div>
-          ))}
-        </div>
+
+                <div className="mt-3 flex items-center gap-1 border-t border-[var(--color-shell-border)] pt-2">
+                  {onEdit && (
+                    <ActionButton
+                      onClick={() => onEdit(ex)}
+                      label="Edit"
+                      srLabel={`Edit date exception for ${formatDate(ex.exception_date)}`}
+                      icon={<Pencil className="h-3.5 w-3.5" aria-hidden="true" />}
+                    />
+                  )}
+                  {onRemove && (
+                    <ActionButton
+                      onClick={() => onRemove(ex)}
+                      label="Delete"
+                      srLabel={`Delete date exception for ${formatDate(ex.exception_date)}`}
+                      danger
+                      icon={<Trash2 className="h-3.5 w-3.5" aria-hidden="true" />}
+                    />
+                  )}
+                </div>
+              </motion.li>
+            );
+          })}
+        </ul>
+      )}
+
+      {pastCount > 0 && (
+        <p className="px-1 text-[11px] text-[var(--color-shell-text-subtle)]">
+          {pastCount} past {pastCount === 1 ? 'exception is' : 'exceptions are'} hidden because
+          past dates are never bookable.
+        </p>
       )}
     </div>
   );

@@ -67,7 +67,7 @@ export const MentorDirectoryPage: React.FC = () => {
   const searchParams = new URLSearchParams(
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
-  const paramSegmentId = searchParams.get('segmentId') || '';
+  const paramSegmentSlug = searchParams.get('segmentSlug') || '';
 
   const userTimezone = profile?.timezone || 'UTC';
 
@@ -104,7 +104,7 @@ export const MentorDirectoryPage: React.FC = () => {
           setSegments(activeSegs);
           setSelectedSegmentId((current) => {
             if (current && activeSegs.some((s) => s.id === current)) return current;
-            const matched = activeSegs.find((s) => s.id === paramSegmentId || s.slug === paramSegmentId);
+            const matched = activeSegs.find((s) => s.slug === paramSegmentSlug);
             return matched?.id || '';
           });
         }
@@ -119,7 +119,7 @@ export const MentorDirectoryPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [paramSegmentId]);
+  }, [paramSegmentSlug]);
 
   useEffect(() => {
     let isMounted = true;
@@ -427,7 +427,7 @@ export const MentorDirectoryPage: React.FC = () => {
               key={mentor.id}
               variant="discovery"
               directoryMentor={mentor}
-              segmentId={mentor.segments[0]?.id || ''}
+              segmentSlug={mentor.segments[0]?.slug || ''}
               selectedDate={today}
               today={today}
               navigate={navigate}
