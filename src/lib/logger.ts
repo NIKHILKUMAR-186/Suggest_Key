@@ -613,6 +613,44 @@ export const logger = {
       metadata,
     }).catch(() => {});
   },
+
+  /**
+   * Structured booking transition logger. Safe identifiers only — never
+   * logs passwords, payment secrets, private tokens or PII.
+   */
+  booking: (
+    event: string,
+    options: {
+      requestId?: string;
+      userId?: string;
+      role?: string;
+      bookingId?: string;
+      holdId?: string;
+      bookingCode?: string;
+      mentorId?: string;
+      seekerId?: string;
+      status?: string;
+      error?: string;
+      metadata?: Record<string, any>;
+    },
+  ): void => {
+    logAuthEvent({
+      requestId: options.requestId || '',
+      event,
+      userId: options.userId,
+      role: options.role,
+      metadata: {
+        ...options.metadata,
+        bookingId: options.bookingId,
+        holdId: options.holdId,
+        bookingCode: options.bookingCode,
+        mentorId: options.mentorId,
+        seekerId: options.seekerId,
+        status: options.status,
+        error: options.error,
+      },
+    }).catch(() => {});
+  },
 };
 
 export function requestIdMiddleware(req: RequestWithId, res: Response, next: NextFunction): void {

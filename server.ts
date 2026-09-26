@@ -30,7 +30,7 @@ import {
   type AuthRequest,
 } from './src/lib/supabaseServer';
 import { generateRequestId } from './src/lib/requestId';
-import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError } from './src/lib/logger';
+import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError, logger } from './src/lib/logger';
 import { auditAction } from './src/lib/auditLogger';
 import { POSTGREST_RELATIONSHIPS } from './src/lib/postgrestRelationships';
 import { describeSupabaseError, getErrorMessage, respondWithServerError, resolveHttpStatusForSupabaseError } from './src/lib/supabaseErrors';
@@ -602,7 +602,50 @@ async function startServer() {
           });
         }
 
-        return res.status(201).json(data);
+        // The RPC returns { success, booking, hold }. The canonical booking
+        // record is what the frontend must use for navigation — never the
+        // hold id, never a payment id.
+        const booking = data?.booking;
+        if (!booking || typeof booking.id !== 'string') {
+          return res.status(500).json({
+            success: false,
+            error: { code: 'BOOKING_CREATE_FAILED', message: 'Booking creation returned an invalid record.' },
+          });
+        }
+
+        logger.booking('BOOKING_CREATE_COMMITTED', {
+          requestId: req.requestId,
+          userId: req.auth?.user?.id,
+          role: 'seeker',
+          bookingId: booking.id,
+          holdId: booking.hold_id,
+          bookingCode: booking.booking_code,
+          mentorId: booking.mentor_id,
+          seekerId: booking.seeker_id,
+          status: booking.status,
+        });
+
+        return res.status(201).json({
+          success: true,
+          booking: {
+            id: booking.id,
+            booking_code: booking.booking_code,
+            mentor_id: booking.mentor_id,
+            seeker_id: booking.seeker_id,
+            gig_id: booking.gig_id,
+            segment_id: booking.segment_id,
+            hold_id: booking.hold_id,
+            start_time: booking.start_time,
+            end_time: booking.end_time,
+            seeker_timezone: booking.seeker_timezone,
+            mentor_timezone: booking.mentor_timezone,
+            amount_inr: booking.amount_inr,
+            status: booking.status,
+            created_at: booking.created_at,
+            updated_at: booking.updated_at,
+          },
+          hold: data?.hold || null,
+        });
       }
 
       const db: BookingEngineContext = getLocalBookingEngineContext();

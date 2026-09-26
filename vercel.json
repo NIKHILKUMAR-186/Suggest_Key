@@ -15,12 +15,6 @@
     }
   ],
 
-  "functions": {
-    "server.cjs": {
-      "runtime": "nodejs22.x"
-    }
-  },
-
   "headers": [
     {
       "source": "/assets/(.*)",
