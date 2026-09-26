@@ -397,7 +397,7 @@ export const LandingFeatureCard: React.FC<LandingFeatureCardProps> = ({ feature,
       whileHover={{ y: -6 }}
       className={cn(
         'group relative rounded-2xl border border-[var(--color-shell-border)]',
-        'bg-[var(--color-shell-surface)]/60 p-6',
+        'bg-[var(--color-shell-surface)]/60 p-7',
         'hover:border-[var(--color-shell-border-strong)] transition-colors duration-200',
         'focus-within:border-[var(--color-shell-border-strong)] focus-within:outline-none',
         'dark-scene'
@@ -419,14 +419,14 @@ export const LandingFeatureCard: React.FC<LandingFeatureCardProps> = ({ feature,
         <Visual />
       </div>
 
-      <div className="relative space-y-2.5">
-        <div className="flex items-center gap-2">
+      <div className="relative space-y-3">
+        <div className="flex items-center gap-2 mb-1">
           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: dotColor }} />
           <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-shell-text-muted)]">
             {label}
           </span>
         </div>
-        <h3 className="text-[18px] font-medium text-[var(--color-shell-text)] leading-tight">
+        <h3 className="text-[18px] font-medium text-[var(--color-shell-text)] leading-snug">
           {title}
         </h3>
         <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">

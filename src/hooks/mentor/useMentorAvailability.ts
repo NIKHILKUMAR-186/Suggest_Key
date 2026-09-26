@@ -4,7 +4,7 @@ import type {
   MentorAvailability,
   MentorAvailabilityException,
 } from '@/src/types/database';
-import { DAYS_OF_WEEK } from '@/src/config/app';
+import { APP_CONFIG, DAYS_OF_WEEK } from '@/src/config/app';
 
 export interface AvailabilityDay {
   dayName: string;
@@ -26,7 +26,7 @@ export interface UseMentorAvailabilityResult {
 export function useMentorAvailability(mentorId: string | undefined): UseMentorAvailabilityResult {
   const [days, setDays] = useState<AvailabilityDay[]>([]);
   const [exceptions, setExceptions] = useState<MentorAvailabilityException[]>([]);
-  const [timezone, setTimezone] = useState<string>('Asia/Kolkata');
+  const [timezone, setTimezone] = useState<string>(APP_CONFIG.DEFAULT_TIMEZONE);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +34,7 @@ export function useMentorAvailability(mentorId: string | undefined): UseMentorAv
     if (!mentorId) {
       setDays([]);
       setExceptions([]);
-      setTimezone('Asia/Kolkata');
+      setTimezone(APP_CONFIG.DEFAULT_TIMEZONE);
       setLoading(false);
       return;
     }
@@ -42,7 +42,7 @@ export function useMentorAvailability(mentorId: string | undefined): UseMentorAv
     if (!isSupabaseConfigured()) {
       setDays([]);
       setExceptions([]);
-      setTimezone('Asia/Kolkata');
+      setTimezone(APP_CONFIG.DEFAULT_TIMEZONE);
       setLoading(false);
       return;
     }

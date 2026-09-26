@@ -1,31 +1,92 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft,
-  Clock,
-  CheckCircle2,
-  Shield,
-  AlertTriangle,
-  Globe,
-  Star,
   ArrowRight,
-  Lock,
+  BadgeCheck,
   Calendar,
+  CheckCircle2,
+  Clock,
+  Globe,
+  Languages,
+  Lock,
+  Star,
+  Timer,
+  TriangleAlert,
+  Briefcase,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
-import { Badge } from '@/src/components/ui/Badge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchMentorDetail } from '@/src/lib/discoveryService';
-import { createBookingWithHold, calculateRemainingHoldSeconds, formatCountdown } from '@/src/lib/bookingService';
+import {
+  createBookingWithHold,
+  calculateRemainingHoldSeconds,
+  formatCountdown,
+} from '@/src/lib/bookingService';
+import {
+  formatInr,
+  formatShortDate,
+  formatTimeRange,
+} from '@/src/lib/seekerFormat';
 import { DiscoverableMentor, GeneratedSlot, Booking, SlotHold } from '@/src/types/database';
-import { formatLocalTimeLabel, formatDate } from '@/src/lib/slotEngine';
+import {
+  formatLocalTimeLabel,
+  formatDate,
+  getDateStringInTimezone,
+} from '@/src/lib/slotEngine';
+import { cn } from '@/src/lib/utils';
+
+const EASE = [0.23, 1, 0.31, 1] as const;
+
+/** Human label for a generated slot's real status. */
+const SLOT_STATUS_COPY: Record<GeneratedSlot['status'], string> = {
+  AVAILABLE: 'Available',
+  PAST: 'Past',
+  BOOKED: 'Booked',
+  HELD: 'On hold',
+};
+
+/**
+ * Maps a failed reservation onto a message a seeker can act on.
+ *
+ * The raw server text ("Role 'seeker' required.") is developer-facing, so it
+ * is translated here instead of being dumped into the UI. Authorization
+ * failures are NOT hidden: they get their own explicit explanation, because
+ * the fix belongs on the account, not in the browser.
+ */
+const describeBookingError = (code: string | undefined, message: string | undefined): string => {
+  const text = (message || '').trim();
+
+  if (code === 'FORBIDDEN' || /role '.+' required/i.test(text)) {
+    return 'Your account is not authorized to book sessions on this platform. An administrator needs to assign your account the seeker role before you can reserve a slot.';
+  }
+  if (code === 'AUTH_REQUIRED' || code === 'AUTH_INVALID') {
+    return 'Your session has expired. Sign in again to reserve this slot.';
+  }
+  if (code === 'SLOT_ALREADY_BOOKED') {
+    return 'That slot has just been booked by someone else. Pick another time.';
+  }
+  if (code === 'SLOT_HELD_BY_OTHER') {
+    return 'That slot is currently on hold by another seeker. Pick another time or try again shortly.';
+  }
+  if (code === 'BOOKING_CONFLICT') {
+    return 'That time now conflicts with an existing booking. Pick another slot.';
+  }
+  if (code === 'MENTOR_NOT_BOOKABLE') {
+    return 'This mentor is not currently accepting bookings. Browse other mentors in this segment.';
+  }
+  if (code === 'SEEKER_ACCOUNT_SUSPENDED' || code === 'SEEKER_ACCOUNT_DEACTIVATED') {
+    return text || 'Your account cannot start new bookings right now.';
+  }
+  return text || 'We could not reserve that slot. Please choose another time and try again.';
+};
 
 export const SeekerMentorDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
-  const { user } = useAuth();
+  const { profile } = useAuth();
 
   const searchParams = new URLSearchParams(
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
@@ -34,6 +95,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const paramSegmentId = searchParams.get('segmentId') || '';
   const paramDate = searchParams.get('date') || new Date().toISOString().split('T')[0];
   const hasRequiredParams = Boolean(paramMentorId && paramSegmentId);
+
+  // "Today" follows the seeker's own configured timezone, matching the
+  // calendar the date picker shows.
+  const userTimezone = profile?.timezone || 'UTC';
+  const today = getDateStringInTimezone(new Date(), userTimezone);
 
   const [selectedDate, setSelectedDate] = useState<string>(paramDate);
   const [mentorData, setMentorData] = useState<DiscoverableMentor | null>(null);
@@ -45,27 +111,26 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [activeBooking, setActiveBooking] = useState<Booking | null>(null);
   const [activeHold, setActiveHold] = useState<SlotHold | null>(null);
   const [holdSecondsRemaining, setHoldSecondsRemaining] = useState<number>(0);
-  const [bookingConflictError, setBookingConflictError] = useState<string | null>(null);
+  // Set ONLY after a real failed operation. There is no permanently rendered
+  // error banner on this page.
+  const [bookingError, setBookingError] = useState<string | null>(null);
 
   const reloadMentorSlots = useCallback(async () => {
     try {
-      const { mentor } = await fetchMentorDetail(
-        paramMentorId,
-        paramSegmentId,
-        selectedDate
-      );
+      const { mentor } = await fetchMentorDetail(paramMentorId, paramSegmentId, selectedDate);
       if (mentor) {
         setMentorData(mentor);
         if (selectedSlot && !mentor.all_slots.find((s) => s.id === selectedSlot.id)) {
           setSelectedSlot(null);
         }
       }
-    } catch (e) {
-      // Ignore background reload failure
+    } catch {
+      // A background refresh failure must not clear a good render or invent an
+      // error; the next explicit action will surface any real problem.
     }
   }, [paramMentorId, paramSegmentId, selectedDate, selectedSlot]);
 
-  // Live 15-Minute Countdown Timer
+  // Live 15-minute countdown.
   useEffect(() => {
     if (!activeHold || holdSecondsRemaining <= 0) return;
 
@@ -74,8 +139,8 @@ export const SeekerMentorDetailPage: React.FC = () => {
         if (prev <= 1) {
           clearInterval(interval);
           setActiveHold(null);
-          setBookingConflictError(
-            'Slot hold expired. The 15-minute reservation window has ended and the slot has been released.'
+          setBookingError(
+            'Your 15-minute hold expired and the slot was released. Select a time to try again.'
           );
           reloadMentorSlots();
           return 0;
@@ -89,15 +154,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
 
   const handleReserveSlot = async () => {
     if (!selectedSlot || !mentorData) return;
-    const seekerId = user?.id;
-    if (!seekerId) return;
 
     setIsReserving(true);
-    setBookingConflictError(null);
+    setBookingError(null);
 
     try {
+      // The seeker identity is NOT sent from the browser: the server derives it
+      // from the authenticated Supabase session.
       const result = await createBookingWithHold({
-        seekerId,
         mentorId: mentorData.id,
         segmentId: mentorData.segment.id,
         gigId: mentorData.gig.id,
@@ -106,20 +170,17 @@ export const SeekerMentorDetailPage: React.FC = () => {
       });
 
       if (!result.success || !result.booking || !result.hold) {
-        setBookingConflictError(
-          result.error?.message || 'Failed to acquire slot hold. Please try selecting a different slot.'
-        );
+        setBookingError(describeBookingError(result.error?.code, result.error?.message));
         await reloadMentorSlots();
         return;
       }
 
       setActiveBooking(result.booking);
       setActiveHold(result.hold);
-      const remainingSec = calculateRemainingHoldSeconds(result.hold.expires_at) || 900;
-      setHoldSecondsRemaining(remainingSec);
+      setHoldSecondsRemaining(calculateRemainingHoldSeconds(result.hold.expires_at) || 900);
       await reloadMentorSlots();
     } catch (err: any) {
-      setBookingConflictError(err.message || 'An unexpected error occurred while locking the slot.');
+      setBookingError(describeBookingError(undefined, err?.message));
       await reloadMentorSlots();
     } finally {
       setIsReserving(false);
@@ -146,16 +207,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
         if (err) throw err;
         if (isMounted) {
           setMentorData(mentor);
-          if (mentor && mentor.available_slots.length > 0) {
-            setSelectedSlot(mentor.available_slots[0]);
-          } else {
-            setSelectedSlot(null);
-          }
+          const firstAvailable = mentor?.available_slots?.[0] ?? null;
+          setSelectedSlot(firstAvailable);
         }
       } catch (e: any) {
-        if (isMounted) {
-          setError(e.message || 'Failed to load mentor details');
-        }
+        if (isMounted) setError(e.message || 'Failed to load mentor details');
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -167,421 +223,490 @@ export const SeekerMentorDetailPage: React.FC = () => {
     };
   }, [paramMentorId, paramSegmentId, selectedDate]);
 
+  // ---------------------------------------------------------------------------
+  // Derived display values — every one of them comes from the loaded mentor.
+  // ---------------------------------------------------------------------------
+  const gig = mentorData?.gig;
+  const gigPrice = mentorData ? formatInr(mentorData.gig.price_inr) : '';
+  const holdAmount = activeBooking ? formatInr(activeBooking.amount_inr) : '';
+  const availableSlots = mentorData?.available_slots ?? [];
+  const allSlots = mentorData?.all_slots ?? [];
+  const selectedTimeLabel = selectedSlot
+    ? formatTimeRange(
+        formatLocalTimeLabel(selectedSlot.local_start_time),
+        formatLocalTimeLabel(selectedSlot.local_end_time)
+      )
+    : '';
+  const canReserve = Boolean(selectedSlot?.is_available) && !isReserving && !activeHold;
+
+  const backPath = `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.23, 1, 0.31, 1] }}
-      className="space-y-6"
+      transition={{ duration: 0.4, ease: EASE }}
+      className="mx-auto w-full max-w-[1280px]"
     >
-      {/* Navigation breadcrumb */}
-      <motion.button
-        initial={{ opacity: 0, x: -10 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ duration: 0.3 }}
-        onClick={() =>
-          navigate(
-            `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`
-          )
-        }
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors rounded-md p-1 -ml-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+      <button
+        type="button"
+        onClick={() => navigate(backPath)}
+        className="inline-flex min-h-[36px] cursor-pointer items-center gap-1.5 rounded-lg px-1.5 text-[13px] font-medium text-[var(--color-shell-text-muted)] transition-colors hover:text-[var(--color-shell-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
       >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        <span>Back to Mentors List</span>
-      </motion.button>
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        <span>Back to mentors</span>
+      </button>
 
       {isLoading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 space-y-4 shadow-xs">
-              <div className="flex items-start gap-5">
-                <Skeleton variant="circular" className="h-20 w-20" />
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(340px,1fr)] lg:gap-8">
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+              <div className="flex items-center gap-5">
+                <Skeleton variant="circular" className="h-20 w-20 shrink-0" />
                 <div className="flex-1 space-y-2">
                   <Skeleton className="h-6 w-1/2" />
                   <Skeleton className="h-4 w-3/4" />
-                  <Skeleton className="h-16 w-full mt-2" />
                 </div>
               </div>
             </div>
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+              <Skeleton className="h-5 w-1/3" />
+              <Skeleton className="mt-3 h-16 w-full" />
+            </div>
           </div>
-          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-32 w-full" />
-            <Skeleton className="h-8 w-full" />
+          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+            <Skeleton className="h-5 w-1/2" />
+            <Skeleton className="mt-4 h-12 w-full" />
+            <Skeleton className="mt-4 h-40 w-full" />
           </div>
         </div>
       ) : !mentorData ? (
-        <EmptyState
-          title="Mentor Not Found"
-          description="Could not find mentor profile or active gig for the selected segment."
-          actionLabel="Back to Mentors"
-          onAction={() => navigate('/seeker/mentors')}
-        />
+        <div className="mt-6">
+          <EmptyState
+            title="Mentor not found"
+            description="We could not find this mentor with an active session in the selected segment."
+            actionLabel="Back to mentors"
+            onAction={() => navigate('/seeker/mentors')}
+          />
+        </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Column: Mentor Profile & Active Gig Information */}
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, delay: 0.05 }}
-            className="lg:col-span-2 space-y-6"
-          >
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-6">
-              <div className="flex items-start gap-5">
+        <div className="mt-6 grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(340px,1fr)] lg:gap-8">
+          {/* ================= LEFT: profile, expertise, gig ================= */}
+          <div className="min-w-0 space-y-6">
+            {/* ---- Identity header ---- */}
+            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
                 {mentorData.avatar_url ? (
                   <img
                     src={mentorData.avatar_url}
-                    alt={mentorData.full_name}
-                    className="h-20 w-20 rounded-full object-cover border border-[var(--color-shell-border)] shrink-0"
+                    alt={`${mentorData.full_name} profile photo`}
+                    className="h-20 w-20 shrink-0 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] object-cover sm:h-24 sm:w-24"
                   />
                 ) : (
-                  <div className="h-20 w-20 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display shrink-0">
-                    {mentorData.full_name
+                  <div
+                    role="img"
+                    aria-label={`${mentorData.full_name} profile photo placeholder`}
+                    className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-2xl font-bold text-[var(--color-shell-text-muted)] sm:h-24 sm:w-24"
+                  >
+                    {(mentorData.full_name || 'M')
                       .split(' ')
+                      .filter(Boolean)
                       .map((n) => n[0])
                       .join('')
-                      .toUpperCase() || 'M'}
+                      .slice(0, 2)
+                      .toUpperCase()}
                   </div>
                 )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-xl font-bold text-[var(--color-shell-text)]">
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
+                    <h1 className="font-display text-2xl font-bold leading-tight tracking-tight text-[var(--color-shell-text)] sm:text-[28px]">
                       {mentorData.full_name}
                     </h1>
-                    {mentorData.is_featured && (
-                      <Badge
-                        variant="secondary"
-                        className="text-[10px] gap-0.5 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)] border-[var(--color-shell-warning)]/30"
-                      >
-                        <Star className="h-3 w-3 fill-current" />
-                        Featured
-                      </Badge>
-                    )}
                     {mentorData.is_approved && (
-                      <Badge variant="success" className="text-[10px]">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-shell-success)]">
+                        <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
                         Verified
-                      </Badge>
+                      </span>
+                    )}
+                    {mentorData.is_featured && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-warning)]/35 bg-[var(--color-shell-warning-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-shell-warning)]">
+                        <Star className="h-3 w-3 fill-current" aria-hidden="true" />
+                        Featured
+                      </span>
                     )}
                   </div>
-                  <p className="text-xs text-[var(--color-shell-text-muted)] mt-1">{mentorData.headline}</p>
+
+                  {mentorData.headline && (
+                    <p className="mt-1.5 text-[15px] leading-snug text-[var(--color-shell-text-muted)]">
+                      {mentorData.headline}
+                    </p>
+                  )}
+
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-[var(--color-shell-text-muted)]">
+                    {mentorData.languages.length > 0 && (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Languages
+                          className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
+                          aria-hidden="true"
+                        />
+                        {mentorData.languages.join(', ')}
+                      </span>
+                    )}
+                    {mentorData.timezone && (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Globe
+                          className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
+                          aria-hidden="true"
+                        />
+                        {mentorData.timezone}
+                      </span>
+                    )}
+                    {mentorData.experience_years > 0 && (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Briefcase
+                          className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
+                          aria-hidden="true"
+                        />
+                        {mentorData.experience_years}{' '}
+                        {mentorData.experience_years === 1 ? 'year' : 'years'} experience
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Timezone Info */}
-              <div className="flex items-center gap-2 text-xs text-[var(--color-shell-text-muted)]">
-                <Globe className="h-4 w-4 text-[var(--color-shell-text-subtle)]" />
-                <span>Mentor Operating Timezone:</span>
-                <span className="font-medium text-[var(--color-shell-text)]">{mentorData.timezone}</span>
-              </div>
-
-              {/* About */}
-              {mentorData.about && (
-                <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">
-                  {mentorData.about}
+              {mentorData.about && mentorData.about.trim() && (
+                <p className="mt-5 text-[14px] leading-relaxed text-[var(--color-shell-text-muted)]">
+                  {mentorData.about.trim()}
                 </p>
               )}
 
-              {/* Languages & Experience */}
-              <div className="flex flex-wrap gap-2">
-                {mentorData.languages.map((lang) => (
-                  <span
-                    key={lang}
-                    className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)]"
-                  >
-                    {lang}
-                  </span>
-                ))}
-                <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)] font-medium">
-                  {mentorData.experience_years}+ Years Experience
+              {mentorData.expertise && mentorData.expertise.length > 0 && (
+                <div className="mt-5">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
+                    Expertise
+                  </h2>
+                  <ul className="mt-2.5 flex flex-wrap gap-2" aria-label="Expertise">
+                    {mentorData.expertise.map((item) => (
+                      <li
+                        key={item}
+                        className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-shell-text-muted)]"
+                      >
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+
+            {/* ---- Active gig ---- */}
+            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
+                  Active session offer
+                </h2>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-shell-text-muted)]">
+                  {mentorData.segment.name}
                 </span>
               </div>
 
-              {/* Selected Active Gig Offer */}
-              <motion.div
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: 0.1 }}
-                className="rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/30 p-5 space-y-3"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-shell-warning)]">
-                    Active Gig Offer
-                  </span>
-                  <Badge variant="secondary" className="text-[10px] border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)]">
-                    Segment: {mentorData.segment.name}
-                  </Badge>
-                </div>
-                <h3 className="text-lg font-bold text-[var(--color-shell-text)]">
-                  {mentorData.gig.title}
-                </h3>
-                <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">
-                  {mentorData.gig.description}
-                </p>
-                <div className="flex items-center gap-6 pt-2 text-xs">
-                  <div>
-                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Session Length</span>
-                    <span className="font-semibold text-[var(--color-shell-text)] flex items-center gap-1">
-                      <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)]" />{' '}
-                      {mentorData.gig.duration_minutes} Minutes
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Price</span>
-                    <span className="font-bold text-[var(--color-shell-text)] text-sm">
-                      ?{mentorData.gig.price_inr} INR
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[var(--color-shell-text-subtle)] block text-[11px]">Hold Window</span>
-                    <span className="font-semibold text-[var(--color-shell-warning)] flex items-center gap-1">
-                      <Lock className="h-3.5 w-3.5" /> 15 Min Lock
-                    </span>
-                  </div>
-                </div>
-              </motion.div>
+              <h3 className="mt-3 font-display text-lg font-bold leading-snug text-[var(--color-shell-text)] sm:text-xl">
+                {gig?.title}
+              </h3>
 
-              {/* Global Mentor Availability Invariant Notice */}
-              <motion.div
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: 0.15 }}
-                className="flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 text-xs text-blue-900"
-              >
-                <Shield className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+              {gig?.description && (
+                <p className="mt-2 text-[14px] leading-relaxed text-[var(--color-shell-text-muted)]">
+                  {gig.description}
+                </p>
+              )}
+
+              <dl className="mt-5 grid grid-cols-1 gap-4 border-t border-[var(--color-shell-border)] pt-5 sm:grid-cols-3">
                 <div>
-                  <span className="font-semibold">
-                    Global Mentor Availability Invariant:
-                  </span>
-                  <p className="text-blue-800 mt-0.5 leading-relaxed">
-                    Availability belongs to {mentorData.full_name}, not individual gigs. Any slot
-                    confirmed or held here is locked across all segments {mentorData.full_name}{' '}
-                    mentors on the platform.
-                  </p>
+                  <dt className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
+                    Duration
+                  </dt>
+                  <dd className="mt-1 inline-flex items-center gap-1.5 text-[14px] font-semibold text-[var(--color-shell-text)]">
+                    <Clock
+                      className="h-4 w-4 shrink-0 text-[var(--color-shell-text-muted)]"
+                      aria-hidden="true"
+                    />
+                    {gig?.duration_minutes} minutes
+                  </dd>
                 </div>
-              </motion.div>
-            </div>
-          </motion.div>
+                <div>
+                  <dt className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
+                    Session price
+                  </dt>
+                  <dd className="mt-1 text-[18px] font-bold leading-tight text-[var(--color-shell-text)]">
+                    {gigPrice}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
+                    Hold window
+                  </dt>
+                  <dd className="mt-1 inline-flex items-center gap-1.5 text-[14px] font-semibold text-[var(--color-shell-text)]">
+                    <Lock
+                      className="h-4 w-4 shrink-0 text-[var(--color-shell-text-muted)]"
+                      aria-hidden="true"
+                    />
+                    15 minutes
+                  </dd>
+                </div>
+              </dl>
+            </section>
 
-          {/* Right Column: Dynamic Slot Selection & Booking Summary */}
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, delay: 0.08 }}
-            className="space-y-6"
-          >
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5 sticky top-20">
-              <div>
-                <h3 className="text-base font-bold text-[var(--color-shell-text)]">Select Session Slot</h3>
-                <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
-                  Dynamic slots calculated in {mentorData.timezone} and verified in UTC.
-                </p>
-              </div>
+            {/* ---- Availability summary ---- */}
+            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
+                Availability
+              </h2>
+              <p className="mt-2.5 text-[14px] leading-relaxed text-[var(--color-shell-text-muted)]">
+                {availableSlots.length > 0 ? (
+                  <>
+                    {mentorData.full_name} has{' '}
+                    <span className="font-semibold text-[var(--color-shell-text)]">
+                      {availableSlots.length} {availableSlots.length === 1 ? 'slot' : 'slots'}
+                    </span>{' '}
+                    available on {formatShortDate(selectedDate) || formatDate(selectedDate)} in{' '}
+                    {mentorData.timezone}.
+                  </>
+                ) : (
+                  <>
+                    {mentorData.full_name} has no bookable slots on{' '}
+                    {formatShortDate(selectedDate) || formatDate(selectedDate)}. Pick another
+                    date to see open times.
+                  </>
+                )}
+              </p>
+              <p className="mt-2 text-[12px] text-[var(--color-shell-text-subtle)]">
+                Availability belongs to the mentor, not to a single session offer. A confirmed or
+                held time is blocked across every segment they mentor on.
+              </p>
+            </section>
+          </div>
 
-              {/* Date Input */}
-              <div>
-                <label className="block text-xs font-medium text-[var(--color-shell-text-muted)] mb-1.5">
-                  Session Date
+          {/* ================= RIGHT: sticky booking panel ================= */}
+          <div className="min-w-0 lg:sticky lg:top-20">
+            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+              <h2 className="font-display text-[17px] font-bold leading-tight text-[var(--color-shell-text)]">
+                Book a session
+              </h2>
+              <p className="mt-1 text-[13px] leading-relaxed text-[var(--color-shell-text-muted)]">
+                Times are shown in {mentorData.timezone}.
+              </p>
+
+              {/* ---- Date ---- */}
+              <div className="mt-5">
+                <label
+                  htmlFor="session-date"
+                  className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]"
+                >
+                  Session date
                 </label>
-                <div className="flex items-center gap-2 bg-[var(--color-shell-surface)] rounded-xl border border-[var(--color-shell-border)] px-3 py-2.5 shadow-xs">
-                  <Calendar className="h-4 w-4 text-[var(--color-shell-text-subtle)]" />
+                <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-3.5 py-2.5 focus-within:border-[var(--color-shell-primary)]/60 focus-within:ring-2 focus-within:ring-[var(--color-shell-focus)]">
+                  <Calendar
+                    className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
+                    aria-hidden="true"
+                  />
                   <input
+                    id="session-date"
                     type="date"
                     value={selectedDate}
-                    min={new Date().toISOString().split('T')[0]}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="text-xs text-[var(--color-shell-text)] border-none bg-transparent focus:outline-none font-semibold cursor-pointer w-full"
-                    aria-label="Select session date"
+                    min={today}
+                    onChange={(e) => {
+                      setSelectedDate(e.target.value);
+                      setSelectedSlot(null);
+                      setBookingError(null);
+                    }}
+                    className="w-full cursor-pointer border-none bg-transparent text-[14px] font-semibold text-[var(--color-shell-text)] focus:outline-none"
                   />
                 </div>
               </div>
 
-              {/* Dynamic Slots Grid */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-medium text-[var(--color-shell-text-muted)]">
-                    Slots on {formatDate(selectedDate)}
-                  </label>
-                  <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
-                    {mentorData.available_slots.length} available
+              {/* ---- Times ---- */}
+              <div className="mt-5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
+                    Available times
+                  </span>
+                  <span className="text-[12px] text-[var(--color-shell-text-muted)]">
+                    {availableSlots.length} {availableSlots.length === 1 ? 'slot' : 'slots'}
                   </span>
                 </div>
 
-                {mentorData.all_slots.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-4 text-center text-xs text-[var(--color-shell-text-muted)]">
-                    No operating slots or mentor has leave on this date.
-                  </div>
+                {allSlots.length === 0 ? (
+                  <p className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center text-[13px] text-[var(--color-shell-text-muted)]">
+                    No operating hours on this date. Choose another day to see open times.
+                  </p>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
-                    {mentorData.all_slots.map((s) => {
-                      const isSelected = selectedSlot?.id === s.id;
-                      const timeLabel = `${formatLocalTimeLabel(
-                        s.local_start_time
-                      )} � ${formatLocalTimeLabel(s.local_end_time)}`;
+                  <ul className="mt-2.5 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
+                    {allSlots.map((slot) => {
+                      const isSelected = selectedSlot?.id === slot.id;
+                      const isDisabled = !slot.is_available;
 
                       return (
-                        <button
-                          key={s.id}
-                          disabled={!s.is_available}
-                          onClick={() => setSelectedSlot(s)}
-                          className={`flex flex-col items-center justify-center p-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
-                            s.status === 'PAST'
-                              ? 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-zinc-300 cursor-not-allowed line-through'
-                              : s.status === 'BOOKED'
-                              ? 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-subtle)] cursor-not-allowed'
-                              : s.status === 'HELD'
-                              ? 'border-[var(--color-shell-warning)]/20 bg-[var(--color-shell-warning-soft)]/50 text-[var(--color-shell-warning)] cursor-not-allowed'
-                              : isSelected
-                              ? 'border-amber-600 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] shadow-xs'
-                              : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:border-[var(--color-shell-border-strong)] hover:bg-[var(--color-shell-surface-elevated)]'
-                          }`}
-                        >
-                          <span className="font-semibold text-[11px]">{timeLabel}</span>
-                          <span className="text-[9px] opacity-80 mt-0.5">
-                            {s.status === 'PAST'
-                              ? 'Past Slot'
-                              : s.status === 'BOOKED'
-                              ? 'Booked'
-                              : s.status === 'HELD'
-                              ? 'On Hold'
-                              : 'Available'}
-                          </span>
-                        </button>
+                        <li key={slot.id}>
+                          <button
+                            type="button"
+                            disabled={isDisabled}
+                            aria-pressed={isSelected}
+                            onClick={() => {
+                              setSelectedSlot(slot);
+                              setBookingError(null);
+                            }}
+                            className={cn(
+                              'flex w-full min-h-[52px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2',
+                              isSelected
+                                ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)]'
+                                : isDisabled
+                                  ? 'cursor-not-allowed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-subtle)]'
+                                  : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:border-[var(--color-shell-primary)]/50 hover:bg-[var(--color-shell-surface-elevated)]'
+                            )}
+                          >
+                            <span className="text-[12px] font-semibold leading-tight">
+                              {formatLocalTimeLabel(slot.local_start_time)}
+                            </span>
+                            <span
+                              className={cn(
+                                'text-[10px] leading-tight',
+                                isSelected
+                                  ? 'opacity-90'
+                                  : 'text-[var(--color-shell-text-subtle)]'
+                              )}
+                            >
+                              {SLOT_STATUS_COPY[slot.status]}
+                            </span>
+                          </button>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ul>
                 )}
-                <p className="text-[10px] text-[var(--color-shell-text-subtle)] pt-1">
-                  * Calculated dynamically from recurring schedule & date exceptions.
-                </p>
               </div>
 
-              {/* Conflict / Error Banner */}
-              {bookingConflictError && (
-                <motion.div
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)]/80 p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2.5"
+              {/* ---- Contextual error: only after a real failure ---- */}
+              {bookingError && (
+                <div
+                  role="alert"
+                  className="mt-5 flex items-start gap-2.5 rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-3.5"
                 >
-                  <AlertTriangle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="font-semibold text-[var(--color-shell-text)]">Booking Concurrency Alert</p>
-                    <p>{bookingConflictError}</p>
-                  </div>
-                </motion.div>
+                  <TriangleAlert
+                    className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-error)]"
+                    aria-hidden="true"
+                  />
+                  <p className="text-[13px] leading-relaxed text-[var(--color-shell-error)]">
+                    {bookingError}
+                  </p>
+                </div>
               )}
 
-              {/* Active Hold State Display */}
+              {/* ---- Active hold ---- */}
               {activeHold && activeBooking ? (
-                <motion.div
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="rounded-2xl border-2 border-emerald-500/80 bg-emerald-50/40 p-4 space-y-4"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-emerald-800 font-bold text-xs">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
-                      </span>
-                      <span>15-Minute Slot Hold Active</span>
-                    </div>
-                    <Badge variant="outline" className="border-emerald-300 text-emerald-800 bg-[var(--color-shell-surface)] font-mono text-[11px]">
+                <div className="mt-5 rounded-xl border border-[var(--color-shell-success)]/35 bg-[var(--color-shell-success-soft)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2 text-[13px] font-semibold text-[var(--color-shell-text)]">
+                      <Timer className="h-4 w-4 text-[var(--color-shell-success)]" aria-hidden="true" />
+                      Slot held for you
+                    </span>
+                    <span className="rounded-lg border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-surface)] px-2 py-1 font-mono text-[12px] font-semibold text-[var(--color-shell-text)]">
                       {formatCountdown(holdSecondsRemaining)}
-                    </Badge>
+                    </span>
                   </div>
 
-                  <div className="rounded-lg bg-[var(--color-shell-surface)] border border-emerald-200 p-3 space-y-1.5 text-xs">
-                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
-                      <span>Booking Code:</span>
-                      <span className="font-mono font-bold text-[var(--color-shell-text)]">
+                  <dl className="mt-3.5 space-y-2 border-t border-[var(--color-shell-success)]/20 pt-3.5 text-[13px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-[var(--color-shell-text-muted)]">Booking code</dt>
+                      <dd className="font-mono font-semibold text-[var(--color-shell-text)]">
                         {activeBooking.booking_code}
-                      </span>
+                      </dd>
                     </div>
-                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
-                      <span>Status:</span>
-                      <Badge variant="warning" className="text-[10px] py-0">
-                        {activeBooking.status}
-                      </Badge>
+                    <div className="flex items-center justify-between gap-3">
+                      <dt className="text-[var(--color-shell-text-muted)]">Session time</dt>
+                      <dd className="text-right font-semibold text-[var(--color-shell-text)]">
+                        {selectedTimeLabel}
+                      </dd>
                     </div>
-                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
-                      <span>Session Time:</span>
-                      <span className="font-medium text-[var(--color-shell-text)]">
-                        {selectedSlot
-                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} � ${formatLocalTimeLabel(
-                              selectedSlot.local_end_time
-                            )}`
-                          : ''}
-                      </span>
+                    <div className="flex items-center justify-between gap-3 border-t border-[var(--color-shell-success)]/20 pt-2">
+                      <dt className="font-semibold text-[var(--color-shell-text)]">Amount due</dt>
+                      <dd className="text-[16px] font-bold text-[var(--color-shell-text)]">
+                        {holdAmount}
+                      </dd>
                     </div>
-                    <div className="flex justify-between text-[var(--color-shell-text)] font-bold pt-1 border-t border-[var(--color-shell-border)]">
-                      <span>Amount Payable:</span>
-                      <span>?{activeBooking.amount_inr} INR</span>
-                    </div>
-                  </div>
-
-                  <p className="text-[11px] text-emerald-900 leading-relaxed">
-                    This slot has been locked exclusively for you in the database. Complete
-                    payment within 15 minutes before the hold expires.
-                  </p>
+                  </dl>
 
                   <Button
-                    onClick={() => {
-                      navigate(`/seeker/payment?bookingId=${activeBooking.id}`);
-                    }}
-                    className="w-full gap-2 text-xs bg-emerald-700 hover:bg-emerald-800 text-white font-semibold"
-                    size="md"
+                    onClick={() => navigate(`/seeker/payment?bookingId=${activeBooking.id}`)}
+                    size="lg"
+                    className="mt-4 w-full gap-2"
                   >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>Proceed to Payment Proof Upload</span>
-                    <ArrowRight className="h-3.5 w-3.5" />
+                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                    Continue to payment
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
                   </Button>
-                </motion.div>
+                </div>
               ) : (
                 <>
-                  {/* Booking Summary Box */}
-                  <div className="border-t border-[var(--color-shell-border)] pt-4 space-y-2 text-xs">
-                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
-                      <span>Duration</span>
-                      <span className="font-medium text-[var(--color-shell-text)]">
-                        {mentorData.gig.duration_minutes} minutes
-                      </span>
+                  {/* ---- Summary ---- */}
+                  <dl className="mt-5 space-y-2.5 border-t border-[var(--color-shell-border)] pt-5 text-[13px]">
+                    <div className="flex items-start justify-between gap-3">
+                      <dt className="text-[var(--color-shell-text-muted)]">Duration</dt>
+                      <dd className="text-right font-medium text-[var(--color-shell-text)]">
+                        {gig?.duration_minutes} minutes
+                      </dd>
                     </div>
-                    <div className="flex justify-between text-[var(--color-shell-text-muted)]">
-                      <span>Selected Time</span>
-                      <span className="font-semibold text-[var(--color-shell-text)]">
-                        {selectedSlot
-                          ? `${formatLocalTimeLabel(selectedSlot.local_start_time)} � ${formatLocalTimeLabel(
-                              selectedSlot.local_end_time
-                            )} (${mentorData.timezone})`
-                          : 'Please select an available slot'}
-                      </span>
+                    <div className="flex items-start justify-between gap-3">
+                      <dt className="text-[var(--color-shell-text-muted)]">Selected time</dt>
+                      <dd className="text-right font-medium text-[var(--color-shell-text)]">
+                        {selectedSlot ? (
+                          <>
+                            {selectedTimeLabel}
+                            <span className="block text-[11px] font-normal text-[var(--color-shell-text-subtle)]">
+                              {formatShortDate(selectedDate)} · {mentorData.timezone}
+                            </span>
+                          </>
+                        ) : (
+                          'Select an available time'
+                        )}
+                      </dd>
                     </div>
-                    <div className="flex justify-between text-[var(--color-shell-text)] text-sm font-bold pt-1 border-t border-[var(--color-shell-border)]">
-                      <span>Total Due</span>
-                      <span>?{mentorData.gig.price_inr} INR</span>
+                    <div className="flex items-center justify-between gap-3 border-t border-[var(--color-shell-border)] pt-3">
+                      <dt className="text-[14px] font-semibold text-[var(--color-shell-text)]">
+                        Total
+                      </dt>
+                      <dd className="text-[18px] font-bold text-[var(--color-shell-text)]">
+                        {gigPrice}
+                      </dd>
                     </div>
-                  </div>
+                  </dl>
 
-                  {/* Hold Action Button */}
                   <Button
-                    disabled={!selectedSlot || !selectedSlot.is_available || isReserving}
                     onClick={handleReserveSlot}
-                    className="w-full gap-2 text-xs font-semibold"
-                    size="md"
+                    disabled={!canReserve}
+                    isLoading={isReserving}
+                    loadingText="Reserving"
+                    size="lg"
+                    className="mt-5 w-full gap-2"
                   >
-                    <Lock className="h-3.5 w-3.5" />
+                    {!isReserving && <Lock className="h-4 w-4" aria-hidden="true" />}
                     <span>
-                      {isReserving ? 'Validating & Locking Slot...' : 'Reserve Slot (15-Min Hold)'}
+                      {isReserving
+                        ? 'Reserving slot'
+                        : 'Reserve slot (15-min hold)'}
                     </span>
-                    <ArrowRight className="h-3.5 w-3.5" />
+                    {!isReserving && <ArrowRight className="h-4 w-4" aria-hidden="true" />}
                   </Button>
-                  <p className="text-[11px] text-center text-[var(--color-shell-text-subtle)]">
-                    Holding this slot locks it in PostgreSQL for 15 minutes.
+
+                  <p className="mt-2.5 text-center text-[11px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                    Reserving locks this time in the database for 15 minutes while you complete
+                    payment.
                   </p>
                 </>
               )}
             </div>
-          </motion.div>
+          </div>
         </div>
       )}
     </motion.div>

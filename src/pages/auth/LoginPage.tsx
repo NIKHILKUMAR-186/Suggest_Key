@@ -166,7 +166,7 @@ export const LoginPage: React.FC = () => {
             size="md"
             isLoading={isSubmitting}
             loadingText="Signing In..."
-            className="w-full auth-button-primary"
+            className="w-full"
           >
             Continue
           </Button>

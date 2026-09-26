@@ -2,7 +2,9 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
+import { createServer as createHttpServer, type Server as HttpServer } from 'http';
 import { createServer as createViteServer } from 'vite';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   executeAtomicBookingWithHold,
   confirmSessionByMentor,
@@ -74,6 +76,7 @@ import {
   parseAccountStatusAction,
   validateAccountStatusAction,
 } from './src/lib/adminAccountControl';
+import { APP_CONFIG } from './src/config/app';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -115,6 +118,171 @@ const UUID_SHAPE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 const MIN_MENTOR_BIO_LENGTH = 10;
 const MIN_PASSWORD_LENGTH = 6;
 
+/**
+ * How many admin accounts are currently OPERATIONAL.
+ *
+ * Counted through the shared `deriveAccountState` so a time-boxed suspension
+ * whose window has already elapsed counts as active: the account can sign in
+ * and use the admin area, so treating it as inactive would wrongly block a
+ * legitimate status change with LAST_ACTIVE_ADMIN. Raw string comparison is
+ * deliberately avoided here for exactly that reason.
+ */
+async function countActiveAdminAccounts(admin: SupabaseClient): Promise<number> {
+  const { data: adminRoleRows, error: adminRoleErr } = await admin
+    .from('user_roles')
+    .select('user_id')
+    .eq('role', 'admin');
+  if (adminRoleErr) throw adminRoleErr;
+
+  const adminIds = Array.from(new Set((adminRoleRows || []).map((r: { user_id: string }) => r.user_id)));
+  if (!adminIds.length) return 0;
+
+  const { data: adminAccounts, error: adminAccountsErr } = await admin
+    .from('profiles')
+    .select('id, account_status, suspended_until')
+    .in('id', adminIds);
+  if (adminAccountsErr) throw adminAccountsErr;
+
+  const now = new Date();
+  return (adminAccounts || []).filter(
+    (row: { account_status?: string | null; suspended_until?: string | null }) =>
+      deriveAccountState(
+        { account_status: row.account_status ?? null, suspended_until: row.suspended_until ?? null },
+        now,
+      ).canPerformOperationalActions,
+  ).length;
+}
+
+
+/**
+ * Resolve an Admin segment reference that may be EITHER the human-readable
+ * `segments.slug` used in browser URLs OR the internal `segments.id` UUID.
+ *
+ * URLs stay short and readable (`/admin/segments/relationship-advisior`) while
+ * the database keeps its UUID primary key. Primary keys are never changed and
+ * UUIDs are never stringified: the slug is resolved to the real row and the
+ * real `segment.id` is what every downstream query uses.
+ *
+ * A slug can never collide with a UUID shape, so the two are unambiguous.
+ */
+async function resolveAdminSegmentBySlugOrId(
+  admin: SupabaseClient,
+  reference: string,
+): Promise<{ segment: any | null; error: any | null }> {
+  const key = String(reference ?? '').trim();
+  if (!key) return { segment: null, error: null };
+
+  const column = UUID_SHAPE_PATTERN.test(key) ? 'id' : 'slug';
+  const { data, error } = await admin
+    .from('segments')
+    .select('*')
+    .eq(column, key)
+    .maybeSingle();
+
+  if (error) return { segment: null, error };
+  return { segment: data ?? null, error: null };
+}
+
+/**
+ * Mentors assigned to a segment, read through `mentor_segments` and joined with
+ * `profiles` (identity), `mentor_profiles` (approval/active/headline) and
+ * `user_roles` (confirm the account really is a mentor).
+ *
+ * `headline` lives on `mentor_profiles`, NOT on `profiles`; selecting it from
+ * `profiles` makes PostgREST reject the whole query and previously produced
+ * rows with no name or email.
+ */
+async function loadSegmentMentors(
+  admin: SupabaseClient,
+  segmentId: string,
+): Promise<{ mentors: any[]; error: any | null }> {
+  const { data: msData, error: msErr } = await admin
+    .from('mentor_segments')
+    .select('mentor_id, segment_id, is_primary, created_at')
+    .eq('segment_id', segmentId);
+
+  if (msErr) return { mentors: [], error: msErr };
+
+  const rows = msData || [];
+  const mentorIds = Array.from(new Set(rows.map((ms: any) => ms.mentor_id as string)));
+  if (mentorIds.length === 0) return { mentors: [], error: null };
+
+  const [profilesRes, mentorProfilesRes, rolesRes, gigsRes] = await Promise.all([
+    admin.from('profiles').select('id, full_name, email').in('id', mentorIds),
+    admin.from('mentor_profiles').select('id, approval_status, is_approved, is_active, headline').in('id', mentorIds),
+    admin.from('user_roles').select('user_id, role').in('user_id', mentorIds).eq('role', 'mentor'),
+    admin.from('gigs').select('id, title, mentor_id, segment_id, is_active').in('mentor_id', mentorIds).eq('is_active', true),
+  ]);
+
+  // Every one of these must be checked: a discarded `error` turns a failed
+  // query into an empty result set and silently blanks the whole table.
+  for (const res of [profilesRes, mentorProfilesRes, rolesRes, gigsRes]) {
+    if (res.error) return { mentors: [], error: res.error };
+  }
+
+  const profileMap = new Map((profilesRes.data || []).map((p: any) => [p.id, p]));
+  const mpMap = new Map((mentorProfilesRes.data || []).map((mp: any) => [mp.id, mp]));
+  const mentorRoleIds = new Set((rolesRes.data || []).map((r: any) => r.user_id as string));
+
+  const activeGigByMentor = new Map<string, any>();
+  for (const g of gigsRes.data || []) {
+    if (g.segment_id !== segmentId) continue;
+    if (!activeGigByMentor.has(g.mentor_id)) activeGigByMentor.set(g.mentor_id, g);
+  }
+
+  const mentors = rows
+    // A mentor_segments row can outlive the mentor role; only list real mentors.
+    .filter((ms: any) => mentorRoleIds.has(ms.mentor_id))
+    .map((ms: any) => {
+      const profile = profileMap.get(ms.mentor_id);
+      const mp = mpMap.get(ms.mentor_id);
+      return {
+        id: ms.mentor_id,
+        name: profile?.full_name || 'Unknown',
+        email: profile?.email || '',
+        headline: mp?.headline || '',
+        isPrimary: Boolean(ms.is_primary),
+        activeGig: activeGigByMentor.get(ms.mentor_id)?.title || null,
+        approvalStatus: mp?.approval_status || 'draft',
+        isActive: Boolean(mp?.is_active),
+      };
+    });
+
+  return { mentors, error: null };
+}
+
+/**
+ * Gigs belonging to a segment. A segment with no gigs yields an empty array,
+ * which is a normal state and never an error.
+ */
+async function loadSegmentGigs(
+  admin: SupabaseClient,
+  segmentId: string,
+): Promise<{ gigs: any[]; error: any | null }> {
+  const { data, error } = await admin
+    .from('gigs')
+    .select('*, segment:segments(name)')
+    .eq('segment_id', segmentId)
+    .order('created_at', { ascending: false });
+
+  if (error) return { gigs: [], error };
+
+  const gigs = (data || []).map((g: any) => ({
+    id: g.id,
+    title: g.title,
+    description: g.description,
+    durationMinutes: g.duration_minutes,
+    priceInr: g.price_inr,
+    isActive: g.is_active,
+    mentorId: g.mentor_id,
+    segmentId: g.segment_id,
+    segmentName: g.segment?.name || 'Unknown',
+    createdAt: g.created_at,
+    updatedAt: g.updated_at,
+  }));
+
+  return { gigs, error: null };
+}
 
 async function startServer() {
   const app = express();
@@ -1040,7 +1208,7 @@ async function startServer() {
         success: true,
         availability: availabilityRes.data || [],
         exceptions: exceptionsRes.data || [],
-        timezone: (profileRes.data as { timezone?: string | null } | null)?.timezone || 'Asia/Kolkata',
+        timezone: (profileRes.data as { timezone?: string | null } | null)?.timezone || APP_CONFIG.DEFAULT_TIMEZONE,
       });
     } catch (err: any) {
       return respondWithServerError({
@@ -1073,7 +1241,7 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 50 recurring windows.' } });
       }
 
-      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Kolkata';
+      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : APP_CONFIG.DEFAULT_TIMEZONE;
 
       const normalised = rules.map((rule, index) => {
         const r = (rule || {}) as Record<string, unknown>;
@@ -1581,6 +1749,37 @@ async function startServer() {
         suspended_until: accountProfile?.suspended_until ?? null,
       });
 
+      // A mentor may ALSO hold the admin role, so the platform-critical Admin
+      // invariants are enforced here too: driving the same account through the
+      // mentor endpoint must not be a way around the last-active-admin guard
+      // that /api/admin/users/:id/status applies. Only the lockout rule is
+      // evaluated; every other mentor rule stays with validateMentorStatusAction.
+      if (action === 'deactivate' || action === 'suspend') {
+        const [{ data: mentorRoleRows, error: mentorRolesErr }, activeAdminCount] = await Promise.all([
+          admin.from('user_roles').select('role').eq('user_id', id),
+          countActiveAdminAccounts(admin),
+        ]);
+        if (mentorRolesErr) throw mentorRolesErr;
+
+        const mentorSafety = assertAdminAccountSafety({
+          action,
+          adminId,
+          targetId: id,
+          targetRoles: (mentorRoleRows || []).map((entry: { role: string }) => entry.role),
+          activeAdminCount,
+          targetState: deriveAccountState({
+            account_status: accountProfile?.account_status ?? null,
+            suspended_until: accountProfile?.suspended_until ?? null,
+          }),
+        });
+        if (!mentorSafety.allowed && mentorSafety.code === 'LAST_ACTIVE_ADMIN') {
+          return res.status(409).json({
+            success: false,
+            error: { code: mentorSafety.code, message: mentorSafety.message },
+          });
+        }
+      }
+
       const validation = validateMentorStatusAction({
         action,
         reason: (req.body || {}).reason,
@@ -1673,6 +1872,56 @@ async function startServer() {
   // ADMIN-ONLY: served from an authenticated, Admin-gated endpoint and never
   // exposed through public mentor discovery (prompt section 11). Verification
   // documents, internal notes and audit records live here and nowhere public.
+  //
+  // NOTE: GET /api/admin/mentors/eligible is registered immediately below and
+  // MUST stay above this `/api/admin/mentors/:id` route. Express matches routes
+  // in registration order, so a `:id` route registered first captures the
+  // literal segment "eligible" and rejects it with 400 "Mentor ID must be a
+  // valid UUID.", leaving the eligible-mentor handler permanently unreachable.
+
+  // GET /api/admin/mentors/eligible: Approved + active mentors available for
+  // segment assignment. Needs no segment id: eligibility is a property of the
+  // mentor, not of the segment being edited.
+  app.get('/api/admin/mentors/eligible', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: mpData, error: mpErr } = await admin
+        .from('mentor_profiles')
+        .select('id')
+        .eq('is_approved', true)
+        .eq('is_active', true);
+
+      if (mpErr) throw mpErr;
+
+      const mentorIds = (mpData || []).map((mp: any) => mp.id);
+      if (mentorIds.length === 0) {
+        return res.json({ success: true, mentors: [] });
+      }
+
+      const { data: profiles, error: profilesErr } = await admin
+        .from('profiles')
+        .select('id, full_name, email')
+        .in('id', mentorIds);
+
+      if (profilesErr) throw profilesErr;
+
+      const mentors = (profiles || []).map((p: any) => ({
+        id: p.id,
+        name: p.full_name,
+        email: p.email,
+      }));
+
+      return res.json({ success: true, mentors });
+    } catch (err: any) {
+      console.error('Failed to fetch eligible mentors:', err);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+    }
+  });
+
   app.get('/api/admin/mentors/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
@@ -2352,7 +2601,7 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 50 recurring windows.' } });
       }
 
-      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Kolkata';
+      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : APP_CONFIG.DEFAULT_TIMEZONE;
 
       const normalised = rules.map((rule, index) => {
         const r = (rule || {}) as Record<string, unknown>;
@@ -2703,6 +2952,9 @@ async function startServer() {
       // Fetch mentor counts per segment (only approved and active mentors with active gigs)
       const segmentIds = segments?.map((s: any) => s.id) || [];
       let mentorCounts: Record<string, number> = {};
+      // Derived from the active-gig rows already fetched below, so the list can
+      // show a real Gigs count without an extra round trip or a hardcoded 0.
+      const activeGigCounts: Record<string, number> = {};
 
       if (segmentIds.length > 0) {
         // Get mentor_segments for active segments
@@ -2739,10 +2991,28 @@ async function startServer() {
 
             // Count unique mentors per segment who have active gigs
             for (const g of gigsData || []) {
-              if (approvedMentorIds.has(g.mentor_id)) {
-                mentorCounts[g.segment_id] = (mentorCounts[g.segment_id] || 0) + 1;
-              }
+              if (!approvedMentorIds.has(g.mentor_id)) continue;
+              mentorCounts[g.segment_id] = (mentorCounts[g.segment_id] || 0) + 1;
+              activeGigCounts[g.segment_id] = (activeGigCounts[g.segment_id] || 0) + 1;
             }
+          }
+        }
+      }
+
+      // Gigs owned by mentors who are not approved still exist and belong to the
+      // segment, so count them too rather than under-reporting.
+      if (segmentIds.length > 0) {
+        const { data: allActiveGigs, error: allGigsErr } = await admin
+          .from('gigs')
+          .select('id, segment_id')
+          .in('segment_id', segmentIds)
+          .eq('is_active', true);
+
+        if (allGigsErr) throw allGigsErr;
+
+        for (const g of allActiveGigs || []) {
+          if (activeGigCounts[g.segment_id] === undefined) {
+            activeGigCounts[g.segment_id] = (activeGigCounts[g.segment_id] || 0) + 1;
           }
         }
       }
@@ -2750,6 +3020,7 @@ async function startServer() {
       const segmentsWithCounts = (segments || []).map((s: any) => ({
         ...s,
         mentorsCount: mentorCounts[s.id] || 0,
+        gigsCount: activeGigCounts[s.id] || 0,
       }));
 
       return res.json({ success: true, segments: segmentsWithCounts });
@@ -2759,10 +3030,55 @@ async function startServer() {
     }
   });
 
+  // GET /api/admin/segments/:segment
+  //
+  // `:segment` is the public `segments.slug` from the browser URL. The internal
+  // `segments.id` UUID is resolved here and used for every related query, so no
+  // UUID ever appears in a URL. A UUID is still accepted for back-compat.
+  //
+  // Returns segment + mentors + gigs in ONE response so the detail page needs a
+  // single round trip instead of a three-request waterfall. Always JSON: an
+  // unknown slug is 404 JSON, never an HTML page.
+  app.get('/api/admin/segments/:segment', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    try {
+      const { segment, error } = await resolveAdminSegmentBySlugOrId(admin, req.params.segment);
+      if (error) throw error;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const [mentorsRes, gigsRes] = await Promise.all([
+        loadSegmentMentors(admin, segment.id),
+        loadSegmentGigs(admin, segment.id),
+      ]);
+      if (mentorsRes.error) throw mentorsRes.error;
+      if (gigsRes.error) throw gigsRes.error;
+
+      return res.json({
+        success: true,
+        segment,
+        mentors: mentorsRes.mentors,
+        gigs: gigsRes.gigs,
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch segment:', err);
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/segments/:segment',
+        clientMessage: 'Unable to load the segment.',
+      });
+    }
+  });
+
   // POST /api/admin/segments: Create new segment
   app.post('/api/admin/segments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
-      const { name, slug, priority, isActive } = req.body;
+      const { name, slug, priority, isActive, description } = req.body;
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
@@ -2772,11 +3088,26 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Name and slug are required.' } });
       }
 
+      // `segments.slug` is UNIQUE in the live schema. Check it explicitly so a
+      // duplicate is a clear validation error instead of a 23505 surfacing as a
+      // generic 500, and so no duplicate row is ever attempted.
+      const { data: slugClash, error: slugCheckErr } = await admin
+        .from('segments')
+        .select('id')
+        .eq('slug', slug)
+        .maybeSingle();
+
+      if (slugCheckErr) throw slugCheckErr;
+      if (slugClash) {
+        return res.status(400).json({ success: false, error: { code: 'DUPLICATE_SLUG', message: 'Another segment already uses this slug.' } });
+      }
+
       const { data, error } = await admin
         .from('segments')
         .insert({
           name,
           slug,
+          description: description ?? null,
           priority: priority || 10,
           is_active: isActive !== false,
         })
@@ -2785,7 +3116,7 @@ async function startServer() {
 
       if (error) {
         if (error.code === '23505') { // unique violation
-          return res.status(409).json({ success: false, error: { code: 'DUPLICATE', message: 'Segment name or slug already exists.' } });
+          return res.status(400).json({ success: false, error: { code: 'DUPLICATE_SLUG', message: 'Another segment already uses this slug.' } });
         }
         throw error;
       }
@@ -2814,12 +3145,43 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
+      // Writes stay keyed on the internal UUID; only reads use the slug.
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SEGMENT_ID', message: 'Segment ID must be a valid UUID.' } });
+      }
+
+      const { data: existing, error: existingErr } = await admin
+        .from('segments')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
       const updateData: Record<string, any> = { updated_at: new Date().toISOString() };
       if (name !== undefined) updateData.name = name;
       if (slug !== undefined) updateData.slug = slug;
       if (priority !== undefined) updateData.priority = priority;
       if (isActive !== undefined) updateData.is_active = isActive;
       if (description !== undefined) updateData.description = description;
+
+      // A slug change must not collide with a DIFFERENT segment. The row's own id
+      // is excluded so re-saving a segment without touching its slug is fine.
+      if (slug !== undefined) {
+        const { data: slugClash, error: slugCheckErr } = await admin
+          .from('segments')
+          .select('id')
+          .eq('slug', slug)
+          .neq('id', id)
+          .maybeSingle();
+
+        if (slugCheckErr) throw slugCheckErr;
+        if (slugClash) {
+          return res.status(400).json({ success: false, error: { code: 'DUPLICATE_SLUG', message: 'Another segment already uses this slug.' } });
+        }
+      }
 
       const { data, error } = await admin
         .from('segments')
@@ -2830,7 +3192,7 @@ async function startServer() {
 
       if (error) {
         if (error.code === '23505') {
-          return res.status(409).json({ success: false, error: { code: 'DUPLICATE', message: 'Segment name or slug already exists.' } });
+          return res.status(400).json({ success: false, error: { code: 'DUPLICATE_SLUG', message: 'Another segment already uses this slug.' } });
         }
         throw error;
       }
@@ -3307,142 +3669,67 @@ async function startServer() {
     }
   });
 
-  // GET /api/admin/segments/:id/mentors: Fetch mentors assigned to segment
-  app.get('/api/admin/segments/:id/mentors', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  // GET /api/admin/segments/:segment/mentors
+  // Accepts the public slug or the internal UUID; the detail endpoint already
+  // returns mentors inline, so this stays for callers that need just the list.
+  app.get('/api/admin/segments/:segment/mentors', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
     try {
-      const { id } = req.params;
-      const admin = getSupabaseAdmin();
-      if (!admin) {
-        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const { segment, error: segErr } = await resolveAdminSegmentBySlugOrId(admin, req.params.segment);
+      if (segErr) throw segErr;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const { data: msData, error: msErr } = await admin
-        .from('mentor_segments')
-        .select('*, segment:segments(*)')
-        .eq('segment_id', id);
-
-      if (msErr) throw msErr;
-
-      const mentorIds = (msData || []).map((ms: any) => ms.mentor_id);
-      if (mentorIds.length === 0) {
-        return res.json({ success: true, mentors: [] });
-      }
-
-      const [{ data: profiles }, { data: mentorProfiles }, { data: gigs }] = await Promise.all([
-        admin.from('profiles').select('id, full_name, email, headline').in('id', mentorIds),
-        admin.from('mentor_profiles').select('id, approval_status, is_active, headline').in('id', mentorIds),
-        admin.from('gigs').select('id, title, mentor_id, segment_id, is_active').in('mentor_id', mentorIds).eq('is_active', true),
-      ]);
-
-      const profileMap = new Map(profiles?.map((p: any) => [p.id, p]) || []);
-      const mpMap = new Map(mentorProfiles?.map((mp: any) => [mp.id, mp]) || []);
-      const gigMap = new Map<string, any[]>();
-      for (const g of gigs || []) {
-        if (!gigMap.has(g.mentor_id)) gigMap.set(g.mentor_id, []);
-        gigMap.get(g.mentor_id)!.push(g);
-      }
-
-      const mentors = (msData || []).map((ms: any) => {
-        const profile = profileMap.get(ms.mentor_id);
-        const mp = mpMap.get(ms.mentor_id);
-        const mentorGigs = gigMap.get(ms.mentor_id) || [];
-        const segmentGig = mentorGigs.find((g: any) => g.segment_id === id);
-        return {
-          id: ms.mentor_id,
-          name: profile?.full_name || 'Unknown',
-          email: profile?.email || '',
-          headline: mp?.headline || profile?.headline || '',
-          isPrimary: ms.is_primary,
-          activeGig: segmentGig?.title || null,
-          approvalStatus: mp?.approval_status || 'draft',
-          isActive: mp?.is_active || false,
-        };
-      });
+      const { mentors, error } = await loadSegmentMentors(admin, segment.id);
+      if (error) throw error;
 
       return res.json({ success: true, mentors });
     } catch (err: any) {
       console.error('Failed to fetch segment mentors:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/segments/:segment/mentors',
+        clientMessage: 'Unable to load the mentors for this segment.',
+      });
     }
   });
 
-  // GET /api/admin/segments/:id/gigs: Fetch gigs for segment
-  app.get('/api/admin/segments/:id/gigs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  // GET /api/admin/segments/:segment/gigs
+  // A segment with no gigs returns `gigs: []`, which is a normal state.
+  app.get('/api/admin/segments/:segment/gigs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
     try {
-      const { id } = req.params;
-      const admin = getSupabaseAdmin();
-      if (!admin) {
-        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      const { segment, error: segErr } = await resolveAdminSegmentBySlugOrId(admin, req.params.segment);
+      if (segErr) throw segErr;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const { data: gigs, error } = await admin
-        .from('gigs')
-        .select('*, mentor:profiles(full_name), segment:segments(name)')
-        .eq('segment_id', id)
-        .order('created_at', { ascending: false });
-
+      const { gigs, error } = await loadSegmentGigs(admin, segment.id);
       if (error) throw error;
 
-      const formattedGigs = (gigs || []).map((g: any) => ({
-        id: g.id,
-        title: g.title,
-        description: g.description,
-        durationMinutes: g.duration_minutes,
-        priceInr: g.price_inr,
-        isActive: g.is_active,
-        segmentId: g.segment_id,
-        segmentName: g.segment?.name || 'Unknown',
-        createdAt: g.created_at,
-        updatedAt: g.updated_at,
-      }));
-
-      return res.json({ success: true, gigs: formattedGigs });
+      return res.json({ success: true, gigs });
     } catch (err: any) {
       console.error('Failed to fetch segment gigs:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/segments/:segment/gigs',
+        clientMessage: 'Unable to load the gigs for this segment.',
+      });
     }
   });
 
-  // GET /api/admin/mentors/eligible: Fetch all approved active mentors for assignment
-  app.get('/api/admin/mentors/eligible', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
-    try {
-      const admin = getSupabaseAdmin();
-      if (!admin) {
-        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      const { data: mpData, error: mpErr } = await admin
-        .from('mentor_profiles')
-        .select('id')
-        .eq('is_approved', true)
-        .eq('is_active', true);
-
-      if (mpErr) throw mpErr;
-
-      const mentorIds = (mpData || []).map((mp: any) => mp.id);
-      if (mentorIds.length === 0) {
-        return res.json({ success: true, mentors: [] });
-      }
-
-      const { data: profiles, error: profilesErr } = await admin
-        .from('profiles')
-        .select('id, full_name, email')
-        .in('id', mentorIds);
-
-      if (profilesErr) throw profilesErr;
-
-      const mentors = (profiles || []).map((p: any) => ({
-        id: p.id,
-        name: p.full_name,
-        email: p.email,
-      }));
-
-      return res.json({ success: true, mentors });
-    } catch (err: any) {
-      console.error('Failed to fetch eligible mentors:', err);
-      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: err.message } });
-    }
-  });
+  // GET /api/admin/mentors/eligible was moved above GET /api/admin/mentors/:id
+  // so that Express can no longer shadow it with the `:id` parameter route.
 
   // GET /api/admin/mentors/:id/slots: Generate slots for mentor on date
   app.get('/api/admin/mentors/:id/slots', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
@@ -3661,7 +3948,10 @@ async function startServer() {
       // Every number below is a live database count, never a computed guess.
       const nowIso = new Date().toISOString();
       const isAdminAccount = (roles || []).some((entry: { role: string }) => entry.role === 'admin');
-      const isActiveAccount = !['suspended', 'deactivated'].includes(String(profile.account_status || 'active'));
+      const isActiveAccount = deriveAccountState({
+        account_status: profile.account_status ?? null,
+        suspended_until: profile.suspended_until ?? null,
+      }).canPerformOperationalActions;
 
       const [
         { count: upcomingBookings },
@@ -3691,14 +3981,8 @@ async function startServer() {
 
       // How many ADMIN accounts are currently active. The UI needs this to
       // explain the "last active admin" protection before an Admin clicks.
-      const { data: adminRoleRows } = await admin.from('user_roles').select('user_id').eq('role', 'admin');
-      const adminIds = Array.from(new Set((adminRoleRows || []).map((r: { user_id: string }) => r.user_id)));
-      const { data: adminAccounts } = adminIds.length
-        ? await admin.from('profiles').select('id, account_status').in('id', adminIds)
-        : { data: [] as Array<{ id: string; account_status: string | null }> };
-      const activeAdminCount = (adminAccounts || []).filter(
-        (row) => !['suspended', 'deactivated'].includes(String(row.account_status || 'active')),
-      ).length;
+      // Lapsed suspensions count as active here, matching the write-time guard.
+      const activeAdminCount = await countActiveAdminAccounts(admin);
 
       // ---- Supabase Auth account-access state (invitation lifecycle) ---------
       // Read through the admin client only. No password, hash or session token
@@ -3892,19 +4176,7 @@ async function startServer() {
         suspended_until: profile.suspended_until ?? null,
       });
 
-      const { data: adminRoleRows, error: adminRoleErr } = await admin
-        .from('user_roles')
-        .select('user_id')
-        .eq('role', 'admin');
-      if (adminRoleErr) throw adminRoleErr;
-      const adminIds = Array.from(new Set((adminRoleRows || []).map((r: { user_id: string }) => r.user_id)));
-      const { data: adminAccounts, error: adminAccountsErr } = adminIds.length
-        ? await admin.from('profiles').select('id, account_status').in('id', adminIds)
-        : { data: [] as Array<{ id: string; account_status: string | null }>, error: null };
-      if (adminAccountsErr) throw adminAccountsErr;
-      const activeAdminCount = (adminAccounts || []).filter(
-        (row) => !['suspended', 'deactivated'].includes(String(row.account_status || 'active')),
-      ).length;
+      const activeAdminCount = await countActiveAdminAccounts(admin);
 
       const safety = assertAdminAccountSafety({
         action,
@@ -7178,9 +7450,19 @@ async function startServer() {
   // --------------------------------------------------------------------------
   // Vite Middleware (Development) / Static Files (Production)
   // --------------------------------------------------------------------------
+  let httpServer: HttpServer | null = null;
   if (process.env.NODE_ENV !== 'production') {
+    const hmrEnabled = process.env.DISABLE_HMR !== 'true';
+    httpServer = createHttpServer(app);
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: { server: httpServer },
+        // HMR rides the Express server instead of opening its own WebSocket
+        // listener on the default 24678, which collided as soon as a second
+        // dev server for this project was running.
+        ws: hmrEnabled ? { server: httpServer } : false,
+        watch: hmrEnabled ? {} : null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -7198,6 +7480,10 @@ async function startServer() {
   // app.listen() is only used for local/standalone development.
   if (process.env.VERCEL === '1') {
     (module as any).exports = app;
+  } else if (httpServer) {
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
+    });
   } else {
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);

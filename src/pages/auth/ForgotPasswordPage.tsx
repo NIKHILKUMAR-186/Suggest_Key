@@ -124,7 +124,7 @@ export const ForgotPasswordPage: React.FC = () => {
                 size="md"
                 isLoading={isSubmitting}
                 loadingText="Sending..."
-                className="w-full auth-button-primary"
+                className="w-full"
               >
                 <Mail className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Send Reset Link</span>

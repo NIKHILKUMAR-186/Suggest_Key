@@ -19,7 +19,13 @@ export const TopNavigation: React.FC = () => {
 
   const userDropdownRef = useRef<HTMLDivElement>(null);
 
-  const baseConfig = ROLE_NAVIGATION[currentRole] || ROLE_NAVIGATION.seeker;
+  // `currentRole` is null when the database has no role row for the account.
+  // Navigation links still need a concrete path prefix, so the display prefix
+  // falls back to the seeker shell. This is presentation only: `ProtectedRoute`
+  // authorises against the real `roles` array, so no access is granted here.
+  const rolePrefix = currentRole ?? 'seeker';
+
+  const baseConfig = ROLE_NAVIGATION[rolePrefix] || ROLE_NAVIGATION.seeker;
   const config = {
     ...baseConfig,
     navItems: baseConfig.navItems.map((item) => {
@@ -105,7 +111,7 @@ export const TopNavigation: React.FC = () => {
               const Icon = item.icon;
               const isActive =
                 item.href === currentPath ||
-                (item.href !== `/${currentRole}` && currentPath.startsWith(item.href));
+                (item.href !== `/${rolePrefix}` && currentPath.startsWith(item.href));
 
               return (
                 <button
@@ -200,7 +206,7 @@ export const TopNavigation: React.FC = () => {
 
                     <button
                       onClick={() => {
-                        navigate(`/${currentRole}/settings`);
+                        navigate(`/${rolePrefix}/settings`);
                         setUserDropdownOpen(false);
                       }}
                       role="menuitem"
@@ -241,7 +247,7 @@ export const TopNavigation: React.FC = () => {
           <ThemeToggle />
           {unreadCount > 0 && (
             <button
-              onClick={() => handleNavClick(`/${currentRole}/notifications`)}
+              onClick={() => handleNavClick(`/${rolePrefix}/notifications`)}
               className="p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] relative rounded-lg"
               aria-label="View notifications"
             >
@@ -301,7 +307,7 @@ export const TopNavigation: React.FC = () => {
                   const Icon = item.icon;
                   const isActive =
                     item.href === currentPath ||
-                    (item.href !== `/${currentRole}` && currentPath.startsWith(item.href));
+                    (item.href !== `/${rolePrefix}` && currentPath.startsWith(item.href));
 
                   return (
                     <button

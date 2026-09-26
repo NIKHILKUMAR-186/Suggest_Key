@@ -127,7 +127,7 @@ export const SignUpPage: React.FC = () => {
             type="submit"
             size="md"
             disabled={isSubmitting}
-            className="w-full auth-button-primary"
+            className="w-full"
           >
             <UserPlus className="h-3.5 w-3.5" />
             <span>{isSubmitting ? 'Provisioning Account...' : 'Register & Continue'}</span>

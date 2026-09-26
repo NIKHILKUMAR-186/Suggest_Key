@@ -23,7 +23,14 @@ export { validateSessionAccess, joinSessionAuthoritative };
 const isDevMode = process.env.NODE_ENV !== 'production';
 
 export interface CreateBookingRequest {
-  seekerId: string;
+  /**
+   * The seeker is NEVER sent from the browser.
+   *
+   * `POST /api/bookings/hold` derives the seeker from the authenticated
+   * Supabase session and re-checks the canonical role server-side. A client
+   * supplied identity would be an authorization bypass, so the field is
+   * intentionally absent from this request.
+   */
   mentorId: string;
   segmentId: string;
   gigId: string;
@@ -45,79 +52,58 @@ export interface CreateBookingResponse {
 
 /**
  * Initiates the atomic booking & hold transaction.
- * First attempts to call the server `/api/bookings/hold` or Supabase RPC `create_booking_with_hold`.
- * If running in local standalone mode, executes the atomic booking engine with persisted state.
+ *
+ * The server is the ONLY authority here. It resolves the seeker from the
+ * authenticated Supabase session, re-reads the canonical role from
+ * `user_roles`, and performs the hold inside the `create_booking_with_hold`
+ * database function.
+ *
+ * There is deliberately no client-side fallback:
+ *   - calling the RPC directly would let the browser assert `p_seeker_id`,
+ *   - the in-memory engine would fabricate a booking that does not exist.
+ *
+ * A transport failure or a non-2xx response is reported as a real error.
  */
 export async function createBookingWithHold(
   request: CreateBookingRequest
 ): Promise<CreateBookingResponse> {
-  // 1. Try server-side Express endpoint if available
+  let res: Response;
   try {
-    const res = await apiFetch('/api/bookings/hold', {
+    res = await apiFetch('/api/bookings/hold', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(request),
     });
-
-    if (res.ok) {
-      const data = await res.json();
-      return data;
-    }
-
-    if (res.status === 409 || res.status === 400 || res.status === 403) {
-      const errData = await res.json();
-      return {
-        success: false,
-        error: errData.error || { code: 'BOOKING_FAILED', message: errData.message || 'Booking failed' },
-      };
-    }
-  } catch (httpErr) {
-    // Backend API route not responding; proceed to Supabase RPC
-  }
-
-  // 2. Try Supabase RPC `create_booking_with_hold`
-  if (supabase) {
-    try {
-      const { data, error } = await (supabase as any).rpc('create_booking_with_hold', {
-        p_seeker_id: request.seekerId,
-        p_mentor_id: request.mentorId,
-        p_segment_id: request.segmentId,
-        p_gig_id: request.gigId,
-        p_start_time: request.startTime,
-        p_end_time: request.endTime,
-      });
-
-      if (!error && data) {
-        return data as CreateBookingResponse;
-      }
-      if (error) {
-        return {
-          success: false,
-          error: {
-            code: 'DATABASE_ERROR',
-            message: error.message,
-          },
-        };
-      }
-    } catch (rpcErr: any) {
-      // Proceed to local fallback
-    }
-  }
-
-  // 3. Deterministic Local State Engine Fallback (for preview/testing only)
-  if (!isDevMode) {
+  } catch (err: any) {
     return {
       success: false,
       error: {
-        code: 'NO_BACKEND',
-        message: 'Booking service is unavailable in production without a backend connection.',
+        code: 'NETWORK_ERROR',
+        message: 'We could not reach the booking service. Check your connection and try again.',
       },
     };
   }
-  const seedDb: BookingEngineContext = getLocalBookingEngineContext();
-  return executeAtomicBookingWithHold(request, seedDb);
+
+  let payload: any = null;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+
+  if (res.ok && payload) {
+    return payload as CreateBookingResponse;
+  }
+
+  return {
+    success: false,
+    error: payload?.error ?? {
+      code: res.status === 401 ? 'AUTH_REQUIRED' : 'BOOKING_FAILED',
+      message: 'The booking could not be completed. Please try again.',
+    },
+  };
 }
 
 // In-memory persistent database representation for local development

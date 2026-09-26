@@ -4,7 +4,7 @@ import type { UserRole } from '@/src/types/navigation';
 
 interface NavigationContextType {
   currentPath: string;
-  currentRole: UserRole;
+  currentRole: UserRole | null;
   navigate: (path: string) => void;
 }
 

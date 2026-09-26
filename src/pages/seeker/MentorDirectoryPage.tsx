@@ -15,7 +15,8 @@ import { Badge } from '@/src/components/ui/Badge';
 import { Button } from '@/src/components/ui/Button';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
-import { MentorDirectoryCard } from '@/src/components/seeker/MentorDirectoryCard';
+import { MentorCard } from '@/src/components/seeker/MentorCard';
+import { MENTOR_GRID_CLASS, MentorGridSkeleton } from '@/src/components/seeker/MentorGrid';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import {
@@ -402,34 +403,33 @@ export const MentorDirectoryPage: React.FC = () => {
 
       {/* Content */}
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {[1, 2, 3, 4].map((i) => (
-            <Skeleton key={i} className="h-64 w-full rounded-2xl" />
-          ))}
-        </div>
+        <MentorGridSkeleton count={6} />
       ) : error ? null : mentors.length === 0 ? (
         <EmptyState
           icon={Search}
           title={
             hasActiveFilters
-              ? 'No Mentors Match Your Filters'
-              : 'No mentors are currently available on the platform.'
+              ? 'No mentors match your filters'
+              : 'No mentors are currently available'
           }
           description={
             hasActiveFilters
               ? 'No approved and active mentors match your current search and filters.'
               : 'There are no approved, active mentors on the platform yet. Please check back later.'
           }
-          actionLabel={hasActiveFilters ? 'Clear Filters' : undefined}
+          actionLabel={hasActiveFilters ? 'Clear filters' : undefined}
           onAction={hasActiveFilters ? clearAllFilters : undefined}
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className={MENTOR_GRID_CLASS}>
           {mentors.map((mentor) => (
-            <MentorDirectoryCard
+            <MentorCard
               key={mentor.id}
-              mentor={mentor}
-              date={today}
+              variant="discovery"
+              directoryMentor={mentor}
+              segmentId={mentor.segments[0]?.id || ''}
+              selectedDate={today}
+              today={today}
               navigate={navigate}
             />
           ))}

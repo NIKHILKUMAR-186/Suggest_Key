@@ -122,6 +122,38 @@ export function getDayOfWeekFromDateString(dateStr: string): number {
   return midDay.getUTCDay();
 }
 
+export const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * Short weekday label (e.g. "Wed") for a 'YYYY-MM-DD' date string, computed in
+ * UTC so it is stable regardless of the user's browser timezone.
+ */
+export function getWeekdayShort(dateStr: string): string {
+  const dow = getDayOfWeekFromDateString(dateStr);
+  return WEEKDAYS_SHORT[dow] ?? '';
+}
+
+/**
+ * Builds a compact rolling set of selectable dates starting from `today`
+ * ('YYYY-MM-DD'), e.g. Today, Tomorrow, Wed, Thu, ...
+ *
+ * `today` must come from `getDateStringInTimezone` so the window is computed in
+ * the user's configured timezone rather than UTC or the browser default.
+ */
+export function buildQuickDates(
+  today: string,
+  count: number
+): { label: string; value: string }[] {
+  const dates: { label: string; value: string }[] = [];
+  for (let i = 0; i < count; i++) {
+    const value = addDaysToDateString(today, i);
+    if (!value) continue;
+    const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : getWeekdayShort(value);
+    dates.push({ label, value });
+  }
+  return dates;
+}
+
 /**
  * Converts 'HH:MM' or 'HH:MM:SS' to total minutes since midnight
  */

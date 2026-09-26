@@ -8,7 +8,24 @@ export function getLastResponseRequestId(): string | null {
   return lastResponseRequestId;
 }
 
+/**
+ * Resolves the bearer token for API calls.
+ *
+ * The live Supabase session is authoritative and is therefore checked FIRST.
+ * The stored development demo token is only consulted when no Supabase session
+ * exists, because preferring it would let a stale value in localStorage
+ * override the signed-in identity — and with it the role the server resolves.
+ */
 export async function getApiAuthorization(): Promise<string | null> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (token) return token;
+    } catch {
+    }
+  }
+
   try {
     const demoAuth = localStorage.getItem(DEMO_AUTH_STORAGE_KEY);
     if (demoAuth) {
@@ -20,14 +37,7 @@ export async function getApiAuthorization(): Promise<string | null> {
   } catch {
   }
 
-  if (!isSupabaseConfigured()) return null;
-
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    return session?.access_token || null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {

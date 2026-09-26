@@ -13,6 +13,7 @@ import {
   GeneratedSlot,
 } from '@/src/types/database';
 import { generateMentorSlots } from '@/src/lib/slotEngine';
+import { deriveAccountState } from '@/src/lib/adminAccountControl';
 
 /**
  * 1. Fetch all active segments ordered by priority (priority 1 = highest priority).
@@ -252,18 +253,22 @@ export async function fetchDiscoverableMentors(
  * RLS already hides non-publicly-visible mentors through
  * `mentor_is_publicly_visible()`, but the predicate is repeated here so the
  * result set stays correct even if the query is executed with elevated rights.
+ *
+ * The account-state half is delegated to the SHARED `deriveAccountState` used
+ * by the server and the Admin Control Center, so discovery, booking validation
+ * and the Admin UI can never disagree about whether a suspension is still in
+ * force. Notably, a time-boxed suspension whose window has already elapsed no
+ * longer hides the mentor here, exactly as on the server.
  */
 function isMentorEligible(profile: any, nowMs: number): boolean {
-  const accountStatus = profile?.profile?.account_status ?? 'active';
-  if (accountStatus === 'deactivated') return false;
-  if (accountStatus === 'suspended') {
-    const until = profile?.profile?.suspended_until;
-    if (!until) return false;
-    const untilMs = Date.parse(until);
-    if (Number.isNaN(untilMs) || untilMs <= nowMs) return false;
-    return false;
-  }
-  return true;
+  const state = deriveAccountState(
+    {
+      account_status: profile?.profile?.account_status ?? null,
+      suspended_until: profile?.profile?.suspended_until ?? null,
+    },
+    new Date(nowMs),
+  );
+  return state.canPerformOperationalActions;
 }
 
 /**

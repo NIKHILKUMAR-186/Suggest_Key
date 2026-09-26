@@ -52,7 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [roles, setRoles] = useState<UserRole[]>([]);
-  const [activeRole, setActiveRole] = useState<UserRole>('seeker');
+  const [activeRoleState, setActiveRoleState] = useState<UserRole | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
@@ -64,7 +64,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSession(null);
     setProfile(data.profile);
     setRoles(data.roles);
-    setActiveRole(data.activeRole);
+    setActiveRoleState(data.activeRole);
     try {
       localStorage.setItem(DEMO_AUTH_STORAGE_KEY, JSON.stringify(data));
     } catch {
@@ -113,9 +113,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Sync Supabase user profile and roles
-  const loadUserData = useCallback(async (supabaseUser: User): Promise<UserRole> => {
-    let primary: UserRole = 'seeker';
+  /**
+   * Resolve the canonical role set for a signed-in user.
+   *
+   * `user_roles` is the ONLY source of truth, exactly as the server resolves it
+   * in `requireAuth`. This function must never invent a role: the previous
+   * `userRoles.length > 0 ? userRoles : ['seeker']` fallback granted every
+   * role-less account a phantom seeker role, which put unprivileged accounts
+   * into the seeker shell where every write was then rejected server-side with
+   * "Role 'seeker' required." A role-less account now honestly reports no
+   * roles and is routed to the unauthorized state instead.
+   */
+  const loadUserData = useCallback(async (supabaseUser: User): Promise<UserRole | null> => {
+    let primary: UserRole | null = null;
     try {
       // 1. Fetch Profile
       let { profile: userProfile } = await fetchUserProfile(supabaseUser.id);
@@ -138,11 +148,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setProfile(userProfile);
 
       // 2. Fetch User Roles from user_roles table (server-authoritative)
-      const { roles: userRoles } = await fetchUserRoles(supabaseUser.id);
-      const effectiveRoles: UserRole[] =
-        userRoles.length > 0
-          ? userRoles
-          : ['seeker'];
+      const { roles: userRoles, error: rolesError } = await fetchUserRoles(supabaseUser.id);
+      if (rolesError) {
+        // A failed role lookup must NOT be treated as "no roles" and must NOT
+        // fall back to a default role. Surface the failure instead of guessing.
+        console.error('Unable to resolve user roles:', rolesError);
+        setRoles([]);
+        setActiveRoleState(null);
+        return null;
+      }
+
+      const effectiveRoles: UserRole[] = userRoles;
       setRoles(effectiveRoles);
 
       // 3. Set Active Role (from database, never frontend-assigned)
@@ -150,8 +166,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? 'admin'
         : effectiveRoles.includes('mentor')
           ? 'mentor'
-          : 'seeker';
-      setActiveRole(primary);
+          : effectiveRoles.includes('seeker')
+            ? 'seeker'
+            : null;
+      setActiveRoleState(primary);
     } catch (err: any) {
       console.error('Error loading Supabase user data:', err);
     }
@@ -163,11 +181,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
 
     async function initAuth() {
-      const restoredDemoSession = restoreDemoAuth();
+      // A stored development demo token must never shadow a real Supabase
+      // session. Restoring it unconditionally let a stale localStorage value
+      // decide who the API believed the caller was, and therefore which role
+      // the server resolved. It is only honoured when there is no database.
+      const restoredDemoSession = isConfigured ? false : restoreDemoAuth();
 
       if (isConfigured) {
         try {
-          if (!restoredDemoSession) {
+          {
             const { data: { session: currentSession } } = await supabase.auth.getSession();
             if (isMounted) {
               if (currentSession?.user) {
@@ -179,6 +201,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setUser(null);
                 setProfile(null);
                 setRoles([]);
+                setActiveRoleState(null);
               }
             }
           }
@@ -188,15 +211,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (isMounted) setIsLoading(false);
         }
 
-        // Listen for Auth changes
+        // Listen for Auth changes. When a database is configured, every event
+        // is honoured: the real session is the only identity that counts, so a
+        // leftover demo entry in localStorage can no longer freeze the UI on a
+        // stale user.
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
           async (event, newSession) => {
             if (!isMounted) return;
-            try {
-              if (localStorage.getItem(DEMO_AUTH_STORAGE_KEY)) return;
-            } catch {
-              return;
-            }
             setSession(newSession);
             if (newSession?.user) {
               setUser(newSession.user);
@@ -205,7 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setUser(null);
               setProfile(null);
               setRoles([]);
-              setActiveRole('seeker');
+              setActiveRoleState(null);
             }
             setIsLoading(false);
           }
@@ -230,8 +251,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               };
               setUser(demoProfile as unknown as User);
               setProfile(demoProfile);
+              // No Supabase connection exists in this branch, so there is no
+              // `user_roles` table to read. This is a local preview identity
+              // only and is never used when a database is configured.
               setRoles(['seeker']);
-              setActiveRole('seeker');
+              setActiveRoleState('seeker');
             }
           } catch {
             // localStorage access disabled
@@ -279,9 +303,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.user) {
         setUser(data.user);
         setSession(data.session);
+        // `undefined` (not null) so a genuinely role-less account is reported
+        // as "no role resolved" rather than as a seeker.
         const role = await loadUserData(data.user);
         setIsLoading(false);
-        return { error: null, role };
+        return { error: null, role: role ?? undefined };
       }
 
       setIsLoading(false);
@@ -436,7 +462,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setSession(null);
           setProfile(null);
           setRoles([]);
-          setActiveRole('seeker');
+          setActiveRoleState(null);
           setPendingEmail(data.user.email || email);
         } else {
           setUser(data.user);
@@ -490,7 +516,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSession(null);
     setProfile(null);
     setRoles([]);
-    setActiveRole('seeker');
+    setActiveRoleState(null);
     setPendingEmail(null);
     setIsLoading(false);
   };
@@ -537,7 +563,7 @@ useEffect(() => {
         session,
         profile,
         roles,
-        activeRole,
+        activeRole: activeRoleState,
         isAuthenticated: !!user,
         isLoading,
         isConfigured,

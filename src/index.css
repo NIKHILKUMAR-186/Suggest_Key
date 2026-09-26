@@ -482,45 +482,6 @@
   box-shadow: 0 0 0 3px var(--color-shell-error-soft);
 }
 
-/* Primary Auth Button - Purple Accent */
-.auth-button-primary {
-  background-color: var(--color-shell-primary);
-  color: var(--color-shell-text-contrast);
-  border-radius: var(--radius-md);
-  padding: 12px 24px;
-  font-weight: 600;
-  border: none;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 48px;
-}
-
-.auth-button-primary:hover {
-  background-color: var(--color-shell-primary-hover);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-md);
-}
-
-.auth-button-primary:active {
-  transform: translateY(0);
-}
-
-.auth-button-primary:focus-visible {
-  outline: 2px solid var(--color-shell-focus);
-  outline-offset: 2px;
-}
-
-.auth-button-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
 /* Ghost Link Button */
 .auth-link-button {
   color: var(--color-shell-accent);
@@ -727,8 +688,6 @@
   --seeker-card-bg: #ffffff;
   --seeker-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 12px 30px -16px rgba(15, 23, 42, 0.24);
   --seeker-card-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 28px 52px -22px rgba(15, 23, 42, 0.34);
-  --seeker-card-image-fallback-a: #663af3;
-  --seeker-card-image-fallback-b: #2563eb;
 
   /* Selected segment pill */
   --seeker-segment-active-bg: linear-gradient(135deg, #663af3 0%, #7c3aed 50%, #2563eb 100%);
@@ -740,6 +699,9 @@
 
   /* Empty state */
   --seeker-empty-halo: rgba(102, 57, 243, 0.16);
+
+  /* Section atmosphere (segment discovery zone) */
+  --seeker-section-glow: rgba(102, 57, 243, 0.09);
 }
 
 .dark {
@@ -774,8 +736,6 @@
   --seeker-card-bg: #0b0d1a;
   --seeker-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 20px 44px -24px rgba(0, 0, 0, 0.95);
   --seeker-card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.55), 0 40px 70px -28px rgba(0, 0, 0, 1);
-  --seeker-card-image-fallback-a: #3b2a8f;
-  --seeker-card-image-fallback-b: #14306b;
 
   /* Selected segment pill */
   --seeker-segment-active-bg: linear-gradient(135deg, #663af3 0%, #7c3aed 50%, #3b82f6 100%);
@@ -787,6 +747,9 @@
 
   /* Empty state */
   --seeker-empty-halo: rgba(102, 57, 243, 0.28);
+
+  /* Section atmosphere */
+  --seeker-section-glow: rgba(102, 57, 243, 0.16);
 }
 
 /* Atmospheric page background — sits behind all seeker content */
@@ -946,9 +909,6 @@
     box-shadow: var(--seeker-card-shadow-hover);
     border-color: var(--color-shell-border-strong);
   }
-}
-.seeker-card-image-fallback {
-  background: linear-gradient(135deg, var(--seeker-card-image-fallback-a), var(--seeker-card-image-fallback-b));
 }
 
 /* Empty state halo */

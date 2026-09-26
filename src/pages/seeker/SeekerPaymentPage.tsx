@@ -9,6 +9,7 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
+import { formatInr } from '@/src/lib/seekerFormat';
 
 export const SeekerPaymentPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
@@ -191,8 +192,10 @@ export const SeekerPaymentPage: React.FC = () => {
                 <span className="font-semibold text-[var(--color-shell-text)]">{booking.gig?.duration_minutes || 60} Minutes</span>
               </div>
               <div className="flex justify-between items-center border-t border-[var(--color-shell-border)] pt-3 text-sm font-bold text-[var(--color-shell-text)]">
-                <span>Amount Due:</span>
-                <span className="font-mono text-base">₹{(booking.amount_inr || booking.gig?.price_inr || 0)} INR</span>
+                <span>Amount due</span>
+                <span className="text-base">
+                  {formatInr(booking.amount_inr || booking.gig?.price_inr || 0)}
+                </span>
               </div>
             </div>
 

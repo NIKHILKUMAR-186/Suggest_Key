@@ -39,7 +39,7 @@ export const EmptyMentorState: React.FC<EmptyMentorStateProps> = ({
     transition={{ duration: 0.25, ease: 'easeOut' }}
     role="status"
     className={cn(
-      'seeker-empty-halo relative mx-auto flex w-full max-w-xl flex-col items-center rounded-3xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-6 py-10 text-center sm:px-10 sm:py-12',
+      'seeker-empty-halo relative mx-auto flex w-full max-w-2xl flex-col items-center rounded-3xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-6 py-8 text-center sm:px-10 sm:py-9',
       className
     )}
   >
@@ -49,8 +49,8 @@ export const EmptyMentorState: React.FC<EmptyMentorStateProps> = ({
           className="pointer-events-none absolute left-1/2 top-0 h-40 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--seeker-empty-halo)] opacity-40 blur-3xl"
           aria-hidden="true"
         />
-        <div className="relative mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-primary)]">
-          <Icon className="h-7 w-7" aria-hidden="true" />
+        <div className="relative mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-primary)]">
+          <Icon className="h-6 w-6" aria-hidden="true" />
         </div>
       </>
     )}
@@ -58,7 +58,7 @@ export const EmptyMentorState: React.FC<EmptyMentorStateProps> = ({
     <h3 className="relative font-display text-lg font-bold tracking-tight text-[var(--color-shell-text)] sm:text-xl">
       {title}
     </h3>
-    <p className="relative mt-2 max-w-sm text-sm leading-relaxed text-[var(--color-shell-text-muted)]">
+    <p className="relative mt-2 max-w-md text-sm leading-relaxed text-[var(--color-shell-text-muted)]">
       {description}
     </p>
 
@@ -69,7 +69,7 @@ export const EmptyMentorState: React.FC<EmptyMentorStateProps> = ({
     )}
 
     {actions.length > 0 && (
-      <div className="relative mt-7 flex flex-wrap items-center justify-center gap-2.5">
+      <div className="relative mt-6 flex flex-wrap items-center justify-center gap-2.5">
         {actions.map((action) => (
           <button
             key={action.label}

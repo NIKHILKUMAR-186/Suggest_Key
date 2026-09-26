@@ -25,7 +25,13 @@ export interface AuthContextType {
   session: Session | null;
   profile: Profile | null;
   roles: UserRole[];
-  activeRole: UserRole;
+  /**
+   * Primary role resolved from `user_roles`, or `null` when the database has no
+   * role row for the account. `null` is a real state, not a fallback: it must
+   * never be defaulted to a role, or the UI would grant a role the server does
+   * not recognise.
+   */
+  activeRole: UserRole | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   isConfigured: boolean;

@@ -17,6 +17,7 @@ interface Segment {
   createdAt: string;
   updatedAt: string;
   mentorsCount: number;
+  gigsCount: number;
   description: string | null;
 }
 
@@ -30,6 +31,7 @@ interface ApiSegment {
   updated_at: string;
   description: string | null;
   mentorsCount: number;
+  gigsCount: number;
 }
 
 export const AdminSegmentsPage: React.FC = () => {
@@ -64,10 +66,11 @@ export const AdminSegmentsPage: React.FC = () => {
         createdAt: s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
         updatedAt: s.updated_at ? new Date(s.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
         mentorsCount: s.mentorsCount,
+        gigsCount: s.gigsCount,
         description: s.description,
       })));
     } catch (err: any) {
-      setError(err.message || 'Failed to load segments');
+      setError(err.message || 'Failed to fetch segments');
       console.error('Failed to fetch segments:', err);
     } finally {
       setLoading(false);
@@ -179,6 +182,7 @@ export const AdminSegmentsPage: React.FC = () => {
         createdAt: s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
         updatedAt: s.updated_at ? new Date(s.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
         mentorsCount: s.mentorsCount,
+        gigsCount: s.gigsCount,
         description: s.description,
       })));
     } catch (err: any) {
@@ -307,7 +311,7 @@ export const AdminSegmentsPage: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-mono text-zinc-500">{seg.slug}</td>
                   <td className="py-3 px-4">{seg.mentorsCount} Active</td>
-                  <td className="py-3 px-4">0</td>
+                  <td className="py-3 px-4">{seg.gigsCount}</td>
                   <td className="py-3 px-4">
                     <button
                       onClick={() => handleToggleActive(seg.id, seg.isActive)}
@@ -326,7 +330,7 @@ export const AdminSegmentsPage: React.FC = () => {
                         variant="ghost"
                         size="sm"
                         className="text-zinc-500 hover:text-zinc-900 font-medium text-xs"
-                        onClick={() => navigate(`/admin/segments/${seg.id}`)}
+                        onClick={() => navigate(`/admin/segments/${encodeURIComponent(seg.slug)}`)}
                       >
                         Manage
                       </Button>

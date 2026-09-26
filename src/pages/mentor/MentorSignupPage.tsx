@@ -242,7 +242,7 @@ export const MentorSignupPage: React.FC = () => {
             type="submit"
             size="md"
             disabled={isSubmitting}
-            className="w-full auth-button-primary"
+            className="w-full"
           >
             <span>{isSubmitting ? 'Creating Account...' : 'Create Account & Start Verification'}</span>
           </Button>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Users, Briefcase, Plus, Edit, Trash2, Loader2, Save, X, CheckCircle2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { ArrowLeft, Users, Briefcase, Plus, Edit, Trash2, Loader2, Save, AlertCircle } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
@@ -43,33 +43,57 @@ interface Gig {
   updatedAt: string;
 }
 
-interface ApiSegment {
-  id: string;
-  name: string;
-  slug: string;
-  description: string | null;
-  priority: number;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
+/**
+ * Read a JSON error body without ever handing an HTML page to a JSON caller.
+ * Returns the server's message when the response really is JSON, and a status
+ * description otherwise. Never throws on non-JSON.
+ */
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    try {
+      const data = await res.json();
+      const message = data?.error?.message;
+      if (typeof message === 'string' && message.trim()) return message;
+    } catch {
+      // fall through to the generic message below
+    }
+  }
+  return `${fallback} (HTTP ${res.status})`;
 }
+
+const formatDate = (value: string | null | undefined) =>
+  value ? new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown';
 
 export const AdminSegmentDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
-  const segmentId = currentPath.split('/').pop() || '';
+
+  // The route segment is the public `segments.slug`, never the internal UUID.
+  // The real `segment.id` comes back from the API and is what every write uses.
+  const segmentSlug = decodeURIComponent(
+    (currentPath.split('?')[0].split('/').filter(Boolean).pop() || '').trim(),
+  );
 
   const [segment, setSegment] = useState<Segment | null>(null);
   const [mentors, setMentors] = useState<Mentor[]>([]);
   const [gigs, setGigs] = useState<Gig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'mentors' | 'gigs'>('mentors');
 
   const [isAddMentorOpen, setIsAddMentorOpen] = useState(false);
   const [isCreateGigOpen, setIsCreateGigOpen] = useState(false);
   const [isEditGigOpen, setIsEditGigOpen] = useState(false);
+  const [isEditSegmentOpen, setIsEditSegmentOpen] = useState(false);
   const [editingGig, setEditingGig] = useState<Gig | null>(null);
   const [eligibleMentors, setEligibleMentors] = useState<{ id: string; name: string; email: string }[]>([]);
+
+  const [editName, setEditName] = useState('');
+  const [editSlug, setEditSlug] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editPriority, setEditPriority] = useState('10');
 
   const [selectedMentorId, setSelectedMentorId] = useState('');
   const [isPrimary, setIsPrimary] = useState(false);
@@ -81,12 +105,34 @@ export const AdminSegmentDetailPage: React.FC = () => {
   const [adding, setAdding] = useState(false);
   const [creatingGig, setCreatingGig] = useState(false);
   const [editingGigState, setEditingGigState] = useState(false);
+  const [savingSegment, setSavingSegment] = useState(false);
 
-  const fetchSegment = useCallback(async () => {
+  /**
+   * One request loads the segment, its mentors and its gigs. The server resolves
+   * the slug to the internal UUID and returns all three together, so there is no
+   * second request that could run with an unresolved identifier.
+   */
+  const loadSegment = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
     try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}`);
+      const res = await apiFetch(`/api/admin/segments/${encodeURIComponent(segmentSlug)}`);
+
+      if (res.status === 404) {
+        setNotFound(true);
+        setSegment(null);
+        setMentors([]);
+        setGigs([]);
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(await readApiError(res, 'Failed to fetch segment'));
+      }
+
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch segment');
+
       const s = data.segment;
       setSegment({
         id: s.id,
@@ -95,62 +141,36 @@ export const AdminSegmentDetailPage: React.FC = () => {
         description: s.description,
         priority: s.priority,
         isActive: s.is_active,
-        createdAt: s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
-        updatedAt: s.updated_at ? new Date(s.updated_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown',
+        createdAt: formatDate(s.created_at),
+        updatedAt: formatDate(s.updated_at),
       });
+      setMentors(data.mentors || []);
+      setGigs(data.gigs || []);
     } catch (err: any) {
-      setError(err.message || 'Failed to load segment');
+      setError(err?.message || 'Failed to load segment');
       console.error('Failed to fetch segment:', err);
     } finally {
       setLoading(false);
     }
-  }, [segmentId]);
+  }, [segmentSlug]);
 
-  const fetchMentors = useCallback(async () => {
-    if (!segment) return;
-    try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/mentors`);
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch mentors');
-      setMentors(data.mentors || []);
-    } catch (err: any) {
-      console.error('Failed to fetch mentors:', err);
-    }
-  }, [segmentId]);
-
-  const fetchGigs = useCallback(async () => {
-    if (!segment) return;
-    try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/gigs`);
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch gigs');
-      setGigs(data.gigs || []);
-    } catch (err: any) {
-      console.error('Failed to fetch gigs:', err);
-    }
-  }, [segmentId]);
+  useEffect(() => {
+    loadSegment();
+  }, [loadSegment]);
 
   const fetchEligibleMentors = useCallback(async () => {
     try {
+      // Needs no segment id: mentor eligibility is a property of the mentor.
       const res = await apiFetch('/api/admin/mentors/eligible');
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to fetch eligible mentors'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch eligible mentors');
       setEligibleMentors(data.mentors || []);
     } catch (err: any) {
       console.error('Failed to fetch eligible mentors:', err);
+      setActionError(err?.message || 'Failed to load eligible mentors');
     }
   }, []);
-
-  useEffect(() => {
-    fetchSegment();
-  }, [fetchSegment]);
-
-  useEffect(() => {
-    if (segment) {
-      fetchMentors();
-      fetchGigs();
-    }
-  }, [segment, fetchMentors, fetchGigs]);
 
   useEffect(() => {
     if (isAddMentorOpen) {
@@ -158,54 +178,113 @@ export const AdminSegmentDetailPage: React.FC = () => {
     }
   }, [isAddMentorOpen, fetchEligibleMentors]);
 
+  const openEditSegment = () => {
+    if (!segment) return;
+    setEditName(segment.name);
+    setEditSlug(segment.slug);
+    setEditDescription(segment.description || '');
+    setEditPriority(String(segment.priority));
+    setActionError(null);
+    setIsEditSegmentOpen(true);
+  };
+
+  const handleSaveSegment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!segment || !editName.trim() || !editSlug.trim()) return;
+
+    setSavingSegment(true);
+    setActionError(null);
+    try {
+      // PATCH is keyed on the internal UUID obtained after the slug lookup.
+      const res = await apiFetch(`/api/admin/segments/${segment.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editName.trim(),
+          slug: editSlug.trim().toLowerCase().replace(/\s+/g, '-'),
+          description: editDescription.trim() || null,
+          priority: parseInt(editPriority, 10) || 10,
+        }),
+      });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to update segment'));
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || 'Failed to update segment');
+
+      setIsEditSegmentOpen(false);
+
+      // A changed slug must not leave the page on a stale URL. Navigate BEFORE
+      // reloading: the old slug no longer exists, so reloading it first would
+      // fire a guaranteed 404 and flash the "Segment not found" state. After
+      // navigate() the route's slug changes, which retriggers loadSegment().
+      const newSlug: string | undefined = data.segment?.slug;
+      if (newSlug && newSlug !== segmentSlug) {
+        navigate(`/admin/segments/${encodeURIComponent(newSlug)}`);
+        return;
+      }
+
+      await loadSegment();
+    } catch (err: any) {
+      console.error('Failed to update segment:', err);
+      setActionError(err?.message || 'Failed to update segment');
+    } finally {
+      setSavingSegment(false);
+    }
+  };
+
   const handleAddMentor = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedMentorId) return;
+    if (!segment || !selectedMentorId) return;
 
     setAdding(true);
+    setActionError(null);
     try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/mentors`, {
+      const res = await apiFetch(`/api/admin/segments/${segment.id}/mentors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mentorId: selectedMentorId, isPrimary }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to add mentor'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to add mentor');
       setIsAddMentorOpen(false);
       setSelectedMentorId('');
       setIsPrimary(false);
-      await fetchMentors();
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to add mentor:', err);
-      alert('Failed to add mentor: ' + err.message);
+      setActionError(err?.message || 'Failed to add mentor');
     } finally {
       setAdding(false);
     }
   };
 
   const handleRemoveMentor = async (mentorId: string) => {
+    if (!segment) return;
     if (!confirm('Remove this mentor from the segment? This action cannot be undone.')) return;
 
+    setActionError(null);
     try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/mentors/${mentorId}`, {
+      const res = await apiFetch(`/api/admin/segments/${segment.id}/mentors/${mentorId}`, {
         method: 'DELETE',
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to remove mentor'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to remove mentor');
-      await fetchMentors();
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to remove mentor:', err);
-      alert('Failed to remove mentor: ' + err.message);
+      setActionError(err?.message || 'Failed to remove mentor');
     }
   };
 
   const handleCreateGig = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!gigTitle || !gigPrice || !selectedMentorId) return;
+    if (!segment || !gigTitle || !gigPrice || !selectedMentorId) return;
 
     setCreatingGig(true);
+    setActionError(null);
     try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/gigs`, {
+      const res = await apiFetch(`/api/admin/segments/${segment.id}/gigs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -217,6 +296,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
           isActive: gigActive,
         }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to create gig'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to create gig');
       setIsCreateGigOpen(false);
@@ -226,10 +306,10 @@ export const AdminSegmentDetailPage: React.FC = () => {
       setGigPrice('');
       setGigActive(true);
       setSelectedMentorId('');
-      await fetchGigs();
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to create gig:', err);
-      alert('Failed to create gig: ' + err.message);
+      setActionError(err?.message || 'Failed to create gig');
     } finally {
       setCreatingGig(false);
     }
@@ -240,6 +320,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
     if (!editingGig) return;
 
     setEditingGigState(true);
+    setActionError(null);
     try {
       const res = await apiFetch(`/api/admin/gigs/${editingGig.id}`, {
         method: 'PATCH',
@@ -252,32 +333,35 @@ export const AdminSegmentDetailPage: React.FC = () => {
           isActive: gigActive,
         }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to update gig'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to update gig');
       setIsEditGigOpen(false);
       setEditingGig(null);
-      await fetchGigs();
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to update gig:', err);
-      alert('Failed to update gig: ' + err.message);
+      setActionError(err?.message || 'Failed to update gig');
     } finally {
       setEditingGigState(false);
     }
   };
 
   const handleToggleGigActive = async (id: string, currentActive: boolean) => {
+    setActionError(null);
     try {
       const res = await apiFetch(`/api/admin/gigs/${id}/toggle-active`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive: !currentActive }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to toggle gig'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to toggle gig');
-      await fetchGigs();
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to toggle gig:', err);
-      alert('Failed to update gig: ' + err.message);
+      setActionError(err?.message || 'Failed to toggle gig');
     }
   };
 
@@ -288,23 +372,26 @@ export const AdminSegmentDetailPage: React.FC = () => {
     setGigDuration(String(gig.durationMinutes));
     setGigPrice(String(gig.priceInr));
     setGigActive(gig.isActive);
+    setActionError(null);
     setIsEditGigOpen(true);
   };
 
   const toggleSegmentActive = async () => {
     if (!segment) return;
+    setActionError(null);
     try {
-      const res = await apiFetch(`/api/admin/segments/${segmentId}/toggle-active`, {
+      const res = await apiFetch(`/api/admin/segments/${segment.id}/toggle-active`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive: !segment.isActive }),
       });
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to toggle segment'));
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to toggle segment');
-      setSegment({ ...segment, isActive: !segment.isActive });
+      await loadSegment();
     } catch (err: any) {
       console.error('Failed to toggle segment:', err);
-      alert('Failed to update segment: ' + err.message);
+      setActionError(err?.message || 'Failed to toggle segment');
     }
   };
 
@@ -317,23 +404,11 @@ export const AdminSegmentDetailPage: React.FC = () => {
     );
   }
 
-  if (error) {
+  if (notFound || !segment) {
     return (
       <div className="p-6 text-center text-rose-600">
         <AlertCircle className="h-6 w-6 mx-auto mb-2" />
-        <p className="text-xs">{error}</p>
-        <Button variant="outline" size="sm" onClick={() => navigate('/admin/segments')} className="mt-2">
-          Back to Segments
-        </Button>
-      </div>
-    );
-  }
-
-  if (!segment) {
-    return (
-      <div className="p-6 text-center text-rose-600">
-        <AlertCircle className="h-6 w-6 mx-auto mb-2" />
-        <p className="text-xs">Segment not found</p>
+        <p className="text-xs">{error || 'Segment not found'}</p>
         <Button variant="outline" size="sm" onClick={() => navigate('/admin/segments')} className="mt-2">
           Back to Segments
         </Button>
@@ -343,17 +418,19 @@ export const AdminSegmentDetailPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header: Back to Segments, name, slug, priority, status */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/admin/segments')} className="p-2">
+          <Button variant="ghost" size="sm" onClick={() => navigate('/admin/segments')} className="p-2" aria-label="Back to Segments">
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
               {segment.name}
             </h1>
-            <p className="mt-1 text-xs text-zinc-500 flex items-center gap-2">
+            {/* A <div> wrapper, not a <p>: Badge renders a <div>, which is not
+                valid inside a paragraph. */}
+            <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
               <span className="font-mono text-zinc-400">{segment.slug}</span>
               <Badge variant={segment.priority === 1 ? 'default' : 'secondary'} className="text-[10px]">
                 Priority #{segment.priority}
@@ -361,7 +438,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
               <Badge variant={segment.isActive ? 'success' : 'secondary'} className="text-[10px]">
                 {segment.isActive ? 'Active' : 'Inactive'}
               </Badge>
-            </p>
+            </div>
           </div>
         </div>
 
@@ -369,12 +446,19 @@ export const AdminSegmentDetailPage: React.FC = () => {
           <Button variant="outline" size="sm" onClick={toggleSegmentActive} className="gap-1.5 text-xs">
             {segment.isActive ? 'Deactivate' : 'Activate'}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => navigate(`/admin/segments/${segmentId}/edit`)} className="gap-1.5 text-xs">
+          <Button variant="outline" size="sm" onClick={openEditSegment} className="gap-1.5 text-xs">
             <Edit className="h-3.5 w-3.5" />
-            Edit
+            Edit Segment
           </Button>
         </div>
       </div>
+
+      {actionError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>{actionError}</span>
+        </div>
+      )}
 
       {/* Segment Info */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -426,7 +510,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
           <div className="p-4">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
               <h3 className="text-sm font-semibold text-zinc-900">Assigned Mentors</h3>
-              <Button size="sm" onClick={() => setIsAddMentorOpen(true)} className="gap-1.5 text-xs self-start">
+              <Button size="sm" onClick={() => { setActionError(null); setIsAddMentorOpen(true); }} className="gap-1.5 text-xs self-start">
                 <Plus className="h-3.5 w-3.5" />
                 <span>Add Mentor</span>
               </Button>
@@ -513,6 +597,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
               <h3 className="text-sm font-semibold text-zinc-900">Gigs</h3>
               <Button size="sm" onClick={() => {
+                setActionError(null);
                 setSelectedMentorId('');
                 setGigTitle('');
                 setGigDescription('');
@@ -538,7 +623,6 @@ export const AdminSegmentDetailPage: React.FC = () => {
                   <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
                     <tr>
                       <th className="py-3 px-4">Title</th>
-                      <th className="py-3 px-4">Mentor</th>
                       <th className="py-3 px-4">Duration</th>
                       <th className="py-3 px-4">Price</th>
                       <th className="py-3 px-4">Status</th>
@@ -552,7 +636,6 @@ export const AdminSegmentDetailPage: React.FC = () => {
                           <span className="font-bold text-zinc-950 block">{gig.title}</span>
                           {gig.description && <span className="text-[10px] text-zinc-500 block truncate max-w-xs">{gig.description}</span>}
                         </td>
-                        <td className="py-3 px-4 font-mono text-zinc-500">{gig.segmentName}</td>
                         <td className="py-3 px-4">{gig.durationMinutes} min</td>
                         <td className="py-3 px-4 font-mono text-zinc-900">₹{gig.priceInr}</td>
                         <td className="py-3 px-4">
@@ -586,6 +669,59 @@ export const AdminSegmentDetailPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Edit Segment Modal */}
+      <Modal
+        isOpen={isEditSegmentOpen}
+        onClose={() => setIsEditSegmentOpen(false)}
+        title="Edit Mentorship Segment"
+        description="Changes are saved directly to the database."
+      >
+        <form onSubmit={handleSaveSegment} className="space-y-4 pt-2">
+          <Input
+            label="Segment Name"
+            placeholder="e.g. Parental Advisor"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            required
+          />
+
+          <Input
+            label="URL Slug (unique)"
+            placeholder="parental-advisor"
+            value={editSlug}
+            onChange={(e) => setEditSlug(e.target.value)}
+            required
+          />
+
+          <Input
+            label="Description (optional)"
+            placeholder="Brief description of this segment"
+            value={editDescription}
+            onChange={(e) => setEditDescription(e.target.value)}
+          />
+
+          <Input
+            label="Ordering Priority (lower = higher priority)"
+            type="number"
+            value={editPriority}
+            onChange={(e) => setEditPriority(e.target.value)}
+            required
+          />
+
+          {actionError && <p className="text-xs text-rose-600">{actionError}</p>}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsEditSegmentOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={savingSegment || !editName.trim() || !editSlug.trim()}>
+              {savingSegment ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              <span>{savingSegment ? 'Saving...' : 'Save Changes'}</span>
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Add Mentor Modal */}
       <Modal

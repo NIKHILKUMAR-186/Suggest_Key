@@ -10,6 +10,8 @@ import {
   EmptyMentorState,
   EmptyMentorStateAction,
 } from '@/src/components/seeker/EmptyMentorState';
+import { SegmentMentorsSection } from '@/src/components/seeker/SegmentMentorsSection';
+import { useSegmentMentors } from '@/src/hooks/seeker/useSegmentMentors';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import {
@@ -18,7 +20,7 @@ import {
   fetchDiscoverableMentors,
   fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
-import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngine';
+import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
@@ -193,17 +195,22 @@ export const SeekerHomePage: React.FC = () => {
     setExperienceFilter('all');
   }, []);
 
-  // Derived from the live clock, never a hardcoded calendar date.
-  const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
+   // Derived from the live clock, never a hardcoded calendar date.
+   const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
 
-  const quickDates = useMemo(() => {
-    const dates = [{ label: 'Today', value: today }];
-    if (tomorrow) dates.push({ label: 'Tomorrow', value: tomorrow });
-    return dates;
-  }, [today, tomorrow]);
+   const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
 
   const handleDateSelect = (dateValue: string) => {
     setSelectedDate(dateValue);
+  };
+
+  // The new segment section lives on this page, so "View all mentors" scrolls
+  // to it instead of navigating away. No route or backend call is added.
+  const scrollToSegmentMentors = () => {
+    const target = document.getElementById('segment-mentors');
+    if (!target) return;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
   };
 
   const goToAllMentors = () => {
@@ -213,6 +220,16 @@ export const SeekerHomePage: React.FC = () => {
   };
 
   const retryLoad = () => setReloadToken((t) => t + 1);
+
+  // Section B data. Derived from the SAME selected segment, but fetched
+  // without any date so it never inherits the availability filter.
+  const {
+    mentors: segmentMentors,
+    total: segmentMentorTotal,
+    isLoading: isLoadingSegmentMentors,
+    error: segmentMentorError,
+    reload: reloadSegmentMentors,
+  } = useSegmentMentors(selectedSegment?.id ?? null);
 
   // Empty-state copy is derived from the real current context only.
   const emptyContextLabel = [selectedSegment?.name, selectedDate].filter(Boolean).join(' · ');
@@ -228,19 +245,21 @@ export const SeekerHomePage: React.FC = () => {
       } has a bookable slot on ${selectedDate}. Try another date, or browse all verified mentors.`;
 
   const emptyActions: EmptyMentorStateAction[] = useMemo(() => {
+    // "View all mentors" targets the on-page segment discovery section.
     if (hasActiveFilters) {
       return [
         { label: 'Clear filters', onClick: clearAllFilters, variant: 'primary' },
-        { label: 'View all mentors', onClick: goToAllMentors, variant: 'outline' },
+        { label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'outline' },
       ];
     }
     if (tomorrow && selectedDate !== tomorrow) {
       return [
+        // Reuses the existing date-selection logic — no new date logic.
         { label: 'Try tomorrow', onClick: () => handleDateSelect(tomorrow), variant: 'primary' },
-        { label: 'View all mentors', onClick: goToAllMentors, variant: 'outline' },
+        { label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'outline' },
       ];
     }
-    return [{ label: 'View all mentors', onClick: goToAllMentors, variant: 'primary' }];
+    return [{ label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'primary' }];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasActiveFilters, tomorrow, selectedDate, clearAllFilters]);
 
@@ -287,7 +306,7 @@ export const SeekerHomePage: React.FC = () => {
           selectedDate={selectedDate}
           count={filteredMentors.length}
           isCountLoading={isLoadingMentors || !!mentorError}
-          onViewAll={goToAllMentors}
+          onViewAll={scrollToSegmentMentors}
         />
 
         {/* Segment-level error */}
@@ -324,7 +343,7 @@ export const SeekerHomePage: React.FC = () => {
 
         {/* Content */}
         {isLoadingMentors ? (
-          <MentorGridSkeleton count={4} />
+          <MentorGridSkeleton count={3} />
         ) : mentorError ? null : filteredMentors.length === 0 ? (
           <EmptyMentorState
             icon={hasActiveFilters ? SearchX : CalendarX}
@@ -339,10 +358,34 @@ export const SeekerHomePage: React.FC = () => {
             regularMentors={regularMentors}
             selectedSegment={selectedSegment}
             selectedDate={selectedDate}
+            today={today}
             navigate={navigate}
           />
         )}
       </motion.div>
+
+      {/* Visual divider — separates AVAILABILITY from DISCOVERY without
+          stacking another bordered surface. */}
+      <div className="mt-20 sm:mt-24 lg:mt-28" aria-hidden="true">
+        <div className="mx-auto h-px w-full max-w-2xl bg-gradient-to-r from-transparent via-[var(--color-shell-border)] to-transparent" />
+      </div>
+
+      {/*
+        SECTION B — all real mentors in the selected segment.
+        Answers "who are the mentors in this segment?", which is a different
+        question from the availability results above.
+      */}
+      <SegmentMentorsSection
+        segment={selectedSegment}
+        mentors={segmentMentors}
+        total={segmentMentorTotal}
+        isLoading={isLoadingSegmentMentors}
+        error={segmentMentorError}
+        onRetry={reloadSegmentMentors}
+        selectedDate={selectedDate}
+        today={today}
+        navigate={navigate}
+      />
     </div>
   );
 };

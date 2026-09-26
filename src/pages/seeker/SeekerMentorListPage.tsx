@@ -19,7 +19,7 @@ import {
   fetchDiscoverableMentors,
   fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
-import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngine';
+import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
@@ -184,9 +184,7 @@ export const SeekerMentorListPage: React.FC = () => {
 
   const today = getDateStringInTimezone(new Date(), userTimezone);
   const tomorrow = addDaysToDateString(today, 1);
-  const quickDates = [{ label: 'Today', value: today }].concat(
-    tomorrow ? [{ label: 'Tomorrow', value: tomorrow }] : []
-  );
+  const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
 
   const emptyContextLabel = [selectedSegment?.name, selectedDate].filter(Boolean).join(' · ');
 
@@ -299,7 +297,7 @@ export const SeekerMentorListPage: React.FC = () => {
 
       {/* Content */}
       {isLoadingSegments || isLoadingMentors ? (
-        <MentorGridSkeleton count={4} />
+        <MentorGridSkeleton count={3} />
       ) : mentorError ? null : filteredMentors.length === 0 ? (
         <EmptyMentorState
           title={emptyTitle}
@@ -313,6 +311,7 @@ export const SeekerMentorListPage: React.FC = () => {
           regularMentors={regularMentors}
           selectedSegment={selectedSegment}
           selectedDate={selectedDate}
+          today={today}
           navigate={navigate}
         />
       )}

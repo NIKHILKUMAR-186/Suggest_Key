@@ -51,12 +51,15 @@ export const SeekerHero: React.FC<SeekerHeroProps> = ({
   >
     <HeroVisual />
 
-    <div className="relative mx-auto flex w-full max-w-4xl flex-col items-center px-5 py-12 text-center sm:px-8 sm:py-14 lg:min-h-[620px] lg:flex-col lg:justify-center lg:py-12">
-      <MarketplaceBadge className="mb-5" />
+    {/* Content-driven height. The hero is a control surface, not a showcase:
+        it is deliberately kept short so the mentor results stay close to the
+        top of the page instead of being pushed below a screen of decoration. */}
+    <div className="relative mx-auto flex w-full max-w-4xl flex-col items-center px-5 py-8 text-center sm:px-8 sm:py-10">
+      <MarketplaceBadge className="mb-4" />
 
       <h1
         id="seeker-hero-heading"
-        className="font-display text-[2.5rem] font-bold leading-[1.06] tracking-[-0.03em] text-[var(--color-shell-text)] sm:text-[3.5rem] lg:text-[3.9rem]"
+        className="font-display text-[2.1rem] font-bold leading-[1.08] tracking-[-0.03em] text-[var(--color-shell-text)] sm:text-[3rem] lg:text-[3.25rem]"
       >
         Find the right mentor
         <br />
@@ -65,21 +68,21 @@ export const SeekerHero: React.FC<SeekerHeroProps> = ({
         </span>
       </h1>
 
-      <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-[var(--color-shell-text-muted)] sm:text-base">
+      <p className="mt-3 max-w-xl text-[14px] leading-relaxed text-[var(--color-shell-text-muted)] sm:text-[15px]">
         Real guidance. Meaningful conversations. One session at a time.
       </p>
 
       <MentorSearch
         value={searchQuery}
         onChange={onSearchChange}
-        className="mt-7 w-full max-w-2xl"
+        className="mt-5 w-full max-w-2xl"
       />
 
       {/* Control deck: keeps segments and date visually related to the search */}
-      <div className="seeker-panel mt-5 w-full max-w-2xl space-y-4 rounded-3xl p-4 text-left sm:p-5">
-        <div className="space-y-3">
+      <div className="seeker-panel mt-4 w-full max-w-2xl space-y-3.5 rounded-3xl p-4 text-left sm:p-5">
+        <div className="space-y-2.5">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)]">
-            Explore segments
+            Explore by segment
           </p>
           <SegmentSelector
             segments={segments}

@@ -24,7 +24,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const variantStyles = {
-      default: 'bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-primary-hover)] shadow-sm active:scale-[0.98]',
+      default: 'bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)] hover:bg-[var(--color-shell-primary-hover)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 active:scale-[0.98] shadow-sm transition-all duration-150',
       outline: 'border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg)] hover:border-[var(--color-shell-border-strong)] active:scale-[0.98]',
       secondary: 'bg-[var(--color-shell-bg)] text-[var(--color-shell-text)] hover:bg-[var(--color-shell-bg-hover)] active:scale-[0.98]',
       ghost: 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg)] hover:text-[var(--color-shell-text)]',
@@ -34,7 +34,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 
     const sizeStyles = {
       sm: 'h-9 px-3 text-xs rounded-lg gap-1.5 min-h-[36px]',
-      md: 'h-11 px-4 py-2 text-sm rounded-lg gap-2 min-h-[44px]',
+      md: 'h-12 px-4 py-2 text-sm rounded-lg gap-2 min-h-[48px]',
       lg: 'h-12 px-6 text-base rounded-xl gap-2.5 min-h-[48px]',
     };
 

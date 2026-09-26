@@ -115,7 +115,11 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/admin/mentors') return <AdminMentorsPage />;
           if (pathname.startsWith('/admin/mentors/')) return <AdminMentorDetailPage />;
           if (pathname === '/admin/segments') return <AdminSegmentsPage />;
-          if (pathname.startsWith('/admin/segments/')) return <AdminSegmentDetailPage />;
+          // Exactly ONE path segment: the segment slug, e.g.
+          // /admin/segments/relationship-advisior. A strict match keeps any
+          // deeper path (such as the old, never-implemented /edit) from being
+          // treated as a segment slug by the detail page.
+          if (/^\/admin\/segments\/[^/]+$/.test(pathname)) return <AdminSegmentDetailPage />;
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
           if (pathname === '/admin/workspaces') return <AdminWorkspacesPage />;
           if (pathname === '/admin/payments') return <AdminPaymentsPage />;

@@ -131,7 +131,7 @@ export const ResetPasswordPage: React.FC = () => {
                 size="md"
                 isLoading={isSubmitting}
                 loadingText="Updating..."
-                className="w-full auth-button-primary"
+                className="w-full"
               >
                 <Lock className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Update Password</span>

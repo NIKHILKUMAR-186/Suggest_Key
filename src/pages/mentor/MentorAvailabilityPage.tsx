@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { ShieldCheck, AlertCircle, Check } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -27,6 +27,39 @@ const initialExceptionForm: ExceptionFormData = {
   endTime: '17:00',
   reason: '',
 };
+
+function validateDay(day: AvailabilityDay): string[] {
+  const errors: string[] = [];
+  if (!day.enabled) return errors;
+  const { windows } = day;
+  const seen = new Set<string>();
+  for (let i = 0; i < windows.length; i++) {
+    const { start, end } = windows[i];
+    if (!start || !end) {
+      errors.push(`Window ${i + 1} needs both a start and an end time.`);
+      continue;
+    }
+    if (start >= end) {
+      errors.push(`Window ${i + 1} (${start}-${end}): start must be earlier than end.`);
+    }
+    const key = `${start}-${end}`;
+    if (seen.has(key)) {
+      errors.push(`Duplicate window (${start}-${end}); remove or adjust it.`);
+    }
+    seen.add(key);
+  }
+  const valid = windows.filter((w) => w.start && w.end && w.start < w.end);
+  if (valid.length > 1) {
+    const sorted = [...valid].sort((a, b) => (a.start < b.start ? -1 : 1));
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i - 1].end > sorted[i].start) {
+        errors.push('Time windows overlap; adjust so no two windows share time.');
+        break;
+      }
+    }
+  }
+  return errors;
+}
 
 export const MentorAvailabilityPage: React.FC = () => {
   const { user, activeRole } = useAuth();
@@ -59,7 +92,7 @@ export const MentorAvailabilityPage: React.FC = () => {
         return {
           ...day,
           enabled,
-          windows: enabled && day.windows.length === 0 ? [{ start: '09:00', end: '17:00' }] : day.windows,
+          windows: day.windows,
         };
       })
     );
@@ -71,7 +104,7 @@ export const MentorAvailabilityPage: React.FC = () => {
         if (idx !== dayIndex) return day;
         return {
           ...day,
-          windows: [...day.windows, { start: '18:00', end: '20:00' }],
+          windows: [...day.windows, { start: '', end: '' }],
         };
       })
     );
@@ -94,6 +127,10 @@ export const MentorAvailabilityPage: React.FC = () => {
       prev.map((d) => (d.dayIndex === day.dayIndex ? day : d))
     );
   }, []);
+
+  const dayErrors = useMemo(() => days.map(validateDay), [days]);
+
+  const hasValidationErrors = dayErrors.some((e) => e.length > 0);
 
   const openAddException = useCallback(() => {
     const tomorrow = new Date();
@@ -147,6 +184,12 @@ export const MentorAvailabilityPage: React.FC = () => {
 
   const handleSave = async () => {
     if (!mentorId) return;
+
+    if (hasValidationErrors) {
+      setSaveStatus('error');
+      setSaveError('Please fix the highlighted availability errors before saving.');
+      return;
+    }
 
     setSaveStatus('saving');
     setSaveError(null);
@@ -246,7 +289,13 @@ export const MentorAvailabilityPage: React.FC = () => {
           </p>
         </div>
 
-        <Button onClick={handleSave} size="md" className="self-start text-xs" disabled={saveStatus === 'saving'}>
+        <Button
+          onClick={handleSave}
+          size="md"
+          className="self-start text-xs"
+          disabled={saveStatus === 'saving' || hasValidationErrors}
+          title={hasValidationErrors ? 'Fix the highlighted availability errors before saving.' : undefined}
+        >
           {saveStatus === 'saving' ? 'Saving...' : 'Save Availability Settings'}
         </Button>
       </div>
@@ -293,6 +342,7 @@ export const MentorAvailabilityPage: React.FC = () => {
             <MentorAvailabilitySchedule
               days={days}
               timezone={timezone}
+              errors={dayErrors}
               onToggleDay={handleToggleDay}
               onAddWindow={handleAddWindow}
               onRemoveWindow={handleRemoveWindow}

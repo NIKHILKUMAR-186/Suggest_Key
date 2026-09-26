@@ -11,6 +11,10 @@ import {
   Menu,
   X,
   ChevronRight,
+  Users,
+  CalendarCheck,
+  ShieldCheck,
+  CheckCircle,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Button } from '@/src/components/ui/Button';
@@ -31,10 +35,10 @@ const NAV_ITEMS = [
 ];
 
 const PRINCIPLES = [
-  { title: 'Real mentors', desc: 'Every profile represents a verified professional with genuine expertise.' },
-  { title: 'Real availability', desc: 'Open slots reflect actual calendar openings, not fabricated numbers.' },
-  { title: 'Secure booking', desc: 'End-to-end protected transactions with clear cancellation policies.' },
-  { title: 'Clear session states', desc: 'Every booking has a transparent lifecycle from hold to completion.' },
+  { title: 'Real mentors', desc: 'Every profile represents a verified professional with genuine expertise.', icon: Users },
+  { title: 'Real availability', desc: 'Open slots reflect actual calendar openings, not fabricated numbers.', icon: CalendarCheck },
+  { title: 'Secure booking', desc: 'End-to-end protected transactions with clear cancellation policies.', icon: ShieldCheck },
+  { title: 'Clear session states', desc: 'Every booking has a transparent lifecycle from hold to completion.', icon: CheckCircle },
 ];
 
 export const LandingPage: React.FC = () => {
@@ -191,7 +195,7 @@ export const LandingPage: React.FC = () => {
         >
           <div className="inline-flex items-center gap-2 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 px-4 py-1.5 text-xs font-medium text-[var(--color-shell-text-muted)]">
             <Sparkles className="h-3.5 w-3.5 text-[var(--color-shell-accent)]" />
-            <span className="tracking-wider uppercase">1:1 Mentorship, Built Around You</span>
+            <span className="tracking-wider">1:1 mentorship, built around you</span>
           </div>
 
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-medium tracking-tight text-[var(--color-shell-text)] leading-[1.14]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
@@ -345,23 +349,38 @@ export const LandingPage: React.FC = () => {
             </div>
           ) : segments && segments.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {segments.map((seg) => (
-                <motion.div
-                  key={seg.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true }}
-                  transition={{ duration: 0.5 }}
-                  className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 p-6 hover:border-[var(--color-shell-border-strong)] transition-colors cursor-pointer group"
-                  onClick={() => navigate('/auth/login')}
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-base font-semibold text-[var(--color-shell-text)] group-hover:text-[var(--color-shell-accent)] transition-colors">{seg.name}</h3>
-                    <ArrowRight className="h-4 w-4 text-[var(--color-shell-text-subtle)] group-hover:text-[var(--color-shell-text)] transition-colors" />
-                  </div>
-                  <p className="text-sm text-[var(--color-shell-text-muted)] leading-relaxed">{seg.description || 'Explore mentors in this category.'}</p>
-                </motion.div>
-              ))}
+{segments.map((seg) => (
+                  <motion.div
+                    key={seg.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ duration: 0.5 }}
+                    className={cn(
+                      'group relative rounded-2xl border border-[var(--color-shell-border)]',
+                      'bg-[var(--color-shell-surface)]/60 p-6',
+                      'hover:border-[var(--color-shell-border-strong)] transition-colors duration-200',
+                      'focus-within:border-[var(--color-shell-border-strong)] focus-within:outline-none'
+                    )}
+                    style={{
+                      boxShadow: 'var(--hero-card-shadow)',
+                    }}
+                    onClick={() => navigate('/auth/login')}
+                  >
+                    <div className="relative mb-4 flex justify-center transition-transform duration-250 group-hover:scale-[1.03]">
+                      <ArrowRight className="h-10 w-10 text-[var(--color-shell-accent)] opacity-60 group-hover:opacity-100 transition-opacity duration-200" />
+                    </div>
+
+                    <div className="relative space-y-2.5">
+                      <h3 className="text-[18px] font-medium text-[var(--color-shell-text)] leading-tight group-hover:text-[var(--color-shell-accent)] transition-colors">
+                        {seg.name}
+                      </h3>
+                      <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed">
+                        {seg.description || 'Explore mentors in this category.'}
+                      </p>
+                    </div>
+                  </motion.div>
+                ))}
             </div>
           ) : (
             <div className="text-center py-16">
@@ -449,19 +468,25 @@ export const LandingPage: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {PRINCIPLES.map((principle, i) => (
-              <motion.div
-                key={principle.title}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5, delay: i * 0.1 }}
-                className="text-center space-y-2"
-              >
-                <h3 className="text-sm font-semibold text-[var(--color-shell-text)]">{principle.title}</h3>
-                <p className="text-xs text-[var(--color-shell-text-muted)] leading-relaxed max-w-xs mx-auto">{principle.desc}</p>
-              </motion.div>
-            ))}
+            {PRINCIPLES.map((principle, i) => {
+              const Icon = principle.icon;
+              return (
+                <motion.div
+                  key={principle.title}
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.5, delay: i * 0.1 }}
+                  className="text-center space-y-3 p-6 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]/60 hover:border-[var(--color-shell-border-strong)] hover:bg-[var(--color-shell-surface-hover)] transition-all"
+                >
+                  <div className="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-primary)] mx-auto">
+                    <Icon className="h-6 w-6" aria-hidden="true" />
+                  </div>
+                  <h3 className="text-base font-semibold text-[var(--color-shell-text)]">{principle.title}</h3>
+                  <p className="text-sm text-[var(--color-shell-text-muted)] leading-relaxed max-w-xs mx-auto">{principle.desc}</p>
+                </motion.div>
+              );
+            })}
           </div>
         </div>
       </section>
@@ -480,20 +505,21 @@ export const LandingPage: React.FC = () => {
               size="lg"
               onClick={() => navigate('/seeker/mentors')}
               className="gap-2 text-sm bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-[var(--color-shell-text-contrast)] shadow-xs min-h-[48px] px-6"
-            >
-              Find a Mentor
-            </Button>
-            {/* <Button
-              variant="outline"
-              size="lg"
-              onClick={() => navigate('/mentor/signup')}
-              className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
-            >
-              Become a Mentor
-            </Button> */}
-          </div>
-        </div>
-      </section>
+             >
+               Find a Mentor
+               <ArrowRight className="h-4 w-4" />
+             </Button>
+             {/* <Button
+               variant="outline"
+               size="lg"
+               onClick={() => navigate('/mentor/signup')}
+               className="gap-2 text-sm border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)]/60 text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)] min-h-[48px] px-6"
+             >
+               Become a Mentor
+             </Button> */}
+           </div>
+         </div>
+       </section>
 
       {/* Footer */}
       <footer className="relative z-10 border-t border-[var(--color-shell-border)] px-4 sm:px-6 lg:px-8 py-12">
@@ -503,7 +529,7 @@ export const LandingPage: React.FC = () => {
               <img src="/logo.png" alt="Suggest Key logo" className="h-8 w-8 rounded-lg object-cover shadow-xs" />
               <img src="/name.png" alt="Suggest Key" className="h-4 w-auto block leading-tight" />
             </div>
-            <nav className="flex flex-wrap items-center justify-center gap-6" aria-label="Footer Navigation">
+            <nav className="flex flex-wrap items-center justify-center gap-8" aria-label="Footer Navigation">
               {[
                 { label: 'Home', href: '#' },
                 { label: 'About', href: '#' },
@@ -516,21 +542,21 @@ export const LandingPage: React.FC = () => {
               <button
                 key={item.label}
                 onClick={() => handleNavClick(item.href)}
-                className="text-xs text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+                className="text-xs text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors cursor-pointer px-3 py-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
               >
                 {item.label}
               </button>
             ))}
             <button
               onClick={() => navigate('/mentor/signup')}
-              className="text-xs text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+              className="text-xs text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] transition-colors cursor-pointer px-3 py-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
             >
               Become a Mentor
             </button>
             </nav>
           </div>
           <div className="mt-8 pt-6 border-t border-[var(--color-shell-border)] text-center">
-            <p className="text-[10px] text-[var(--color-shell-text-subtle)]"> Suggest Key. All rights reserved.</p>
+            <p className="text-[12px] text-[var(--color-shell-text-subtle)]"> Suggest Key. All rights reserved.</p>
           </div>
         </div>
       </footer>

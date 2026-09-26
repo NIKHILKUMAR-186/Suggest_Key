@@ -8,6 +8,7 @@ import type { AvailabilityDay } from '@/src/hooks/mentor/useMentorAvailability';
 export interface MentorAvailabilityScheduleProps {
   days: AvailabilityDay[];
   timezone: string;
+  errors?: string[][];
   onEdit?: (day: AvailabilityDay) => void;
   onAddWindow?: (dayIndex: number) => void;
   onRemoveWindow?: (dayIndex: number, windowIndex: number) => void;
@@ -18,6 +19,7 @@ export interface MentorAvailabilityScheduleProps {
 export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProps> = ({
   days,
   timezone,
+  errors,
   onEdit,
   onAddWindow,
   onRemoveWindow,
@@ -100,7 +102,7 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
                         className="rounded-md border border-[var(--color-shell-border-strong)] px-2 py-1 bg-[var(--color-shell-bg)] text-xs text-[var(--color-shell-text)]"
                       />
                     </div>
-                    {day.windows.length > 1 && (
+                    {day.windows.length > 0 && (
                       <button
                         type="button"
                         onClick={() => onRemoveWindow?.(day.dayIndex, wIdx)}
@@ -120,6 +122,17 @@ export const MentorAvailabilitySchedule: React.FC<MentorAvailabilityScheduleProp
             )
           ) : (
             <span className="text-[11px] text-[var(--color-shell-text-subtle)] italic">Marked Unavailable</span>
+          )}
+
+          {day.enabled && (errors?.[idx]?.length ?? 0) > 0 && (
+            <ul className="mt-2 space-y-0.5">
+              {errors?.[idx]?.map((msg, eIdx) => (
+                <li key={eIdx} className="flex items-start gap-1.5 text-[11px] text-[var(--color-shell-error)]">
+                  <span aria-hidden="true">&#9679;</span>
+                  <span>{msg}</span>
+                </li>
+              ))}
+            </ul>
           )}
         </motion.div>
       ))}
