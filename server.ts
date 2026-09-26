@@ -12,9 +12,15 @@ import {
   validateSessionAccess,
   joinSessionAuthoritative,
   transitionExpiredBookingsToCompleted,
+  calculateMeetingLinkDeadline,
   BookingEngineContext,
 } from './src/lib/bookingEngine';
 import { generateMentorSlots, addDaysToDateString } from './src/lib/slotEngine';
+import {
+  isBookingIdShape,
+  isSafeBookingIdentifier,
+  redactMeetingUrlForParticipant,
+} from './src/lib/sessionAccess';
 import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingService';
 import {
   deriveSessionOverview,
@@ -39,12 +45,22 @@ import {
   PAYMENT_PROOF_BUCKET,
   PAYMENT_PROOF_MAX_BYTES,
   PAYMENT_STATUS_PENDING,
-  buildProofStoragePath,
-  decodeBase64Image,
   isPayableBookingStatus,
   normaliseTransactionReference,
   validateProofFile,
 } from './src/lib/paymentProof';
+import {
+  DASHBOARD_RANGES,
+  DEFAULT_RANGE,
+  buildTimeline,
+  computeOverview,
+  detectAnomalies,
+  groupErrors,
+  isDashboardRange,
+  summariseAuth,
+  summariseServices,
+  type HealthRow,
+} from './src/lib/systemHealth';
 import { getAdminDashboardData } from './src/lib/adminDashboardData';
 import { GENERIC_ERROR_MESSAGE, describeSupabaseError, getErrorMessage, respondWithInternalError, respondWithServerError, resolveHttpStatusForSupabaseError, terminalErrorHandler } from './src/lib/supabaseErrors';
 import {
@@ -70,10 +86,10 @@ import {
   buildAdminCreatedMentorProfile,
   buildMentorStatusUpdate,
   deriveMentorAccountState,
-  parseMentorStatusAction,
   resolveMentorCreationSource,
   validateMentorStatusAction,
   type MentorAccountState,
+  type MentorStatusAction,
 } from './src/lib/adminMentorControl';
 
 import {
@@ -87,11 +103,12 @@ import {
   assertAdminAccountSafety,
   buildAccountStatusUpdate,
   deriveAccountState,
-  parseAccountStatusAction,
   validateAccountStatusAction,
+  type AccountStatusAction,
 } from './src/lib/adminAccountControl';
 import { APP_CONFIG } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
+import { apiSchemas, formatValidationFailure, validateBody } from './src/lib/validation';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -301,6 +318,83 @@ async function notifyPaymentReviewed(
   }
 }
 
+
+/**
+ * The booking projection a mentor is allowed to see.
+ *
+ * `gig` is the row joined through `bookings.gig_id`, so a mentor with several
+ * gigs can always tell WHICH gig a booking is for: the gig is never inferred
+ * from the segment, from a default gig, or from a hardcoded name. `segment`
+ * comes from `bookings.segment_id` the same way.
+ */
+const MENTOR_BOOKING_SELECT = `
+  *,
+  seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
+  mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
+  gig:gigs(id, title, description, duration_minutes, price_inr, segment_id),
+  segment:segments(id, name, slug)
+`;
+
+/**
+ * Reads one mentor's bookings, optionally narrowed to a single status.
+ *
+ * Scoped by `mentor_id` in the WHERE clause so a mentor can only ever read
+ * their own rows, and joined with the gig/segment/seeker relations the mentor
+ * card renders.
+ */
+async function loadMentorBookingRows(
+  admin: SupabaseClient,
+  mentorId: string,
+  statusFilter: string | null,
+): Promise<{ data: any[]; error: any | null }> {
+  let query = admin
+    .from('bookings')
+    .select(MENTOR_BOOKING_SELECT)
+    .eq('mentor_id', mentorId)
+    .order('start_time', { ascending: true });
+
+  if (statusFilter) {
+    query = query.eq('status', statusFilter);
+  }
+
+  return (await query) as { data: any[]; error: any | null };
+}
+
+/**
+ * Shapes a live booking row into the payload the mentor UI consumes.
+ *
+ * Nothing here invents data: the gig/segment/seeker are the joined relations of
+ * THIS booking, the price is the `bookings.amount_inr` snapshot taken when the
+ * booking was created, the duration is derived from the booking's own
+ * start/end window, and the payment state comes from the real `payments` row.
+ * The mentor is never redacted from `meeting_url` because the mentor is the
+ * party that supplies it.
+ */
+function enrichMentorBookingProjection(
+  booking: any,
+  payment: any | null,
+  hold: any | null = null,
+): Record<string, any> {
+  const durationMinutes = (() => {
+    const start = new Date(booking.start_time).getTime();
+    const end = new Date(booking.end_time).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    return Math.round((end - start) / 60000);
+  })();
+
+  return {
+    ...booking,
+    gig: booking.gig || null,
+    segment: booking.segment || null,
+    seeker: booking.seeker || null,
+    mentor: booking.mentor || null,
+    payment: payment || null,
+    hold: hold || null,
+    // Duration as it was booked, so a later gig edit cannot rewrite history.
+    duration_minutes: durationMinutes ?? booking.gig?.duration_minutes ?? null,
+    deadlineInfo: calculateMeetingLinkDeadline(booking.start_time),
+  };
+}
 
 /**
  * Resolve an Admin segment reference that may be EITHER the human-readable
@@ -598,6 +692,126 @@ async function computeMentorSlotsForDate(
   return { results, error: null };
 }
 
+// ---------------------------------------------------------------------------
+// Authoritative session context
+// ---------------------------------------------------------------------------
+// The session endpoints used to authorize against `getLocalBookingEngineContext()`,
+// a hard-coded in-memory fixture of demo users, bookings and meeting URLs. That
+// store is not the source of truth: real bookings were never in it, so the
+// participant check, the booking-state check and the T-5 gate were all evaluated
+// against data that has nothing to do with the caller's actual session, and
+// POST /api/sessions/:bookingId/complete mutated a JavaScript object instead of
+// a row.
+//
+// These helpers load the real booking from Supabase and hand it to the SAME
+// `validateSessionAccess` / `joinSessionAuthoritative` engine that was already
+// covered by the unit tests, so the security rules stay in one place. The
+// in-memory context is still used when no database is configured, which is the
+// "no backend at all" local preview.
+//
+// `bookings.id` is a UUID and `bookings.booking_code` is a short opaque code, so
+// both are looked up with separate, shape-validated equality filters instead of
+// a combined PostgREST `.or()` string. Interpolating an unvalidated path segment
+// into `.or()` would let a caller inject extra filter clauses (`,id.neq...`).
+// The shape rules live in `src/lib/sessionAccess.ts` so they are unit-testable.
+
+const SESSION_BOOKING_SELECT = `
+  id, booking_code, mentor_id, seeker_id, gig_id, segment_id, hold_id,
+  start_time, end_time, seeker_timezone, mentor_timezone, amount_inr,
+  status, meeting_url, cancellation_reason, created_at, updated_at,
+  gig:gigs(id, title),
+  seeker:profiles!bookings_seeker_id_fkey(id, full_name, timezone),
+  mentor:profiles!bookings_mentor_id_fkey(id, full_name, timezone)
+`;
+
+interface LoadedSessionBooking {
+  booking: any | null;
+  /** Flattened engine-shaped record; `meeting_url` and timestamps are real. */
+  engineBooking: any;
+  /** Real roles of the caller, read from `user_roles`. */
+  callerIsAdmin: boolean;
+}
+
+/**
+ * Loads one booking, its display metadata and the caller's real admin status.
+ * Returns `{ booking: null }` when the identifier is malformed or unknown.
+ */
+async function loadAuthoritativeSessionBooking(
+  admin: SupabaseClient,
+  rawBookingId: string,
+  callerId: string
+): Promise<LoadedSessionBooking> {
+  if (!isSafeBookingIdentifier(rawBookingId)) {
+    return { booking: null, engineBooking: null, callerIsAdmin: false };
+  }
+
+  const identifier: string = rawBookingId;
+  const isUuid = isBookingIdShape(identifier);
+  const column = isUuid ? 'id' : 'booking_code';
+  const value = isUuid ? identifier : identifier.toUpperCase();
+
+  const { data, error } = await admin
+    .from('bookings')
+    .select(SESSION_BOOKING_SELECT)
+    .eq(column, value)
+    .limit(1);
+
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) return { booking: null, engineBooking: null, callerIsAdmin: false };
+
+  const { data: roleRows, error: roleErr } = await admin
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', callerId);
+  if (roleErr) throw roleErr;
+
+  const callerIsAdmin = (roleRows || []).some((r: { role: string }) => r.role === 'admin');
+
+  // `validateSessionAccess` reads the booking off the context and looks the
+  // caller up in `userRoles`, so the engine sees the real row and the real role.
+  const engineBooking = {
+    ...row,
+    booking_code: row.booking_code,
+    mentor_id: row.mentor_id,
+    seeker_id: row.seeker_id,
+    gig_id: row.gig_id,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    status: row.status,
+    meeting_url: row.meeting_url ?? null,
+    cancellation_reason: row.cancellation_reason ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+
+  return { booking: row, engineBooking, callerIsAdmin };
+}
+
+/**
+ * Builds the minimal `BookingEngineContext` the session engine needs for a
+ * single, already-authorized booking. The only role row supplied is the
+ * caller's, so the engine's internal admin check reflects the database rather
+ * than any fixture.
+ */
+function buildSessionEngineContext(
+  engineBooking: any,
+  callerId: string,
+  callerIsAdmin: boolean
+): BookingEngineContext {
+  const base = getLocalBookingEngineContext();
+  return {
+    ...base,
+    bookings: [engineBooking],
+    userRoles: callerIsAdmin ? [{ user_id: callerId, role: 'admin' }] : [],
+    gigs: engineBooking.gig
+      ? [engineBooking.gig as any]
+      : base.gigs.filter((g: any) => g.id === engineBooking.gig_id),
+    profiles: [engineBooking.seeker, engineBooking.mentor].filter(Boolean),
+  } as BookingEngineContext;
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -615,6 +829,12 @@ async function startServer() {
     full_name: string;
     password: string;
     role: DemoRole;
+    /**
+     * A privileged persona is never reachable with a bare `{"persona":"..."}`
+     * body. It requires the operator-supplied password, so enabling demo
+     * personas can never mint an admin identity out of thin air.
+     */
+    requiresPassword: boolean;
   }
 
   interface DemoAuthResponse {
@@ -639,6 +859,7 @@ async function startServer() {
       full_name: 'Aman Kumar',
       password: 'password123',
       role: 'seeker',
+      requiresPassword: false,
     },
     mentor: {
       id: 'usr-mentor-rahul',
@@ -646,14 +867,40 @@ async function startServer() {
       full_name: 'Rahul Sharma',
       password: 'password123',
       role: 'mentor',
+      requiresPassword: false,
     },
     admin: {
       id: process.env.ADMIN_EMAIL || 'admin@suggestkey.local',
       email: process.env.ADMIN_EMAIL || 'admin@suggestkey.local',
       full_name: 'Platform Administrator',
+      // Never defaults to an empty string. An unset or weak ADMIN_PASSWORD
+      // removes the admin demo account from the registry entirely (see
+      // buildDemoAccounts below), so `password: ""` can no longer be used to
+      // authenticate as an admin.
       password: process.env.ADMIN_PASSWORD || '',
       role: 'admin',
+      requiresPassword: true,
     },
+  };
+
+  /**
+   * Fail closed on the admin demo persona.
+   *
+   * Previously `ADMIN_PASSWORD` defaulted to `''` and the email path compared
+   * the candidate against that empty string, so anybody who knew the default
+   * admin address could sign in as an admin on any host that had merely set a
+   * demo secret. The admin persona is now only registered when the operator
+   * supplies a strong password, and it always demands that password even on
+   * the persona path.
+   */
+  const ADMIN_DEMO_PASSWORD_MIN_LENGTH = 12;
+  const buildDemoAccounts = (): Record<DemoRole, DemoAccount> => {
+    const configured = (process.env.ADMIN_PASSWORD || '').trim();
+    if (configured.length >= ADMIN_DEMO_PASSWORD_MIN_LENGTH) {
+      return demoAccounts;
+    }
+    const { admin: _omitted, ...withoutAdmin } = demoAccounts;
+    return withoutAdmin as Record<DemoRole, DemoAccount>;
   };
 
   const passwordsMatch = (expected: string, candidate: string) => {
@@ -779,9 +1026,13 @@ async function startServer() {
   // POST /api/auth/demo-login
   // Auth is unauthenticated by nature, so this is keyed on IP. 10/min stops
   // credential and persona brute-forcing long before it is useful.
-  // Demo auth is opt-in: it is disabled in production AND requires an explicit,
-  // non-default DEMO_AUTH_SECRET so the hardcoded default can never be exploited.
-  app.post('/api/auth/demo-login', expensiveRouteLimiter, async (req, res) => {
+  // Demo auth is explicit and fail-closed: it requires
+  // ENABLE_DEMO_PERSONAS=true, a non-production NODE_ENV and a strong
+  // externally supplied DEMO_TOKEN_SECRET (see isDemoAuthEnabled). The admin
+  // persona additionally requires the operator-set ADMIN_PASSWORD, and the
+  // persona is dropped from the registry entirely when that password is unset
+  // or too weak, so there is no default-secret or empty-password path to admin.
+  app.post('/api/auth/demo-login', expensiveRouteLimiter, validateBody(apiSchemas.demoLogin), async (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!isDemoAuthEnabled()) {
       return res.status(404).json({
@@ -789,18 +1040,30 @@ async function startServer() {
         error: { code: 'DEMO_LOGIN_DISABLED', message: 'Demo login is unavailable.' },
       });
     }
-    const body = req.body as { email?: unknown; password?: unknown; persona?: unknown };
-    const persona = typeof body.persona === 'string' ? body.persona.toLowerCase() : '';
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    // Already trimmed, lower-cased and type-checked by the schema, and a blank
+    // field arrived here as `undefined` rather than as an empty string.
+    const { persona, email, password } = req.body as {
+      persona?: string;
+      email?: string;
+      password?: string;
+    };
 
+    // Privileged personas are only handed out to a caller who knows the
+    // operator-configured password, so `{"persona":"admin"}` can never mint an
+    // admin identity. The unprivileged personas stay one-click for the
+    // development demo.
+    const registry = buildDemoAccounts();
     let account: DemoAccount | undefined;
-    if (persona && Object.prototype.hasOwnProperty.call(demoAccounts, persona)) {
-      account = demoAccounts[persona as DemoRole];
+    if (persona && Object.prototype.hasOwnProperty.call(registry, persona)) {
+      const candidate = registry[persona as DemoRole];
+      if (!candidate.requiresPassword || passwordsMatch(candidate.password, password ?? '')) {
+        account = candidate;
+      }
     } else if (email) {
-      account = Object.values(demoAccounts).find(
+      account = Object.values(registry).find(
         (candidate) => candidate.email.toLowerCase() === email
       );
-      if (account && !passwordsMatch(account.password, typeof body.password === 'string' ? body.password : '')) {
+      if (account && !passwordsMatch(account.password, password ?? '')) {
         account = undefined;
       }
     }
@@ -903,20 +1166,12 @@ async function startServer() {
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
   // Expensive: the RPC takes a mentor row lock and writes a hold. The strict
   // limiter sits after requireAuth so the bucket is per user, not per IP.
-  app.post('/api/bookings/hold', requireAuth, requireRole('seeker'), expensiveRouteLimiter, async (req: AuthRequest, res) => {
+  app.post('/api/bookings/hold', requireAuth, requireRole('seeker'), expensiveRouteLimiter, validateBody(apiSchemas.bookingHold), async (req: AuthRequest, res) => {
     try {
+      // Schema-checked and normalised: ids are UUID-shaped, the instants are
+      // real ISO timestamps, and nothing else can ride along in the body.
       const { mentorId, segmentId, gigId, startTime, endTime } = req.body;
       const seekerId = req.auth!.user.id;
-
-      if (!mentorId || !segmentId || !gigId || !startTime || !endTime) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'MISSING_REQUIRED_FIELDS',
-            message: 'mentorId, segmentId, gigId, startTime, and endTime are required.',
-          },
-        });
-      }
 
       const admin = getSupabaseAdmin();
       if (admin) {
@@ -1158,34 +1413,115 @@ async function startServer() {
   // --------------------------------------------------------------------------
 
   // GET /api/mentor/bookings: Get bookings for a mentor with optional status filter
-  app.get('/api/mentor/bookings', requireAuth, requireRole('mentor'), (req: AuthRequest, res) => {
+  //
+  // The mentor ledger is read from the LIVE `bookings` table. It used to be
+  // served from the in-memory seed database, so a real booking (created through
+  // `create_booking_with_hold` and advanced to MENTOR_PENDING by
+  // `review_payment`) never appeared in My Bookings even though the mentor had
+  // already been notified about it. The mentor is derived from the session, so
+  // a client can never read another mentor's bookings.
+  app.get('/api/mentor/bookings', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
       const { status } = req.query;
       const mentorId = req.auth!.user.id;
+      const statusFilter = typeof status === 'string' && status && status !== 'ALL' ? status : null;
 
+      const supabaseAdmin = getSupabaseAdmin();
+      if (supabaseAdmin) {
+        const { data: bookings, error: bookingsErr } = await loadMentorBookingRows(
+          supabaseAdmin,
+          mentorId,
+          statusFilter
+        );
+        if (bookingsErr) throw bookingsErr;
+
+        const bookingIds = (bookings || []).map((b: any) => b.id);
+        const { data: payments, error: paymentsErr } = bookingIds.length
+          ? await supabaseAdmin.from('payments').select('*').in('booking_id', bookingIds)
+          : { data: [], error: null };
+        if (paymentsErr) throw paymentsErr;
+
+        const paymentByBooking = new Map<string, any>();
+        for (const payment of payments || []) {
+          paymentByBooking.set(payment.booking_id, payment);
+        }
+
+        const enriched = (bookings || []).map((booking: any) =>
+          enrichMentorBookingProjection(booking, paymentByBooking.get(booking.id) || null)
+        );
+
+        return res.json({ success: true, bookings: enriched });
+      }
+
+      // Fallback to the in-memory dev DB only when Supabase is not configured.
       const db = getLocalBookingEngineContext();
       const mentorIds = [mentorId];
 
       let matched = db.bookings.filter((b) => mentorIds.includes(b.mentor_id));
-      if (status && typeof status === 'string' && status !== 'ALL') {
-        matched = matched.filter((b) => b.status === status);
+      if (statusFilter) {
+        matched = matched.filter((b) => b.status === statusFilter);
       }
 
       matched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-      const enriched = matched.map((b) => enrichBooking(b, db));
+      const devEnriched = matched.map((b) => enrichBooking(b, db));
 
-      return res.json({ success: true, bookings: enriched });
+      return res.json({ success: true, bookings: devEnriched });
     } catch (err: any) {
-      return respondWithInternalError({ req, res, error: err });
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/bookings' });
     }
   });
 
   // GET /api/mentor/bookings/:id: Get booking detail with authorization check
-  app.get('/api/mentor/bookings/:id', requireAuth, requireRole('mentor'), (req: AuthRequest, res) => {
+  app.get('/api/mentor/bookings/:id', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
       const callerId = req.auth!.user.id;
 
+      const supabaseAdmin = getSupabaseAdmin();
+      if (supabaseAdmin) {
+        const { data: booking, error: bookingErr } = await supabaseAdmin
+          .from('bookings')
+          .select(MENTOR_BOOKING_SELECT)
+          .or(`id.eq.${bookingId},booking_code.eq.${bookingId}`)
+          .maybeSingle();
+        if (bookingErr) throw bookingErr;
+
+        if (!booking) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+          });
+        }
+
+        if (booking.mentor_id !== callerId) {
+          return res.status(403).json({
+            success: false,
+            error: {
+              code: 'FORBIDDEN_NOT_BOOKING_OWNER',
+              message: 'Forbidden: You are not authorized to view this booking.',
+            },
+          });
+        }
+
+        const { data: payment, error: paymentErr } = await supabaseAdmin
+          .from('payments')
+          .select('*')
+          .eq('booking_id', booking.id)
+          .maybeSingle();
+        if (paymentErr) throw paymentErr;
+
+        const { data: hold, error: holdErr } = booking.hold_id
+          ? await supabaseAdmin.from('slot_holds').select('*').eq('id', booking.hold_id).maybeSingle()
+          : { data: null, error: null };
+        if (holdErr) throw holdErr;
+
+        return res.json({
+          success: true,
+          booking: enrichMentorBookingProjection(booking, payment || null, hold || null),
+        });
+      }
+
+      // Fallback to the in-memory dev DB only when Supabase is not configured.
       const db = getLocalBookingEngineContext();
       const booking = db.bookings.find((b) => b.id === bookingId || b.booking_code === bookingId);
 
@@ -1209,7 +1545,7 @@ async function startServer() {
       const enriched = enrichBooking(booking, db);
       return res.json({ success: true, booking: enriched });
     } catch (err: any) {
-      return respondWithInternalError({ req, res, error: err });
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/bookings/:id' });
     }
   });
 
@@ -1280,15 +1616,18 @@ async function startServer() {
           if (!holdErr) hold = holdData;
         }
 
-        const enriched = {
-          ...booking,
-          gig: booking.gig || null,
-          segment: booking.segment || null,
-          seeker: booking.seeker || null,
-          mentor: booking.mentor || null,
-          payment: payment || null,
-          hold: hold || null,
-        };
+        const enriched = redactMeetingUrlForParticipant(
+          {
+            ...booking,
+            gig: booking.gig || null,
+            segment: booking.segment || null,
+            seeker: booking.seeker || null,
+            mentor: booking.mentor || null,
+            payment: payment || null,
+            hold: hold || null,
+          },
+          { isAdmin, isMentor: false }
+        );
 
         return res.json({ success: true, booking: enriched });
       }
@@ -1360,14 +1699,21 @@ async function startServer() {
           paymentByBooking.set(payment.booking_id, payment);
         }
 
-        const enriched = (bookings || []).map((booking: any) => ({
-          ...booking,
-          gig: booking.gig || null,
-          segment: booking.segment || null,
-          seeker: booking.seeker || null,
-          mentor: booking.mentor || null,
-          payment: paymentByBooking.get(booking.id) || null,
-        }));
+        // The meeting link is only released inside the session access window,
+        // so a seeker cannot read it out of their own booking list at leisure.
+        const enriched = (bookings || []).map((booking: any) =>
+          redactMeetingUrlForParticipant(
+            {
+              ...booking,
+              gig: booking.gig || null,
+              segment: booking.segment || null,
+              seeker: booking.seeker || null,
+              mentor: booking.mentor || null,
+              payment: paymentByBooking.get(booking.id) || null,
+            },
+            { isAdmin, isMentor: false }
+          )
+        );
 
         return res.json({ success: true, bookings: enriched });
       }
@@ -1399,7 +1745,7 @@ async function startServer() {
   // Nothing about the payment is taken from the request except the UTR and the
   // image itself. The amount, the seeker, the booking and the storage key are
   // all derived server-side, so a client cannot pay ₹1 for a ₹499 session.
-  app.post('/api/seeker/bookings/:id/payment-proof', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+  app.post('/api/seeker/bookings/:id/payment-proof', requireAuth, requireRole('seeker'), expensiveRouteLimiter, async (req: AuthRequest, res) => {
     const bookingId = req.params.id;
     const callerId = req.auth!.user.id;
 
@@ -1673,22 +2019,335 @@ async function startServer() {
     }
   });
 
-  // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
-  app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+  // --------------------------------------------------------------------------
+  // Seeker Cancellation & Rescheduling
+  // --------------------------------------------------------------------------
+  //
+  // POST /api/seeker/bookings/:id/cancel
+  // Cancels a booking if the session starts in >= 10 minutes.
+  // The 10-minute window is evaluated server-side using the authoritative clock.
+  app.post('/api/seeker/bookings/:id/cancel', requireAuth, requireRole('seeker'), validateBody(apiSchemas.bookingCancel), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
-      const mentorId = req.auth!.user.id;
-      const { meetingUrl } = req.body;
+      const callerId = req.auth!.user.id;
+      const { reason } = req.body as { reason?: string };
 
-      if (!meetingUrl) {
-        return res.status(400).json({
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const now = new Date();
+
+      // Fetch booking with seeker ownership check
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('id, booking_code, seeker_id, mentor_id, status, start_time, hold_id, cancellation_reason')
+        .eq('id', bookingId)
+        .maybeSingle();
+
+      if (bookingErr) throw bookingErr;
+      if (!booking) {
+        return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+      }
+      if (booking.seeker_id !== callerId) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to cancel this booking.' } });
+      }
+
+      // Check if booking is in a cancellable state
+      const cancellableStatuses = ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'];
+      if (!cancellableStatuses.includes(booking.status)) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'BOOKING_NOT_CANCELLABLE', message: `This booking is ${booking.status.toLowerCase().replace(/_/g, ' ')} and cannot be cancelled.` },
+        });
+      }
+
+      // Enforce 10-minute cancellation window (server-side authoritative time)
+      const sessionStartMs = new Date(booking.start_time).getTime();
+      const nowMs = now.getTime();
+      const minutesUntilStart = (sessionStartMs - nowMs) / (1000 * 60);
+
+      if (minutesUntilStart < APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES) {
+        return res.status(409).json({
           success: false,
           error: {
-            code: 'MEETING_URL_REQUIRED',
-            message: 'Meeting link is required to confirm session.',
+            code: 'CANCELLATION_WINDOW_CLOSED',
+            message: `Normal cancellation is only available until ${APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before the session. The session starts in ${Math.ceil(minutesUntilStart)} minutes.`,
           },
         });
       }
+
+      // If PAYMENT_PENDING, also expire the associated hold
+      if (booking.status === 'PAYMENT_PENDING' && booking.hold_id) {
+        await admin
+          .from('slot_holds')
+          .update({ status: 'RELEASED', updated_at: now.toISOString() })
+          .eq('id', booking.hold_id)
+          .eq('status', 'ACTIVE');
+      }
+
+      // Cancel the booking
+      const { data: updatedBooking, error: updateErr } = await admin
+        .from('bookings')
+        .update({
+          status: 'CANCELLED',
+          cancellation_reason: reason || 'Cancelled by seeker',
+          updated_at: now.toISOString(),
+        })
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+
+      // Notify seeker
+      await admin.from('notifications').insert({
+        user_id: booking.seeker_id,
+        title: 'Booking Cancelled',
+        message: `You cancelled booking ${booking.booking_code}.${reason ? ` Reason: ${reason}` : ''}`,
+        type: 'BOOKING',
+        event_type: 'CANCELLATION',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: '/seeker/bookings',
+        is_read: false,
+      });
+
+      // Notify mentor
+      await admin.from('notifications').insert({
+        user_id: booking.mentor_id,
+        title: 'Seeker Cancelled Booking',
+        message: `The seeker cancelled booking ${booking.booking_code}. The slot is now available for new bookings.`,
+        type: 'BOOKING',
+        event_type: 'MENTOR_CANCELLATION',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: '/mentor/bookings',
+        is_read: false,
+      });
+
+      auditAction(req.auth, 'booking_cancelled', {
+        entityType: 'booking',
+        entityId: booking.id,
+        requestId: req.requestId,
+        metadata: { bookingCode: booking.booking_code, reason: reason || 'Cancelled by seeker' },
+      });
+
+      return res.json({ success: true, booking: updatedBooking, message: 'Booking cancelled successfully.' });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/cancel' });
+    }
+  });
+
+  // POST /api/seeker/bookings/:id/reschedule
+  // Reschedules a booking to a new slot if the session starts in >= 10 minutes.
+  // The new slot must pass all availability/conflict checks.
+  app.post('/api/seeker/bookings/:id/reschedule', requireAuth, requireRole('seeker'), validateBody(apiSchemas.bookingReschedule), async (req: AuthRequest, res) => {
+    try {
+      const bookingId = req.params.id;
+      const callerId = req.auth!.user.id;
+      const { newStartTime, newEndTime, newGigId } = req.body as { newStartTime: string; newEndTime: string; newGigId?: string };
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const now = new Date();
+
+      // Fetch current booking
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('id, booking_code, seeker_id, mentor_id, gig_id, segment_id, status, start_time, end_time, hold_id, amount_inr')
+        .eq('id', bookingId)
+        .maybeSingle();
+
+      if (bookingErr) throw bookingErr;
+      if (!booking) {
+        return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+      }
+      if (booking.seeker_id !== callerId) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to reschedule this booking.' } });
+      }
+
+      // Check if booking is in a reschedulable state
+      const reschedulableStatuses = ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'];
+      if (!reschedulableStatuses.includes(booking.status)) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'BOOKING_NOT_RESCHEDULABLE', message: `This booking is ${booking.status.toLowerCase().replace(/_/g, ' ')} and cannot be rescheduled.` },
+        });
+      }
+
+      // Enforce 10-minute rescheduling window
+      const sessionStartMs = new Date(booking.start_time).getTime();
+      const nowMs = now.getTime();
+      const minutesUntilStart = (sessionStartMs - nowMs) / (1000 * 60);
+
+      if (minutesUntilStart < APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'RESCHEDULE_WINDOW_CLOSED',
+            message: `Normal rescheduling is only available until ${APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before the session. The session starts in ${Math.ceil(minutesUntilStart)} minutes.`,
+          },
+        });
+      }
+
+      // Validate new slot times
+      const newStartMs = new Date(newStartTime).getTime();
+      const newEndMs = new Date(newEndTime).getTime();
+
+      if (isNaN(newStartMs) || isNaN(newEndMs) || newStartMs >= newEndMs) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_INTERVAL', message: 'Invalid new slot times.' } });
+      }
+      if (newStartMs <= nowMs) {
+        return res.status(400).json({ success: false, error: { code: 'PAST_SLOT_FORBIDDEN', message: 'Cannot reschedule to a slot in the past.' } });
+      }
+
+      // Determine target gig (same gig by default, or new gig if provided)
+      const targetGigId = newGigId || booking.gig_id;
+      const { data: targetGig, error: gigErr } = await admin
+        .from('gigs')
+        .select('id, mentor_id, segment_id, duration_minutes, price_inr, is_active')
+        .eq('id', targetGigId)
+        .maybeSingle();
+
+      if (gigErr) throw gigErr;
+      if (!targetGig || !targetGig.is_active) {
+        return res.status(404).json({ success: false, error: { code: 'GIG_INACTIVE', message: 'Selected gig is not active.' } });
+      }
+
+      // If changing gig, verify it belongs to same mentor and segment
+      if (targetGig.mentor_id !== booking.mentor_id || targetGig.segment_id !== booking.segment_id) {
+        return res.status(400).json({ success: false, error: { code: 'GIG_MISMATCH', message: 'New gig must belong to the same mentor and segment.' } });
+      }
+
+      // Check duration matches
+      const newDurationMinutes = Math.round((newEndMs - newStartMs) / 60000);
+      if (newDurationMinutes !== targetGig.duration_minutes) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'DURATION_MISMATCH', message: `New slot duration (${newDurationMinutes}m) must match gig duration (${targetGig.duration_minutes}m).` },
+        });
+      }
+
+      // Release old hold if PAYMENT_PENDING
+      if (booking.status === 'PAYMENT_PENDING' && booking.hold_id) {
+        await admin
+          .from('slot_holds')
+          .update({ status: 'RELEASED', updated_at: now.toISOString() })
+          .eq('id', booking.hold_id)
+          .eq('status', 'ACTIVE');
+      }
+
+      // Create new hold and update booking atomically via RPC
+      // We reuse the atomic booking function but need a variant that updates existing booking
+      // For simplicity, we'll do the checks and updates in a transaction-like manner
+      // Acquire mentor lock
+      await admin.rpc('acquire_slot_hold', {
+        p_mentor_id: booking.mentor_id,
+        p_seeker_id: booking.seeker_id,
+        p_gig_id: targetGigId,
+        p_start_time: newStartTime,
+        p_end_time: newEndTime,
+      });
+
+      // The RPC will fail if slot is not available; if it succeeds, we have a new hold
+      const { data: holdResult, error: holdErr } = await admin.rpc('acquire_slot_hold', {
+        p_mentor_id: booking.mentor_id,
+        p_seeker_id: booking.seeker_id,
+        p_gig_id: targetGigId,
+        p_start_time: newStartTime,
+        p_end_time: newEndTime,
+      });
+
+      if (holdErr) {
+        const codeMatch = holdErr.message.match(/code:\s*([A-Z0-9_]+)/i);
+        const code = codeMatch?.[1]?.toUpperCase() || 'RESCHEDULE_FAILED';
+        const reasonMatch = holdErr.message.match(/code:\s*[A-Z0-9_]+,\s*(.*)$/i);
+        const reason = (reasonMatch?.[1] || '').trim();
+
+        const status = ['SLOT_ALREADY_BOOKED', 'SLOT_HELD_BY_OTHER', 'OUTSIDE_AVAILABILITY', 'OUTSIDE_EXCEPTION_HOURS', 'DATE_EXCEPTION_UNAVAILABLE', 'DURATION_MISMATCH', 'PAST_SLOT_FORBIDDEN', 'BOOKING_CUTOFF_REACHED'].includes(code)
+          ? 409
+          : 400;
+
+        return res.status(status).json({ success: false, error: { code, message: reason || 'Could not reschedule to the requested slot.' } });
+      }
+
+      // Update booking with new slot and new hold
+      const { data: updatedBooking, error: updateErr } = await admin
+        .from('bookings')
+        .update({
+          gig_id: targetGigId,
+          hold_id: holdResult.id,
+          start_time: newStartTime,
+          end_time: newEndTime,
+          amount_inr: targetGig.price_inr,
+          status: 'PAYMENT_PENDING', // Reset to payment pending for new slot
+          updated_at: now.toISOString(),
+        })
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+
+      // Cancel old payment if exists (will be replaced when new payment submitted)
+      await admin
+        .from('payments')
+        .update({ status: 'REJECTED', rejection_reason: 'Booking rescheduled to new slot', updated_at: now.toISOString() })
+        .eq('booking_id', bookingId)
+        .eq('status', 'PENDING_VERIFICATION');
+
+      // Notify seeker
+      await admin.from('notifications').insert({
+        user_id: booking.seeker_id,
+        title: 'Booking Rescheduled',
+        message: `Your booking ${booking.booking_code} has been rescheduled. Please complete payment for the new slot within 15 minutes.`,
+        type: 'BOOKING',
+        event_type: 'RESCHEDULING',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: `/seeker/payment?bookingId=${booking.id}`,
+        is_read: false,
+      });
+
+      // Notify mentor
+      await admin.from('notifications').insert({
+        user_id: booking.mentor_id,
+        title: 'Seeker Rescheduled Booking',
+        message: `Booking ${booking.booking_code} was rescheduled by the seeker.`,
+        type: 'BOOKING',
+        event_type: 'MENTOR_RESCHEDULING',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: '/mentor/bookings',
+        is_read: false,
+      });
+
+      auditAction(req.auth, 'booking_rescheduled', {
+        entityType: 'booking',
+        entityId: booking.id,
+        requestId: req.requestId,
+        metadata: { bookingCode: booking.booking_code, newStartTime, newEndTime },
+      });
+
+      return res.json({ success: true, booking: updatedBooking, hold: holdResult, message: 'Booking rescheduled. Please complete payment for the new slot.' });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/reschedule' });
+    }
+  });
+
+  // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
+  app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorBookingConfirm), async (req: AuthRequest, res) => {
+    try {
+      const bookingId = req.params.id;
+      const mentorId = req.auth!.user.id;
+      // The schema guarantees a real http(s) URL, so `javascript:` and other
+      // script-bearing schemes can never be stored as the session's meeting link.
+      const { meetingUrl } = req.body as { meetingUrl: string };
 
       const admin = getSupabaseAdmin();
       if (admin) {
@@ -1924,16 +2583,18 @@ async function startServer() {
   // POST /api/mentor/gigs: Create a new gig for authenticated mentor
   // requireActiveMentor: a deactivated or suspended mentor cannot create or
   // edit active gigs through the normal mentor UI (prompt section 5).
-  app.post('/api/mentor/gigs', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+  app.post('/api/mentor/gigs', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.gigCreate), async (req: AuthRequest, res) => {
     try {
-      const { title, segmentId, durationMinutes, priceInr, description } = req.body;
+      // Title and description arrive already trimmed and stripped of markup, so
+      // the row can never contain a `<script>` payload typed into the form.
+      const { title, segmentId, durationMinutes, priceInr, description } = req.body as {
+        title: string;
+        segmentId: string;
+        durationMinutes: number;
+        priceInr: number;
+        description?: string;
+      };
       const mentorId = req.auth!.user.id;
-      if (!title || !segmentId || !durationMinutes || priceInr === undefined) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'Missing required fields.' },
-        });
-      }
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -1979,10 +2640,16 @@ async function startServer() {
   });
 
   // PATCH /api/mentor/gigs/:id: Update gig
-  app.patch('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+  app.patch('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.gigUpdate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { title, durationMinutes, priceInr, description, isActive } = req.body;
+      const { title, durationMinutes, priceInr, description, isActive } = req.body as {
+        title?: string;
+        durationMinutes?: number;
+        priceInr?: number;
+        description?: string;
+        isActive?: boolean;
+      };
       const mentorId = req.auth!.user.id;
 
       const admin = getSupabaseAdmin();
@@ -2117,18 +2784,12 @@ async function startServer() {
   // request body, so anyone could add any mentor to any segment. It now
   // requires an authenticated mentor, ignores any client-supplied mentorId, and
   // blocks deactivated/suspended mentors (prompt section 5).
-  app.post('/api/mentor/segments/apply', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+  app.post('/api/mentor/segments/apply', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.segmentApply), async (req: AuthRequest, res) => {
     try {
       // The mentor is always the authenticated caller. A mentor may never
       // apply on behalf of someone else.
       const mentorId = req.auth!.user.id;
-      const { segmentId } = req.body;
-      if (!segmentId) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'segmentId is required.' },
-        });
-      }
+      const { segmentId } = req.body as { segmentId: string };
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -2229,7 +2890,7 @@ async function startServer() {
   // Replaces the caller's recurring weekly windows. Same validation and
   // replace-all semantics as the admin endpoint, but scoped to the caller and
   // gated on requireActiveMentor (prompt section 5).
-  app.put('/api/mentor/availability', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+  app.put('/api/mentor/availability', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.availability), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -2238,48 +2899,22 @@ async function startServer() {
       // Ownership is the caller's id, full stop.
       const mentorId = req.auth!.user.id;
 
-      const { rules, timezone } = (req.body || {}) as { rules?: unknown; timezone?: unknown };
-      if (!Array.isArray(rules)) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array.' } });
-      }
-      if (rules.length > 50) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 50 recurring windows.' } });
-      }
+      // Every rule is already a well-typed, in-range, start-before-end window:
+      // the schema rejected anything else with a 400 before we got here.
+      const { rules, timezone } = req.body as {
+        rules: Array<{ dayOfWeek: number; startTime: string; endTime: string; isEnabled: boolean }>;
+        timezone?: string;
+      };
+      const resolvedTimezone = timezone ?? APP_CONFIG.DEFAULT_TIMEZONE;
 
-      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : APP_CONFIG.DEFAULT_TIMEZONE;
-
-      const normalised = rules.map((rule, index) => {
-        const r = (rule || {}) as Record<string, unknown>;
-        const dayOfWeek = Number(r.dayOfWeek);
-        const startTime = typeof r.startTime === 'string' ? r.startTime : '';
-        const endTime = typeof r.endTime === 'string' ? r.endTime : '';
-        if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
-          return { error: `rules[${index}].dayOfWeek must be an integer 0-6.` };
-        }
-        if (!/^\d{2}:\d{2}(:\d{2})?$/.test(startTime) || !/^\d{2}:\d{2}(:\d{2})?$/.test(endTime)) {
-          return { error: `rules[${index}] times must be HH:MM.` };
-        }
-        if (startTime >= endTime) {
-          return { error: `rules[${index}] startTime must be earlier than endTime.` };
-        }
-        return {
-          value: {
-            mentor_id: mentorId,
-            day_of_week: dayOfWeek,
-            start_time: startTime,
-            end_time: endTime,
-            timezone: resolvedTimezone,
-            is_enabled: r.isEnabled === undefined ? true : r.isEnabled === true,
-          },
-        };
-      });
-
-      const failure = normalised.find((entry) => 'error' in entry);
-      if (failure && 'error' in failure) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
-      }
-
-      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+      const rows = rules.map((rule) => ({
+        mentor_id: mentorId,
+        day_of_week: rule.dayOfWeek,
+        start_time: rule.startTime,
+        end_time: rule.endTime,
+        timezone: resolvedTimezone,
+        is_enabled: rule.isEnabled,
+      }));
 
       // Replace-all semantics. Availability is operational, not historical, so
       // rewriting the window set destroys no booking record.
@@ -2312,7 +2947,7 @@ async function startServer() {
   // PUT /api/mentor/availability/exceptions
   //
   // Replaces the caller's date exceptions. Same validation as the admin route.
-  app.put('/api/mentor/availability/exceptions', requireAuth, requireRole('mentor'), requireActiveMentor, async (req: AuthRequest, res) => {
+  app.put('/api/mentor/availability/exceptions', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.availabilityExceptions), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -2321,45 +2956,26 @@ async function startServer() {
       // Ownership is the caller's id, full stop.
       const mentorId = req.auth!.user.id;
 
-      const { exceptions } = (req.body || {}) as { exceptions?: unknown };
-      if (!Array.isArray(exceptions)) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'exceptions must be an array.' } });
-      }
-      if (exceptions.length > 200) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 200 date exceptions.' } });
-      }
+      // Dates are YYYY-MM-DD, an available day is guaranteed a real
+      // start-before-end window, and `reason` is already markup-free.
+      const { exceptions } = req.body as {
+        exceptions: Array<{
+          exceptionDate: string;
+          isAvailable: boolean;
+          startTime?: string | null;
+          endTime?: string | null;
+          reason?: string;
+        }>;
+      };
 
-      const normalised = exceptions.map((item, index) => {
-        const e = (item || {}) as Record<string, unknown>;
-        const exceptionDate = typeof e.exceptionDate === 'string' ? e.exceptionDate : '';
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(exceptionDate)) {
-          return { error: `exceptions[${index}].exceptionDate must be YYYY-MM-DD.` };
-        }
-        const isAvailable = e.isAvailable === true;
-        const startTime = typeof e.startTime === 'string' ? e.startTime : null;
-        const endTime = typeof e.endTime === 'string' ? e.endTime : null;
-        // Mirrors chk_exception_times: an available day needs a real window.
-        if (isAvailable && (!startTime || !endTime || startTime >= endTime)) {
-          return { error: `exceptions[${index}] needs a valid startTime/endTime window when isAvailable is true.` };
-        }
-        return {
-          value: {
-            mentor_id: mentorId,
-            exception_date: exceptionDate,
-            is_available: isAvailable,
-            start_time: isAvailable ? startTime : null,
-            end_time: isAvailable ? endTime : null,
-            reason: typeof e.reason === 'string' && e.reason.trim() ? e.reason.trim() : null,
-          },
-        };
-      });
-
-      const failure = normalised.find((entry) => 'error' in entry);
-      if (failure && 'error' in failure) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
-      }
-
-      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+      const rows = exceptions.map((exception) => ({
+        mentor_id: mentorId,
+        exception_date: exception.exceptionDate,
+        is_available: exception.isAvailable,
+        start_time: exception.isAvailable ? exception.startTime ?? null : null,
+        end_time: exception.isAvailable ? exception.endTime ?? null : null,
+        reason: exception.reason ? exception.reason : null,
+      }));
 
       const { error: clearErr } = await admin
         .from('mentor_availability_exceptions').delete().eq('mentor_id', mentorId);
@@ -2828,7 +3444,7 @@ async function startServer() {
   //    repeating verification (section 6).
   //  - every transition is audited with admin_id, mentor_id, timestamp, action
   //    and the reason (section 12).
-  app.patch('/api/admin/mentors/:id/status', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/mentors/:id/status', requireAuth, requireAdmin, validateBody(apiSchemas.mentorStatus), async (req: AuthRequest, res) => {
     const requestId = req.requestId ?? '';
     try {
       const { id } = req.params;
@@ -2840,13 +3456,12 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const action = parseMentorStatusAction((req.body || {}).action);
-      if (!action) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'action must be one of: activate, deactivate, suspend, reactivate.' },
-        });
-      }
+      // The action enum and the markup-free reason are enforced by the schema.
+      const { action, reason, suspendedUntil } = req.body as {
+        action: MentorStatusAction;
+        reason?: string;
+        suspendedUntil?: string;
+      };
 
       const adminId = req.auth!.user.id;
 
@@ -2919,8 +3534,8 @@ async function startServer() {
 
       const validation = validateMentorStatusAction({
         action,
-        reason: (req.body || {}).reason,
-        suspendedUntil: (req.body || {}).suspendedUntil,
+        reason,
+        suspendedUntil,
         state,
       });
 
@@ -3375,7 +3990,7 @@ async function startServer() {
   // approval_status and is_active are deliberately NOT editable here: approval
   // belongs to the verification flow and activation to the status endpoint, so
   // this endpoint can never be used to bypass either.
-  app.patch('/api/admin/mentors/:id/profile', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/mentors/:id/profile', requireAuth, requireAdmin, validateBody(apiSchemas.adminMentorProfile), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3386,54 +4001,56 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const body = (req.body || {}) as Record<string, unknown>;
+      // Free text arrives trimmed and markup-free; tag arrays are bounded and
+      // de-duplication is left to the column default.
+      const body = req.body as {
+        fullName?: string;
+        timezone?: string;
+        phone?: string;
+        avatarUrl?: string | null;
+        headline?: string;
+        bio?: string;
+        experienceYears?: number;
+        languages?: string[];
+        expertise?: string[] | null;
+        isFeatured?: boolean;
+        segmentIds?: string[];
+      };
 
       const profileUpdates: Record<string, unknown> = {};
-      if (typeof body.fullName === 'string' && body.fullName.trim()) {
-        profileUpdates.full_name = body.fullName.trim();
+      if (body.fullName !== undefined) {
+        profileUpdates.full_name = body.fullName;
       }
-      if (typeof body.timezone === 'string' && body.timezone.trim()) {
-        profileUpdates.timezone = body.timezone.trim();
+      if (body.timezone !== undefined) {
+        profileUpdates.timezone = body.timezone;
       }
       // `profiles.phone` verified to exist in the live schema.
-      if (typeof body.phone === 'string') {
-        profileUpdates.phone = body.phone.trim() || null;
+      if (body.phone !== undefined) {
+        profileUpdates.phone = body.phone || null;
       }
-      if (body.avatarUrl === null || typeof body.avatarUrl === 'string') {
-        profileUpdates.avatar_url = typeof body.avatarUrl === 'string' ? body.avatarUrl.trim() || null : null;
+      if (body.avatarUrl !== undefined) {
+        profileUpdates.avatar_url = body.avatarUrl || null;
       }
 
       const mentorUpdates: Record<string, unknown> = {};
-      if (typeof body.headline === 'string') mentorUpdates.headline = body.headline.trim();
-      if (typeof body.bio === 'string') mentorUpdates.about = body.bio.trim() || null;
-      if (typeof body.experienceYears === 'number'
-        && Number.isInteger(body.experienceYears)
-        && body.experienceYears >= 0) {
+      if (body.headline !== undefined) mentorUpdates.headline = body.headline;
+      if (body.bio !== undefined) mentorUpdates.about = body.bio || null;
+      if (body.experienceYears !== undefined) {
         mentorUpdates.experience_years = body.experienceYears;
       }
-      if (Array.isArray(body.languages) && body.languages.every((l) => typeof l === 'string')) {
-        mentorUpdates.languages = body.languages as string[];
+      if (body.languages !== undefined) {
+        mentorUpdates.languages = body.languages;
       }
       // `mentor_profiles.expertise` verified to exist in the live schema (text[]).
-      if (body.expertise === null) {
-        mentorUpdates.expertise = null;
-      } else if (Array.isArray(body.expertise) && body.expertise.every((e) => typeof e === 'string')) {
-        mentorUpdates.expertise = body.expertise as string[];
+      if (body.expertise !== undefined) {
+        mentorUpdates.expertise = body.expertise;
       }
-      if (typeof body.isFeatured === 'boolean') mentorUpdates.is_featured = body.isFeatured;
+      if (body.isFeatured !== undefined) mentorUpdates.is_featured = body.isFeatured;
 
-      // Segments: add / remove, only when explicitly provided.
-      const replaceSegments = Array.isArray(body.segmentIds);
-      const requestedSegmentIds = replaceSegments ? (body.segmentIds as unknown[]) : [];
-      if (replaceSegments && !requestedSegmentIds.every((s) => typeof s === 'string' && UUID_SHAPE_PATTERN.test(s))) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'segmentIds must be an array of segment UUIDs.' } });
-      }
-
-      if (Object.keys(profileUpdates).length === 0
-        && Object.keys(mentorUpdates).length === 0
-        && !replaceSegments) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No editable fields were provided.' } });
-      }
+      // Segments: add / remove, only when explicitly provided. An empty array
+      // is a real instruction to clear every assignment, so it is honoured.
+      const replaceSegments = body.segmentIds !== undefined;
+      const requestedSegmentIds = body.segmentIds ?? [];
 
       const { data: existing, error: existsErr } = await admin
         .from('mentor_profiles').select('id').eq('id', mentorId).maybeSingle();
@@ -3461,7 +4078,7 @@ async function startServer() {
       }
 
       if (replaceSegments) {
-        const nextSegmentIds = body.segmentIds as string[];
+        const nextSegmentIds = requestedSegmentIds;
 
         // Validate every referenced segment actually exists.
         if (nextSegmentIds.length > 0) {
@@ -3520,7 +4137,7 @@ async function startServer() {
   // gigs for ANY mentor without the mentor's password. Archiving sets
   // is_active=false and NEVER deletes the row, so booking and payment history
   // keeps its foreign key (prompt section 5).
-  app.post('/api/admin/mentors/:id/gigs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/mentors/:id/gigs', requireAuth, requireAdmin, validateBody(apiSchemas.adminMentorGigCreate), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3531,25 +4148,15 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const { title, segmentId, durationMinutes, priceInr, description } = (req.body || {}) as Record<string, unknown>;
-      if (typeof title !== 'string' || !title.trim()
-        || typeof segmentId !== 'string' || !UUID_SHAPE_PATTERN.test(segmentId)
-        || typeof durationMinutes !== 'number'
-        || typeof priceInr !== 'number') {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'title, segmentId, durationMinutes and priceInr are required.' },
-        });
-      }
-      if (![30, 45, 60, 90, 120].includes(durationMinutes)) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'durationMinutes must be one of 30, 45, 60, 90, 120.' },
-        });
-      }
-      if (priceInr < 0) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'priceInr must be zero or greater.' } });
-      }
+      // Title and description arrive trimmed and markup-free; duration is one of
+      // the allowed slot lengths and price is non-negative.
+      const { title, segmentId, durationMinutes, priceInr, description } = req.body as {
+        title: string;
+        segmentId: string;
+        durationMinutes: number;
+        priceInr: number;
+        description?: string;
+      };
 
       const { data: mentorProfile, error: mpErr } = await admin
         .from('mentor_profiles').select('id').eq('id', mentorId).maybeSingle();
@@ -3607,7 +4214,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/mentors/gigs/:gigId - edit price, duration, title, etc.
-  app.patch('/api/admin/mentors/gigs/:gigId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/mentors/gigs/:gigId', requireAuth, requireAdmin, validateBody(apiSchemas.adminMentorGigUpdate), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3618,28 +4225,23 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_GIG_ID', message: 'Gig ID must be a valid UUID.' } });
       }
 
-      const { title, durationMinutes, priceInr, description, isActive } = (req.body || {}) as Record<string, unknown>;
+      // Already typed, in-range and markup-free. The schema also guarantees at
+      // least one editable field, so the "nothing to change" case is a 400
+      // before the handler runs.
+      const { title, durationMinutes, priceInr, description, isActive } = req.body as {
+        title?: string;
+        durationMinutes?: number;
+        priceInr?: number;
+        description?: string;
+        isActive?: boolean;
+      };
 
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-      if (typeof title === 'string' && title.trim()) updates.title = title.trim();
-      if (typeof description === 'string') updates.description = description.trim();
-      if (typeof durationMinutes === 'number') {
-        if (![30, 45, 60, 90, 120].includes(durationMinutes)) {
-          return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'durationMinutes must be one of 30, 45, 60, 90, 120.' } });
-        }
-        updates.duration_minutes = durationMinutes;
-      }
-      if (typeof priceInr === 'number') {
-        if (priceInr < 0) {
-          return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'priceInr must be zero or greater.' } });
-        }
-        updates.price_inr = priceInr;
-      }
-      if (typeof isActive === 'boolean') updates.is_active = isActive;
-
-      if (Object.keys(updates).length === 1) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No editable fields were provided.' } });
-      }
+      if (title !== undefined) updates.title = title;
+      if (description !== undefined) updates.description = description;
+      if (durationMinutes !== undefined) updates.duration_minutes = durationMinutes;
+      if (priceInr !== undefined) updates.price_inr = priceInr;
+      if (isActive !== undefined) updates.is_active = isActive;
 
       const { data: gig, error } = await admin
         .from('gigs').update(updates).eq('id', gigId).select().single();
@@ -3719,7 +4321,7 @@ async function startServer() {
   // Admin must be able to set availability up front and to repair it while the
   // mentor is deactivated or suspended. The restriction in prompt section 5
   // applies to the MENTOR's own UI, enforced by requireActiveMentor.
-  app.put('/api/admin/mentors/:id/availability', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.put('/api/admin/mentors/:id/availability', requireAuth, requireAdmin, validateBody(apiSchemas.availability), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3730,48 +4332,22 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const { rules, timezone } = (req.body || {}) as { rules?: unknown; timezone?: unknown };
-      if (!Array.isArray(rules)) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'rules must be an array.' } });
-      }
-      if (rules.length > 50) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 50 recurring windows.' } });
-      }
+      // Rules are already in-range, start-before-end windows: the schema
+      // rejected anything else with a 400 before we got here.
+      const { rules, timezone } = req.body as {
+        rules: Array<{ dayOfWeek: number; startTime: string; endTime: string; isEnabled: boolean }>;
+        timezone?: string;
+      };
+      const resolvedTimezone = timezone ?? APP_CONFIG.DEFAULT_TIMEZONE;
 
-      const resolvedTimezone = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : APP_CONFIG.DEFAULT_TIMEZONE;
-
-      const normalised = rules.map((rule, index) => {
-        const r = (rule || {}) as Record<string, unknown>;
-        const dayOfWeek = Number(r.dayOfWeek);
-        const startTime = typeof r.startTime === 'string' ? r.startTime : '';
-        const endTime = typeof r.endTime === 'string' ? r.endTime : '';
-        if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
-          return { error: `rules[${index}].dayOfWeek must be an integer 0-6.` };
-        }
-        if (!/^\d{2}:\d{2}(:\d{2})?$/.test(startTime) || !/^\d{2}:\d{2}(:\d{2})?$/.test(endTime)) {
-          return { error: `rules[${index}] times must be HH:MM.` };
-        }
-        if (startTime >= endTime) {
-          return { error: `rules[${index}] startTime must be earlier than endTime.` };
-        }
-        return {
-          value: {
-            mentor_id: mentorId,
-            day_of_week: dayOfWeek,
-            start_time: startTime,
-            end_time: endTime,
-            timezone: resolvedTimezone,
-            is_enabled: r.isEnabled === undefined ? true : r.isEnabled === true,
-          },
-        };
-      });
-
-      const failure = normalised.find((entry) => 'error' in entry);
-      if (failure && 'error' in failure) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
-      }
-
-      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+      const rows = rules.map((rule) => ({
+        mentor_id: mentorId,
+        day_of_week: rule.dayOfWeek,
+        start_time: rule.startTime,
+        end_time: rule.endTime,
+        timezone: resolvedTimezone,
+        is_enabled: rule.isEnabled,
+      }));
 
       // Replace-all semantics. Availability is operational, not historical, so
       // rewriting the window set destroys no booking record.
@@ -3805,7 +4381,7 @@ async function startServer() {
   //
   // Replaces the mentor's date exceptions. Same admin-vs-mentor reasoning as
   // the recurring windows above.
-  app.put('/api/admin/mentors/:id/availability/exceptions', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.put('/api/admin/mentors/:id/availability/exceptions', requireAuth, requireAdmin, validateBody(apiSchemas.availabilityExceptions), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3816,45 +4392,26 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const { exceptions } = (req.body || {}) as { exceptions?: unknown };
-      if (!Array.isArray(exceptions)) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'exceptions must be an array.' } });
-      }
-      if (exceptions.length > 200) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A mentor may not have more than 200 date exceptions.' } });
-      }
+      // Dates are YYYY-MM-DD, an available day is guaranteed a real
+      // start-before-end window, and `reason` is already markup-free.
+      const { exceptions } = req.body as {
+        exceptions: Array<{
+          exceptionDate: string;
+          isAvailable: boolean;
+          startTime?: string | null;
+          endTime?: string | null;
+          reason?: string;
+        }>;
+      };
 
-      const normalised = exceptions.map((item, index) => {
-        const e = (item || {}) as Record<string, unknown>;
-        const exceptionDate = typeof e.exceptionDate === 'string' ? e.exceptionDate : '';
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(exceptionDate)) {
-          return { error: `exceptions[${index}].exceptionDate must be YYYY-MM-DD.` };
-        }
-        const isAvailable = e.isAvailable === true;
-        const startTime = typeof e.startTime === 'string' ? e.startTime : null;
-        const endTime = typeof e.endTime === 'string' ? e.endTime : null;
-        // Mirrors chk_exception_times: an available day needs a real window.
-        if (isAvailable && (!startTime || !endTime || startTime >= endTime)) {
-          return { error: `exceptions[${index}] needs a valid startTime/endTime window when isAvailable is true.` };
-        }
-        return {
-          value: {
-            mentor_id: mentorId,
-            exception_date: exceptionDate,
-            is_available: isAvailable,
-            start_time: isAvailable ? startTime : null,
-            end_time: isAvailable ? endTime : null,
-            reason: typeof e.reason === 'string' && e.reason.trim() ? e.reason.trim() : null,
-          },
-        };
-      });
-
-      const failure = normalised.find((entry) => 'error' in entry);
-      if (failure && 'error' in failure) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: failure.error } });
-      }
-
-      const rows = normalised.map((entry) => (entry as { value: Record<string, unknown> }).value);
+      const rows = exceptions.map((exception) => ({
+        mentor_id: mentorId,
+        exception_date: exception.exceptionDate,
+        is_available: exception.isAvailable,
+        start_time: exception.isAvailable ? exception.startTime ?? null : null,
+        end_time: exception.isAvailable ? exception.endTime ?? null : null,
+        reason: exception.reason ? exception.reason : null,
+      }));
 
       const { error: clearErr } = await admin
         .from('mentor_availability_exceptions').delete().eq('mentor_id', mentorId);
@@ -3970,7 +4527,7 @@ async function startServer() {
   // A dedicated endpoint rather than a PATCH on the profile, because segment
   // membership is its own audited operation and a partial update must never
   // silently drop an unrelated field.
-  app.put('/api/admin/mentors/:id/segments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.put('/api/admin/mentors/:id/segments', requireAuth, requireAdmin, validateBody(apiSchemas.adminMentorSegments), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3981,13 +4538,13 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor ID must be a valid UUID.' } });
       }
 
-      const body = (req.body || {}) as { segmentIds?: unknown; primarySegmentId?: unknown };
-      if (!Array.isArray(body.segmentIds) || !body.segmentIds.every((s) => typeof s === 'string' && UUID_PATTERN.test(s))) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'segmentIds must be an array of segment UUIDs.' } });
-      }
+      // Both fields are already UUID-shaped and sanitised by the schema.
+      const { segmentIds, primarySegmentId } = req.body as {
+        segmentIds: string[];
+        primarySegmentId?: string;
+      };
 
-      const nextSegmentIds = Array.from(new Set(body.segmentIds as string[]));
-      const primarySegmentId = typeof body.primarySegmentId === 'string' ? body.primarySegmentId : null;
+      const nextSegmentIds = Array.from(new Set(segmentIds));
 
       if (primarySegmentId && !nextSegmentIds.includes(primarySegmentId)) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'primarySegmentId must be one of segmentIds.' } });
@@ -4213,16 +4770,12 @@ async function startServer() {
   });
 
   // POST /api/admin/segments: Create new segment
-  app.post('/api/admin/segments', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/segments', requireAuth, requireAdmin, validateBody(apiSchemas.segmentCreate), async (req: AuthRequest, res) => {
     try {
       const { name, slug, priority, isActive, description } = req.body;
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      if (!name || !slug) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Name and slug are required.' } });
       }
 
       // `segments.slug` is UNIQUE in the live schema. Check it explicitly so a
@@ -4273,7 +4826,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/segments/:id: Update segment
-  app.patch('/api/admin/segments/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/segments/:id', requireAuth, requireAdmin, validateBody(apiSchemas.segmentUpdate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { name, slug, priority, isActive, description } = req.body;
@@ -4349,7 +4902,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/segments/:id/toggle-active: Toggle segment active status
-  app.patch('/api/admin/segments/:id/toggle-active', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/segments/:id/toggle-active', requireAuth, requireAdmin, validateBody(apiSchemas.segmentToggleActive), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { isActive } = req.body;
@@ -4382,7 +4935,7 @@ async function startServer() {
   });
 
   // POST /api/admin/segments/:id/priority: Change segment priority
-  app.post('/api/admin/segments/:id/priority', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/segments/:id/priority', requireAuth, requireAdmin, validateBody(apiSchemas.segmentPriority), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { direction } = req.body; // 'up' or 'down'
@@ -4458,17 +5011,13 @@ async function startServer() {
   });
 
   // POST /api/admin/segments/:id/mentors: Add mentor to segment
-  app.post('/api/admin/segments/:id/mentors', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/segments/:id/mentors', requireAuth, requireAdmin, validateBody(apiSchemas.segmentAddMentor), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { mentorId, isPrimary } = req.body;
+      const { mentorId, isPrimary } = req.body as { mentorId: string; isPrimary: boolean };
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      if (!mentorId) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'mentorId is required.' } });
       }
 
       // Check segment exists
@@ -4599,17 +5148,22 @@ async function startServer() {
   });
 
   // POST /api/admin/segments/:id/gigs: Create gig for mentor in segment
-  app.post('/api/admin/segments/:id/gigs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/segments/:id/gigs', requireAuth, requireAdmin, validateBody(apiSchemas.segmentGigCreate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { mentorId, title, description, durationMinutes, priceInr, isActive } = req.body;
+      // mentorId, title, duration and price are required and markup-free; the
+      // description is bounded and sanitised.
+      const { mentorId, title, description, durationMinutes, priceInr, isActive } = req.body as {
+        mentorId: string;
+        title: string;
+        description?: string;
+        durationMinutes: number;
+        priceInr: number;
+        isActive?: boolean;
+      };
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      if (!mentorId || !title || !durationMinutes || priceInr === undefined) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'mentorId, title, durationMinutes, and priceInr are required.' } });
       }
 
       // Check segment exists
@@ -4682,7 +5236,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/gigs/:id: Update gig
-  app.patch('/api/admin/gigs/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/gigs/:id', requireAuth, requireAdmin, validateBody(apiSchemas.adminGigUpdate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { title, description, durationMinutes, priceInr, isActive } = req.body;
@@ -4748,7 +5302,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/gigs/:id/toggle-active: Toggle gig active status
-  app.patch('/api/admin/gigs/:id/toggle-active', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/gigs/:id/toggle-active', requireAuth, requireAdmin, validateBody(apiSchemas.adminGigToggleActive), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { isActive } = req.body;
@@ -5169,7 +5723,7 @@ async function startServer() {
   // and audited. `email` is also not editable here because the login identity
   // lives in Supabase Auth, not in `profiles`; the email-change flow is a
   // separate protected operation.
-  app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/users/:id', requireAuth, requireAdmin, validateBody(apiSchemas.adminUserUpdate), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
@@ -5177,7 +5731,16 @@ async function startServer() {
       if (!UUID_PATTERN.test(userId)) {
         return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
       }
-      const body = (req.body || {}) as Record<string, unknown>;
+      // Free text is already trimmed and markup-free; the schema also guarantees
+      // at least one editable field and that the update is not silently empty.
+      const { fullName, timezone, phone, bio, headline, experienceYears } = req.body as {
+        fullName?: string;
+        timezone?: string;
+        phone?: string;
+        bio?: string;
+        headline?: string;
+        experienceYears?: number;
+      };
 
       const { data: existing, error: existingErr } = await admin
         .from('profiles')
@@ -5190,19 +5753,15 @@ async function startServer() {
       }
 
       const profileUpdates: Record<string, string | null> = {};
-      if (typeof body.fullName === 'string' && body.fullName.trim()) profileUpdates.full_name = body.fullName.trim();
-      if (typeof body.timezone === 'string' && body.timezone.trim()) profileUpdates.timezone = body.timezone.trim();
+      if (fullName !== undefined) profileUpdates.full_name = fullName;
+      if (timezone !== undefined) profileUpdates.timezone = timezone;
       // profiles.phone exists in the real schema. Clearing it is allowed.
-      if (typeof body.phone === 'string') profileUpdates.phone = body.phone.trim() || null;
+      if (phone !== undefined) profileUpdates.phone = phone || null;
 
       const mentorUpdates: Record<string, unknown> = {};
-      if (typeof body.bio === 'string') mentorUpdates.about = body.bio.trim();
-      if (typeof body.headline === 'string') mentorUpdates.headline = body.headline.trim();
-      if (typeof body.experienceYears === 'number' && Number.isInteger(body.experienceYears) && body.experienceYears >= 0) mentorUpdates.experience_years = body.experienceYears;
-
-      if (Object.keys(profileUpdates).length === 0 && Object.keys(mentorUpdates).length === 0) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No editable fields were provided.' } });
-      }
+      if (bio !== undefined) mentorUpdates.about = bio;
+      if (headline !== undefined) mentorUpdates.headline = headline;
+      if (experienceYears !== undefined) mentorUpdates.experience_years = experienceYears;
 
       if (Object.keys(profileUpdates).length > 0) {
         const { error } = await admin.from('profiles').update({ ...profileUpdates, updated_at: new Date().toISOString() }).eq('id', userId);
@@ -5244,7 +5803,7 @@ async function startServer() {
   //    disabling the last active admin, no no-op writes).
   //  - every transition is audited with admin id, target user id, action,
   //    timestamp and reason.
-  app.patch('/api/admin/users/:id/status', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/users/:id/status', requireAuth, requireAdmin, validateBody(apiSchemas.adminUserStatus), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -5255,14 +5814,12 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
       }
 
-      const body = (req.body || {}) as Record<string, unknown>;
-      const action = parseAccountStatusAction(body.action);
-      if (!action) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'action must be one of: activate, deactivate, suspend, reactivate.' },
-        });
-      }
+      // Action enum enforced by the schema; `reason` arrives markup-free.
+      const { action, reason, suspendedUntil } = req.body as {
+        action: AccountStatusAction;
+        reason?: string;
+        suspendedUntil?: string;
+      };
 
       const adminId = req.auth!.user.id;
 
@@ -5301,8 +5858,8 @@ async function startServer() {
 
       const validation = validateAccountStatusAction({
         action,
-        reason: body.reason,
-        suspendedUntil: body.suspendedUntil,
+        reason,
+        suspendedUntil,
       });
       if (!validation.valid) {
         return res.status(400).json({ success: false, error: { code: validation.code, message: validation.message } });
@@ -5587,7 +6144,7 @@ async function startServer() {
   //
   // Admin-triggered notification. Reuses the EXISTING notifications table - no
   // second notification system is introduced.
-  app.post('/api/admin/users/:id/notifications', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/users/:id/notifications', requireAuth, requireAdmin, validateBody(apiSchemas.adminUserNotification), async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
@@ -5596,12 +6153,8 @@ async function startServer() {
         return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID must be a valid UUID.' } });
       }
 
-      const body = (req.body || {}) as Record<string, unknown>;
-      const title = typeof body.title === 'string' ? body.title.trim() : '';
-      const message = typeof body.message === 'string' ? body.message.trim() : '';
-      if (!title || !message) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'A title and a message are required.' } });
-      }
+      // Both fields are required, trimmed and markup-free by the schema.
+      const { title, message } = req.body as { title: string; message: string };
 
       const { data: profile, error: profileErr } = await admin
         .from('profiles')
@@ -5954,7 +6507,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/payments/:id/reject: Reject payment
-  app.patch('/api/admin/payments/:id/reject', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/payments/:id/reject', requireAuth, requireAdmin, validateBody(apiSchemas.paymentReject), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { rejectionReason } = req.body;
@@ -6114,7 +6667,7 @@ async function startServer() {
 
   // PATCH /api/notifications/:id/read: Mark single notification as read.
   // The caller may only mark a notification they own as read.
-  app.patch('/api/notifications/:id/read', requireAuth, async (req: AuthRequest, res) => {
+  app.patch('/api/notifications/:id/read', requireAuth, validateBody(apiSchemas.notificationRead), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { isRead = true } = req.body;
@@ -6172,7 +6725,7 @@ async function startServer() {
   });
 
   // POST /api/notifications/mark-all-read: Mark all notifications as read for the authenticated caller
-  app.post('/api/notifications/mark-all-read', requireAuth, async (req: AuthRequest, res) => {
+  app.post('/api/notifications/mark-all-read', requireAuth, validateBody(apiSchemas.notificationMarkAllRead), async (req: AuthRequest, res) => {
     try {
       const userId = req.auth!.user.id;
 
@@ -6209,20 +6762,39 @@ async function startServer() {
     }
   });
 
-   // POST /api/notifications/dispatch: Dispatch new notification (admin or self only)
-   app.post('/api/notifications/dispatch', requireAuth, (req: AuthRequest, res) => {
+  // POST /api/notifications/dispatch: Create a notification for a user.
+  //
+  // Operational delivery is an administrative capability: it lets the caller
+  // choose the recipient, the title, the body and the in-app link. Leaving it
+  // on `requireAuth` alone meant any signed-in seeker or mentor could call it
+  // (self-targeted only, enforced below) - a broken function-level
+  // authorization on an admin action, and an unauthenticated-content write
+  // primitive. `requireAdmin` is now server-side authoritative; the
+  // self-targeting branch is retained only so the endpoint stays honest about
+  // who it may notify.
+  app.post('/api/notifications/dispatch', requireAuth, requireAdmin, validateBody(apiSchemas.notificationDispatch), (req: AuthRequest, res) => {
      try {
        const {
          userId: bodyUserId,
          title,
          message,
-         type = 'SYSTEM',
+         type,
          eventType,
          entityType,
          entityId,
          link,
-         metadata = {},
-       } = req.body;
+         metadata,
+       } = req.body as {
+         userId?: string;
+         title: string;
+         message: string;
+         type: string;
+         eventType?: string;
+         entityType?: string;
+         entityId?: string;
+         link?: string;
+         metadata: Record<string, unknown>;
+       };
 
        const callerId = req.auth?.user?.id;
        const isAdmin = req.auth?.roles.includes('admin') ?? false;
@@ -6234,14 +6806,16 @@ async function startServer() {
          });
        }
 
+       // The route is admin-gated, so the caller is always the target unless the
+       // body named somebody else. Title and message are guaranteed present.
        const userId = bodyUserId || callerId;
 
-      if (!userId || !title || !message) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'userId, title, and message are required' },
-        });
-      }
+       if (!userId) {
+         return res.status(400).json({
+           success: false,
+           error: { code: 'VALIDATION_ERROR', message: 'userId is required' },
+         });
+       }
 
       const db = getLocalBookingEngineContext();
       if (!db.notifications) db.notifications = [];
@@ -6274,32 +6848,69 @@ async function startServer() {
   // Phase 9: Session Access & Join Endpoints
   // --------------------------------------------------------------------------
 
-   // GET /api/sessions/:bookingId/access: Authoritative server check for session countdown & state
-   app.get('/api/sessions/:bookingId/access', requireAuth, (req: AuthRequest, res) => {
-     try {
-       const { bookingId } = req.params;
-       const userId = req.auth!.user.id;
-       const currentTime = req.query.currentTime;
+   // GET /api/sessions/:bookingId/access: Authoritative server check for session countdown & state.
+   //
+   // SECURITY: `currentTime` used to be read straight from the query string and
+   // handed to `validateSessionAccess` as the "authoritative server clock".
+   // A caller could therefore pass any timestamp and unlock the T-5 gate at
+   // will, receiving `meetingUrl` for a session that had not started yet, and
+   // could equally pass a time before `end_time` to join a finished session.
+   // The server clock is now the only clock. A `currentTime` parameter is
+   // accepted for backwards compatibility and deliberately ignored.
+   app.get('/api/sessions/:bookingId/access', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const { bookingId } = req.params;
+      const userId = req.auth!.user.id;
+      // Server clock. Never `req.query.currentTime`.
+      const currentUtcTime = new Date();
 
-       const db = getLocalBookingEngineContext();
-       const currentUtcTime = currentTime && typeof currentTime === 'string' ? new Date(currentTime) : new Date();
+      const db = getSupabaseAdmin()
+        ? await (async () => {
+            const loaded = await loadAuthoritativeSessionBooking(
+              getSupabaseAdmin()!,
+              bookingId,
+              userId
+            );
+            if (!loaded.booking) return null;
+            return buildSessionEngineContext(loaded.engineBooking, userId, loaded.callerIsAdmin);
+          })()
+        : getLocalBookingEngineContext();
 
-       const accessResult = validateSessionAccess(
-         {
-           bookingId,
-           userId,
-           currentUtcTime,
-         },
-         db
-       );
+      if (!db) {
+        return res.status(404).json({
+          success: false,
+          canJoin: false,
+          meetingUrl: null,
+          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+        });
+      }
+
+      const accessResult = validateSessionAccess(
+        {
+          bookingId,
+          userId,
+          currentUtcTime,
+        },
+        db
+      );
+
 
       if (!accessResult.success) {
         const code = accessResult.error?.code;
-        if (code === 'FORBIDDEN_NOT_PARTICIPANT') {
-          return res.status(403).json(accessResult);
-        }
-        if (code === 'BOOKING_NOT_FOUND') {
-          return res.status(404).json(accessResult);
+        // Resource concealment: a non-participant and a non-existent booking
+        // are indistinguishable from outside, and the refusal body carries no
+        // participant names, ids, times or booking code, so the endpoint can
+        // neither enumerate real booking ids nor describe one to a stranger.
+        if (code === 'FORBIDDEN_NOT_PARTICIPANT' || code === 'BOOKING_NOT_FOUND') {
+          return res.status(404).json({
+            success: false,
+            canJoin: false,
+            accessState: 'BEFORE_T5',
+            meetingUrl: null,
+            currentServerTime: currentUtcTime.toISOString(),
+            message: 'Booking not found.',
+            error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+          });
         }
         return res.status(400).json(accessResult);
       }
@@ -6311,15 +6922,36 @@ async function startServer() {
   });
 
   // POST /api/sessions/:bookingId/join: Authoritative join action triggered by Join Session button
-  // Requires authentication; the caller's own id is used, never a client-supplied userId.
-  app.post('/api/sessions/:bookingId/join', requireAuth, async (req: AuthRequest, res) => {
+  //
+  // Requires authentication; the caller's own id comes from the verified token,
+  // never from a body `userId`. The same holds for the clock: `currentTime` in
+  // the body is ignored, because a client-supplied timestamp is a T-5 bypass and
+  // a post-end join. Authorization, booking state and the time gate are all
+  // evaluated against the real Supabase row.
+  app.post('/api/sessions/:bookingId/join', requireAuth, validateBody(apiSchemas.sessionJoin), async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
-      const { currentTime } = req.body;
       const userId = req.auth!.user.id;
+      // Server clock. Never `req.body.currentTime`.
+      const currentUtcTime = new Date();
 
-      const db = getLocalBookingEngineContext();
-      const currentUtcTime = currentTime ? new Date(currentTime) : new Date();
+      const supabase = getSupabaseAdmin();
+      const db = supabase
+        ? await (async () => {
+            const loaded = await loadAuthoritativeSessionBooking(supabase, bookingId, userId);
+            if (!loaded.booking) return null;
+            return buildSessionEngineContext(loaded.engineBooking, userId, loaded.callerIsAdmin);
+          })()
+        : getLocalBookingEngineContext();
+
+      if (!db) {
+        return res.status(404).json({
+          success: false,
+          canJoin: false,
+          accessState: 'COMPLETED',
+          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+        });
+      }
 
       const joinResult = joinSessionAuthoritative(
         {
@@ -6354,8 +6986,17 @@ async function startServer() {
             },
           });
         }
-        if (code === 'FORBIDDEN_NOT_PARTICIPANT') {
-          return res.status(403).json(joinResult);
+        // Resource concealment. A caller who is not a participant gets exactly
+        // the same 404 as a caller probing an id that does not exist, so the
+        // endpoint cannot be used to enumerate which booking ids are real. The
+        // distinction is still visible in the server-side auth log, not in the
+        // response.
+        if (code === 'FORBIDDEN_NOT_PARTICIPANT' || code === 'BOOKING_NOT_FOUND') {
+          return res.status(404).json({
+            success: false,
+            canJoin: false,
+            error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
+          });
         }
         return res.status(400).json(joinResult);
       }
@@ -6373,38 +7014,117 @@ async function startServer() {
     }
   });
 
-  // POST /api/sessions/:bookingId/complete: Transition session/booking to COMPLETED.
-  // Requires authentication; only the booking's seeker, mentor, or an admin may conclude it.
+  // POST /api/sessions/:bookingId/complete: Transition a booking to COMPLETED.
+  //
+  // Four things are checked server-side, all of them from trusted state:
+  //   1. authentication, and the caller id comes from the verified token;
+  //   2. the caller is the booking's seeker, its mentor, or an admin
+  //      (admin from `user_roles`, which `requireAuth` already resolved);
+  //   3. the booking is in a state that can legitimately conclude - only a
+  //      CONFIRMED session can be completed, so a PAYMENT_PENDING,
+  //      PENDING_VERIFICATION, MENTOR_PENDING, CANCELLED or REJECTED booking
+  //      cannot be forced forward;
+  //   4. the session has actually started (server clock), so a participant
+  //      cannot mark a future session complete days in advance.
+  //
+  // The write is a conditional UPDATE scoped to the still-CONFIRMED row, so two
+  // concurrent completions cannot double-apply, and it lands in Postgres rather
+  // than in a process-local object.
   app.post('/api/sessions/:bookingId/complete', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { bookingId } = req.params;
       const userId = req.auth!.user.id;
       const isAdmin = req.auth!.roles.includes('admin');
-      const db = getLocalBookingEngineContext();
-      const booking = db.bookings.find(
-        (b) => b.id === bookingId || b.booking_code.toUpperCase() === bookingId.toUpperCase()
-      );
 
-      if (!booking) {
+      const supabase = getSupabaseAdmin();
+      if (!supabase) {
+        // No database configured: only the no-backend local preview can reach
+        // this point. Fail closed rather than mutate a fixture object.
+        return res.status(503).json({
+          success: false,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Session service is not configured.' },
+        });
+      }
+
+      const loaded = await loadAuthoritativeSessionBooking(supabase, bookingId, userId);
+      if (!loaded.booking) {
         return res.status(404).json({
           success: false,
           error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
         });
       }
 
-      if (!isAdmin && booking.seeker_id !== userId && booking.mentor_id !== userId) {
-        return res.status(403).json({
+      const booking = loaded.booking;
+      const isParticipant = booking.seeker_id === userId || booking.mentor_id === userId;
+
+      // Same refusal for "not yours" and "does not exist", so booking ids
+      // cannot be enumerated through this endpoint.
+      if (!isAdmin && !isParticipant) {
+        return res.status(404).json({
           success: false,
-          error: { code: 'FORBIDDEN', message: 'Only a session participant or administrator can mark this session complete.' },
+          error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
         });
       }
 
-      booking.status = 'COMPLETED';
-      booking.updated_at = new Date().toISOString();
+      if (booking.status === 'COMPLETED') {
+        return res.json({
+          success: true,
+          booking: { id: booking.id, booking_code: booking.booking_code, status: 'COMPLETED' },
+          message: 'Booking is already COMPLETED.',
+        });
+      }
+
+      if (booking.status !== 'CONFIRMED') {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_COMPLETABLE',
+            message: `A booking that is ${String(booking.status).replace(/_/g, ' ').toLowerCase()} cannot be completed.`,
+          },
+        });
+      }
+
+      const nowMs = Date.now();
+      const startMs = new Date(booking.start_time).getTime();
+      if (Number.isFinite(startMs) && nowMs < startMs) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'SESSION_NOT_STARTED',
+            message: 'This session has not started yet, so it cannot be marked complete.',
+          },
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      const { data: updated, error: updateErr } = await supabase
+        .from('bookings')
+        .update({ status: 'COMPLETED', updated_at: nowIso })
+        .eq('id', booking.id)
+        .eq('status', 'CONFIRMED')
+        .select('id, booking_code, status, updated_at')
+        .maybeSingle();
+
+      if (updateErr) throw updateErr;
+
+      if (!updated) {
+        // Another request completed it between the read and the write.
+        return res.status(409).json({
+          success: false,
+          error: { code: 'BOOKING_STATE_CHANGED', message: 'The booking changed state and was not completed.' },
+        });
+      }
+
+      auditAction(req.auth, 'session_completed', {
+        entityType: 'booking',
+        entityId: booking.id,
+        requestId: req.requestId,
+        metadata: { bookingCode: booking.booking_code },
+      });
 
       return res.json({
         success: true,
-        booking,
+        booking: updated,
         message: 'Booking marked as COMPLETED.',
       });
     } catch (err: any) {
@@ -6511,24 +7231,33 @@ async function startServer() {
   // POST /api/workspaces: Create or Save Workspace (Mentor & Admin)
   // Requires authentication; admin role is derived from the verified token,
   // never from a client-supplied body field.
-  app.post('/api/workspaces', requireAuth, async (req: AuthRequest, res) => {
+  app.post('/api/workspaces', requireAuth, validateBody(apiSchemas.workspace), async (req: AuthRequest, res) => {
     try {
       const {
         bookingId,
         mentorNotes,
-        takeaways = [],
-        suggestions = [],
-        nextSteps = [],
-        followUpRecommendation = null,
-        publish = false,
-      } = req.body;
+        takeaways,
+        suggestions,
+        nextSteps,
+        next_steps,
+        followUpRecommendation,
+        publish,
+      } = req.body as {
+        bookingId: string;
+        mentorNotes?: string;
+        takeaways: string[];
+        suggestions: string[];
+        nextSteps?: Array<{ id?: string; text: string; completed?: boolean }>;
+        next_steps?: Array<{ id?: string; text: string; completed?: boolean }>;
+        followUpRecommendation?: unknown;
+        publish: boolean;
+      };
 
-      if (!bookingId) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'MISSING_BOOKING_ID', message: 'bookingId is required.' },
-        });
-      }
+      // Both spellings are accepted and normalised here. The Mentor and Admin
+      // workspace pages send `next_steps`, while this route historically read
+      // `nextSteps`, so next steps were silently discarded on every save. The
+      // schema validates both, and whichever is present wins.
+      const steps = nextSteps ?? next_steps ?? [];
 
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -6570,7 +7299,9 @@ async function startServer() {
       const overview = deriveSessionOverview(booking as any);
       const status = publish ? 'PUBLISHED' : 'PENDING';
 
-      // Upsert workspace in Supabase
+      // Upsert workspace in Supabase.
+      // Every list is a real array and every string already markup-free: the
+      // schema rejected or normalised all of it before the handler ran.
       const upsertRecord = {
         booking_id: booking.id,
         mentor_id: booking.mentor_id,
@@ -6578,17 +7309,15 @@ async function startServer() {
         status,
         mentor_notes: mentorNotes || '',
         summary: mentorNotes || '',
-        takeaways: Array.isArray(takeaways) ? takeaways : [],
-        suggestions: Array.isArray(suggestions) ? suggestions : [],
-        next_steps: Array.isArray(nextSteps) ? nextSteps : [],
-        action_items: Array.isArray(nextSteps)
-          ? nextSteps.map((ns: any) => ({
-              id: ns.id || `act-${Date.now()}`,
-              text: ns.text || '',
-              completed: !!ns.completed,
-            }))
-          : [],
-        follow_up_recommendation: followUpRecommendation || null,
+        takeaways,
+        suggestions,
+        next_steps: steps,
+        action_items: steps.map((step, index) => ({
+          id: step.id || `act-${Date.now()}-${index}`,
+          text: step.text,
+          completed: !!step.completed,
+        })),
+        follow_up_recommendation: followUpRecommendation ?? null,
         resources: [],
         published_at: publish ? nowIso : null,
         created_at: nowIso,
@@ -6755,17 +7484,21 @@ async function startServer() {
   });
 
   // POST /api/mentor/application/draft: Create or update a mentor application in draft
-  app.post('/api/mentor/application/draft', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+  app.post('/api/mentor/application/draft', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorApplicationDraft), async (req: AuthRequest, res) => {
     try {
       const userId = req.auth!.user.id;
-      const { fullName, bio, timezone, headline, experienceYears, segmentIds } = req.body;
+      // Full name, bio and headline arrive trimmed and markup-free.
+      const { fullName, bio, timezone, headline, experienceYears, segmentIds } = req.body as {
+        fullName: string;
+        bio?: string;
+        timezone?: string;
+        headline?: string;
+        experienceYears?: number;
+        segmentIds?: string[];
+      };
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      if (!fullName || typeof fullName !== 'string' || fullName.trim() === '') {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Full name is required.' } });
       }
 
       // Upsert application in draft/rejected state (RLS won't allow this from service role, so direct insert)
@@ -6976,17 +7709,23 @@ async function startServer() {
   });
 
   // POST /api/mentor/document: Upsert mentor verification document metadata (after file uploaded to storage)
-  app.post('/api/mentor/document', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+  app.post('/api/mentor/document', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorDocument), async (req: AuthRequest, res) => {
     try {
       const userId = req.auth!.user.id;
-      const { applicationId, documentType, storagePath, originalFilename, mimeType, sizeBytes } = req.body;
+      // The schema pins the MIME type to the four supported image/PDF types and
+      // caps the size at the same 5MB limit the signed-upload route enforces, so
+      // this metadata row can never describe a file the bucket would refuse.
+      const { applicationId, documentType, storagePath, originalFilename, mimeType, sizeBytes } = req.body as {
+        applicationId: string;
+        documentType: string;
+        storagePath: string;
+        originalFilename: string;
+        mimeType: string;
+        sizeBytes: number;
+      };
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
-      }
-
-      if (!applicationId || !documentType || !storagePath || !originalFilename || !mimeType || !sizeBytes) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'All document fields are required.' } });
       }
 
       // Validate application ownership and status
@@ -6996,7 +7735,6 @@ async function startServer() {
         .eq('id', applicationId)
         .eq('user_id', userId)
         .maybeSingle();
-
       if (appErr) throw appErr;
       if (!application) {
         return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
@@ -7439,7 +8177,7 @@ async function startServer() {
   });
 
   // POST /api/admin/mentor-applications/:id/reject: Reject mentor application (admin)
-  app.post('/api/admin/mentor-applications/:id/reject', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/mentor-applications/:id/reject', requireAuth, requireAdmin, validateBody(apiSchemas.mentorApplicationReject), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { rejectionReason } = req.body;
@@ -7449,9 +8187,8 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      if (!rejectionReason || typeof rejectionReason !== 'string' || rejectionReason.trim() === '') {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Rejection reason is required.' } });
-      }
+      // `rejectionReason` is required, bounded and markup-free by the schema.
+
 
       const { data: application, error: appErr } = await admin
         .from('mentor_applications')
@@ -7523,7 +8260,7 @@ async function startServer() {
   });
 
   // PATCH /api/admin/mentor-documents/:id/review: Review a verification document (admin)
-  app.patch('/api/admin/mentor-documents/:id/review', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.patch('/api/admin/mentor-documents/:id/review', requireAuth, requireAdmin, validateBody(apiSchemas.mentorDocumentReview), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
       const { status, adminNote } = req.body;
@@ -7533,9 +8270,7 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      if (status !== 'approved' && status !== 'rejected') {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Status must be "approved" or "rejected".' } });
-      }
+      // `status` is constrained to the approved/rejected enum by the schema.
 
       // Get document with application context
       const { data: document, error: docErr } = await admin
@@ -7611,7 +8346,41 @@ async function startServer() {
 
     // 1. Validate the request body (the browser is never trusted). The exact
     //    same validator runs in the Admin form, so client and server agree.
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    //
+    //    Two layers, deliberately:
+    //      - the Zod schema is the structural gate: exact types, length and
+    //        format bounds, and HTML stripped from every free-text field;
+    //      - `validateCreateUserForm` (below) is the cross-field domain gate
+    //        shared verbatim with the browser.
+    //    Doing the Zod pass inline rather than as middleware keeps this route's
+    //    own validation-failure logging in the system logs.
+    const structural = apiSchemas.adminUserDirectCreate.safeParse(req.body ?? {});
+    if (!structural.success) {
+      const failure = formatValidationFailure(structural.error);
+      await logApiError({
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: 400,
+        message: `direct-create validation failed - fields: ${Object.keys(failure.fields).join(', ')}`,
+        error_code: 'VALIDATION_ERROR',
+        userId: adminUserId,
+        role: 'admin',
+        metadata: {
+          operation: 'validation',
+          adminUserId,
+          requestId,
+          invalidFields: failure.fields,
+        },
+      }).catch(() => {});
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: failure.message, fields: failure.fields, requestId: requestId || null },
+      });
+    }
+    req.body = structural.data;
+
+    const body = req.body as Record<string, unknown>;
     const role = typeof body.role === 'string' ? body.role.trim().toLowerCase() : '';
     const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
     const fullName = typeof body.fullName === 'string' ? body.fullName.trim() : '';
@@ -8441,6 +9210,108 @@ async function startServer() {
   // Phase 13: Admin System Health & Technical Logs Endpoints
   // --------------------------------------------------------------------------
 
+  // GET /api/admin/system-health/dashboard
+  //
+  // ONE aggregation endpoint for the whole overview, so the browser makes a
+  // single request instead of five and never receives raw log rows. Every value
+  // in the response is computed from `system_logs` / `audit_logs` on the server.
+  //
+  // Query params:
+  //   range    15m | 1h | 24h | 7d   (default 1h)
+  //   startAt  ISO timestamp — drill-down window start
+  //   endAt    ISO timestamp — drill-down window end
+  //   endpoint path fragment — drill-down endpoint filter
+  //
+  // startAt/endAt narrow the window to an exact bucket so clicking a spike on
+  // the chart lands on precisely those logs.
+  app.get('/api/admin/system-health/dashboard', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    try {
+      const rangeParam = req.query.range;
+      const range = isDashboardRange(rangeParam) ? rangeParam : DEFAULT_RANGE;
+      const { ms: rangeMs, bucketMs } = DASHBOARD_RANGES[range];
+
+      const now = Date.now();
+
+      // An explicit drill-down window narrows everything; otherwise use the range.
+      const parsedStart = req.query.startAt ? new Date(String(req.query.startAt)).getTime() : NaN;
+      const parsedEnd = req.query.endAt ? new Date(String(req.query.endAt)).getTime() : NaN;
+      const hasWindow = Number.isFinite(parsedStart) && Number.isFinite(parsedEnd) && parsedEnd > parsedStart;
+
+      const windowStartIso = hasWindow ? new Date(parsedStart).toISOString() : new Date(now - rangeMs).toISOString();
+      const windowEndIso = hasWindow ? new Date(parsedEnd).toISOString() : new Date(now).toISOString();
+      const endpointFilter = typeof req.query.endpoint === 'string' && req.query.endpoint.trim()
+        ? req.query.endpoint.trim()
+        : null;
+
+      // A hard row cap keeps one request bounded. At the measured volume the
+      // largest range (7d) is ~10k rows, well inside this.
+      const ROW_CAP = 20000;
+      const selects = [
+        admin
+          .from('system_logs')
+          .select('created_at, category, level, status_code, duration_ms, path, error_code, request_id')
+          .gte('created_at', windowStartIso)
+          .lte('created_at', windowEndIso)
+          .in('category', ['api_request', 'api_error', 'auth', 'db'])
+          .order('created_at', { ascending: false })
+          .limit(ROW_CAP),
+        admin
+          .from('audit_logs')
+          .select('id', { count: 'exact', head: true })
+          .gte('created_at', windowStartIso)
+          .lte('created_at', windowEndIso),
+      ];
+
+      const [logRes, auditRes] = await Promise.all(selects);
+      if (logRes.error) throw logRes.error;
+      if (auditRes.error) throw auditRes.error;
+
+      let rows = (logRes.data ?? []) as unknown as HealthRow[];
+
+      // Endpoint drill-down narrows to matching rows only, after the DB read.
+      if (endpointFilter) {
+        rows = rows.filter((r) => (r.path ?? '').includes(endpointFilter));
+      }
+
+      // A connectivity probe: this exact read already proved the database
+      // answers, so its success IS the health signal. No extra scan.
+      const dbReachable = true;
+
+      const overview = computeOverview(rows, auditRes.count ?? 0);
+      const timeline = buildTimeline(rows, rangeMs, bucketMs, now);
+      const anomalies = detectAnomalies(timeline, rows, bucketMs);
+      const topErrors = groupErrors(rows, 10);
+      const auth = summariseAuth(rows);
+      const services = summariseServices(overview, rows, dbReachable, auth);
+
+      return res.json({
+        success: true,
+        dashboard: {
+          overview,
+          timeline,
+          anomalies,
+          topErrors,
+          services,
+          auth,
+          range,
+          bucketMs,
+          // True when the DB had more rows in range than we could read, so the
+          // UI can say the numbers are a floor rather than an exact total.
+          truncated: (logRes.data?.length ?? 0) >= ROW_CAP,
+          window: { start: windowStartIso, end: windowEndIso },
+          lastUpdated: new Date(now).toISOString(),
+        },
+      });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/system-health/dashboard' });
+    }
+  });
+
   // GET /api/admin/system-health/metrics: Aggregated health metrics
   app.get('/api/admin/system-health/metrics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
@@ -8578,15 +9449,10 @@ async function startServer() {
   });
 
   // POST /api/admin/system-health/retention: Update log retention days
-  app.post('/api/admin/system-health/retention', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/system-health/retention', requireAuth, requireAdmin, validateBody(apiSchemas.logRetention), async (req: AuthRequest, res) => {
     try {
-      const { retentionDays } = req.body;
-      if (typeof retentionDays !== 'number' || retentionDays < 1 || retentionDays > 365) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'retentionDays must be a number between 1 and 365.' },
-        });
-      }
+      // Already a whole number between 1 and 365.
+      const { retentionDays } = req.body as { retentionDays: number };
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });

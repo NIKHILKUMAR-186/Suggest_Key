@@ -306,6 +306,18 @@ if (mode === 'storage-audit') {
   }
 }
 
+if (mode === 'jc') {
+  // Prints ONLY the JSON body (no status prefix) so shell parsing works.
+  const r = await fetch(`${URL_BASE}/rest/v1/${process.argv[3]}`, { headers: H });
+  console.log(await r.text());
+}
+
+if (mode === 'count') {
+  // Exact row count via Content-Range (cheap: no rows transferred).
+  const r = await fetch(`${URL_BASE}/rest/v1/${process.argv[3]}`, { headers: { ...H, Prefer: 'count=exact', Range: '0-0' } });
+  console.log(`${r.headers.get('content-range') || 'none'}`);
+}
+
 if (mode === 'q') {
   const { status, body } = await get(process.argv[3]);
   console.log(status, body.slice(0, 4000));

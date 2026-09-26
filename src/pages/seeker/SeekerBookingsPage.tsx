@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard } from 'lucide-react';
+import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard, RotateCcw, Trash2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -10,6 +10,7 @@ import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { usePaymentSync } from '@/src/hooks/seeker/usePaymentSync';
 import type { BookingStatus, Payment } from '@/src/types/database';
+import { APP_CONFIG } from '@/src/config/app';
 
 /**
  * Maps a stored payment status to the label My Bookings shows.
@@ -34,11 +35,24 @@ const paymentStateTone = (payment: Payment | null | undefined): string => {
   if (!payment) return '';
   switch (payment.status) {
     case 'VERIFIED':
-      return 'bg-emerald-50 text-emerald-800 border-emerald-200';
+      return 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:border-emerald-800/50';
     case 'REJECTED':
-      return 'bg-rose-50 text-rose-800 border-rose-200';
+      return 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-900/20 dark:text-rose-200 dark:border-rose-800/50';
     default:
-      return 'bg-sky-50 text-sky-800 border-sky-200';
+      return 'bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-900/20 dark:text-sky-200 dark:border-sky-800/50';
+  }
+};
+
+const getStatusDisplay = (status: BookingStatus): { label: string; variant: 'success' | 'warning' | 'secondary' | 'destructive' | 'outline' } => {
+  switch (status) {
+    case 'CONFIRMED': return { label: 'Confirmed', variant: 'success' };
+    case 'MENTOR_PENDING': return { label: 'Waiting for Mentor', variant: 'warning' };
+    case 'PENDING_VERIFICATION': return { label: 'Verification Pending', variant: 'secondary' };
+    case 'PAYMENT_PENDING': return { label: 'Payment Required', variant: 'warning' };
+    case 'COMPLETED': return { label: 'Completed', variant: 'secondary' };
+    case 'CANCELLED': return { label: 'Cancelled', variant: 'destructive' };
+    case 'REJECTED': return { label: 'Rejected', variant: 'destructive' };
+    default: return { label: status, variant: 'outline' };
   }
 };
 
@@ -108,23 +122,8 @@ export const SeekerBookingsPage: React.FC = () => {
   const cancelledCount = bookings.filter((b) => b.status === 'CANCELLED' || b.status === 'REJECTED').length;
 
   const getBookingStatusBadge = (status: BookingStatus) => {
-    switch (status) {
-      case 'CONFIRMED':
-        return <Badge variant="success" className="text-[10px] font-bold">CONFIRMED</Badge>;
-      case 'MENTOR_PENDING':
-        return <Badge variant="warning" className="text-[10px] font-bold">MENTOR_PENDING</Badge>;
-      case 'PAYMENT_PENDING':
-      case 'PENDING_VERIFICATION':
-        return <Badge variant="secondary" className="text-[10px] font-bold">VERIFICATION</Badge>;
-      case 'COMPLETED':
-        return <Badge variant="secondary" className="text-[10px] font-bold">COMPLETED</Badge>;
-      case 'CANCELLED':
-        return <Badge variant="destructive" className="text-[10px] font-bold">CANCELLED</Badge>;
-      case 'REJECTED':
-        return <Badge variant="destructive" className="text-[10px] font-bold">REJECTED</Badge>;
-      default:
-        return <Badge variant="outline" className="text-[10px]">{status}</Badge>;
-    }
+    const display = getStatusDisplay(status);
+    return <Badge variant={display.variant} className="text-[10px] font-bold">{display.label}</Badge>;
   };
 
   return (
@@ -168,12 +167,12 @@ export const SeekerBookingsPage: React.FC = () => {
           >
             <span>{tab.label}</span>
             {tab.id === 'upcoming' && upcomingCount > 0 && activeTab !== 'upcoming' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-[var(--color-shell-text-muted)]">
+              <Badge className="ml-1.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 text-[var(--color-shell-text-muted)]">
                 {upcomingCount}
               </Badge>
             )}
             {tab.id === 'cancelled' && cancelledCount > 0 && activeTab !== 'cancelled' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 text-[var(--color-shell-text-muted)]">
+              <Badge className="ml-1.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 text-[var(--color-shell-text-muted)]">
                 {cancelledCount}
               </Badge>
             )}
@@ -219,109 +218,123 @@ export const SeekerBookingsPage: React.FC = () => {
           className="space-y-4"
         >
           {activeTab === 'upcoming' &&
-            filteredBookings.map((booking) => (
-              <motion.div
-                key={booking.id}
-                variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
-                  <div className="flex items-center gap-2">
-                    {getBookingStatusBadge(booking.status)}
-                    <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
-                      Booking #{booking.booking_code}
-                    </span>
-                  </div>
-                  {booking.status === 'CONFIRMED' && (
-                    <span className="text-xs font-semibold text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] border border-[var(--color-shell-warning)]/20 px-2.5 py-1 rounded-full">
-                      Meeting unlocks at T-5 minutes
-                    </span>
-                  )}
-                  {/* Payment state comes straight from the joined payments row. */}
-                  {paymentStateLabel(booking.payment) && (
-                    <span
-                      className={`inline-flex items-center gap-1.5 text-[11px] font-semibold border px-2.5 py-1 rounded-full ${paymentStateTone(booking.payment)}`}
-                    >
-                      <CreditCard className="h-3 w-3" aria-hidden="true" />
-                      {paymentStateLabel(booking.payment)}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-bold text-[var(--color-shell-text)]">
-                      {booking.gig?.title || '1:1 Guidance Session'}
-                    </h2>
-                    <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
-                      Mentor: {booking.mentor?.full_name || 'Mentor'} · Segment:{' '}
-                      {booking.segment?.name || 'N/A'}
-                    </p>
-                    <div className="flex items-center gap-3 text-xs text-[var(--color-shell-text-muted)] mt-2 font-medium flex-wrap">
-                      <span className="flex items-center gap-1.5">
-                        <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
-                        {new Date(booking.start_time).toLocaleDateString('en-IN', {
-                          weekday: 'short',
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </span>
-                      <span>·</span>
-                      <span className="flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
-                        {new Date(booking.start_time).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}{' '}
-                        –{' '}
-                        {new Date(booking.end_time).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}{' '}
-                        (IST)
+            filteredBookings.map((booking) => {
+              const minutesUntilStart = Math.max(0, Math.floor((new Date(booking.start_time).getTime() - Date.now()) / (1000 * 60)));
+              const canCancelNormally = minutesUntilStart >= APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES &&
+                ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(booking.status);
+              return (
+                <motion.div
+                  key={booking.id}
+                  variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
+                  className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
+                    <div className="flex items-center gap-2">
+                      {getBookingStatusBadge(booking.status)}
+                      <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
+                        Booking #{booking.booking_code}
                       </span>
                     </div>
+                    {booking.status === 'CONFIRMED' && (
+                      <span className="text-xs font-semibold text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] border border-[var(--color-shell-warning)]/20 px-2.5 py-1 rounded-full">
+                        Meeting unlocks at T-5 minutes
+                      </span>
+                    )}
+                    {paymentStateLabel(booking.payment) && (
+                      <span
+                        className={`inline-flex items-center gap-1.5 text-[11px] font-semibold border px-2.5 py-1 rounded-full ${paymentStateTone(booking.payment)}`}
+                      >
+                        <CreditCard className="h-3 w-3" aria-hidden="true" />
+                        {paymentStateLabel(booking.payment)}
+                      </span>
+                    )}
                   </div>
 
-                  <div className="flex items-center gap-2.5">
-                    {/* Only offered while the booking can actually accept a proof. */}
-                    {(booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING_VERIFICATION') && (
-                      <Button
-                        onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
-                        size="sm"
-                        className="gap-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
-                      >
-                        <CreditCard className="h-3.5 w-3.5" />
-                        <span>
-                          {booking.status === 'PAYMENT_PENDING' ? 'Pay now' : 'View payment status'}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h2 className="text-base font-bold text-[var(--color-shell-text)]">
+                        {booking.gig?.title || '1:1 Guidance Session'}
+                      </h2>
+                      <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
+                        Mentor: {booking.mentor?.full_name || 'Mentor'} · Segment:{' '}
+                        {booking.segment?.name || 'N/A'}
+                      </p>
+                      <div className="flex items-center gap-3 text-xs text-[var(--color-shell-text-muted)] mt-2 font-medium flex-wrap">
+                        <span className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                          {new Date(booking.start_time).toLocaleDateString('en-IN', {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
                         </span>
-                      </Button>
-                    )}
-                    <Button
-                      onClick={() =>
-                        navigate(`/seeker/booking-detail?bookingId=${booking.id}`)
-                      }
-                      variant="outline"
-                      size="sm"
-                      className="text-xs font-medium"
-                    >
-                      Booking Details
-                    </Button>
-                    {booking.status === 'CONFIRMED' && (
+                        <span>·</span>
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                          {new Date(booking.start_time).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}{' '}
+                          –{' '}
+                          {new Date(booking.end_time).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}{' '}
+                          (IST)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      {(booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING_VERIFICATION') && (
+                        <Button
+                          onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
+                          size="sm"
+                          className="gap-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                        >
+                          <CreditCard className="h-3.5 w-3.5" />
+                          <span>
+                            {booking.status === 'PAYMENT_PENDING' ? 'Pay now' : 'View payment status'}
+                          </span>
+                        </Button>
+                      )}
                       <Button
-                        onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                        onClick={() =>
+                          navigate(`/seeker/booking-detail?bookingId=${booking.id}`)
+                        }
+                        variant="outline"
                         size="sm"
-                        className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs"
+                        className="text-xs font-medium"
                       >
-                        <Video className="h-3.5 w-3.5" />
-                        <span>Join Session Room</span>
+                        Booking Details
                       </Button>
-                    )}
+                      {canCancelNormally && (
+                        <Button
+                          onClick={() => navigate(`/seeker/booking-detail?bookingId=${booking.id}`)}
+                          variant="outline"
+                          size="sm"
+                          className="text-xs font-medium gap-1.5 text-[var(--color-shell-error)] border-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Cancel</span>
+                        </Button>
+                      )}
+                      {booking.status === 'CONFIRMED' && (
+                        <Button
+                          onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                          size="sm"
+                          className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs"
+                        >
+                          <Video className="h-3.5 w-3.5" />
+                          <span>Join Session Room</span>
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
 
           {activeTab === 'history' &&
             filteredBookings.map((booking) => (
@@ -341,7 +354,7 @@ export const SeekerBookingsPage: React.FC = () => {
                       })}
                     </span>
                   </div>
-                  <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
+                  <span className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1">
                     <FileText className="h-3.5 w-3.5" /> Workspace Notes Available
                   </span>
                 </div>
@@ -385,7 +398,7 @@ export const SeekerBookingsPage: React.FC = () => {
                   {booking.gig?.title || '1:1 Guidance Session'}
                 </h2>
                 <p className="text-xs text-[var(--color-shell-text-muted)]">
-                  Normal cancellation policy: Permitted ≥24 hours before start.
+                  Normal cancellation policy: Permitted ≥{APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before start.
                 </p>
               </motion.div>
             ))}

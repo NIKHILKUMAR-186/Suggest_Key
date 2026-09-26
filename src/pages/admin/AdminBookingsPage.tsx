@@ -210,6 +210,7 @@ export const AdminBookingsPage: React.FC = () => {
                 <tr>
                   <th className="py-3 px-4">Booking Code</th>
                   <th className="py-3 px-4">Seeker ➔ Mentor</th>
+                  <th className="py-3 px-4">Gig ➔ Segment</th>
                   <th className="py-3 px-4">Scheduled Time</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4">Meeting Link Deadline</th>
@@ -220,7 +221,7 @@ export const AdminBookingsPage: React.FC = () => {
               <tbody className="divide-y divide-[var(--color-shell-border)]">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-[var(--color-shell-text-subtle)]">
+                    <td colSpan={8} className="py-8 text-center text-[var(--color-shell-text-subtle)]">
                       No bookings found matching filter "{filterStatus}".
                     </td>
                   </tr>
@@ -251,6 +252,14 @@ export const AdminBookingsPage: React.FC = () => {
                           <ShortId value={b.mentor_id} label="Mentor ID" />
                         </span>
                       )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="block font-bold text-zinc-900 break-words">
+                        {b.gig?.title || 'Gig unavailable'}
+                      </span>
+                      <span className="text-[11px] text-zinc-400">
+                        {b.segment?.name || 'Segment unavailable'}
+                      </span>
                     </td>
                     <td className="py-3 px-4 text-zinc-700">
                       {formatScheduledTime(b.start_time, b.mentor_timezone)}
@@ -320,7 +329,7 @@ export const AdminBookingsPage: React.FC = () => {
           isOpen={!!selectedBooking}
           onClose={() => setSelectedBooking(null)}
           title={`Booking Audit: #${selectedBooking.booking_code}`}
-          description={`Session: ${selectedBooking.gig?.title || '1:1 Session'}`}
+          description={`Session: ${selectedBooking.gig?.title || 'Gig unavailable'}`}
         >
           <div className="space-y-4 pt-2 text-xs">
             <div className="grid grid-cols-2 gap-3 bg-zinc-50 p-3.5 rounded-lg border border-zinc-100">

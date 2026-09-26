@@ -181,12 +181,47 @@ export interface InternalErrorOptions {
  * message and a non-500 status (duplicate email -> 409, and so on).
  */
 export function respondWithInternalError(options: InternalErrorOptions): Response {
+  // A malformed identifier in a path segment reaches Postgres as
+  // `22P02 invalid input syntax for type uuid`, which is a caller mistake, not
+  // a server fault. Hard-coding 500 turned `GET /api/seeker/bookings/1' OR
+  // 1=1--` into a 500 plus a logged error, which is both a misleading signal
+  // and a cheap way to fill the admin error log. The mapping below only
+  // produces statuses for errors that are unambiguously the caller's fault
+  // (bad uuid, constraint violation, missing row); anything unrecognised still
+  // answers 500, so this never masks a genuine internal failure.
+  const mapped = resolveHttpStatusForSupabaseError(describeSupabaseError(options.error));
+  const isCallerFault = mapped >= 400 && mapped < 500 && mapped !== 404;
+
   return respondWithServerError({
     ...options,
     clientMessage: GENERIC_ERROR_MESSAGE,
-    code: 'SERVER_ERROR',
-    status: 500,
+    code: isCallerFault ? 'VALIDATION_ERROR' : 'SERVER_ERROR',
+    status: isCallerFault ? mapped : 500,
   });
+}
+
+/**
+ * Body-parser and other request-shape failures raised by middleware before a
+ * route handler runs. Express forwards these to the error handler with a
+ * `type`/`status` pair; without this mapping a client that simply sent an
+ * oversized or unparseable body got a 500 instead of the accurate 413/400.
+ */
+function resolveRequestShapeFailure(err: unknown): { status: number; code: string; message: string } | null {
+  const candidate = err as { type?: string; status?: number; statusCode?: number };
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const status = candidate.status ?? candidate.statusCode;
+
+  if (candidate.type === 'entity.too.large' || status === 413) {
+    return { status: 413, code: 'PAYLOAD_TOO_LARGE', message: 'The request body is too large.' };
+  }
+  if (candidate.type === 'entity.parse.failed' || status === 400) {
+    return { status: 400, code: 'VALIDATION_ERROR', message: 'The request body could not be parsed.' };
+  }
+  if (candidate.type === 'encoding.unsupported' || candidate.type === 'charset.unsupported' || status === 415) {
+    return { status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Unsupported content type or encoding.' };
+  }
+  return null;
 }
 
 /**
@@ -212,5 +247,25 @@ export const terminalErrorHandler: ErrorRequestHandler = (err, req, res, next) =
     next(err);
     return;
   }
+
+  const shapeFailure = resolveRequestShapeFailure(err);
+  if (shapeFailure) {
+    const requestId = (req as { requestId?: string }).requestId ?? '';
+    void logApiError({
+      requestId,
+      method: req.method ?? 'GET',
+      path: req.path ?? '',
+      statusCode: shapeFailure.status,
+      message: `request shape rejected: ${(err as Error)?.message ?? 'unknown'}`,
+      error_code: shapeFailure.code,
+      userId: (req as { auth?: { user?: { id?: string } } }).auth?.user?.id,
+    }).catch(() => {});
+    res.status(shapeFailure.status).json({
+      success: false,
+      error: { code: shapeFailure.code, message: shapeFailure.message, requestId: requestId || null },
+    });
+    return;
+  }
+
   respondWithInternalError({ req, res, error: err });
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Calendar, Clock, Video, FileText, AlertCircle, ShieldCheck, XCircle } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock, Video, FileText, AlertCircle, ShieldCheck, XCircle, AlertTriangle, Trash2, RotateCcw, Info } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
@@ -8,9 +8,13 @@ import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingServ
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { BookingStatus } from '@/src/types/database';
+import { APP_CONFIG, CANCELLATION_WINDOW_MS } from '@/src/config/app';
+import { useToast } from '@/src/context/ToastContext';
+import { apiFetch } from '@/src/lib/apiClient';
 
 export const SeekerBookingDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const toast = useToast();
 
   const getBookingIdFromUrl = (): string => {
     const params = new URLSearchParams(currentPath.includes('?') ? currentPath.split('?')[1] : '');
@@ -21,6 +25,9 @@ export const SeekerBookingDetailPage: React.FC = () => {
   const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [showCancelModal, setShowCancelModal] = useState(false);
 
   const loadBooking = async () => {
     if (!bookingId) {
@@ -60,8 +67,63 @@ export const SeekerBookingDetailPage: React.FC = () => {
 
   const steps = booking ? statusSteps(booking.status) : [];
 
-  const canCancel = booking && booking.status === 'CONFIRMED';
+  const canCancelOrReschedule = booking && ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(booking.status);
   const isConfirmed = booking?.status === 'CONFIRMED';
+  const isMentorPending = booking?.status === 'MENTOR_PENDING';
+  const isPendingVerification = booking?.status === 'PENDING_VERIFICATION';
+  const isPaymentPending = booking?.status === 'PAYMENT_PENDING';
+
+  const minutesUntilStart = booking
+    ? Math.max(0, Math.floor((new Date(booking.start_time).getTime() - Date.now()) / (1000 * 60)))
+    : 0;
+
+  const canCancelNormally = booking && canCancelOrReschedule && minutesUntilStart >= APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES;
+  const cancellationDeadline = booking
+    ? new Date(new Date(booking.start_time).getTime() - CANCELLATION_WINDOW_MS)
+    : null;
+
+  const handleCancel = async () => {
+    if (!booking || cancelling) return;
+    setCancelling(true);
+    try {
+      const res = await apiFetch(`/api/seeker/bookings/${encodeURIComponent(booking.id)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: cancellationReason || 'Cancelled by seeker' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error?.message || 'Failed to cancel booking');
+      }
+      toast.success('Booking cancelled successfully');
+      setShowCancelModal(false);
+      await loadBooking();
+    } catch (err: any) {
+      toast.error(toUserMessage(err, 'Failed to cancel booking'));
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const handleReschedule = async () => {
+    if (!booking) return;
+    navigate(`/seeker/reschedule?bookingId=${booking.id}`);
+  };
+
+  const getStatusDisplay = (status: BookingStatus): { label: string; variant: 'success' | 'warning' | 'secondary' | 'destructive' | 'outline' } => {
+    switch (status) {
+      case 'CONFIRMED': return { label: 'Confirmed', variant: 'success' };
+      case 'MENTOR_PENDING': return { label: 'Waiting for Mentor', variant: 'warning' };
+      case 'PENDING_VERIFICATION': return { label: 'Payment Verification Pending', variant: 'secondary' };
+      case 'PAYMENT_PENDING': return { label: 'Payment Required', variant: 'warning' };
+      case 'COMPLETED': return { label: 'Completed', variant: 'secondary' };
+      case 'CANCELLED': return { label: 'Cancelled', variant: 'destructive' };
+      case 'REJECTED': return { label: 'Rejected', variant: 'destructive' };
+      default: return { label: status, variant: 'outline' };
+    }
+  };
+
+  const statusDisplay = booking ? getStatusDisplay(booking.status) : { label: '—', variant: 'outline' as const };
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -91,29 +153,45 @@ export const SeekerBookingDetailPage: React.FC = () => {
         <>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-2xl font-bold text-[var(--color-shell-text)]">Booking #{booking.booking_code}</h1>
-                <Badge variant={isConfirmed ? 'success' : booking.status === 'COMPLETED' ? 'secondary' : 'warning'}>
-                  {booking.status}
-                </Badge>
+                <Badge variant={statusDisplay.variant}>{statusDisplay.label}</Badge>
               </div>
               <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
                 {isConfirmed
                   ? `Confirmed by mentor ${booking.mentor?.full_name || 'Mentor'} · Meeting URL ${booking.meeting_url ? 'attached' : 'pending'}`
+                  : isMentorPending
+                  ? 'Awaiting mentor confirmation and meeting link'
+                  : isPendingVerification
+                  ? 'Payment proof submitted · Waiting for admin verification'
+                  : isPaymentPending
+                  ? 'Payment required within 15-minute hold window'
                   : `Status: ${booking.status} · Awaiting next action`}
               </p>
             </div>
 
-            {isConfirmed && (
-              <Button
-                onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
-                size="sm"
-                className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-              >
-                <Video className="h-3.5 w-3.5" />
-                <span>Join Session Room</span>
-              </Button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {isConfirmed && (
+                <Button
+                  onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                  size="sm"
+                  className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                >
+                  <Video className="h-3.5 w-3.5" />
+                  <span>Join Session Room</span>
+                </Button>
+              )}
+              {isPaymentPending && (
+                <Button
+                  onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
+                  size="sm"
+                  className="gap-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                >
+                  <CreditCard className="h-3.5 w-3.5" />
+                  <span>Complete Payment</span>
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-5 shadow-xs space-y-3">
@@ -126,8 +204,8 @@ export const SeekerBookingDetailPage: React.FC = () => {
                   key={idx}
                   className={`p-2.5 rounded-lg ${
                     step.isComplete
-                      ? 'bg-emerald-50 text-emerald-800 font-bold border border-emerald-200'
-                      : 'bg-zinc-100 text-[var(--color-shell-text-muted)] font-medium'
+                      ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-800 dark:text-emerald-200 font-bold border border-emerald-200 dark:border-emerald-800/50'
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-[var(--color-shell-text-muted)] font-medium'
                   }`}
                 >
                   {idx + 1}. {step.label}
@@ -170,47 +248,244 @@ export const SeekerBookingDetailPage: React.FC = () => {
                   <span className="text-[var(--color-shell-text-muted)]">Booking Ref:</span>
                   <span className="font-mono text-[var(--color-shell-text)]">#{booking.booking_code}</span>
                 </div>
+                {booking.payment && (
+                  <div className="flex justify-between border-t border-[var(--color-shell-border)] pt-3">
+                    <span className="text-[var(--color-shell-text-muted)]">Payment:</span>
+                    <span className="font-semibold text-[var(--color-shell-text)]">
+                      {booking.payment.status === 'VERIFIED' ? 'Verified' :
+                       booking.payment.status === 'REJECTED' ? 'Rejected' :
+                       'Pending Verification'}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-3 text-xs text-[var(--color-shell-text-muted)]">
               <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-2">
-                Policies & Actions
+                Cancellation & Rescheduling
               </h3>
-              <div className="flex items-start gap-2 text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] p-3 rounded-lg border border-[var(--color-shell-warning)]/30">
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>
-                  <strong>24-Hour Policy:</strong> Standard seeker cancellation or rescheduling is allowed only ≥ 24 hours prior to session start.
-                </span>
-              </div>
 
-              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
-                For emergency rescheduling within 24 hours, contact platform administration.
-              </p>
+              {canCancelNormally ? (
+                <>
+                  <div className="flex items-start gap-2 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 p-3 rounded-lg border border-emerald-200 dark:border-emerald-800/50">
+                    <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-emerald-900 dark:text-emerald-100">Normal cancellation & rescheduling available</p>
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                        You can cancel or reschedule this session until <strong>{APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before start</strong>.
+                      </p>
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-1">
+                        Session starts: <strong>{new Date(booking.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong> ·{' '}
+                        Cancellation closes: <strong>{cancellationDeadline?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+                      </p>
+                    </div>
+                  </div>
 
-              <div className="pt-2 flex flex-col gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full text-xs text-[var(--color-shell-text-subtle)] border-[var(--color-shell-border)] cursor-not-allowed"
-                  disabled
-                >
-                  Cancel Session (Locked &lt; 24h)
-                </Button>
-                {!canCancel && (
-                  <p className="text-[10px] text-[var(--color-shell-text-subtle)] text-center">
-                    {booking.status === 'MENTOR_PENDING'
-                      ? 'Cancellation available after mentor confirmation and 24h before session.'
-                      : booking.status === 'COMPLETED'
-                      ? 'Session completed. No cancellation available.'
-                      : 'Session confirmed within 24h window. Cancellation locked.'}
-                  </p>
-                )}
-              </div>
+                  <div className="pt-2 flex flex-col gap-2">
+                    <Button
+                      onClick={() => setShowCancelModal(true)}
+                      variant="destructive"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Cancel Booking</span>
+                    </Button>
+                    <Button
+                      onClick={handleReschedule}
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Reschedule Session</span>
+                    </Button>
+                  </div>
+                </>
+              ) : canCancelOrReschedule ? (
+                <>
+                  <div className="flex items-start gap-2 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-amber-900 dark:text-amber-100">Cancellation & rescheduling window closed</p>
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-0.5">
+                        This session starts in <strong>{minutesUntilStart} minutes</strong>. Normal seeker cancellation/rescheduling is only available until <strong>{APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before start</strong>.
+                      </p>
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1">
+                        For emergency changes within {APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes, contact platform administration.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex flex-col gap-2">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5 cursor-not-allowed opacity-50"
+                      disabled
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Cancel Booking (Window Closed)</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5 cursor-not-allowed opacity-50"
+                      disabled
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Reschedule Session (Window Closed)</span>
+                    </Button>
+                  </div>
+                </>
+              ) : isConfirmed ? (
+                <>
+                  <div className="flex items-start gap-2 text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-zinc-800 p-3 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-zinc-900 dark:text-zinc-100">Session confirmed — cancellation not available</p>
+                      <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+                        This session is confirmed with a meeting link. Normal seeker cancellation is no longer available.
+                      </p>
+                      <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-1">
+                        For exceptional circumstances, contact platform administration.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex flex-col gap-2">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5 cursor-not-allowed opacity-50"
+                      disabled
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Cancel Booking (Not Available)</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-xs font-medium gap-1.5 cursor-not-allowed opacity-50"
+                      disabled
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Reschedule Session (Not Available)</span>
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-start gap-2 text-zinc-600 dark:text-zinc-400 bg-zinc-50 dark:bg-zinc-800 p-3 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-zinc-900 dark:text-zinc-100">
+                        {isMentorPending
+                          ? 'Cancellation available after mentor confirms'
+                          : isPendingVerification
+                          ? 'Cancellation available after payment verification'
+                          : isPaymentPending
+                          ? 'Complete payment first'
+                          : 'Cancellation not available for this status'}
+                      </p>
+                      <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+                        {isMentorPending
+                          ? 'Once the mentor confirms and the session is more than 10 minutes away, you can cancel or reschedule.'
+                          : isPendingVerification
+                          ? 'Once admin verifies your payment and the mentor confirms, you can cancel or reschedule if the session is more than 10 minutes away.'
+                          : isPaymentPending
+                          ? 'Complete payment within the 15-minute window to proceed.'
+                          : 'This booking is in a final state.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex flex-col gap-2">
+                    {isPaymentPending && (
+                      <Button
+                        onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
+                        size="sm"
+                        className="w-full text-xs font-semibold gap-1.5 bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
+                      >
+                        <CreditCard className="h-3.5 w-3.5" />
+                        <span>Complete Payment</span>
+                      </Button>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </>
       )}
+
+      <div
+        className={`fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 ${showCancelModal ? 'block' : 'hidden'}`}
+        onClick={() => setShowCancelModal(false)}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cancel-modal-title"
+      >
+        <div
+          className="w-full max-w-md rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xl space-y-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between">
+            <h2 id="cancel-modal-title" className="text-lg font-bold text-[var(--color-shell-text)]">Cancel Booking</h2>
+            <button
+              onClick={() => setShowCancelModal(false)}
+              className="p-1 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              aria-label="Close"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+          </div>
+
+          {booking && (
+            <>
+              <p className="text-sm text-[var(--color-shell-text-muted)]">
+                Are you sure you want to cancel <strong>Booking #{booking.booking_code}</strong>?
+              </p>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-[var(--color-shell-text)]">Reason (optional)</label>
+                <textarea
+                  value={cancellationReason}
+                  onChange={(e) => setCancellationReason(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-3 text-sm text-[var(--color-shell-text)] placeholder:text-[var(--color-shell-text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--color-shell-accent)] focus:border-transparent resize-none"
+                  placeholder="e.g., Schedule conflict, no longer needed, etc."
+                  maxLength={500}
+                />
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                <Button
+                  onClick={() => setShowCancelModal(false)}
+                  variant="outline"
+                  className="flex-1"
+                >
+                  Keep Booking
+                </Button>
+                <Button
+                  onClick={handleCancel}
+                  variant="destructive"
+                  isLoading={cancelling}
+                  loadingText="Cancelling..."
+                  className="flex-1"
+                >
+                  Cancel Booking
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
+
+import { CreditCard } from 'lucide-react';
+
+export default SeekerBookingDetailPage;

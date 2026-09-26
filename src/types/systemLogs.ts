@@ -103,12 +103,27 @@ export interface Anomaly {
   id: string;
   severity: 'critical' | 'warning';
   metric: string;
+  metricKey: 'errors5xx' | 'errors4xx' | 'requests' | 'latency';
   currentValue: number;
   baselineValue: number;
-  percentChange: number;
+  /** null when the baseline was zero and a ratio is undefined. */
+  percentChange: number | null;
   firstDetected: string;
+  /** Drill-down window for this anomaly. */
+  windowStart: string;
+  windowEnd: string;
   affectedEndpoint: string | null;
   occurrenceCount: number;
+}
+
+export interface AuthHealthSummary {
+  totalEvents: number;
+  successful: number;
+  failures: number;
+  unauthorizedRequests: number;
+  topFailurePath: string | null;
+  topFailureCount: number;
+  repeatedFailuresDetected: boolean;
 }
 
 export interface SystemHealthDashboard {
@@ -119,7 +134,7 @@ export interface SystemHealthDashboard {
     error5xx: number;
     successRate: number;
     errorRate: number;
-    averageLatencyMs: number;
+    averageLatencyMs: number | null;
     p95LatencyMs: number | null;
     slowRequests: number;
     totalAuditEvents: number;
@@ -134,5 +149,11 @@ export interface SystemHealthDashboard {
     storage: { status: ServiceStatus; detail: string };
     notifications: { status: ServiceStatus; detail: string };
   };
+  auth: AuthHealthSummary;
+  range: string;
+  bucketMs: number;
+  /** True when more rows existed in range than could be read. */
+  truncated: boolean;
+  window: { start: string; end: string };
   lastUpdated: string;
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import { ShieldCheck, CreditCard, Clock, QrCode, Lock } from 'lucide-react';
-import { APP_CONFIG, HOLDOUT_MINUTES, SESSION_ACCESS_WINDOW_MINUTES, CANCELLATION_WINDOW_HOURS, BOOKING_CUTOFF_MINUTES } from '@/src/config/app';
+import { APP_CONFIG, HOLDOUT_MINUTES, SESSION_ACCESS_WINDOW_MINUTES, CANCELLATION_WINDOW_MINUTES, BOOKING_CUTOFF_MINUTES } from '@/src/config/app';
 
 const hours = (ms: number) => ms / (60 * 60 * 1000);
 const MEETING_LINK_DEADLINE_HOURS = hours(APP_CONFIG.MEETING_LINK_DEADLINE_MS);
@@ -39,8 +39,8 @@ export const AdminSettingsPage: React.FC = () => {
     },
     {
       label: 'Seeker Cancellation Policy',
-      value: `≥ ${CANCELLATION_WINDOW_HOURS} Hours Prior`,
-      note: `Cancellations inside ${CANCELLATION_WINDOW_HOURS} hours of the session start are locked.`,
+      value: `≥ ${CANCELLATION_WINDOW_MINUTES} Minutes Prior`,
+      note: `Cancellations inside ${CANCELLATION_WINDOW_MINUTES} minutes of the session start are locked.`,
     },
     {
       label: 'Default Timezone',

@@ -228,8 +228,19 @@ export const MentorBookingDetailPage: React.FC = () => {
   const paymentStatus = (booking.payment?.status || '').toLowerCase() === 'verified' ? 'verified' : 'pending';
   const amountLabel = formatInr(booking.amount_inr) || 'Not recorded';
 
+  // The gig this booking is actually for, joined through `bookings.gig_id`.
+  // A mentor with several gigs must never have to infer it from the segment.
+  const gigTitle = booking.gig?.title || 'Gig no longer listed';
+  const segmentName = booking.segment?.name || 'Not recorded';
+
   // Duration is read off the booking window instead of being assumed to be 60.
   const sessionDurationLabel = (() => {
+    if (typeof booking.duration_minutes === 'number' && booking.duration_minutes > 0) {
+      const minutes = booking.duration_minutes;
+      if (minutes < 60) return `${minutes} Minutes`;
+      const hours = minutes / 60;
+      return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} Hour${hours === 1 ? '' : 's'}`;
+    }
     const start = new Date(booking.start_time).getTime();
     const end = new Date(booking.end_time).getTime();
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 'Not recorded';
@@ -253,17 +264,36 @@ export const MentorBookingDetailPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 pb-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+              Booking Details
+            </span>
             <h1 className="text-2xl font-bold text-zinc-950 font-mono">
-              Booking #{booking.booking_code}
+              #{booking.booking_code}
             </h1>
             <Badge variant={isConfirmed ? 'success' : isPending ? 'warning' : 'secondary'}>
               {booking.status}
             </Badge>
           </div>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            Admin Verified Payment · ₹{booking.amount_inr} INR
-          </p>
+          {/* The gig is the anchor: it is the exact gig the seeker selected. */}
+          <h2 className="mt-2 text-xl font-bold leading-snug text-zinc-950">{gigTitle}</h2>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            {booking.segment?.name ? (
+              <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700">
+                {segmentName}
+              </span>
+            ) : null}
+            <span className="text-[11px] font-medium text-zinc-600">{sessionDurationLabel}</span>
+            <span
+              className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
+                paymentStatus === 'verified'
+                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                  : 'text-zinc-600 bg-zinc-50 border-zinc-200'
+              }`}
+            >
+              {paymentStatus === 'verified' ? `Payment verified · ${amountLabel}` : 'Payment not verified yet'}
+            </span>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -276,29 +306,6 @@ export const MentorBookingDetailPage: React.FC = () => {
             <FileText className="h-3.5 w-3.5 text-zinc-600" />
             <span>Session Workspace</span>
           </Button>
-
-          {import.meta.env?.DEV && (
-            <>
-              {/* Quick switcher between sample bookings if in demo */}
-              <span className="text-[11px] text-zinc-400">Switch Demo Booking:</span>
-              {['bk-9021', 'bk-9022', 'bk-9020'].map((id) => (
-                <button
-                  key={id}
-                  onClick={() => {
-                    setBookingId(id);
-                    loadBooking(id);
-                  }}
-                  className={`px-2 py-0.5 text-xs font-mono rounded border cursor-pointer ${
-                    booking.id === id
-                      ? 'bg-zinc-900 text-white border-zinc-900'
-                      : 'bg-white text-zinc-600 border-zinc-200 hover:bg-zinc-50'
-                  }`}
-                >
-                  {id.toUpperCase()}
-                </button>
-              ))}
-            </>
-          )}
         </div>
       </div>
 
@@ -459,13 +466,13 @@ export const MentorBookingDetailPage: React.FC = () => {
             <div className="flex justify-between gap-3">
               <span className="text-zinc-500 shrink-0">Segment:</span>
               <span className="font-medium text-zinc-900 text-right break-words">
-                {booking.segment?.name || 'Not recorded'}
+                {segmentName}
               </span>
             </div>
             <div className="flex justify-between gap-3">
               <span className="text-zinc-500 shrink-0">Gig:</span>
               <span className="font-medium text-zinc-900 text-right break-words">
-                {booking.gig?.title || 'Not recorded'}
+                {gigTitle}
               </span>
             </div>
             <div className="flex justify-between gap-3">

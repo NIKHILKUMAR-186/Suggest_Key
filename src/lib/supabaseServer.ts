@@ -18,15 +18,64 @@ export interface DemoTokenClaims {
 
 const DEMO_TOKEN_PREFIX = 'skdemo.';
 const DEMO_TOKEN_TTL_SECONDS = 24 * 60 * 60;
-// Demo auth is opt-in. A missing/empty/placeholder secret disables it entirely,
-// even in non-production, so a hardcoded default can never be exploited to
-// forge admin tokens in a deployed-but-not-labeled- production environment.
-const DEMO_TOKEN_SECRET = process.env.DEMO_AUTH_SECRET || '';
-const FORBIDDEN_DEFAULT_SECRET = 'suggest-key-development-only';
+// Demo auth is opt-in AND fail-closed. Three conditions must ALL hold:
+//
+//   1. ENABLE_DEMO_PERSONAS=true  - an explicit human decision, not an accident
+//                                   of having some other variable set.
+//   2. A strong, externally supplied signing secret (DEMO_TOKEN_SECRET).
+//      `DEMO_AUTH_SECRET` is accepted as a legacy alias so an existing local
+//      setup keeps working, but a missing, short, or well-known value disables
+//      demo auth entirely. There is deliberately no fallback default.
+//   3. NODE_ENV is not production.
+//
+// Any one of them missing means `isDemoAuthEnabled()` is false, which makes
+// `verifyDemoToken` reject every `skdemo.` token and closes
+// `POST /api/auth/demo-login` with 404. There is no code path on which a
+// missing secret silently degrades to a predictable one.
+const FORBIDDEN_DEFAULT_SECRETS = new Set([
+  'suggest-key-development-only',
+  'development-only',
+  'secret',
+  'changeme',
+  'demo',
+]);
+
+/** Minimum accepted length for DEMO_TOKEN_SECRET (256 bits of entropy is far more than enough). */
+export const DEMO_TOKEN_SECRET_MIN_LENGTH = 32;
+
+function readDemoTokenSecret(): string {
+  const raw = (process.env.DEMO_TOKEN_SECRET ?? process.env.DEMO_AUTH_SECRET ?? '').trim();
+  if (!raw) return '';
+  if (raw.length < DEMO_TOKEN_SECRET_MIN_LENGTH) return '';
+  if (FORBIDDEN_DEFAULT_SECRETS.has(raw.toLowerCase())) return '';
+  return raw;
+}
+
+const DEMO_TOKEN_SECRET = readDemoTokenSecret();
+
+/**
+ * Explicit, opt-in switch for the demo personas.
+ *
+ * Only the exact string `true` enables it, so an unset variable, `0`, `false`
+ * or a typo all leave demo auth off.
+ */
+export function isDemoPersonasExplicitlyEnabled(): boolean {
+  return String(process.env.ENABLE_DEMO_PERSONAS ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * Non-secret diagnostic used by the boot log so an operator can see exactly
+ * which precondition is missing instead of guessing why demo login 404s.
+ */
+export function demoAuthDisabledReason(): string {
+  if (process.env.NODE_ENV === 'production') return 'NODE_ENV=production';
+  if (!isDemoPersonasExplicitlyEnabled()) return 'ENABLE_DEMO_PERSONAS is not "true"';
+  if (!DEMO_TOKEN_SECRET) return 'DEMO_TOKEN_SECRET is missing, too short, or a known default';
+  return '';
+}
 
 export function isDemoAuthEnabled(): boolean {
-  if (process.env.NODE_ENV === 'production') return false;
-  return Boolean(DEMO_TOKEN_SECRET) && DEMO_TOKEN_SECRET !== FORBIDDEN_DEFAULT_SECRET;
+  return demoAuthDisabledReason() === '';
 }
 
 const encodeBase64Url = (value: Buffer): string =>

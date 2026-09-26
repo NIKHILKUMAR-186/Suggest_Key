@@ -864,6 +864,13 @@ export function formatCountdown(seconds: number): string {
 
 export interface EnrichedBookingRecord extends Booking {
   payment?: Payment;
+  hold?: SlotHold;
+  /**
+   * Duration in minutes as the booking was created, derived from the booking's
+   * own start/end window. Preferred over `gig.duration_minutes` so a later gig
+   * edit cannot rewrite the length of a session that was already booked.
+   */
+  duration_minutes?: number | null;
   deadlineInfo?: {
     deadlineUtc: string;
     isOverdue: boolean;
@@ -882,66 +889,76 @@ export function enrichBooking(booking: Booking, db: BookingEngineContext): Enric
   const payment = db.payments?.find((pay) => pay.booking_id === booking.id);
   const deadlineInfo = calculateMeetingLinkDeadline(booking.start_time);
 
+  const bookedMinutes = Math.round(
+    (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / 60000,
+  );
+
   return {
     ...booking,
     gig: gig || booking.gig,
     segment: segment || booking.segment,
     seeker: seeker || booking.seeker,
     payment,
+    duration_minutes: Number.isFinite(bookedMinutes) && bookedMinutes > 0 ? bookedMinutes : null,
     deadlineInfo,
   };
 }
 
 /**
  * Fetches mentor bookings with optional status filter.
- * Works both via HTTP endpoint or in-memory DB fallback.
+ *
+ * `GET /api/mentor/bookings` is the only source of truth and it reads the live
+ * `bookings` table for the signed-in mentor. The in-memory seed database is a
+ * development fallback for the case where the API cannot be REACHED at all.
+ *
+ * A response the server actually sent is never downgraded to an empty list: a
+ * non-2xx status (or a body without a `bookings` array) throws, so a failing
+ * endpoint is reported as a failure instead of being rendered as "No Pending
+ * Confirmations" while the booking sits verified in the database.
  */
 export async function fetchMentorBookings(
   mentorId: string,
   statusFilter?: string
 ): Promise<EnrichedBookingRecord[]> {
-  if (!isDevMode) {
-    try {
-      const params = new URLSearchParams({ mentorId });
-      if (statusFilter && statusFilter !== 'ALL') {
-        params.append('status', statusFilter);
-      }
-      const res = await apiFetch(`/api/mentor/bookings?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.bookings) return data.bookings;
-      }
-    } catch {
-      // API unreachable
-    }
-    return [];
+  const params = new URLSearchParams({ mentorId });
+  if (statusFilter && statusFilter !== 'ALL') {
+    params.append('status', statusFilter);
   }
 
   try {
-    const params = new URLSearchParams({ mentorId });
-    if (statusFilter && statusFilter !== 'ALL') {
-      params.append('status', statusFilter);
-    }
     const res = await apiFetch(`/api/mentor/bookings?${params.toString()}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.bookings) return data.bookings;
+
+    if (!res.ok) {
+      throw new Error(
+        res.status === 401
+          ? 'AUTH_REQUIRED'
+          : res.status === 403
+          ? 'FORBIDDEN_NOT_BOOKING_OWNER'
+          : `BOOKINGS_REQUEST_FAILED_${res.status}`
+      );
     }
-  } catch {
-    // Network or preview offline fallback
+
+    const data = await res.json();
+    if (!Array.isArray(data?.bookings)) {
+      throw new Error('BOOKINGS_RESPONSE_INVALID');
+    }
+    return data.bookings as EnrichedBookingRecord[];
+  } catch (err: any) {
+    // The request never reached the server (offline preview, network down).
+    // Only in that case may the development seed data stand in.
+    const reached = !(err instanceof Error) || !/^(AUTH_REQUIRED|FORBIDDEN_NOT_BOOKING_OWNER|BOOKINGS_)/.test(err.message);
+    if (reached && isDevMode) {
+      const db = getLocalBookingEngineContext();
+      const mentorIds = [mentorId];
+      let offline = db.bookings.filter((b) => mentorIds.includes(b.mentor_id));
+      if (statusFilter && statusFilter !== 'ALL') {
+        offline = offline.filter((b) => b.status === statusFilter);
+      }
+      offline.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+      return offline.map((b) => enrichBooking(b, db));
+    }
+    throw err;
   }
-
-  const db = getLocalBookingEngineContext();
-  const mentorIds = [mentorId];
-
-  let matched = db.bookings.filter((b) => mentorIds.includes(b.mentor_id));
-  if (statusFilter && statusFilter !== 'ALL') {
-    matched = matched.filter((b) => b.status === statusFilter);
-  }
-
-  // Sort by start_time ascending
-  matched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-  return matched.map((b) => enrichBooking(b, db));
 }
 
 /**
@@ -1014,7 +1031,7 @@ export async function confirmMentorBooking(
     const res = await apiFetch(`/api/mentor/bookings/${bookingId}/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mentorId, meetingUrl }),
+      body: JSON.stringify({ meetingUrl }),
     });
 
     const data = await res.json();

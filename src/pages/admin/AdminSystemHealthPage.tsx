@@ -26,14 +26,11 @@ import { apiFetch } from '@/src/lib/apiClient';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { ShortId } from '@/src/components/shared/ShortId';
-import type { SystemLog, AuditLog, SystemHealthMetrics, ErrorGroup } from '@/src/types/systemLogs';
+import { SystemHealthChart } from '@/src/components/admin/SystemHealthChart';
+import { DASHBOARD_RANGES, DEFAULT_RANGE, SLOW_REQUEST_MS } from '@/src/lib/systemHealth';
+import type { SystemLog, AuditLog, ErrorGroup, SystemHealthDashboard, TimelineBucket } from '@/src/types/systemLogs';
 
 type TabId = 'overview' | 'requests' | 'errors' | 'auth' | 'audit';
-
-interface MetricsResponse {
-  success: boolean;
-  metrics: SystemHealthMetrics;
-}
 
 interface LogsResponse {
   success: boolean;
@@ -203,7 +200,6 @@ const AuditLogRow: React.FC<AuditLogRowProps> = ({ log, onClick }) => {
 export const AdminSystemHealthPage: React.FC = () => {
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
-  const [metrics, setMetrics] = useState<SystemHealthMetrics | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [errors, setErrors] = useState<SystemLog[]>([]);
   const [authLogs, setAuthLogs] = useState<SystemLog[]>([]);
@@ -220,25 +216,117 @@ export const AdminSystemHealthPage: React.FC = () => {
   const [pruneLoading, setPruneLoading] = useState(false);
   const [pruneResult, setPruneResult] = useState<number | null>(null);
 
+  // ---- Real-time dashboard state -----------------------------------------
+  const [range, setRange] = useState<string>(DEFAULT_RANGE);
+  const [dashboard, setDashboard] = useState<SystemHealthDashboard | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [secondsSinceUpdate, setSecondsSinceUpdate] = useState<number | null>(null);
+  /** Set when a spike/bucket is clicked, so the log tabs can be filtered to it. */
+  const [drillWindow, setDrillWindow] = useState<{ start: string; end: string; endpoint?: string | null; label: string } | null>(null);
+
+  /**
+   * Fetches the aggregated dashboard. This is a single request, so the browser
+   * never receives raw log rows and never makes five calls per refresh.
+   */
+  const fetchDashboard = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setDashboardLoading(true);
+    setDashboardError(null);
+    try {
+      const res = await apiFetch(`/api/admin/system-health/dashboard?range=${encodeURIComponent(range)}`);
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error?.message || 'Failed to load system health');
+      }
+      setDashboard(data.dashboard as SystemHealthDashboard);
+      setSecondsSinceUpdate(0);
+    } catch (err: any) {
+      setDashboardError(toUserMessage(err, 'Failed to load system health'));
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, [range]);
+
+  useEffect(() => {
+    void fetchDashboard();
+  }, [fetchDashboard]);
+
+  // Lightweight auto-refresh. One interval, skipped entirely while the tab is
+  // hidden, so a backgrounded page costs nothing.
+  useEffect(() => {
+    const REFRESH_MS = 20_000;
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void fetchDashboard({ silent: true });
+    }, REFRESH_MS);
+
+    const onVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void fetchDashboard({ silent: true });
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisible);
+      window.addEventListener('focus', onVisible);
+    }
+
+    return () => {
+      clearInterval(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisible);
+        window.removeEventListener('focus', onVisible);
+      }
+    };
+  }, [fetchDashboard]);
+
+  // Drives the "Last updated: X seconds ago" label.
+  useEffect(() => {
+    if (secondsSinceUpdate === null) return;
+    const t = setInterval(() => setSecondsSinceUpdate((s) => (s === null ? null : s + 1)), 1000);
+    return () => clearInterval(t);
+  }, [secondsSinceUpdate === null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Drills from the chart or an anomaly card into the log tabs. */
+  const handleDrillDown = useCallback((bucket: TimelineBucket) => {
+    const end = new Date(new Date(bucket.bucket).getTime() + (dashboard?.bucketMs ?? 60_000)).toISOString();
+    setDrillWindow({ start: bucket.bucket, end, endpoint: null, label: 'selected time range' });
+    setActiveTab('requests');
+  }, [dashboard?.bucketMs]);
+
+  const handleAnomalyDrillDown = useCallback((anomaly: {
+    windowStart: string;
+    windowEnd: string;
+    affectedEndpoint: string | null;
+    metric: string;
+  }) => {
+    setDrillWindow({
+      start: anomaly.windowStart,
+      end: anomaly.windowEnd,
+      endpoint: anomaly.affectedEndpoint,
+      label: anomaly.metric,
+    });
+    setActiveTab('errors');
+  }, []);
+
   const fetchAllData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [metricsRes, logsRes, errorsRes, authRes, auditRes] = await Promise.all([
-        apiFetch('/api/admin/system-health/metrics'),
+      // The four log feeds the tabs render. The overview no longer needs
+      // /metrics — it reads the aggregated /dashboard payload instead, so the
+      // page makes four tab requests plus one dashboard, not five tab requests
+      // plus a redundant sixth.
+      const [logsRes, errorsRes, authRes, auditRes] = await Promise.all([
         apiFetch('/api/admin/system-health/logs'),
         apiFetch('/api/admin/system-health/errors'),
         apiFetch('/api/admin/system-health/auth-logs'),
         apiFetch('/api/admin/system-health/audit-logs'),
       ]);
 
-      const metricsData = await metricsRes.json() as MetricsResponse;
       const logsData = await logsRes.json() as LogsResponse;
       const errorsData = await errorsRes.json() as ErrorsResponse;
       const authData = await authRes.json() as AuthLogsResponse;
       const auditData = await auditRes.json() as AuditLogsResponse;
 
-      if (metricsData.success) setMetrics(metricsData.metrics);
       if (logsData.success) setLogs(logsData.logs);
       if (errorsData.success) setErrors(errorsData.errors);
       if (authData.success) setAuthLogs(authData.logs);
@@ -326,39 +414,64 @@ export const AdminSystemHealthPage: React.FC = () => {
     fetchRetention();
   }, [fetchAllData, fetchRetention]);
 
+  // A drill-down window (from the chart or an anomaly card) narrows every log
+  // list to exactly that slice, so clicking a spike shows those logs and not
+  // the whole recent window.
+  const inDrillWindow = useCallback((ts: string | null | undefined) => {
+    if (!drillWindow || !ts) return true;
+    const t = Date.parse(ts);
+    if (Number.isNaN(t)) return true;
+    return t >= Date.parse(drillWindow.start) && t <= Date.parse(drillWindow.end);
+  }, [drillWindow]);
+
+  const matchesEndpoint = useCallback((path: string | null) => {
+    if (!drillWindow?.endpoint) return true;
+    return (path ?? '').includes(drillWindow.endpoint);
+  }, [drillWindow]);
+
   const filteredLogs = logs.filter(
     (l) =>
-      l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.path?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.error_code?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.message?.toLowerCase().includes(searchQuery.toLowerCase()),
+      inDrillWindow(l.created_at) &&
+      matchesEndpoint(l.path) &&
+      (l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.path?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.error_code?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.message?.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   const filteredErrors = errors.filter(
     (l) =>
-      l.error_code?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.path?.toLowerCase().includes(searchQuery.toLowerCase()),
+      inDrillWindow(l.created_at) &&
+      matchesEndpoint(l.path) &&
+      (l.error_code?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.path?.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   const filteredAuthLogs = authLogs.filter(
     (l) =>
-      l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.path?.toLowerCase().includes(searchQuery.toLowerCase()),
+      inDrillWindow(l.created_at) &&
+      matchesEndpoint(l.path) &&
+      (l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.path?.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   const filteredAuditLogs = auditLogs.filter(
     (l) =>
-      l.action?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      JSON.stringify(l.metadata || {})?.toLowerCase().includes(searchQuery.toLowerCase()),
+      inDrillWindow(l.created_at) &&
+      (l.action?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        l.request_id?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        JSON.stringify(l.metadata || {})?.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   const renderOverview = () => {
-    if (loading) {
+    // The overview renders from `dashboard` (the aggregated endpoint). Until it
+    // loads there are no metrics, so a skeleton is shown rather than a
+    // placeholder number that would look like real data.
+    if (dashboardLoading && !dashboard) {
       return (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <Card key={i} className="p-4">
               <Skeleton className="h-3 w-20 mb-2" />
@@ -369,101 +482,276 @@ export const AdminSystemHealthPage: React.FC = () => {
       );
     }
 
-    if (!metrics) return null;
+    if (dashboardError && !dashboard) {
+      return (
+        <Card className="p-6 text-center">
+          <p className="text-xs text-[var(--color-shell-error)]">{dashboardError}</p>
+          <Button size="sm" className="mt-3" onClick={() => void fetchDashboard()}>Retry</Button>
+        </Card>
+      );
+    }
 
-    const {
-      total_requests,
-      successful_requests,
-      error_4xx,
-      error_5xx,
-      average_latency_ms,
-      slow_requests,
-      error_rate,
-      total_audit_events,
-      error_groups,
-    } = metrics;
+    if (!dashboard) return null;
 
-    const successRate = total_requests > 0 ? Math.round(((successful_requests || 0) / total_requests) * 100) : 100;
+    const { overview, timeline, anomalies, topErrors, services, auth } = dashboard;
+    const hasTraffic = overview.totalRequests > 0;
 
     return (
       <div className="space-y-6">
-        {/* Health Summary Grid */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="p-4">
-            <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">
-              Total Requests
-            </div>
-            <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">
-              {total_requests.toLocaleString()}
-            </div>
-          </Card>
-
-          <Card className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">
-                  Success Rate
-                </div>
-                <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">
-                  {successRate}%
-                </div>
-              </div>
-              <CheckCircle className={`h-6 w-6 ${successRate >= 95 ? 'text-[var(--color-shell-success)]' : successRate >= 90 ? 'text-[var(--color-shell-warning)]' : 'text-[var(--color-shell-error)]'}`} />
-            </div>
-          </Card>
-
-          <Card className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">
-                  Error Rate
-                </div>
-                <div className="text-2xl font-bold mt-1">
-                  <span className={error_rate > 5 ? 'text-[var(--color-shell-error)]' : error_rate > 1 ? 'text-[var(--color-shell-warning)]' : 'text-[var(--color-shell-success)]'}>
-                    {error_rate}%
-                  </span>
-                </div>
-              </div>
-              <AlertTriangle className={`h-6 w-6 ${error_rate > 5 ? 'text-[var(--color-shell-error)]' : error_rate > 1 ? 'text-[var(--color-shell-warning)]' : 'text-[var(--color-shell-success)]'}`} />
-            </div>
-          </Card>
-
-          <Card className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">
-                  Avg Latency
-                </div>
-                <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">
-                  {formatDuration(average_latency_ms)}
-                </div>
-              </div>
-              <Clock className="h-6 w-6 text-[var(--color-shell-text-muted)]" />
-            </div>
-          </Card>
+        {/* Range selector + refresh */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Time range">
+            {Object.keys(DASHBOARD_RANGES).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRange(r)}
+                aria-pressed={range === r}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
+                  range === r
+                    ? 'bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)]'
+                    : 'border border-[var(--color-shell-border)] text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface)]'
+                }`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
+              {secondsSinceUpdate === null
+                ? 'Last updated: —'
+                : secondsSinceUpdate < 5
+                  ? 'Last updated: just now'
+                  : `Last updated: ${secondsSinceUpdate}s ago`}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => void fetchDashboard()} isLoading={dashboardLoading} className="text-xs">
+              <RefreshCw className="w-3 h-3 mr-1" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
-        {/* Error Breakdown */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <Card className="p-4">
-            <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">4xx Errors</div>
-            <div className="text-xl font-bold text-[var(--color-shell-warning)] mt-1">{error_4xx}</div>
-          </Card>
-          <Card className="p-4">
-            <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">5xx Errors</div>
-            <div className="text-xl font-bold text-[var(--color-shell-error)] mt-1">{error_5xx}</div>
-          </Card>
-          <Card className="p-4">
-            <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Slow Requests (&gt;1s)</div>
-            <div className="text-xl font-bold text-[var(--color-shell-warning)] mt-1">{slow_requests}</div>
-          </Card>
-          <Card className="p-4">
-            <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Audit Events</div>
-            <div className="text-xl font-bold text-[var(--color-shell-text)] mt-1">{total_audit_events}</div>
-          </Card>
+        {dashboardError && (
+          <p className="rounded-lg border border-[var(--color-shell-error)]/40 bg-[var(--color-shell-error-soft)] px-3 py-2 text-xs text-[var(--color-shell-error)]">
+            {dashboardError}
+          </p>
+        )}
+        {dashboard.truncated && (
+          <p className="rounded-lg border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] px-3 py-2 text-xs text-[var(--color-shell-text)]">
+            This window holds more log rows than one read returns, so these totals are a lower bound.
+          </p>
+        )}
+
+        <div>
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--color-shell-text-subtle)]">Overview</h3>
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Total Requests</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{overview.totalRequests.toLocaleString()}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Success Rate</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{hasTraffic ? `${overview.successRate}%` : 'N/A'}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Error Rate</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{hasTraffic ? `${overview.errorRate}%` : 'N/A'}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Avg Latency</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{formatDuration(overview.averageLatencyMs)}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">P95 Latency</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{formatDuration(overview.p95LatencyMs)}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Slow (&gt;{SLOW_REQUEST_MS / 1000}s)</div>
+              <div className="text-2xl font-bold text-[var(--color-shell-text)] mt-1">{overview.slowRequests.toLocaleString()}</div>
+            </Card>
+          </div>
+          <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">4xx Errors</div>
+              <div className="text-xl font-bold text-[var(--color-shell-warning)] mt-1">{overview.error4xx.toLocaleString()}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">5xx Errors</div>
+              <div className="text-xl font-bold text-[var(--color-shell-error)] mt-1">{overview.error5xx.toLocaleString()}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Audit Events</div>
+              <div className="text-xl font-bold text-[var(--color-shell-text)] mt-1">{overview.totalAuditEvents.toLocaleString()}</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-[var(--color-shell-text-subtle)] font-semibold uppercase">Unauthorised</div>
+              <div className="text-xl font-bold text-[var(--color-shell-text)] mt-1">{auth.unauthorizedRequests.toLocaleString()}</div>
+            </Card>
+          </div>
         </div>
 
-        {/* Error Groups Table */}
+        {/* SYSTEM ACTIVITY */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Activity className="h-4 w-4 text-[var(--color-shell-primary)]" />
+              System Activity
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Real logged requests over the last {range}. Click any time slice to inspect its logs.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <SystemHealthChart
+              timeline={timeline}
+              onBucketClick={handleDrillDown}
+              selectedBucket={drillWindow?.start ?? null}
+            />
+          </CardContent>
+        </Card>
+
+        {/* ACTIVE ANOMALIES — rendered only when real evidence exists */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <AlertTriangle
+                className={`h-4 w-4 ${
+                  anomalies.some((a) => a.severity === 'critical')
+                    ? 'text-[var(--color-shell-error)]'
+                    : anomalies.length
+                      ? 'text-[var(--color-shell-warning)]'
+                      : 'text-[var(--color-shell-success)]'
+                }`}
+              />
+              Active Anomalies
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Detected by comparing the newest time slice against this window&apos;s own recent baseline.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {anomalies.length === 0 ? (
+              <div className="flex items-center gap-2 rounded-lg border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] px-3 py-2.5 text-xs font-medium text-[var(--color-shell-success)]">
+                <CheckCircle className="h-4 w-4" />
+                No significant anomaly detected in this window.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {anomalies.map((a) => (
+                  <div
+                    key={a.id}
+                    className={`rounded-lg border p-3 ${
+                      a.severity === 'critical'
+                        ? 'border-[var(--color-shell-error)]/40 bg-[var(--color-shell-error-soft)]'
+                        : 'border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)]'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={a.severity === 'critical' ? 'destructive' : 'warning'} className="text-[10px] font-bold uppercase">
+                          {a.severity}
+                        </Badge>
+                        <span className="text-xs font-semibold text-[var(--color-shell-text)]">{a.metric}</span>
+                      </div>
+                      <span className="text-[11px] text-[var(--color-shell-text-muted)]">
+                        Detected {formatTimestamp(a.firstDetected)}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                      <div>
+                        <div className="text-[var(--color-shell-text-subtle)]">Current</div>
+                        <div className="font-bold text-[var(--color-shell-text)]">{a.currentValue.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-[var(--color-shell-text-subtle)]">Baseline</div>
+                        <div className="font-bold text-[var(--color-shell-text)]">{a.baselineValue.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-[var(--color-shell-text-subtle)]">Change</div>
+                        <div className="font-bold text-[var(--color-shell-text)]">
+                          {a.percentChange === null ? 'n/a' : `${a.percentChange > 0 ? '+' : ''}${a.percentChange}%`}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[var(--color-shell-text-subtle)]">Occurrences</div>
+                        <div className="font-bold text-[var(--color-shell-text)]">{a.occurrenceCount.toLocaleString()}</div>
+                      </div>
+                    </div>
+                    {a.affectedEndpoint && (
+                      <div className="mt-2 text-[11px] text-[var(--color-shell-text-muted)]">
+                        Affected endpoint: <span className="font-mono text-[var(--color-shell-text)]">{a.affectedEndpoint}</span>
+                      </div>
+                    )}
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" variant="outline" className="text-[11px]" onClick={() => handleAnomalyDrillDown(a)}>
+                        View Errors
+                      </Button>
+                      <Button size="sm" variant="ghost" className="text-[11px]" onClick={() => { setActiveTab('requests'); }}>
+                        View API Logs
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* SYSTEM SERVICES */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Server className="h-4 w-4 text-[var(--color-shell-accent)]" />
+              System Services
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Status derived only from logged evidence. No traffic means &quot;unknown&quot;, not &quot;healthy&quot;.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+              {([
+                ['API', 'api'],
+                ['Database', 'database'],
+                ['Authentication', 'authentication'],
+                ['Storage', 'storage'],
+                ['Notifications', 'notifications'],
+              ] as const).map(([label, key]) => {
+                const svc = services[key];
+                return (
+                  <div key={key} className="rounded-lg border border-[var(--color-shell-border)] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--color-shell-text)]">{label}</span>
+                      <Badge
+                        variant={
+                          svc.status === 'operational'
+                            ? 'success'
+                            : svc.status === 'degraded'
+                              ? 'warning'
+                              : svc.status === 'critical'
+                                ? 'destructive'
+                                : 'secondary'
+                        }
+                        className="text-[10px] font-bold uppercase"
+                      >
+                        {svc.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--color-shell-text-muted)]">{svc.detail}</p>
+                  </div>
+                );
+              })}
+            </div>
+            {auth.repeatedFailuresDetected && auth.topFailurePath && (
+              <p className="mt-3 rounded-lg border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] px-3 py-2 text-[11px] text-[var(--color-shell-text)]">
+                Repeated authentication failures detected: {auth.topFailureCount} on{' '}
+                <span className="font-mono">{auth.topFailurePath}</span>.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm">
@@ -471,17 +759,17 @@ export const AdminSystemHealthPage: React.FC = () => {
               Top Error Patterns
             </CardTitle>
             <CardDescription className="text-xs">
-              Aggregated API errors grouped by endpoint and status code.
+              Real API errors grouped by endpoint, status code and error code.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            {error_groups.length === 0 ? (
+            {topErrors.length === 0 ? (
               <div className="p-4 text-center text-xs text-[var(--color-shell-text-subtle)]">
-                No errors detected. System is healthy.
+                No errors recorded in this window.
               </div>
             ) : (
               <div className="max-h-80 overflow-y-auto">
-                {error_groups.map((group) => (
+                {topErrors.map((group) => (
                   <ErrorGroupRow key={`${group.endpoint}|${group.status_code}|${group.error_type}`} group={group} onRequestIdClick={fetchRequestDetail} />
                 ))}
               </div>
@@ -656,6 +944,26 @@ export const AdminSystemHealthPage: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-zinc-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+        </div>
+      )}
+
+      {/* Active drill-down filter, visible so the narrowed logs are never a mystery */}
+      {drillWindow && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--color-shell-accent)]/40 bg-[var(--color-shell-accent-soft)] px-3 py-2 text-[11px] text-[var(--color-shell-text)]">
+          <span>
+            Filtered to {drillWindow.label}:{' '}
+            <span className="font-mono">
+              {formatTimestamp(drillWindow.start)} – {formatTimestamp(drillWindow.end)}
+            </span>
+            {drillWindow.endpoint && (
+              <>
+                {' '}· endpoint <span className="font-mono">{drillWindow.endpoint}</span>
+              </>
+            )}
+          </span>
+          <Button size="sm" variant="outline" className="h-7 min-h-[28px] text-[11px]" onClick={() => setDrillWindow(null)}>
+            Clear filter
+          </Button>
         </div>
       )}
 
