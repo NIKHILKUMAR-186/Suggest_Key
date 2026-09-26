@@ -5,6 +5,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import {
   MENTOR_ACCOUNT_BADGE_LABELS,
   deriveMentorAccountState,
@@ -77,8 +78,7 @@ export const AdminMentorsPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch mentors');
       setMentors(data.mentors || []);
     } catch (err: any) {
-      setError(err.message || 'Failed to load mentors');
-      console.error('Failed to fetch mentors:', err);
+      setError(toUserMessage(err, 'Failed to load mentors'));
     } finally {
       setLoading(false);
     }
@@ -185,6 +185,7 @@ export const AdminMentorsPage: React.FC = () => {
             }
           />
         ) : (
+          <div className="table-scroll">
           <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
             <thead className="border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] text-[11px] font-semibold uppercase tracking-wider text-[var(--color-shell-text)]">
               <tr>
@@ -200,7 +201,12 @@ export const AdminMentorsPage: React.FC = () => {
                 <tr key={mentor.id} className="transition-colors hover:bg-[var(--color-shell-bg)]">
                   <td className="px-4 py-3">
                     <span className="block font-bold text-[var(--color-shell-text)]">{mentor.name}</span>
-                    <span className="font-mono text-[11px] text-[var(--color-shell-text-subtle)]">{mentor.email}</span>
+                    <a
+                      href={`mailto:${mentor.email}`}
+                      className="block max-w-[220px] truncate font-mono text-[11px] text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-accent)] hover:underline"
+                    >
+                      {mentor.email}
+                    </a>
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant="secondary" className="text-[10px]">{mentor.segmentName}</Badge>
@@ -236,6 +242,7 @@ export const AdminMentorsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

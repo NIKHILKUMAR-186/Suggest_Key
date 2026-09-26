@@ -6,6 +6,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { usePaymentSync } from '@/src/hooks/seeker/usePaymentSync';
 import type { BookingStatus, Payment } from '@/src/types/database';
@@ -75,7 +76,7 @@ export const SeekerBookingsPage: React.FC = () => {
       const data = await fetchSeekerBookings(seekerId);
       setBookings(data);
     } catch (err: any) {
-      setError(err.message || 'Failed to load bookings.');
+      setError(toUserMessage(err, 'Failed to load bookings.'));
     } finally {
       setLoading(false);
     }

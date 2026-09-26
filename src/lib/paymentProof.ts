@@ -19,6 +19,12 @@ export const PAYMENT_PROOF_BUCKET = 'payment-proofs';
 export const PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
+ * The limit as shown to the user. Derived from the real byte ceiling rather
+ * than written by hand, so the message can never drift from the actual limit.
+ */
+export const PAYMENT_PROOF_MAX_LABEL = `${PAYMENT_PROOF_MAX_BYTES / (1024 * 1024)} MB`;
+
+/**
  * A subset of the bucket's allowed MIME types. `application/pdf` is allowed by
  * the bucket but excluded here on purpose: this flow asks for a payment
  * *screenshot* that an admin can read the UTR off.
@@ -96,10 +102,13 @@ export function validateProofFile(file: ProofFileLike | null | undefined): Valid
     return { ok: false, message: 'That file is empty. Select the screenshot you took of your payment receipt.' };
   }
   if (!PAYMENT_PROOF_MIME_TYPES.includes(file.type as PaymentProofMimeType)) {
-    return { ok: false, message: 'Payment proof must be a PNG, JPG, JPEG or WEBP image.' };
+    return { ok: false, message: 'Please upload a PNG, JPG, or WebP image.' };
   }
   if (file.size > PAYMENT_PROOF_MAX_BYTES) {
-    return { ok: false, message: 'That image is too large. Please upload a screenshot under 5 MB.' };
+    return {
+      ok: false,
+      message: `This screenshot is larger than the supported limit. Please upload an image smaller than ${PAYMENT_PROOF_MAX_LABEL}.`,
+    };
   }
   return { ok: true, value: file };
 }

@@ -19,6 +19,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { useAuth } from '@/src/context/AuthContext';
 import {
   fetchSessionAccess,
@@ -101,7 +102,7 @@ export const SeekerSessionPage: React.FC = () => {
         setSecondsUntilStart(data.secondsUntilStart);
         setSecondsUntilEnd(data.secondsUntilEnd);
       } catch (err: any) {
-        setServerError(err.message || 'Failed to fetch session access state.');
+        setServerError(toUserMessage(err, 'Failed to fetch session access state.'));
       } finally {
         setLoading(false);
       }
@@ -162,20 +163,22 @@ export const SeekerSessionPage: React.FC = () => {
 
       if (!result.success || !result.canJoin) {
         setServerError(
-          result.error?.message ||
-            'Server authoritative verification rejected the join attempt. Please check session timing.'
+          toUserMessage(
+            result.error?.message,
+            'We could not let you join this session. Please check the session timing and try again.'
+          )
         );
         return;
       }
 
       if (result.meetingUrl) {
-        setActionNotice('Authoritative join verified by server. Opening secure meeting room...');
+        setActionNotice('Verified. Opening your secure meeting room...');
         window.open(result.meetingUrl, '_blank', 'noopener,noreferrer');
       } else {
         setServerError('Meeting URL unavailable from server.');
       }
     } catch (err: any) {
-      setServerError(err.message || 'Error occurred while contacting session server.');
+        setServerError(toUserMessage(err, 'We could not reach the session service. Please try again.'));
     } finally {
       setJoining(false);
     }

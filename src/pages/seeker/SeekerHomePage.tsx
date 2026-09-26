@@ -14,6 +14,7 @@ import { SegmentMentorsSection } from '@/src/components/seeker/SegmentMentorsSec
 import { useSegmentMentors } from '@/src/hooks/seeker/useSegmentMentors';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import {
   fetchActiveSegments,
   getHighestPriorityActiveSegment,
@@ -99,7 +100,7 @@ export const SeekerHomePage: React.FC = () => {
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading segments:', err);
-          setError(err.message || 'Failed to load mentorship segments');
+          setError(toUserMessage(err, 'Failed to load mentorship segments'));
         }
       } finally {
         if (isMounted) setIsLoadingSegments(false);

@@ -6,6 +6,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { BookingStatus } from '@/src/types/database';
 
 export const SeekerBookingDetailPage: React.FC = () => {
@@ -33,7 +34,7 @@ export const SeekerBookingDetailPage: React.FC = () => {
       const data = await fetchBookingDetail(bookingId);
       setBooking(data);
     } catch (err: any) {
-      setError(err.message || 'Failed to load booking details.');
+      setError(toUserMessage(err, 'Failed to load booking details.'));
     } finally {
       setLoading(false);
     }
@@ -82,7 +83,7 @@ export const SeekerBookingDetailPage: React.FC = () => {
         <EmptyState
           icon={AlertCircle}
           title="Booking Not Found"
-          description={error || `Could not find booking ${bookingId}. It may have been cancelled or does not exist.`}
+          description={error || 'This booking could not be found. It may have been cancelled, or the link may be incorrect.'}
           actionLabel="View My Bookings"
           onAction={() => navigate('/seeker/bookings')}
         />

@@ -7,6 +7,9 @@ import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
+import { mailtoHref } from '@/src/lib/contact';
 
 interface Segment {
   id: string;
@@ -67,6 +70,7 @@ const formatDate = (value: string | null | undefined) =>
 
 export const AdminSegmentDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const toast = useToast();
 
   // The route segment is the public `segments.slug`, never the internal UUID.
   // The real `segment.id` comes back from the API and is what every write uses.
@@ -147,8 +151,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
       setMentors(data.mentors || []);
       setGigs(data.gigs || []);
     } catch (err: any) {
-      setError(err?.message || 'Failed to load segment');
-      console.error('Failed to fetch segment:', err);
+      setError(toUserMessage(err, 'Failed to load segment'));
     } finally {
       setLoading(false);
     }
@@ -167,8 +170,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch eligible mentors');
       setEligibleMentors(data.mentors || []);
     } catch (err: any) {
-      console.error('Failed to fetch eligible mentors:', err);
-      setActionError(err?.message || 'Failed to load eligible mentors');
+      setActionError(toUserMessage(err, 'Failed to load eligible mentors'));
     }
   }, []);
 
@@ -223,9 +225,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       }
 
       await loadSegment();
+      toast.success('Segment updated.');
     } catch (err: any) {
-      console.error('Failed to update segment:', err);
-      setActionError(err?.message || 'Failed to update segment');
+      setActionError(toUserMessage(err, 'Failed to update segment'));
     } finally {
       setSavingSegment(false);
     }
@@ -250,9 +252,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       setSelectedMentorId('');
       setIsPrimary(false);
       await loadSegment();
+      toast.success('Mentor added to this segment.');
     } catch (err: any) {
-      console.error('Failed to add mentor:', err);
-      setActionError(err?.message || 'Failed to add mentor');
+      setActionError(toUserMessage(err, 'Failed to add mentor'));
     } finally {
       setAdding(false);
     }
@@ -271,9 +273,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to remove mentor');
       await loadSegment();
+      toast.success('Mentor removed from this segment.');
     } catch (err: any) {
-      console.error('Failed to remove mentor:', err);
-      setActionError(err?.message || 'Failed to remove mentor');
+      setActionError(toUserMessage(err, 'Failed to remove mentor'));
     }
   };
 
@@ -307,9 +309,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       setGigActive(true);
       setSelectedMentorId('');
       await loadSegment();
+      toast.success('Gig created.');
     } catch (err: any) {
-      console.error('Failed to create gig:', err);
-      setActionError(err?.message || 'Failed to create gig');
+      setActionError(toUserMessage(err, 'Failed to create gig'));
     } finally {
       setCreatingGig(false);
     }
@@ -339,9 +341,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       setIsEditGigOpen(false);
       setEditingGig(null);
       await loadSegment();
+      toast.success('Gig updated.');
     } catch (err: any) {
-      console.error('Failed to update gig:', err);
-      setActionError(err?.message || 'Failed to update gig');
+      setActionError(toUserMessage(err, 'Failed to update gig'));
     } finally {
       setEditingGigState(false);
     }
@@ -359,9 +361,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to toggle gig');
       await loadSegment();
+      toast.success(`Gig ${currentActive ? 'paused' : 'activated'}.`);
     } catch (err: any) {
-      console.error('Failed to toggle gig:', err);
-      setActionError(err?.message || 'Failed to toggle gig');
+      setActionError(toUserMessage(err, 'Failed to toggle gig'));
     }
   };
 
@@ -389,9 +391,9 @@ export const AdminSegmentDetailPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to toggle segment');
       await loadSegment();
+      toast.success(`Segment ${segment.isActive ? 'paused' : 'activated'}.`);
     } catch (err: any) {
-      console.error('Failed to toggle segment:', err);
-      setActionError(err?.message || 'Failed to toggle segment');
+      setActionError(toUserMessage(err, 'Failed to toggle segment'));
     }
   };
 
@@ -539,7 +541,18 @@ export const AdminSegmentDetailPage: React.FC = () => {
                       <tr key={mentor.id} className="hover:bg-zinc-50/50 transition-colors">
                         <td className="py-3 px-4">
                           <span className="font-bold text-zinc-950 block">{mentor.name}</span>
-                          <span className="text-[11px] text-zinc-400 font-mono">{mentor.email}</span>
+                          <span className="text-[11px] text-zinc-400 font-mono break-all">
+                            {mentor.email ? (
+                              <a
+                                href={mailtoHref(mentor.email) || undefined}
+                                className="hover:underline underline-offset-2"
+                              >
+                                {mentor.email}
+                              </a>
+                            ) : (
+                              '—'
+                            )}
+                          </span>
                           {mentor.headline && <span className="text-[10px] text-zinc-500 block truncate max-w-xs">{mentor.headline}</span>}
                         </td>
                         <td className="py-3 px-4">

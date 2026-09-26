@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchAllMentors } from '@/src/lib/discoveryService';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import type { DirectoryMentor } from '@/src/types/database';
 
 /**
@@ -66,7 +67,7 @@ export function useSegmentMentors(segmentId: string | null): UseSegmentMentorsRe
         setTotal(typeof pagination.total === 'number' ? pagination.total : rows.length);
       } catch (err) {
         if (!isMounted) return;
-        console.error('Error loading segment mentors:', err);
+        console.error('Error loading segment mentors:', logSanitizer.safeMessage(err));
         // A failure must never be rendered as "0 mentors".
         setMentors([]);
         setTotal(0);

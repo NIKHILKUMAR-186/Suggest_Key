@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { User, Shield, Camera, Check, Bell } from 'lucide-react';
+import { User, Shield, Check, Bell, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
 import { useAuth } from '@/src/context/AuthContext';
+import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { upsertUserProfile } from '@/src/lib/supabase';
 
 interface ProfileUpdate {
@@ -15,6 +18,8 @@ interface ProfileUpdate {
 
 export const SeekerSettingsPage: React.FC = () => {
   const { profile, user } = useAuth();
+  const { navigate } = useNavigation();
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'notifications'>('profile');
   const [savedMessage, setSavedMessage] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -54,8 +59,12 @@ export const SeekerSettingsPage: React.FC = () => {
       });
       if (error) throw error;
       setSavedMessage(true);
-    } catch (err) {
-      console.error('Failed to save profile:', err);
+      toast.success('Your profile details are up to date.', { title: 'Profile updated' });
+    } catch (err: unknown) {
+      toast.error(
+        toUserMessage(err, 'We could not save your profile. Please try again.', { action: 'save-seeker-profile' }),
+        { title: 'Save failed' }
+      );
     } finally {
       setIsSaving(false);
       setTimeout(() => setSavedMessage(false), 3000);
@@ -107,7 +116,7 @@ export const SeekerSettingsPage: React.FC = () => {
             className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800"
           >
             <Check className="h-4 w-4 text-emerald-600" />
-            <span>Profile configuration updated in Supabase store.</span>
+            <span>Profile updated successfully.</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -120,22 +129,13 @@ export const SeekerSettingsPage: React.FC = () => {
           className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-6"
         >
           <div className="flex items-center gap-5 border-b border-[var(--color-shell-border)] pb-6">
-            <div className="relative">
-              <div className="h-20 w-20 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display">
-                {userInitials}
-              </div>
-              <button
-                type="button"
-                className="absolute bottom-0 right-0 p-1.5 rounded-full bg-zinc-900 text-white hover:bg-zinc-800 shadow-xs"
-                title="Change Photo"
-              >
-                <Camera className="h-3.5 w-3.5" />
-              </button>
+            <div className="h-20 w-20 shrink-0 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display">
+              {userInitials}
             </div>
             <div>
               <h3 className="text-sm font-bold text-[var(--color-shell-text)]">Profile Avatar</h3>
               <p className="text-xs text-[var(--color-shell-text-subtle)] mt-0.5">
-                PNG, JPG or WebP up to 2MB. Stored securely in profile bucket.
+                Your initials are shown until a photo is set on your account.
               </p>
             </div>
           </div>
@@ -168,13 +168,9 @@ export const SeekerSettingsPage: React.FC = () => {
           </div>
 
           <div className="pt-2 flex justify-end">
-            <Button type="submit" size="md" className="text-xs gap-1.5" disabled={isSaving}>
-              {isSaving ? 'Saving…' : (
-                <>
-                  <Check className="h-3.5 w-3.5" />
-                  <span>Save Settings</span>
-                </>
-              )}
+            <Button type="submit" size="md" className="text-xs gap-1.5" disabled={isSaving} isLoading={isSaving} loadingText="Saving…">
+              {!isSaving && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+              <span>Save Settings</span>
             </Button>
           </div>
         </motion.form>
@@ -187,25 +183,24 @@ export const SeekerSettingsPage: React.FC = () => {
           className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5"
         >
           <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
-            Authentication & Security
+            Authentication &amp; Security
           </h3>
           <p className="text-xs text-[var(--color-shell-text-muted)]">
-            Authentication is managed via Supabase Auth. Passwords and credentials are never stored in plain text.
+            Your password is managed by Suggest Key and is never stored in plain text. Request a
+            reset link and we will email it to the address on your account.
           </p>
           <div className="space-y-3 max-w-sm">
-            <Input label="Email Address" defaultValue={userEmail} disabled />
-            <Input label="New Password" type="password" placeholder="••••••••" />
-            <Input label="Confirm New Password" type="password" placeholder="••••••••" />
+            <Input label="Email Address" value={userEmail} disabled />
           </div>
-          <div className="pt-1">
+          <div className="pt-1 flex flex-wrap items-center gap-3">
             <Badge variant="secondary" className="text-[10px]">
-              Connected via Supabase Auth
+              Secured authentication
             </Badge>
+            <Button size="sm" className="text-xs gap-1.5" onClick={() => navigate('/auth/forgot-password')}>
+              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Change Password</span>
+            </Button>
           </div>
-          <Button size="sm" className="text-xs gap-1.5">
-            <Check className="h-3.5 w-3.5" />
-            <span>Update Password</span>
-          </Button>
         </motion.div>
       )}
 
@@ -218,28 +213,28 @@ export const SeekerSettingsPage: React.FC = () => {
           <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
             In-App Notification Preferences
           </h3>
-          <div className="space-y-3 text-xs">
+          <p className="text-xs text-[var(--color-shell-text-muted)]">
+            Suggest Key sends you these updates automatically. Review and dismiss them any time
+            from your notification centre.
+          </p>
+          <ul className="space-y-3 text-xs">
             {[
-              { title: 'Payment Verification', desc: 'Alert when admin approves or rejects your payment proof' },
-              { title: 'Meeting Link Unlock', desc: 'Alert at T-5 minutes when video call room opens' },
-              { title: 'Workspace Published', desc: 'Alert when your mentor posts takeaways and notes' },
-            ].map((item, i) => (
-              <label
-                key={i}
-                className="flex items-start gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] hover:bg-[var(--color-shell-surface-elevated)] cursor-pointer"
+              { title: 'Payment Verification', desc: 'Sent when an admin approves or rejects your payment proof' },
+              { title: 'Meeting Link Unlock', desc: 'Sent at T-5 minutes when the video call room opens' },
+              { title: 'Workspace Published', desc: 'Sent when your mentor posts takeaways and notes' },
+            ].map((item) => (
+              <li
+                key={item.title}
+                className="flex items-start gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]"
               >
-                <input
-                  type="checkbox"
-                  defaultChecked
-                  className="mt-0.5 rounded border-zinc-300 focus:ring-amber-500"
-                />
-                <div>
+                <Bell className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-accent)]" aria-hidden="true" />
+                <div className="min-w-0">
                   <span className="font-semibold text-[var(--color-shell-text)] block">{item.title}</span>
                   <span className="text-[var(--color-shell-text-muted)]">{item.desc}</span>
                 </div>
-              </label>
+              </li>
             ))}
-          </div>
+          </ul>
         </motion.div>
       )}
     </div>

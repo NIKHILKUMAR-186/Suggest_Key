@@ -57,10 +57,72 @@ const api = (token) => async (path, init = {}) => {
 
 // A real 1x1 PNG, so the upload path runs with genuine image bytes.
 const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
-const proofBody = (ref, name = 'payment-proof.png') => JSON.stringify({
-  transactionReference: ref, fileName: name, mimeType: 'image/png',
-  fileSize: 68, fileBase64: `data:image/png;base64,${PNG_B64}`,
-});
+
+/**
+ * Mirrors exactly what the browser now does, in two steps:
+ *   1. upload the image straight to the private bucket using the SEEKER's own
+ *      credentials, so live storage RLS decides whether it is allowed;
+ *   2. POST a small metadata envelope (no image bytes) to the API.
+ *
+ * The image never appears in the JSON body, which is what caused the 413.
+ */
+const submitAsSeeker = async ({ token, seekerId, bookingId, ref, name = 'payment-proof.png' }) => {
+  const storagePath = `${seekerId}/${bookingId}/${crypto.randomUUID()}-${name}`;
+  const up = await fetch(`${BASE}/storage/v1/object/payment-proofs/${storagePath}`, {
+    method: 'POST',
+    headers: { apikey: env.VITE_SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+    body: Buffer.from(PNG_B64, 'base64'),
+  });
+  if (!up.ok) {
+    return { status: 0, body: { error: { code: 'STORAGE_FAILED', message: `storage upload ${up.status}` } } };
+  }
+
+  const r = await fetch(`${API}/api/seeker/bookings/${bookingId}/payment-proof`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transactionReference: ref, fileName: name, mimeType: 'image/png',
+      fileSize: 68, storagePath,
+    }),
+  });
+  return { status: r.status, body: await json(r), storagePath };
+};
+
+/** Metadata-only POST, for validation cases where no image is ever uploaded. */
+const postMetadata = ({ token, bookingId, ref, fileName = 'a.png', mimeType = 'image/png', fileSize = 68, storagePath }) =>
+  fetch(`${API}/api/seeker/bookings/${bookingId}/payment-proof`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transactionReference: ref, fileName, mimeType, fileSize, storagePath }),
+  });
+
+
+/**
+ * Proves the ORIGINAL failure mode is gone with a realistic multi-megabyte
+ * phone screenshot. Under the old base64-in-JSON flow this single file
+ * exceeded the platform request limit and returned 413.
+ */
+const submitLargeScreenshot = async ({ token, seekerId, bookingId, ref, sizeBytes = 4 * 1024 * 1024 }) => {
+  const bytes = Buffer.concat([Buffer.from(PNG_B64, 'base64'), Buffer.alloc(sizeBytes, 0x41)]);
+  const storagePath = `${seekerId}/${bookingId}/${crypto.randomUUID()}-big-proof.png`;
+
+  const up = await fetch(`${BASE}/storage/v1/object/payment-proofs/${storagePath}`, {
+    method: 'POST',
+    headers: { apikey: env.VITE_SUPABASE_ANON_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+    body: bytes,
+  });
+  if (!up.ok) return { uploadStatus: up.status, apiStatus: 0, body: null, storagePath: null };
+
+  const r = await fetch(`${API}/api/seeker/bookings/${bookingId}/payment-proof`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      transactionReference: ref, fileName: 'big-proof.png', mimeType: 'image/png',
+      fileSize: sizeBytes, storagePath,
+    }),
+  });
+  return { uploadStatus: up.status, apiStatus: r.status, body: await json(r), storagePath };
+};
 
 const main = async () => {
   // ---- Provision an isolated, temporary fixture ---------------------------
@@ -121,6 +183,21 @@ const main = async () => {
   });
   if (bkRes.status >= 400) throw new Error(`booking insert failed ${bkRes.status}: ${(await bkRes.text()).slice(0, 300)}`);
   const booking = (await json(bkRes))[0];
+
+  // A second, independent booking so the rejection path can be exercised
+  // without disturbing the one used for the approval path.
+  const bk2Res = await rest(`bookings`, {
+    method: 'POST', headers: JRH,
+    body: JSON.stringify({
+      booking_code: `${suffix}-BK2`, mentor_id: mentorUser.id, seeker_id: seekerId, gig_id: gigId,
+      segment_id: segmentId, start_time: new Date(Date.now() + 2 * 864e5).toISOString(),
+      end_time: new Date(Date.now() + 2 * 864e5 + 36e5).toISOString(),
+      seeker_timezone: 'Asia/Kolkata', mentor_timezone: 'Asia/Kolkata',
+      amount_inr: 1299, status: 'PAYMENT_PENDING',
+    }),
+  });
+  if (bk2Res.status >= 400) throw new Error(`booking2 insert failed ${bk2Res.status}`);
+  const booking2 = (await json(bk2Res))[0];
   console.log('temp booking', booking.booking_code, booking.id, 'amount', booking.amount_inr);
 
   const asSeeker = api(seekerToken);
@@ -133,9 +210,9 @@ const main = async () => {
   // Removes the entire temporary fixture, so no test data survives the run.
   const cleanup = async () => {
     for (const p of createdPaths) await rest(`object/payment-proofs/${p}`, { method: 'DELETE' });
-    await rest(`payments?booking_id=eq.${booking.id}`, { method: 'DELETE' });
-    await rest(`notifications?user_id=in.(${seekerId},${adminId},${mentorUser.id})&entity_id=eq.${booking.id}`, { method: 'DELETE' });
-    await rest(`bookings?id=eq.${booking.id}`, { method: 'DELETE' });
+    await rest(`payments?booking_id=in.(${booking.id},${booking2.id})`, { method: 'DELETE' });
+    await rest(`notifications?user_id=in.(${seekerId},${adminId},${mentorUser.id})&entity_id=in.(${booking.id},${booking2.id})`, { method: 'DELETE' });
+    await rest(`bookings?id=in.(${booking.id},${booking2.id})`, { method: 'DELETE' });
     await rest(`gigs?id=eq.${gigId}`, { method: 'DELETE' });
     await rest(`mentor_profiles?id=eq.${mentorUser.id}`, { method: 'DELETE' });
     await rest(`user_roles?user_id=in.(${seekerId},${mentorUser.id},${adminUser.id})`, { method: 'DELETE' });
@@ -147,48 +224,48 @@ const main = async () => {
   try {
     // ---- 1. Security --------------------------------------------------------
     section('1. Security');
-    const anon = await fetch(`${API}/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: proofBody('ANON12345'),
-    });
+    const anon = await postMetadata({ token: 'not-a-real-token', bookingId: booking.id, ref: 'ANON12345', storagePath: 'x/y/z.png' });
     check('unauthenticated submission rejected (401)', anon.status === 401, `got ${anon.status}`);
 
-    const foreign = await asSeeker('/api/seeker/bookings/00000000-0000-0000-0000-000000000000/payment-proof', {
-      method: 'POST', body: proofBody('FOREIGN123'),
-    });
+    const foreign = await postMetadata({ token: seekerToken, bookingId: '00000000-0000-0000-0000-000000000000', ref: 'FOREIGN123', storagePath: 'x/y/z.png' });
     check('unknown booking is 404', foreign.status === 404, `got ${foreign.status}`);
+
+    // A seeker must not be able to name a storage path in somebody else's
+    // folder, even if the object exists there.
+    const wrongOwner = await postMetadata({
+      token: seekerToken, bookingId: booking.id, ref: 'OWNER12345',
+      storagePath: `${mentorUser.id}/${booking.id}/someone-else.png`,
+    });
+    check('storage path outside own folder is 403', wrongOwner.status === 403, `got ${wrongOwner.status}`);
 
     // ---- 2. Validation ------------------------------------------------------
     section('2. Validation');
-    const noRef = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ fileName: 'a.png', mimeType: 'image/png', fileBase64: `data:image/png;base64,${PNG_B64}` }),
-    });
+    const noRef = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: '', storagePath: 'x/y/z.png' });
     check('empty UTR is 400', noRef.status === 400, `got ${noRef.status}`);
 
-    const blankRef = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ transactionReference: '    ', fileName: 'a.png', mimeType: 'image/png', fileBase64: `data:image/png;base64,${PNG_B64}` }),
-    });
+    const blankRef = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: '    ', storagePath: 'x/y/z.png' });
     check('whitespace-only UTR is 400', blankRef.status === 400, `got ${blankRef.status}`);
 
-    const badRef = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ transactionReference: 'ref with spaces', fileName: 'a.png', mimeType: 'image/png', fileBase64: `data:image/png;base64,${PNG_B64}` }),
-    });
+    const badRef = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: 'ref with spaces', storagePath: 'x/y/z.png' });
     check('invalid UTR characters is 400', badRef.status === 400, `got ${badRef.status}`);
 
-    const badMime = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ transactionReference: 'REF123456', fileName: 'a.exe', mimeType: 'application/x-msdownload', fileBase64: `data:image/png;base64,${PNG_B64}` }),
-    });
+    const badMime = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: 'REF123456', mimeType: 'application/x-msdownload', storagePath: 'x/y/z.png' });
     check('non-image MIME is 400', badMime.status === 400, `got ${badMime.status}`);
 
-    const noFile = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ transactionReference: 'REF123456' }),
-    });
-    check('missing screenshot is 400', noFile.status === 400, `got ${noFile.status}`);
+    const tooBig = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: 'REF123456', fileSize: 9 * 1024 * 1024, storagePath: 'x/y/z.png' });
+    const tooBigBody = await json(tooBig);
+    check('oversized file is 400', tooBig.status === 400, `got ${tooBig.status}`);
+    check('oversized file message names the limit', /smaller than 5 MB/.test(tooBigBody?.error?.message ?? ''), tooBigBody?.error?.message);
 
-    const emptyImg = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: JSON.stringify({ transactionReference: 'REF123456', fileName: 'a.png', mimeType: 'image/png', fileBase64: 'data:image/png;base64,' }),
+    const noPath = await postMetadata({ token: seekerToken, bookingId: booking.id, ref: 'REF123456' });
+    check('missing storage path is 400', noPath.status === 400, `got ${noPath.status}`);
+
+    // A path that is well-formed but holds no object must not create a payment.
+    const notStored = await postMetadata({
+      token: seekerToken, bookingId: booking.id, ref: 'REF123456',
+      storagePath: `${seekerId}/${booking.id}/does-not-exist.png`,
     });
-    check('empty image payload is 400', emptyImg.status === 400, `got ${emptyImg.status}`);
+    check('path with no stored object is 400', notStored.status === 400, `got ${notStored.status}`);
 
     const none = (await json(await rest(`payments?booking_id=eq.${booking.id}&select=id`)))?.length ?? 0;
     check('no payment row created by any rejected request', none === 0, `rows=${none}`);
@@ -196,16 +273,20 @@ const main = async () => {
     // ---- 3. Real submission --------------------------------------------------
     section('3. Real submission');
     const ref = `E2E${crypto.randomInt(100000, 999999)}`;
-    const sub = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST',
-      // Leading/trailing whitespace must be trimmed server-side.
-      body: JSON.stringify({
-        transactionReference: `  ${ref}  `, fileName: 'payment-proof.png', mimeType: 'image/png',
-        fileSize: 68, fileBase64: `data:image/png;base64,${PNG_B64}`,
-      }),
+
+    // The metadata request body, measured to prove it is now tiny.
+    const envelopeBytes = Buffer.byteLength(JSON.stringify({
+      transactionReference: `  ${ref}  `, fileName: 'payment-proof.png', mimeType: 'image/png',
+      fileSize: 68, storagePath: `${seekerId}/${booking.id}/abc.png`,
+    }));
+    check('API request body is tiny (no image inside)', envelopeBytes < 1024, `${envelopeBytes} bytes`);
+
+    const sub = await submitAsSeeker({
+      token: seekerToken, seekerId, bookingId: booking.id, ref: `  ${ref}  `,
     });
-    check('submission returns 201', sub.status === 201, `got ${sub.status} ${JSON.stringify(sub.body)}`);
+    check('submission returns 201 (not 413)', sub.status === 201, `got ${sub.status} ${JSON.stringify(sub.body)}`);
     check('returned payment is PENDING_VERIFICATION', sub.body?.payment?.status === 'PENDING_VERIFICATION', sub.body?.payment?.status);
+    if (sub.storagePath) createdPaths.push(sub.storagePath);
 
     const pay = (await json(await rest(`payments?booking_id=eq.${booking.id}&select=*`)))[0];
     check('exactly one payment row exists', !!pay);
@@ -214,7 +295,7 @@ const main = async () => {
       check('amount equals the BOOKING amount (server-derived)', pay.amount_inr === booking.amount_inr, `${pay.amount_inr} vs ${booking.amount_inr}`);
       check('stored UTR is trimmed', pay.transaction_reference === ref, pay.transaction_reference);
       check('proof path starts with seeker id (storage RLS convention)', pay.proof_storage_path.startsWith(`${seekerId}/${booking.id}/`), pay.proof_storage_path);
-      createdPaths.push(pay.proof_storage_path);
+      if (!createdPaths.includes(pay.proof_storage_path)) createdPaths.push(pay.proof_storage_path);
     }
 
     const bk = (await json(await rest(`bookings?id=eq.${booking.id}&select=status`)))[0];
@@ -227,10 +308,9 @@ const main = async () => {
 
     // ---- 5. Idempotency -----------------------------------------------------
     section('5. Duplicate submission protection');
-    const sub2 = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: proofBody(`${ref}B`),
-    });
+    const sub2 = await submitAsSeeker({ token: seekerToken, seekerId, bookingId: booking.id, ref: `${ref}B` });
     check('second submission succeeds (update, not duplicate)', sub2.status === 201, `got ${sub2.status}`);
+    if (sub2.storagePath) createdPaths.push(sub2.storagePath);
     const rows = await json(await rest(`payments?booking_id=eq.${booking.id}&select=id,transaction_reference`));
     check('still exactly ONE payment row', rows.length === 1, `rows=${rows.length}`);
     check('existing row updated in place', rows[0].id === pay.id && rows[0].transaction_reference === `${ref}B`, JSON.stringify(rows[0]));
@@ -280,17 +360,65 @@ const main = async () => {
     check('My Bookings shows the verified payment', mine?.payment?.status === 'VERIFIED', mine?.payment?.status);
     check('My Bookings shows the advanced booking status', mine?.status === 'MENTOR_PENDING', mine?.status);
 
-    // ---- 9. Verified payment is terminal -------------------------------------
-    section('9. Verified payment is terminal');
-    const afterVerify = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`, {
-      method: 'POST', body: proofBody('AFTER12345'),
+    // ---- 9. Large, realistic screenshot (the original 413 case) -----------
+    section('9. Large screenshot (previously 413)');
+    const big = await submitLargeScreenshot({
+      token: seekerToken, seekerId, bookingId: booking2.id, ref: `${ref}BIG`,
     });
-    check('cannot submit again once verified (409)', afterVerify.status === 409, `got ${afterVerify.status}`);
+    check('4MB screenshot uploads to storage', big.uploadStatus === 200, `upload ${big.uploadStatus}`);
+    check('4MB screenshot is accepted by the API (no 413)', big.apiStatus === 201, `api ${big.apiStatus} ${JSON.stringify(big.body)}`);
+    if (big.storagePath) createdPaths.push(big.storagePath);
+    const bigPayment = (await json(await rest(`payments?booking_id=eq.${booking2.id}&select=status,proof_storage_path`)))[0];
+    check('large proof recorded against the booking', bigPayment?.status === 'PENDING_VERIFICATION', bigPayment?.status);
+    check('large proof path stored', !!bigPayment?.proof_storage_path);
 
-    // ---- 10. Refresh keeps the real state -------------------------------------
-    section('10. Refresh / re-read');
+    // Put the booking back to PAYMENT_PENDING so the reject section can run.
+    await rest(`payments?booking_id=eq.${booking2.id}`, { method: 'DELETE' });
+    await rest(`bookings?id=eq.${booking2.id}`, {
+      method: 'PATCH', headers: JH, body: JSON.stringify({ status: 'PAYMENT_PENDING' }),
+    });
+
+    // ---- 10. Reject path (on an independent booking) -----------------------
+    section('10. Reject path');
+    const subR = await submitAsSeeker({ token: seekerToken, seekerId, bookingId: booking2.id, ref: `${ref}R` });
+    check('second booking submission returns 201', subR.status === 201, `got ${subR.status}`);
+    if (subR.storagePath) createdPaths.push(subR.storagePath);
+    const payR = subR.body?.payment;
+
+    const rej = await asAdmin(`/api/admin/payments/${payR.id}/reject`, {
+      method: 'PATCH', body: JSON.stringify({ rejectionReason: 'UTR not readable' }),
+    });
+    check('reject returns 200', rej.status === 200, `got ${rej.status} ${JSON.stringify(rej.body)}`);
+
+    const rejected = (await json(await rest(`payments?id=eq.${payR.id}&select=status,rejection_reason,proof_storage_path`)))[0];
+    check('payment is now REJECTED', rejected?.status === 'REJECTED', rejected?.status);
+    check('rejection reason is stored', rejected?.rejection_reason === 'UTR not readable', rejected?.rejection_reason);
+    check('proof is NOT deleted on rejection', !!rejected?.proof_storage_path);
+    createdPaths.push(rejected.proof_storage_path);
+
+    const rejNotif = await json(await rest(`notifications?user_id=eq.${seekerId}&entity_id=eq.${payR.id}&event_type=eq.PAYMENT_REJECTED&select=id`));
+    for (const n of rejNotif ?? []) createdNotifIds.push(n.id);
+    check('seeker notified that payment needs attention', (rejNotif?.length ?? 0) === 1, JSON.stringify(rejNotif));
+
+    const bkR = (await json(await rest(`bookings?id=eq.${booking2.id}&select=status`)))[0];
+    check('rejected booking left the payable state', bkR?.status === 'REJECTED', bkR?.status);
+
+    const afterReject = await submitAsSeeker({ token: seekerToken, seekerId, bookingId: booking2.id, ref: 'AFTERREJ1' });
+    if (afterReject.storagePath) createdPaths.push(afterReject.storagePath);
+    check('cannot submit against a rejected booking (409)', afterReject.status === 409, `got ${afterReject.status}`);
+
+    // ---- 10. A verified payment cannot be re-reviewed -----------------------
+    section('10. Verified payment is terminal');
+    const reApprove = await asAdmin(`/api/admin/payments/${pay.id}/approve`, { method: 'PATCH' });
+    check('re-approving a verified payment is refused', reApprove.status >= 400, `got ${reApprove.status}`);
+
+    // ---- 11. Refresh keeps the real state ------------------------------------
+    section('11. Refresh / re-read');
     const reread = await asSeeker(`/api/seeker/bookings/${booking.id}/payment-proof`);
-    check('re-read returns the real stored payment', reread.body?.payment?.id === pay.id && reread.body?.payment?.status === 'VERIFIED');
+    check('re-read returns the real stored payment', reread.body?.payment?.id === pay.id && reread.body?.payment?.status === 'VERIFIED', reread.body?.payment?.status);
+
+    const reread2 = await asSeeker(`/api/seeker/bookings/${booking2.id}/payment-proof`);
+    check('re-read returns the rejected payment', reread2.body?.payment?.status === 'REJECTED', reread2.body?.payment?.status);
   } finally {
     section('Cleanup');
     await cleanup();

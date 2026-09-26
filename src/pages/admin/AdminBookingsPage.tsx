@@ -4,6 +4,8 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { ShortId } from '@/src/components/shared/ShortId';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { apiFetch } from '@/src/lib/apiClient';
 import { APP_CONFIG } from '@/src/config/app';
 
@@ -70,11 +72,8 @@ export const AdminBookingsPage: React.FC = () => {
       const overdue = enriched.filter((b) => b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue);
       setOverdueCount(overdue.length);
     } catch (err) {
-      console.error('Failed to load admin bookings:', err);
       setError(
-        err instanceof Error && err.message
-          ? err.message
-          : 'The bookings ledger could not be loaded.'
+        toUserMessage(err, 'The bookings ledger could not be loaded. Please try again.', { page: 'admin-bookings' })
       );
     } finally {
       setLoading(false);
@@ -204,7 +203,8 @@ export const AdminBookingsPage: React.FC = () => {
       ) : (
         <>
           {/* Bookings Table */}
-          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] overflow-hidden shadow-xs">
+          <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-xs overflow-hidden">
+            <div className="table-scroll">
             <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
               <thead className="bg-[var(--color-shell-bg-hover)]/70 border-b border-[var(--color-shell-border)] text-[var(--color-shell-text)] font-semibold uppercase tracking-wider text-[11px]">
                 <tr>
@@ -240,10 +240,17 @@ export const AdminBookingsPage: React.FC = () => {
                       #{b.booking_code}
                     </td>
                     <td className="py-3 px-4">
-                      <span className="font-bold text-zinc-900 block">
-                        {b.seeker?.full_name || b.seeker_id}
+                      <span className="block font-bold text-zinc-900 break-words">
+                        {b.seeker?.full_name || 'Seeker'}
                       </span>
-                      <span className="text-[11px] text-zinc-400">Mentor: {b.mentor_id}</span>
+                      <span className="text-[11px] text-zinc-400">
+                        Mentor: {b.mentor?.full_name || 'Mentor'}
+                      </span>
+                      {b.mentor_id && (
+                        <span className="text-[10px] text-zinc-400">
+                          <ShortId value={b.mentor_id} label="Mentor ID" />
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-zinc-700">
                       {formatScheduledTime(b.start_time, b.mentor_timezone)}
@@ -302,8 +309,9 @@ export const AdminBookingsPage: React.FC = () => {
                 );
               })
             )}
-          </tbody>
+            </tbody>
         </table>
+        </div>
       </div>
 
       {/* Booking Detail Modal */}
@@ -318,16 +326,37 @@ export const AdminBookingsPage: React.FC = () => {
             <div className="grid grid-cols-2 gap-3 bg-zinc-50 p-3.5 rounded-lg border border-zinc-100">
               <div>
                 <span className="text-zinc-400 block text-[11px]">Seeker</span>
-                <span className="font-bold text-zinc-900">
-                  {selectedBooking.seeker?.full_name || selectedBooking.seeker_id}
+                <span className="font-bold text-zinc-900 break-words">
+                  {selectedBooking.seeker?.full_name || 'Seeker'}
                 </span>
+                {selectedBooking.seeker?.email && (
+                  <a
+                    href={`mailto:${selectedBooking.seeker.email}`}
+                    className="text-zinc-500 hover:text-zinc-900 hover:underline break-all text-[10px]"
+                  >
+                    {selectedBooking.seeker.email}
+                  </a>
+                )}
                 <span className="text-zinc-400 block text-[10px]">
-                  {selectedBooking.seeker?.email}
+                  <ShortId value={selectedBooking.seeker_id} label="Seeker ID" />
                 </span>
               </div>
               <div>
-                <span className="text-zinc-400 block text-[11px]">Mentor ID</span>
-                <span className="font-bold text-zinc-900">{selectedBooking.mentor_id}</span>
+                <span className="text-zinc-400 block text-[11px]">Mentor</span>
+                <span className="font-bold text-zinc-900 break-words">
+                  {selectedBooking.mentor?.full_name || 'Mentor'}
+                </span>
+                {selectedBooking.mentor?.email && (
+                  <a
+                    href={`mailto:${selectedBooking.mentor.email}`}
+                    className="text-zinc-500 hover:text-zinc-900 hover:underline break-all text-[10px]"
+                  >
+                    {selectedBooking.mentor.email}
+                  </a>
+                )}
+                <span className="text-zinc-400 block text-[10px]">
+                  <ShortId value={selectedBooking.mentor_id} label="Mentor ID" />
+                </span>
               </div>
               <div>
                 <span className="text-zinc-400 block text-[11px]">Scheduled Start</span>
@@ -354,7 +383,7 @@ export const AdminBookingsPage: React.FC = () => {
             {/* Meeting Link & Deadline Inspection */}
             <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-200 space-y-1.5">
               <span className="font-semibold text-zinc-900 block text-xs">
-                Phase 8: Meeting Link & Deadline Rules
+                Meeting Link & Deadline
               </span>
               <div className="text-zinc-700 space-y-1">
                 <div>

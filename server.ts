@@ -31,6 +31,8 @@ import {
 } from './src/lib/supabaseServer';
 import { generateRequestId } from './src/lib/requestId';
 import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError, logger } from './src/lib/logger';
+import { logSanitizer } from './src/lib/logSanitizer';
+import { recordLoginFailure, resetLoginFailures } from './src/lib/loginFailureTracker';
 import { auditAction } from './src/lib/auditLogger';
 import { POSTGREST_RELATIONSHIPS } from './src/lib/postgrestRelationships';
 import {
@@ -295,7 +297,7 @@ async function notifyPaymentReviewed(
       },
     });
   } catch (notifyErr) {
-    console.error('Failed to notify seeker of payment review outcome:', notifyErr);
+    console.error('Failed to notify seeker of payment review outcome:', logSanitizer.safeMessage(notifyErr));
   }
 }
 
@@ -678,13 +680,13 @@ async function startServer() {
     };
   };
 
-  // A payment proof is an inline base64 screenshot capped at
-  // PAYMENT_PROOF_MAX_BYTES (5MB). base64 inflates that by ~4/3, so the JSON
-  // body limit must leave room for the encoded image plus the small metadata
-  // envelope. The cap is enforced precisely, per field, in the payment-proof
-  // route and by the bucket's own file_size_limit — this limit only stops a
-  // single oversized request from being buffered.
-  app.use(express.json({ limit: '8mb' }));
+  // Payment proofs are NOT sent through this parser. The browser uploads the
+  // screenshot straight to the private Supabase bucket and POSTs only a small
+  // metadata envelope (a few hundred bytes) to /api/seeker/bookings/:id/
+  // /payment-proof, so a large base64 image can never reach the body limit
+  // again — that was the cause of the 413. The cap is kept small and explicit
+  // rather than removed, so a single oversized request is still refused early.
+  app.use(express.json({ limit: '256kb' }));
 
   // --------------------------------------------------------------------------
   // Request ID + Centralized Request Logging Middleware
@@ -779,7 +781,7 @@ async function startServer() {
   // credential and persona brute-forcing long before it is useful.
   // Demo auth is opt-in: it is disabled in production AND requires an explicit,
   // non-default DEMO_AUTH_SECRET so the hardcoded default can never be exploited.
-  app.post('/api/auth/demo-login', expensiveRouteLimiter, (req, res) => {
+  app.post('/api/auth/demo-login', expensiveRouteLimiter, async (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!isDemoAuthEnabled()) {
       return res.status(404).json({
@@ -804,13 +806,98 @@ async function startServer() {
     }
 
     if (!account) {
+      const tracked = await recordLoginFailure({
+        email: email || persona,
+        ip: req.ip,
+        reason: 'INVALID_DEMO_CREDENTIALS',
+      });
+
+      logger.auth('login_failure', {
+        requestId: (req as AuthRequest).requestId,
+        path: '/api/auth/demo-login',
+        method: 'POST',
+        statusCode: 401,
+        result: 'failure',
+        reason: 'INVALID_DEMO_CREDENTIALS',
+      });
+
       return res.status(401).json({
         success: false,
         error: { code: 'INVALID_DEMO_CREDENTIALS', message: 'Invalid demo credentials.' },
+        consecutiveFailures: tracked.consecutiveFailures,
       });
     }
 
+    await resetLoginFailures({ email: account.email, ip: req.ip });
+
     return res.json({ success: true, ...demoAuthResponse(account) });
+  });
+
+  // POST /api/auth/login-failure
+  // Detection telemetry for the brute-force alert. Supabase password sign-in
+  // happens in the browser, so the server never observes the failed attempt
+  // itself and the client reports it here. Rate limited per IP so the reporting
+  // path cannot itself be used to flood the tracker table.
+  app.post('/api/auth/login-failure', expensiveRouteLimiter, async (req: AuthRequest, res) => {
+    try {
+      const body = (req.body || {}) as { email?: unknown; reason?: unknown };
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const ip = typeof req.ip === 'string' ? req.ip : '';
+
+      if (!email && !ip) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'email is required.' },
+        });
+      }
+
+      const tracked = await recordLoginFailure({ email, ip, reason: body.reason });
+
+      logger.auth('login_failure', {
+        requestId: req.requestId,
+        path: '/api/auth/login-failure',
+        method: 'POST',
+        statusCode: 401,
+        result: 'failure',
+        reason: typeof body.reason === 'string' ? body.reason.slice(0, 60) : 'INVALID_CREDENTIALS',
+      });
+
+      return res.json({
+        success: true,
+        consecutiveFailures: tracked.consecutiveFailures,
+        shouldAlert: tracked.shouldAlert,
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/auth/login-failure',
+        clientMessage: 'Unable to record login attempt.',
+      });
+    }
+  });
+
+  // POST /api/auth/login-success
+  // A correct password breaks the streak, so only genuinely consecutive failures
+  // ever reach the threshold.
+  app.post('/api/auth/login-success', expensiveRouteLimiter, async (req: AuthRequest, res) => {
+    try {
+      const body = (req.body || {}) as { email?: unknown };
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const ip = typeof req.ip === 'string' ? req.ip : '';
+
+      const cleared = await resetLoginFailures({ email, ip });
+      return res.json({ success: true, clearedFailures: cleared });
+    } catch (err: any) {
+      return respondWithServerError({
+        req,
+        res,
+        error: err,
+        context: 'POST /api/auth/login-success',
+        clientMessage: 'Unable to record login attempt.',
+      });
+    }
   });
 
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
@@ -1061,7 +1148,7 @@ async function startServer() {
 
       return res.status(201).json(result);
     } catch (err: any) {
-      console.error('Unhandled booking error:', err);
+      console.error('Unhandled booking error:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err, context: 'POST /api/bookings' });
     }
   });
@@ -1322,7 +1409,13 @@ async function startServer() {
     }
 
     // ---- 1. Input validation --------------------------------------------
-    const { transactionReference, fileName, mimeType, fileBase64 } = req.body ?? {};
+    // The image is NOT sent in this request. The browser uploads it straight
+    // to the private Supabase bucket (the same two-step flow the mentor
+    // verification documents already use) and sends only the resulting object
+    // path here. That keeps this request a few hundred bytes instead of a
+    // base64 image ~33% larger than the file, which is what previously blew
+    // past the platform request-size limit and returned 413.
+    const { transactionReference, fileName, mimeType, fileSize, storagePath } = req.body ?? {};
 
     const reference = normaliseTransactionReference(transactionReference);
     if (!reference.ok) {
@@ -1332,25 +1425,14 @@ async function startServer() {
     const proof = validateProofFile({
       name: typeof fileName === 'string' ? fileName : '',
       type: typeof mimeType === 'string' ? mimeType : '',
-      // The real, decoded length is re-checked below; this is only a cheap
-      // pre-check so an oversized payload is rejected before it is decoded.
-      size: typeof req.body?.fileSize === 'number' ? req.body.fileSize : PAYMENT_PROOF_MAX_BYTES + 1,
+      size: typeof fileSize === 'number' ? fileSize : PAYMENT_PROOF_MAX_BYTES + 1,
     });
     if (!proof.ok) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: proof.message } });
     }
 
-    if (typeof fileBase64 !== 'string' || !fileBase64) {
+    if (typeof storagePath !== 'string' || !storagePath) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'Select your payment screenshot.' } });
-    }
-
-    const imageBytes = decodeBase64Image(fileBase64);
-    if (!imageBytes) {
-      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That screenshot could not be read. Please select it again.' } });
-    }
-    // Authoritative size check on the decoded bytes, not a client-claimed number.
-    if (imageBytes.length > PAYMENT_PROOF_MAX_BYTES) {
-      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That image is too large. Please upload a screenshot under 5 MB.' } });
     }
 
     // ---- 2. Booking exists, is owned by the caller, and is payable -------
@@ -1370,6 +1452,15 @@ async function startServer() {
       // The guard that stops one seeker submitting proof against another
       // seeker's booking.
       return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to pay for this booking.' } });
+    }
+
+    // Checked only once the booking is known to exist and be the caller's, so a
+    // bogus booking id still reports 404 rather than being masked as 403. The
+    // client only ever names a path inside its OWN folder, and live storage RLS
+    // already enforces that on upload; re-checking here means a crafted path
+    // cannot make the server record a proof belonging to somebody else.
+    if (!storagePath.startsWith(`${callerId}/${bookingId}/`)) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_STORAGE_PATH', message: 'That file does not belong to this booking.' } });
     }
 
     if (!isPayableBookingStatus(booking.status)) {
@@ -1401,15 +1492,30 @@ async function startServer() {
       });
     }
 
-    // ---- 4. Store the proof in the private bucket ------------------------
-    const storagePath = buildProofStoragePath(callerId, bookingId, fileName, randomUUID());
-    const { error: uploadErr } = await admin.storage
+    // ---- 4. Confirm the uploaded object really is there ------------------
+    // The browser already put the file in the bucket. Verifying it here means a
+    // payment row can never point at a path that holds no image, and lets the
+    // real stored size be checked instead of a client-claimed number.
+    const { data: storedFile, error: statErr } = await admin.storage
       .from(PAYMENT_PROOF_BUCKET)
-      .upload(storagePath, imageBytes, { contentType: mimeType, upsert: false, cacheControl: '3600' });
+      .list(`${callerId}/${bookingId}`, { search: storagePath.split('/').pop(), limit: 10 });
 
-    if (uploadErr) {
-      console.error('Payment proof upload failed:', uploadErr.message);
-      return res.status(502).json({ success: false, error: { code: 'UPLOAD_FAILED', message: 'Payment screenshot upload failed. Please try again.' } });
+    if (statErr) {
+      console.error('Payment proof lookup failed:', statErr.message);
+      return respondWithInternalError({ req, res, error: statErr, context: 'POST /api/seeker/bookings/:id/payment-proof (storage lookup)' });
+    }
+
+    const storedObject = (storedFile || []).find((f) => f.name === storagePath.split('/').pop());
+    if (!storedObject) {
+      return res.status(400).json({ success: false, error: { code: 'PROOF_NOT_STORED', message: 'We could not find that screenshot. Please select it again.' } });
+    }
+    // supabase-js exposes the byte count on `metadata.size`, not on the object.
+    const storedBytes = storedObject.metadata?.size;
+    if (typeof storedBytes === 'number' && storedBytes > PAYMENT_PROOF_MAX_BYTES) {
+      // The bucket's own limit is the backstop; this returns a clear message
+      // instead of a generic failure.
+      await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
+      return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That image is too large. Please upload a screenshot under 5 MB.' } });
     }
 
     // ---- 5. Upsert the payment record ------------------------------------
@@ -1445,7 +1551,7 @@ async function startServer() {
       try {
         await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
       } catch (cleanupErr) {
-        console.error('Failed to clean up orphaned proof upload:', cleanupErr);
+        console.error('Failed to clean up orphaned proof upload:', logSanitizer.safeMessage(cleanupErr));
       }
       return respondWithInternalError({ req, res, error: paymentErr, context: 'POST /api/seeker/bookings/:id/payment-proof (persist)' });
     }
@@ -1507,7 +1613,7 @@ async function startServer() {
           metadata: notificationMetadata,
         });
       } catch (adminNotifErr) {
-        console.error('Failed to raise admin payment verification alert:', adminNotifErr);
+        console.error('Failed to raise admin payment verification alert:', logSanitizer.safeMessage(adminNotifErr));
       }
     }
 
@@ -2570,7 +2676,7 @@ async function startServer() {
 
       return res.json({ success: true, mentors });
     } catch (err: any) {
-      console.error('Failed to fetch admin mentors:', err);
+      console.error('Failed to fetch admin mentors:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -2600,7 +2706,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Mentor approved successfully.' });
     } catch (err: any) {
-      console.error('Failed to approve mentor:', err);
+      console.error('Failed to approve mentor:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -2630,7 +2736,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Mentor rejected successfully.' });
     } catch (err: any) {
-      console.error('Failed to reject mentor:', err);
+      console.error('Failed to reject mentor:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -2702,7 +2808,7 @@ async function startServer() {
 
       return res.json({ success: true, message: `Mentor ${action === 'activate' ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
-      console.error('Failed to toggle mentor active status:', err);
+      console.error('Failed to toggle mentor active status:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -2948,7 +3054,7 @@ async function startServer() {
 
       return res.json({ success: true, mentors });
     } catch (err: any) {
-      console.error('Failed to fetch eligible mentors:', err);
+      console.error('Failed to fetch eligible mentors:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4056,7 +4162,7 @@ async function startServer() {
 
       return res.json({ success: true, segments: segmentsWithCounts });
     } catch (err: any) {
-      console.error('Failed to fetch admin segments:', err);
+      console.error('Failed to fetch admin segments:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4097,7 +4203,7 @@ async function startServer() {
         gigs: gigsRes.gigs,
       });
     } catch (err: any) {
-      console.error('Failed to fetch segment:', err);
+      console.error('Failed to fetch segment:', logSanitizer.safeMessage(err));
       return respondWithServerError({
         req, res, error: err,
         context: 'GET /api/admin/segments/:segment',
@@ -4161,7 +4267,7 @@ async function startServer() {
 
       return res.status(201).json({ success: true, segment: data, message: 'Segment created successfully.' });
     } catch (err: any) {
-      console.error('Failed to create segment:', err);
+      console.error('Failed to create segment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4237,7 +4343,7 @@ async function startServer() {
 
       return res.json({ success: true, segment: data, message: 'Segment updated successfully.' });
     } catch (err: any) {
-      console.error('Failed to update segment:', err);
+      console.error('Failed to update segment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4270,7 +4376,7 @@ async function startServer() {
 
       return res.json({ success: true, segment: data, message: `Segment ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
-      console.error('Failed to toggle segment active status:', err);
+      console.error('Failed to toggle segment active status:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4346,7 +4452,7 @@ async function startServer() {
 
       return res.json({ success: true, segments, message: `Segment priority moved ${direction}.` });
     } catch (err: any) {
-      console.error('Failed to change segment priority:', err);
+      console.error('Failed to change segment priority:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4429,7 +4535,7 @@ async function startServer() {
 
       return res.status(201).json({ success: true, assignment: data, message: 'Mentor assigned to segment.' });
     } catch (err: any) {
-      console.error('Failed to assign mentor to segment:', err);
+      console.error('Failed to assign mentor to segment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4487,7 +4593,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Mentor removed from segment.' });
     } catch (err: any) {
-      console.error('Failed to remove mentor from segment:', err);
+      console.error('Failed to remove mentor from segment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4570,7 +4676,7 @@ async function startServer() {
 
       return res.status(201).json({ success: true, gig: data, message: 'Gig created successfully.' });
     } catch (err: any) {
-      console.error('Failed to create gig:', err);
+      console.error('Failed to create gig:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4636,7 +4742,7 @@ async function startServer() {
 
       return res.json({ success: true, gig: data, message: 'Gig updated successfully.' });
     } catch (err: any) {
-      console.error('Failed to update gig:', err);
+      console.error('Failed to update gig:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4695,7 +4801,7 @@ async function startServer() {
 
       return res.json({ success: true, gig: data, message: `Gig ${isActive ? 'activated' : 'deactivated'} successfully.` });
     } catch (err: any) {
-      console.error('Failed to toggle gig active status:', err);
+      console.error('Failed to toggle gig active status:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -4721,7 +4827,7 @@ async function startServer() {
 
       return res.json({ success: true, mentors });
     } catch (err: any) {
-      console.error('Failed to fetch segment mentors:', err);
+      console.error('Failed to fetch segment mentors:', logSanitizer.safeMessage(err));
       return respondWithServerError({
         req, res, error: err,
         context: 'GET /api/admin/segments/:segment/mentors',
@@ -4750,7 +4856,7 @@ async function startServer() {
 
       return res.json({ success: true, gigs });
     } catch (err: any) {
-      console.error('Failed to fetch segment gigs:', err);
+      console.error('Failed to fetch segment gigs:', logSanitizer.safeMessage(err));
       return respondWithServerError({
         req, res, error: err,
         context: 'GET /api/admin/segments/:segment/gigs',
@@ -4815,7 +4921,7 @@ async function startServer() {
         gig: { id: result.gig.id, title: result.gig.title, durationMinutes: result.gig.duration_minutes },
       });
     } catch (err: any) {
-      console.error('Failed to generate slots:', err);
+      console.error('Failed to generate slots:', logSanitizer.safeMessage(err));
       return respondWithServerError({
         req,
         res,
@@ -4896,7 +5002,7 @@ async function startServer() {
 
       return res.json({ success: true, users });
     } catch (err: any) {
-      console.error('Failed to fetch admin users:', err);
+      console.error('Failed to fetch admin users:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -5776,7 +5882,7 @@ async function startServer() {
                 proofUrl = signed?.signedUrl ?? null;
               }
             } catch (signErr) {
-              console.error('Failed to sign payment proof:', signErr);
+              console.error('Failed to sign payment proof:', logSanitizer.safeMessage(signErr));
             }
           }
 
@@ -5801,7 +5907,7 @@ async function startServer() {
 
       return res.json({ success: true, payments: formattedPayments });
     } catch (err: any) {
-      console.error('Failed to fetch admin payments:', err);
+      console.error('Failed to fetch admin payments:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -5842,7 +5948,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Payment approved successfully.' });
     } catch (err: any) {
-      console.error('Failed to approve payment:', err);
+      console.error('Failed to approve payment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -5887,7 +5993,7 @@ async function startServer() {
 
       return res.json({ success: true, message: 'Payment rejected successfully.' });
     } catch (err: any) {
-      console.error('Failed to reject payment:', err);
+      console.error('Failed to reject payment:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
     }
   });
@@ -8312,7 +8418,7 @@ async function startServer() {
 
       if (urlErr) {
         if (process.env.NODE_ENV !== 'production') {
-          console.error('[MentorVerification] createSignedUploadUrl error:', urlErr);
+          console.error('[MentorVerification] createSignedUploadUrl error:', logSanitizer.safeMessage(urlErr));
         }
         throw urlErr;
       }
@@ -8325,7 +8431,7 @@ async function startServer() {
       });
     } catch (err: any) {
       if (process.env.NODE_ENV !== 'production') {
-        console.error('[MentorVerification] upload-url error:', err);
+        console.error('[MentorVerification] upload-url error:', logSanitizer.safeMessage(err));
       }
       return respondWithInternalError({ req, res, error: err });
     }

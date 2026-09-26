@@ -11,8 +11,9 @@ import { logApiError } from '@/src/lib/logger';
  *  - The CLIENT only ever receives a stable, safe message plus the request id.
  *    Raw database internals (constraint names, SQL fragments, column names)
  *    are never returned to the browser.
- *  - No tokens, cookies or service-role keys are ever logged (logger sanitises
- *    header/body values; error objects never contain credentials).
+ *  - No tokens, cookies or service-role keys are ever logged: every field
+ *    reaching system_logs / audit_logs is scrubbed by the log sanitizer at the
+ *    single write chokepoint (see writeSystemLog in logger.ts).
  */
 
 export interface SupabaseErrorInfo {

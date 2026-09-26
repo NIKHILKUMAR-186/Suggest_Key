@@ -1,5 +1,6 @@
 ﻿import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
 import { apiFetch } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import {
   Segment,
   MentorProfile,
@@ -118,7 +119,7 @@ export async function fetchActiveSegments(): Promise<{ segments: Segment[]; erro
     if (error) throw error;
     return { segments: (data as Segment[]) || [], error: null };
   } catch (err: any) {
-    console.error('Error fetching segments from Supabase:', err);
+    console.error('Error fetching segments from Supabase:', logSanitizer.safeMessage(err));
     return { segments: [], error: err };
   }
 }
@@ -142,13 +143,13 @@ export async function fetchSegmentBySlug(slug: string): Promise<Segment | null> 
       .maybeSingle();
 
     if (error) {
-      console.error('Error fetching segment by slug from Supabase:', error);
+      console.error('Error fetching segment by slug from Supabase:', logSanitizer.safeMessage(error));
       return null;
     }
 
     return (data as Segment) || null;
   } catch (err: any) {
-    console.error('Error fetching segment by slug from Supabase:', err);
+    console.error('Error fetching segment by slug from Supabase:', logSanitizer.safeMessage(err));
     return null;
   }
 }
@@ -312,7 +313,7 @@ export async function fetchDiscoverableMentors(
 
     return { mentors: discoverableMentors, error: null };
   } catch (err: any) {
-    console.error('Error fetching discoverable mentors from Supabase:', err);
+    console.error('Error fetching discoverable mentors from Supabase:', logSanitizer.safeMessage(err));
     return { mentors: [], error: err };
   }
 }
@@ -435,7 +436,7 @@ export async function fetchMentorDetail(
       error: null,
     };
   } catch (err: any) {
-    console.error('Error fetching mentor detail:', err);
+    console.error('Error fetching mentor detail:', logSanitizer.safeMessage(err));
     return {
       mentor: null,
       error: new Error(err?.message || 'Unable to load availability.'),
@@ -655,7 +656,7 @@ export async function fetchAllMentors(
 
     return { mentors, pagination, error: null };
   } catch (err: any) {
-    console.error('Error fetching all mentors from Supabase:', err);
+    console.error('Error fetching all mentors from Supabase:', logSanitizer.safeMessage(err));
     return {
       mentors: [],
       pagination: { ...EMPTY_PAGINATION, page, pageSize },
@@ -693,7 +694,7 @@ export async function fetchEligibleLanguages(): Promise<{ languages: string[]; e
 
     return { languages: Array.from(langs).sort(), error: null };
   } catch (err: any) {
-    console.error('Error fetching eligible languages from Supabase:', err);
+    console.error('Error fetching eligible languages from Supabase:', logSanitizer.safeMessage(err));
     return { languages: [], error: err };
   }
 }

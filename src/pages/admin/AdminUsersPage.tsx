@@ -6,6 +6,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 
 interface UserRecord {
   id: string;
@@ -49,8 +50,7 @@ export const AdminUsersPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch users');
       setUsers(data.users || []);
     } catch (err: any) {
-      setError(err.message || 'Failed to load users');
-      console.error('Failed to fetch users:', err);
+      setError(toUserMessage(err, 'Failed to load users'));
     } finally {
       setLoading(false);
     }

@@ -4,8 +4,10 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
 import { fetchMentorBookings } from '@/src/lib/bookingService';
 import { apiFetch } from '@/src/lib/apiClient';
+import { toUserMessage } from '@/src/lib/errorMessages';
 
 interface Booking {
   id: string;
@@ -33,6 +35,7 @@ interface Booking {
 export const MentorHomePage: React.FC = () => {
   const { user, profile, onboardingStatus } = useAuth();
   const { navigate } = useNavigation();
+  const toast = useToast();
   const [actionBooking, setActionBooking] = useState<Booking | null>(null);
   const [meetingUrl, setMeetingUrl] = useState('');
   const [todaySessions, setTodaySessions] = useState<Booking[]>([]);
@@ -79,7 +82,7 @@ export const MentorHomePage: React.FC = () => {
   const handleConfirm = async () => {
     if (!actionBooking || !meetingUrl.trim()) return;
     if (!meetingUrl.startsWith('https://')) {
-      alert('Meeting URL must be a valid HTTPS link.');
+      toast.error('The meeting link must be a valid HTTPS address.', { title: 'Link not accepted' });
       return;
     }
     try {
@@ -93,8 +96,13 @@ export const MentorHomePage: React.FC = () => {
       await fetchData();
       setActionBooking(null);
       setMeetingUrl('');
-    } catch (err: any) {
-      alert('Failed to confirm session: ' + err.message);
+      toast.success('The seeker has been notified that this session is confirmed.', {
+        title: 'Session confirmed',
+      });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'We could not confirm this session. Please try again.', { action: 'confirm_session' }), {
+        title: 'Confirmation failed',
+      });
     }
   };
 
@@ -226,7 +234,7 @@ export const MentorHomePage: React.FC = () => {
                 </p>
               </div>
               <Button
-                onClick={() => navigate(`/mentor/booking-detail?id=${session.id}`)}
+                onClick={() => navigate(`/mentor/booking-detail?bookingId=${session.id}`)}
                 variant="outline"
                 size="sm"
                 className="text-xs"

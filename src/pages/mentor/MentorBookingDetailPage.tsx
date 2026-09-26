@@ -21,6 +21,10 @@ import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
+import { useToast } from '@/src/context/ToastContext';
+import { ShortId } from '@/src/components/shared/ShortId';
+import { toUserMessage } from '@/src/lib/errorMessages';
+import { formatInr } from '@/src/lib/seekerFormat';
 import {
   fetchBookingDetail,
   confirmMentorBooking,
@@ -30,6 +34,7 @@ import { validateMeetingUrl } from '@/src/lib/bookingEngine';
 
 export const MentorBookingDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const toast = useToast();
   const { user } = useAuth();
 
   // Extract bookingId from current route or window location query string
@@ -71,14 +76,14 @@ export const MentorBookingDetailPage: React.FC = () => {
         setBooking(data);
         if (data.meeting_url) {
           setMeetingUrl(data.meeting_url);
-        } else if (!meetingUrl) {
-          setMeetingUrl('https://meet.google.com/');
         }
       } else {
-        setFeedbackError(`Booking ${idToLoad} not found or access denied.`);
+        setFeedbackError('That booking could not be found, or it does not belong to your mentor account.');
       }
-    } catch (err: any) {
-      setFeedbackError(err.message || 'Failed to load booking details.');
+    } catch (err: unknown) {
+      setFeedbackError(
+        toUserMessage(err, 'We could not load this booking. Please try again.', { bookingId: idToLoad })
+      );
     } finally {
       setLoading(false);
     }
@@ -134,16 +139,29 @@ export const MentorBookingDetailPage: React.FC = () => {
               }
             : null
         );
-        setFeedbackSuccess(
-          'Session confirmed successfully! In-app notification has been dispatched to the seeker.'
-        );
+        setFeedbackSuccess('Session confirmed. The seeker has been notified in-app.');
+        toast.success('The meeting link was saved and the seeker has been notified.', {
+          title: 'Session confirmed',
+        });
         // Reload to sync latest state
         loadBooking(booking.id);
       } else {
-        setFeedbackError(result.error?.message || 'Failed to confirm booking.');
+        const message = toUserMessage(
+          result.error?.message,
+          'We could not confirm this session. Please check the meeting link and try again.',
+          { bookingId: booking.id }
+        );
+        setFeedbackError(message);
+        toast.error(message, { title: 'Confirmation failed' });
       }
-    } catch (err: any) {
-      setFeedbackError(err.message || 'Unexpected network error during confirmation.');
+    } catch (err: unknown) {
+      const message = toUserMessage(
+        err,
+        'We could not confirm this session. Please check your connection and try again.',
+        { bookingId: booking.id }
+      );
+      setFeedbackError(message);
+      toast.error(message, { title: 'Confirmation failed' });
     } finally {
       setSubmitting(false);
     }
@@ -193,7 +211,7 @@ export const MentorBookingDetailPage: React.FC = () => {
         <AlertCircle className="h-10 w-10 text-amber-600 mx-auto" />
         <h2 className="text-lg font-bold text-zinc-950">Booking Not Found</h2>
         <p className="text-sm text-zinc-600">
-          {feedbackError || `The booking #${bookingId} does not exist or does not belong to your mentor account.`}
+          {feedbackError || 'That booking could not be found, or it does not belong to your mentor account.'}
         </p>
         <Button onClick={() => navigate('/mentor/bookings')} variant="outline" size="sm">
           Return to Mentor Bookings
@@ -205,6 +223,21 @@ export const MentorBookingDetailPage: React.FC = () => {
   const isConfirmed = booking.status === 'CONFIRMED';
   const isPending = booking.status === 'MENTOR_PENDING';
   const isOverdue = booking.deadlineInfo?.isOverdue;
+
+  // Derived from the real payment record - never asserted by default.
+  const paymentStatus = (booking.payment?.status || '').toLowerCase() === 'verified' ? 'verified' : 'pending';
+  const amountLabel = formatInr(booking.amount_inr) || 'Not recorded';
+
+  // Duration is read off the booking window instead of being assumed to be 60.
+  const sessionDurationLabel = (() => {
+    const start = new Date(booking.start_time).getTime();
+    const end = new Date(booking.end_time).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 'Not recorded';
+    const minutes = Math.round((end - start) / 60000);
+    if (minutes < 60) return `${minutes} Minutes`;
+    const hours = minutes / 60;
+    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} Hour${hours === 1 ? '' : 's'}`;
+  })();
   const hoursLeft = booking.deadlineInfo?.hoursUntilSession;
 
   return (
@@ -327,12 +360,13 @@ export const MentorBookingDetailPage: React.FC = () => {
                   </a>
                 </div>
                 <Button
-                  onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                  onClick={() => navigate(`/mentor/workspace?bookingId=${booking.id}`)}
                   size="sm"
-                  className="gap-1.5 text-xs bg-emerald-700 hover:bg-emerald-800 text-white"
+                  variant="outline"
+                  className="gap-1.5 text-xs"
                 >
-                  <Video className="h-3.5 w-3.5" />
-                  <span>Enter Session Access Room</span>
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Open Session Workspace</span>
                 </Button>
               </div>
             )}
@@ -349,12 +383,14 @@ export const MentorBookingDetailPage: React.FC = () => {
               <User className="h-4 w-4 text-zinc-500" />
               Seeker Profile
             </h3>
-            <span className="text-[11px] font-mono text-zinc-400">ID: {booking.seeker_id}</span>
+            <span className="text-[11px] font-mono text-zinc-400">
+              <ShortId value={booking.seeker_id} label="Seeker ID" />
+            </span>
           </div>
 
           <div className="space-y-3 text-xs">
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full bg-zinc-100 font-bold text-zinc-700 flex items-center justify-center border border-zinc-200 text-sm">
+              <div className="h-10 w-10 shrink-0 rounded-full bg-zinc-100 font-bold text-zinc-700 flex items-center justify-center border border-zinc-200 text-sm">
                 {booking.seeker?.full_name
                   ? booking.seeker.full_name
                       .split(' ')
@@ -364,21 +400,28 @@ export const MentorBookingDetailPage: React.FC = () => {
                       .toUpperCase()
                   : 'SK'}
               </div>
-              <div>
-                <span className="font-bold text-sm text-zinc-900 block">
-                  {booking.seeker?.full_name || 'Aman Kumar'}
+              <div className="min-w-0">
+                <span className="font-bold text-sm text-zinc-900 block truncate">
+                  {booking.seeker?.full_name || 'Seeker name unavailable'}
                 </span>
-                <span className="text-zinc-500">
-                  {booking.seeker?.email || 'seeker@suggestkey.com'}
-                </span>
+                {booking.seeker?.email ? (
+                  <a
+                    href={`mailto:${booking.seeker.email}`}
+                    className="text-zinc-500 hover:text-zinc-900 hover:underline break-all"
+                  >
+                    {booking.seeker.email}
+                  </a>
+                ) : (
+                  <span className="text-zinc-500">No email on file</span>
+                )}
               </div>
             </div>
 
             <div className="space-y-1.5 pt-1">
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Seeker Timezone:</span>
-                <span className="font-medium text-zinc-800">
-                  {booking.seeker_timezone || 'Asia/Kolkata'}
+              <div className="flex justify-between gap-3">
+                <span className="text-zinc-500 shrink-0">Seeker Timezone:</span>
+                <span className="font-medium text-zinc-800 text-right break-words">
+                  {booking.seeker_timezone || 'Not recorded'}
                 </span>
               </div>
             </div>
@@ -388,7 +431,7 @@ export const MentorBookingDetailPage: React.FC = () => {
                 Topic & Pre-session Note
               </span>
               <p className="text-zinc-700 mt-1 leading-relaxed bg-zinc-50 p-2.5 rounded-lg border border-zinc-100">
-                "Discussion on interpersonal communication strategies and constructive conflict resolution."
+                The seeker has not added a pre-session note for this booking.
               </p>
             </div>
           </div>
@@ -401,48 +444,54 @@ export const MentorBookingDetailPage: React.FC = () => {
               <CreditCard className="h-4 w-4 text-zinc-500" />
               Schedule & Payment Verification
             </h3>
-            <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-              Verified
+            <span
+              className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
+                paymentStatus === 'verified'
+                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                  : 'text-zinc-600 bg-zinc-50 border-zinc-200'
+              }`}
+            >
+              {paymentStatus === 'verified' ? 'Payment verified' : 'Payment pending'}
             </span>
           </div>
 
           <div className="space-y-2.5 text-xs">
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Segment:</span>
-              <span className="font-medium text-zinc-900">
-                {booking.segment?.name || 'Unknown Segment'}
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Segment:</span>
+              <span className="font-medium text-zinc-900 text-right break-words">
+                {booking.segment?.name || 'Not recorded'}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Gig:</span>
-              <span className="font-medium text-zinc-900">
-                {booking.gig?.title || 'Unknown Gig'}
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Gig:</span>
+              <span className="font-medium text-zinc-900 text-right break-words">
+                {booking.gig?.title || 'Not recorded'}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Session Timing:</span>
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Session Timing:</span>
               <span className="font-semibold text-zinc-900 text-right">
                 {formatSessionTime(booking.start_time, booking.end_time, booking.mentor_timezone)}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Duration:</span>
-              <span className="font-medium text-zinc-900">60 Minutes</span>
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Duration:</span>
+              <span className="font-medium text-zinc-900">{sessionDurationLabel}</span>
             </div>
-            <div className="flex justify-between border-t border-zinc-100 pt-2">
-              <span className="text-zinc-500">Payment Amount:</span>
-              <span className="font-bold text-zinc-950">₹{booking.amount_inr} INR</span>
+            <div className="flex justify-between gap-3 border-t border-zinc-100 pt-2">
+              <span className="text-zinc-500 shrink-0">Payment Amount:</span>
+              <span className="font-bold text-zinc-950">{amountLabel}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Payment Status:</span>
-              <span className="font-semibold text-emerald-700">
-                {booking.payment?.status || 'VERIFIED'}
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Payment Status:</span>
+              <span className="font-semibold text-zinc-900 text-right break-words">
+                {booking.payment?.status || 'Not recorded'}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-zinc-500">Txn Reference:</span>
-              <span className="font-mono text-[11px] text-zinc-600">
-                {booking.payment?.transaction_reference || 'UPI-REF-90214481'}
+            <div className="flex justify-between gap-3">
+              <span className="text-zinc-500 shrink-0">Txn Reference:</span>
+              <span className="font-mono text-[11px] text-zinc-600 text-right break-all">
+                {booking.payment?.transaction_reference || 'Not submitted'}
               </span>
             </div>
           </div>

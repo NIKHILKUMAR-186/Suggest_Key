@@ -27,6 +27,7 @@ import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Textarea } from '@/src/components/ui/Textarea';
 import { Modal } from '@/src/components/ui/Modal';
+import { mailtoHref } from '@/src/lib/contact';
 import { LoadingState } from '@/src/components/shared/LoadingState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
 import { ControlTabs } from '@/src/components/admin/ControlTabs';
@@ -982,8 +983,17 @@ export const AdminMentorDetailPage: React.FC = () => {
               <h1 className="text-xl font-bold tracking-tight text-[var(--color-shell-text)]">
                 {mentor.profile.fullName || 'Unnamed mentor'}
               </h1>
-              <p className="mt-0.5 font-mono text-xs text-[var(--color-shell-text-muted)]">
-                {mentor.profile.email}
+              <p className="mt-0.5 font-mono text-xs text-[var(--color-shell-text-muted)] break-all">
+                {mentor.profile.email ? (
+                  <a
+                    href={mailtoHref(mentor.profile.email) || undefined}
+                    className="hover:underline underline-offset-2"
+                  >
+                    {mentor.profile.email}
+                  </a>
+                ) : (
+                  '—'
+                )}
               </p>
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                 <Badge variant="secondary" className="text-[10px]">Mentor</Badge>

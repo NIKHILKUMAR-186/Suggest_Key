@@ -22,6 +22,9 @@ import {
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
+import { ShortId, shortId } from '@/src/components/shared/ShortId';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { useAuth } from '@/src/context/AuthContext';
 import {
   fetchAdminWorkspacesAuthoritative,
@@ -47,6 +50,7 @@ export const AdminWorkspacesPage: React.FC = () => {
   const [editNotes, setEditNotes] = useState<string>('');
   const [savingEdit, setSavingEdit] = useState<boolean>(false);
   const [modalFeedback, setModalFeedback] = useState<string | null>(null);
+  const toast = useToast();
 
   const loadWorkspaces = async () => {
     setLoading(true);
@@ -54,8 +58,8 @@ export const AdminWorkspacesPage: React.FC = () => {
     try {
       const data = await fetchAdminWorkspacesAuthoritative();
       setWorkspaces(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch operational workspaces.');
+    } catch (err: unknown) {
+      setError(toUserMessage(err, 'The workspace records could not be loaded. Please try again.', { page: 'admin-workspaces' }));
     } finally {
       setLoading(false);
     }
@@ -99,11 +103,22 @@ export const AdminWorkspacesPage: React.FC = () => {
         setIsEditing(false);
         setModalFeedback('Operational update applied successfully.');
         loadWorkspaces();
+        toast.success('The workspace notes and takeaways were saved.', { title: 'Workspace updated' });
       } else {
-        setModalFeedback(res.error?.message || 'Failed to apply update.');
+        const message = toUserMessage(
+          res.error?.message,
+          'The workspace could not be updated. Please try again.',
+          { action: 'save-workspace' }
+        );
+        setModalFeedback(message);
+        toast.error(message, { title: 'Update failed' });
       }
-    } catch (err: any) {
-      setModalFeedback(err.message || 'Network error applying update.');
+    } catch (err: unknown) {
+      const message = toUserMessage(err, 'The workspace could not be updated. Please try again.', {
+        action: 'save-workspace',
+      });
+      setModalFeedback(message);
+      toast.error(message, { title: 'Update failed' });
     } finally {
       setSavingEdit(false);
     }
@@ -232,7 +247,8 @@ export const AdminWorkspacesPage: React.FC = () => {
           <p className="text-xs text-zinc-500">No session workspace records match the active criteria.</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xs">
+        <div className="rounded-xl border border-zinc-200 bg-white shadow-xs overflow-hidden">
+          <div className="table-scroll">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-zinc-200 bg-zinc-50/70 text-[11px] font-semibold text-zinc-600 uppercase tracking-wider">
               <tr>
@@ -248,22 +264,26 @@ export const AdminWorkspacesPage: React.FC = () => {
             <tbody className="divide-y divide-zinc-100 text-zinc-800">
               {filteredWorkspaces.map((ws) => (
                 <tr key={ws.id} className="hover:bg-zinc-50/60 transition-colors">
-                  <td className="py-3 px-4 font-mono font-medium text-zinc-900">
-                    {ws.session_overview?.bookingCode || ws.booking_id}
+                  <td className="py-3 px-4 font-mono font-medium text-zinc-900 whitespace-nowrap">
+                    {ws.session_overview?.bookingCode ? (
+                      `#${ws.session_overview.bookingCode}`
+                    ) : (
+                      <ShortId value={ws.booking_id} label="Booking ID" />
+                    )}
                   </td>
                   <td className="py-3 px-4">
                     <span className="font-semibold text-zinc-900 block truncate max-w-[200px]">
-                      {ws.session_overview?.gigTitle || 'Consultation'}
+                      {ws.session_overview?.gigTitle || 'Not recorded'}
                     </span>
                     <span className="text-[11px] text-zinc-400">
                       {ws.session_overview?.segmentTitle}
                     </span>
                   </td>
-                  <td className="py-3 px-4 font-medium text-zinc-900">
-                    {ws.session_overview?.mentorName || ws.mentor_id}
+                  <td className="py-3 px-4 font-medium text-zinc-900 break-words">
+                    {ws.session_overview?.mentorName || 'Mentor'}
                   </td>
-                  <td className="py-3 px-4 text-zinc-700">
-                    {ws.session_overview?.seekerName || ws.seeker_id}
+                  <td className="py-3 px-4 text-zinc-700 break-words">
+                    {ws.session_overview?.seekerName || 'Seeker'}
                   </td>
                   <td className="py-3 px-4">
                     <Badge variant={ws.status === 'PUBLISHED' ? 'success' : 'secondary'} className="text-[10px]">
@@ -295,6 +315,7 @@ export const AdminWorkspacesPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -303,7 +324,7 @@ export const AdminWorkspacesPage: React.FC = () => {
         <Modal
           isOpen={!!selectedWorkspace}
           onClose={() => setSelectedWorkspace(null)}
-          title={`Workspace Audit: ${selectedWorkspace.session_overview?.bookingCode || selectedWorkspace.booking_id}`}
+          title={`Workspace Audit: ${selectedWorkspace.session_overview?.bookingCode || shortId(selectedWorkspace.booking_id)}`}
         >
           <div className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
             {/* Feedback notification in modal */}
@@ -393,12 +414,18 @@ export const AdminWorkspacesPage: React.FC = () => {
                 Key Takeaways ({selectedWorkspace.takeaways?.length || 0})
               </span>
               <ul className="space-y-1.5 text-xs text-zinc-700">
-                {selectedWorkspace.takeaways?.map((item, idx) => (
-                  <li key={idx} className="flex items-start gap-2 bg-zinc-50 p-2 rounded-md">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                    <span>{item}</span>
+                {selectedWorkspace.takeaways && selectedWorkspace.takeaways.length > 0 ? (
+                  selectedWorkspace.takeaways.map((item, idx) => (
+                    <li key={idx} className="flex items-start gap-2 bg-zinc-50 p-2 rounded-md">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                      <span>{item}</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-zinc-400 italic">
+                    No key takeaways were recorded for this session yet.
                   </li>
-                )) || <li className="text-zinc-400 italic">None</li>}
+                )}
               </ul>
             </div>
 
@@ -409,12 +436,16 @@ export const AdminWorkspacesPage: React.FC = () => {
                 Suggestions ({selectedWorkspace.suggestions?.length || 0})
               </span>
               <ul className="space-y-1.5 text-xs text-zinc-700">
-                {selectedWorkspace.suggestions?.map((item, idx) => (
-                  <li key={idx} className="flex items-start gap-2 bg-zinc-50 p-2 rounded-md">
-                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0 mt-1.5" />
-                    <span>{item}</span>
-                  </li>
-                )) || <li className="text-zinc-400 italic">None</li>}
+                {selectedWorkspace.suggestions && selectedWorkspace.suggestions.length > 0 ? (
+                  selectedWorkspace.suggestions.map((item, idx) => (
+                    <li key={idx} className="flex items-start gap-2 bg-zinc-50 p-2 rounded-md">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0 mt-1.5" />
+                      <span>{item}</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-zinc-400 italic">No suggestions were recorded for this session.</li>
+                )}
               </ul>
             </div>
 
@@ -425,12 +456,18 @@ export const AdminWorkspacesPage: React.FC = () => {
                 Next Steps ({selectedWorkspace.next_steps?.length || 0})
               </span>
               <div className="space-y-1 text-xs">
-                {selectedWorkspace.next_steps?.map((step) => (
-                  <div key={step.id} className="p-2 bg-zinc-50 rounded-md flex items-center justify-between">
-                    <span className="text-zinc-800">{step.text}</span>
-                    {step.due_date && <Badge variant="secondary" className="text-[10px]">{step.due_date}</Badge>}
-                  </div>
-                )) || <p className="text-zinc-400 italic">None</p>}
+                {selectedWorkspace.next_steps && selectedWorkspace.next_steps.length > 0 ? (
+                  selectedWorkspace.next_steps.map((step) => (
+                    <div key={step.id} className="p-2 bg-zinc-50 rounded-md flex items-center justify-between gap-2">
+                      <span className="text-zinc-800 min-w-0 break-words">{step.text}</span>
+                      {step.due_date && <Badge variant="secondary" className="text-[10px] shrink-0">{step.due_date}</Badge>}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-zinc-400 italic">
+                    No next steps were agreed for this session.
+                  </p>
+                )}
               </div>
             </div>
 

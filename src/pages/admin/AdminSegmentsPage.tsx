@@ -7,6 +7,8 @@ import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 
 interface Segment {
   id: string;
@@ -36,6 +38,7 @@ interface ApiSegment {
 
 export const AdminSegmentsPage: React.FC = () => {
   const { navigate } = useNavigation();
+  const toast = useToast();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editingSegment, setEditingSegment] = useState<Segment | null>(null);
@@ -70,8 +73,7 @@ export const AdminSegmentsPage: React.FC = () => {
         description: s.description,
       })));
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch segments');
-      console.error('Failed to fetch segments:', err);
+      setError(toUserMessage(err, 'Failed to fetch segments'));
     } finally {
       setLoading(false);
     }
@@ -106,9 +108,9 @@ export const AdminSegmentsPage: React.FC = () => {
       setPriority('10');
       setDescription('');
       await fetchSegments();
+      toast.success('Segment created.');
     } catch (err: any) {
-      console.error('Failed to create segment:', err);
-      alert('Failed to create segment: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to create segment'));
     } finally {
       setCreating(false);
     }
@@ -140,9 +142,9 @@ export const AdminSegmentsPage: React.FC = () => {
       setPriority('10');
       setDescription('');
       await fetchSegments();
+      toast.success('Segment updated.');
     } catch (err: any) {
-      console.error('Failed to update segment:', err);
-      alert('Failed to update segment: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to update segment'));
     } finally {
       setEditing(false);
     }
@@ -158,9 +160,9 @@ export const AdminSegmentsPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to toggle segment');
       await fetchSegments();
+      toast.success(`Segment ${currentActive ? 'paused' : 'activated'}.`);
     } catch (err: any) {
-      console.error('Failed to toggle segment:', err);
-      alert('Failed to update segment: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to update segment'));
     }
   };
 
@@ -185,9 +187,9 @@ export const AdminSegmentsPage: React.FC = () => {
         gigsCount: s.gigsCount,
         description: s.description,
       })));
+      toast.success(`Priority moved ${direction === 'up' ? 'up' : 'down'}.`);
     } catch (err: any) {
-      console.error('Failed to change priority:', err);
-      alert('Failed to change priority: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to change priority'));
     }
   };
 
@@ -260,6 +262,7 @@ export const AdminSegmentsPage: React.FC = () => {
             description="No mentorship segments have been created yet."
           />
         ) : (
+          <div className="table-scroll">
           <table className="w-full text-left text-xs text-zinc-600">
             <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
               <tr>
@@ -282,19 +285,19 @@ export const AdminSegmentsPage: React.FC = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="p-0.5 h-5 w-5"
+                          className="p-0.5 h-8 w-8"
                           onClick={() => handlePriorityChange(seg.id, 'up')}
                           disabled={seg.priority === 1}
-                          aria-label="Move up"
+                          aria-label={`Move ${seg.name} up in priority`}
                         >
                           <ArrowUp className="h-3 w-3" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="p-0.5 h-5 w-5"
+                          className="p-0.5 h-8 w-8"
                           onClick={() => handlePriorityChange(seg.id, 'down')}
-                          aria-label="Move down"
+                          aria-label={`Move ${seg.name} down in priority`}
                         >
                           <ArrowDown className="h-3 w-3" />
                         </Button>
@@ -348,6 +351,7 @@ export const AdminSegmentsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

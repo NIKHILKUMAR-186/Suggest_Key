@@ -5,6 +5,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch, getLastResponseRequestId } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { mailtoHref } from '@/src/lib/contact';
 import { DEFAULT_MENTOR_APPLICATION_PAGE_SIZE } from '@/src/lib/mentorApplicationsQuery';
 import type {
   AdminMentorApplicationsResponse,
@@ -295,8 +296,17 @@ export const AdminMentorVerificationPage: React.FC = () => {
                         <div className="font-semibold text-[var(--color-shell-text)]">
                           {application.profile?.full_name || application.full_name}
                         </div>
-                        <div className="text-[11px] text-[var(--color-shell-text-subtle)] font-mono">
-                          {application.profile?.email || '—'}
+                        <div className="text-[11px] text-[var(--color-shell-text-subtle)] font-mono break-all">
+                          {application.profile?.email ? (
+                            <a
+                              href={mailtoHref(application.profile.email) || undefined}
+                              className="hover:underline underline-offset-2"
+                            >
+                              {application.profile.email}
+                            </a>
+                          ) : (
+                            '—'
+                          )}
                         </div>
                       </td>
                       <td className="py-3 px-4">

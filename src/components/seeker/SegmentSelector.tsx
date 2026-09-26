@@ -36,7 +36,13 @@ export const SegmentSelector: React.FC<SegmentSelectorProps> = ({
     );
   }
 
-  if (segments.length === 0) return null;
+  if (segments.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-3 text-center text-xs text-[var(--color-shell-text-subtle)]">
+        No mentorship segments are available right now. Please check back soon.
+      </p>
+    );
+  }
 
   return (
     <div

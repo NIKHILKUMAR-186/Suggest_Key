@@ -14,6 +14,7 @@ import { AuthCallback } from '@/src/pages/auth/AuthCallback';
 
 // Landing Page
 import { LandingPage } from '@/src/pages/public/LandingPage';
+import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 
 // Seeker Pages
 import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
@@ -185,6 +186,7 @@ if (pathname.startsWith('/admin')) {
     );
   }
 
-  // Default: redirect to landing page
-  return <LandingPage />;
+  // Unknown route: render the global 404 instead of silently falling back to
+  // the landing page, so a mistyped or outdated link never looks like success.
+  return <NotFoundPage />;
 };

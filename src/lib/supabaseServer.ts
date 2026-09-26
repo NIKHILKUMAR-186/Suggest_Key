@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import type { UserRole } from '@/src/types/auth';
 import { logger } from '@/src/lib/logger';
 import { deriveMentorAccountState } from '@/src/lib/adminMentorControl';
@@ -222,7 +223,7 @@ export async function requireAuth(
       result: 'failure',
       reason: 'AUTH_INVALID',
     });
-    console.error('[Auth] Authentication failed:', error);
+    console.error('[Auth] Authentication failed:', logSanitizer.safeMessage(error));
     res.status(401).json({
       success: false,
       error: { code: 'AUTH_INVALID', message: 'The provided token is invalid or expired.' },
@@ -412,7 +413,7 @@ export async function requireActiveMentor(
       result: 'failure',
       reason: 'STATUS_CHECK_FAILED',
     });
-    console.error('[Auth] Failed to verify mentor operational status:', error);
+    console.error('[Auth] Failed to verify mentor operational status:', logSanitizer.safeMessage(error));
     res.status(500).json({
       success: false,
       error: { code: 'STATUS_CHECK_FAILED', message: 'Unable to verify the mentor account status.' },

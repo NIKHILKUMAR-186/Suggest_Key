@@ -4,6 +4,10 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { ShortId } from '@/src/components/shared/ShortId';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
+import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
 
 interface PaymentItem {
@@ -41,6 +45,7 @@ export const AdminPaymentsPage: React.FC = () => {
   const [payments, setPayments] = useState<PaymentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   const fetchPayments = useCallback(async () => {
     setLoading(true);
@@ -50,9 +55,8 @@ export const AdminPaymentsPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch payments');
       setPayments(data.payments || []);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load payments');
-      console.error('Failed to fetch payments:', err);
+    } catch (err: unknown) {
+      setError(toUserMessage(err, 'The payment queue could not be loaded. Please try again.', { page: 'admin-payments' }));
     } finally {
       setLoading(false);
     }
@@ -69,9 +73,13 @@ export const AdminPaymentsPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to approve payment');
       await fetchPayments();
-    } catch (err: any) {
-      console.error('Failed to approve payment:', err);
-      alert('Failed to approve payment: ' + err.message);
+      toast.success('The payment was verified and the booking has advanced to mentor confirmation.', {
+        title: 'Payment approved',
+      });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'The payment could not be approved. Please try again.', { action: 'approve-payment' }), {
+        title: 'Approval failed',
+      });
     }
   };
 
@@ -92,9 +100,13 @@ export const AdminPaymentsPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to reject payment');
       setRejectReason('');
       await fetchPayments();
-    } catch (err: any) {
-      console.error('Failed to reject payment:', err);
-      alert('Failed to reject payment: ' + err.message);
+      toast.success('The payment proof was rejected and the seeker has been notified.', {
+        title: 'Payment rejected',
+      });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'The payment could not be rejected. Please try again.', { action: 'reject-payment' }), {
+        title: 'Rejection failed',
+      });
     }
   };
 
@@ -146,6 +158,7 @@ export const AdminPaymentsPage: React.FC = () => {
             description="No payment records found in the system."
           />
         ) : (
+          <div className="table-scroll">
           <table className="w-full text-left text-xs text-zinc-600">
             <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
               <tr>
@@ -163,14 +176,22 @@ export const AdminPaymentsPage: React.FC = () => {
               {payments.map((p) => (
                 <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
                   <td className="py-3 px-4 font-mono">
-                    <span className="font-bold text-zinc-950 block">{p.bookingCode || p.bookingId}</span>
+                    {p.bookingCode ? (
+                      <span className="font-bold text-zinc-950 block">#{p.bookingCode}</span>
+                    ) : (
+                      <ShortId value={p.bookingId} label="Booking ID" />
+                    )}
                     <span className="text-[11px] text-zinc-400">{p.gigTitle || 'Gig unavailable'}</span>
                   </td>
-                  <td className="py-3 px-4 font-semibold text-zinc-900">{p.seekerName || '—'}</td>
-                  <td className="py-3 px-4">{p.mentorName || '—'}</td>
-                  <td className="py-3 px-4 font-mono text-zinc-700">{p.transactionReference || '—'}</td>
-                  <td className="py-3 px-4 font-bold text-zinc-950">₹{p.amount}</td>
-                  <td className="py-3 px-4 text-zinc-500">{formatSubmittedAt(p.submittedAt)}</td>
+                  <td className="py-3 px-4 font-semibold text-zinc-900 break-words">{p.seekerName || '—'}</td>
+                  <td className="py-3 px-4 break-words">{p.mentorName || '—'}</td>
+                  <td className="py-3 px-4 font-mono text-zinc-700 break-all">
+                    {p.transactionReference || '—'}
+                  </td>
+                  <td className="py-3 px-4 font-bold text-zinc-950 whitespace-nowrap">
+                    {formatInr(p.amount) || '—'}
+                  </td>
+                  <td className="py-3 px-4 text-zinc-500 whitespace-nowrap">{formatSubmittedAt(p.submittedAt)}</td>
                   <td className="py-3 px-4">
                     <Badge
                       variant={
@@ -203,6 +224,7 @@ export const AdminPaymentsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

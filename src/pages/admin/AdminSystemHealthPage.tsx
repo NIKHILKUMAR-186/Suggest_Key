@@ -23,6 +23,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src
 import { Skeleton, SkeletonText } from '@/src/components/ui/Skeleton';
 import { Modal } from '@/src/components/ui/Modal';
 import { apiFetch } from '@/src/lib/apiClient';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
+import { ShortId } from '@/src/components/shared/ShortId';
 import type { SystemLog, AuditLog, SystemHealthMetrics, ErrorGroup } from '@/src/types/systemLogs';
 
 type TabId = 'overview' | 'requests' | 'errors' | 'auth' | 'audit';
@@ -198,6 +201,7 @@ const AuditLogRow: React.FC<AuditLogRowProps> = ({ log, onClick }) => {
 };
 
 export const AdminSystemHealthPage: React.FC = () => {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [metrics, setMetrics] = useState<SystemHealthMetrics | null>(null);
   const [logs, setLogs] = useState<SystemLog[]>([]);
@@ -240,7 +244,7 @@ export const AdminSystemHealthPage: React.FC = () => {
       if (authData.success) setAuthLogs(authData.logs);
       if (auditData.success) setAuditLogs(auditData.logs);
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch system health data');
+      setError(toUserMessage(err, 'Failed to fetch system health data'));
     } finally {
       setLoading(false);
     }
@@ -271,9 +275,12 @@ export const AdminSystemHealthPage: React.FC = () => {
       if (data.success) {
         await fetchRetention();
         setRetentionDaysInput('');
+        toast.success('Log retention updated.');
+      } else {
+        toast.error('Retention update was rejected. Please try again.');
       }
     } catch (err: any) {
-      console.error('Failed to update retention:', err);
+      toast.error(toUserMessage(err, 'Failed to update retention'));
     } finally {
       setRetentionLoading(false);
     }
@@ -285,9 +292,14 @@ export const AdminSystemHealthPage: React.FC = () => {
     try {
       const res = await apiFetch('/api/admin/system-health/prune', { method: 'POST' });
       const data = await res.json();
-      if (data.success) setPruneResult(data.deletedCount || 0);
+      if (data.success) {
+        setPruneResult(data.deletedCount || 0);
+        toast.success(`Pruned ${data.deletedCount || 0} expired log entries.`);
+      } else {
+        toast.error('Prune was rejected. Please try again.');
+      }
     } catch (err: any) {
-      console.error('Failed to prune logs:', err);
+      toast.error(toUserMessage(err, 'Failed to prune logs'));
     } finally {
       setPruneLoading(false);
     }
@@ -783,7 +795,12 @@ export const AdminSystemHealthPage: React.FC = () => {
                       <span className="text-xs text-[var(--color-shell-text)]">{log.message}</span>
                     </div>
                     <div className="text-[9px] text-[var(--color-shell-text-subtle)] mt-0.5">
-                      {log.user_id && <span>User: {log.user_id} · </span>}
+                      {log.user_id && (
+                        <span>
+                          User: <ShortId value={log.user_id} label="User ID" />{' '}
+                          ·{' '}
+                        </span>
+                      )}
                       {log.role && <span>Role: {log.role} · </span>}
                       {formatTimestamp(log.created_at)}
                     </div>

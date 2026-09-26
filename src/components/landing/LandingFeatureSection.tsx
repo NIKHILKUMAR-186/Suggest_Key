@@ -448,7 +448,7 @@ export const LandingFeatureSection: React.FC = () => {
     <section className="relative z-10 px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
       <SharedFilters />
 
-      <div className="absolute inset-0 pointer-events-none">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[480px] opacity-50"
           style={{
@@ -706,7 +706,7 @@ export const LandingHowItWorksSection: React.FC = () => {
     <section id="how-it-works" className="relative z-10 px-4 sm:px-6 lg:px-8 py-20 sm:py-28">
       <SharedFilters />
 
-      <div className="absolute inset-0 pointer-events-none">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[480px] opacity-50"
           style={{

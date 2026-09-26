@@ -36,6 +36,13 @@ export const TopNavigation: React.FC = () => {
     }),
   };
 
+  // Close the drawer on navigation (including browser back/forward) so it can
+  // never be left open over a page the user has already left.
+  useEffect(() => {
+    setMobileMenuOpen(false);
+    setUserDropdownOpen(false);
+  }, [currentPath]);
+
   // Close dropdowns on outside click or Escape key
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -248,8 +255,8 @@ export const TopNavigation: React.FC = () => {
           {unreadCount > 0 && (
             <button
               onClick={() => handleNavClick(`/${rolePrefix}/notifications`)}
-              className="p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] relative rounded-lg"
-              aria-label="View notifications"
+              className="min-touch-icon flex items-center justify-center p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] relative rounded-lg"
+              aria-label={`View notifications, ${unreadCount} unread`}
             >
               <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--color-shell-primary)] text-white text-[10px] font-bold">
                 {unreadCount}
@@ -258,9 +265,10 @@ export const TopNavigation: React.FC = () => {
           )}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            className="p-2.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] transition-colors focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2 cursor-pointer"
-            aria-label="Toggle Navigation"
+            className="min-touch-icon flex items-center justify-center p-2.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] transition-colors focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2 cursor-pointer"
+            aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={mobileMenuOpen}
+            aria-controls="primary-mobile-menu"
           >
             {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
@@ -270,14 +278,17 @@ export const TopNavigation: React.FC = () => {
       {/* Mobile Drawer Menu with AnimatePresence & Backdrop */}
       <AnimatePresence>
         {mobileMenuOpen && (
-            <div className="fixed inset-0 top-16 z-50 flex flex-col sm:top-[68px] md:hidden">
+            <div
+              id="primary-mobile-menu"
+              className="fixed inset-0 top-16 z-50 flex flex-col sm:top-[68px] md:hidden"
+            >
             {/* Backdrop */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.15 }}
-              className="fixed inset-0 top-16 bg-black/70 backdrop-blur-sm sm:top-[68px]"
+              className="fixed inset-0 top-16 w-full bg-black/70 backdrop-blur-sm sm:top-[68px]"
               onClick={() => setMobileMenuOpen(false)}
             />
 
@@ -287,7 +298,7 @@ export const TopNavigation: React.FC = () => {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.18, ease: 'easeOut' }}
-              className="relative max-h-[calc(100vh-4rem)] space-y-4 overflow-y-auto rounded-b-none border-b border-[var(--seeker-panel-border)] bg-[var(--color-shell-surface)] px-5 pb-8 pt-3 shadow-2xl sm:max-h-[calc(100vh-4.25rem)]"
+              className="relative w-full max-w-full max-h-[calc(100vh-4rem)] space-y-4 overflow-y-auto overflow-x-hidden rounded-b-none border-b border-[var(--seeker-panel-border)] bg-[var(--color-shell-surface)] px-5 pb-8 pt-3 shadow-2xl sm:max-h-[calc(100vh-4.25rem)]"
             >
               {/* Header inside mobile drawer */}
               <div className="py-2 flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">

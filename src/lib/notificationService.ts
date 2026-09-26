@@ -1,5 +1,6 @@
 import { apiFetch } from './apiClient';
 import { supabase, isSupabaseConfigured } from './supabase';
+import { logSanitizer } from './logSanitizer';
 import type { Notification, NotificationType, NotificationEventType } from '@/src/types/database';
 
 export interface NotificationFilter {
@@ -42,7 +43,7 @@ export async function fetchUserNotifications(
       }
     }
   } catch (err) {
-    console.warn('API notification fetch fallback:', err);
+    console.warn('API notification fetch fallback:', logSanitizer.safeMessage(err));
   }
 
   // Fallback to Supabase direct query if client configured
@@ -73,7 +74,7 @@ export async function fetchUserNotifications(
         return data as Notification[];
       }
     } catch (sbErr) {
-      console.warn('Supabase direct query failed, returning empty:', sbErr);
+      console.warn('Supabase direct query failed, returning empty:', logSanitizer.safeMessage(sbErr));
     }
   }
 
@@ -98,7 +99,7 @@ export async function markNotificationAsRead(
       return !!data.success;
     }
   } catch (err) {
-    console.warn('API mark as read failed:', err);
+    console.warn('API mark as read failed:', logSanitizer.safeMessage(err));
   }
 
   // Fallback to direct Supabase update
@@ -110,7 +111,7 @@ export async function markNotificationAsRead(
         .eq('id', notificationId);
       return !error;
     } catch (sbErr) {
-      console.warn('Supabase mark read error:', sbErr);
+      console.warn('Supabase mark read error:', logSanitizer.safeMessage(sbErr));
     }
   }
 
@@ -132,7 +133,7 @@ export async function markAllNotificationsAsRead(userId: string): Promise<number
       return data.updatedCount ?? 0;
     }
   } catch (err) {
-    console.warn('API mark all read error:', err);
+    console.warn('API mark all read error:', logSanitizer.safeMessage(err));
   }
 
   if (isSupabaseConfigured() && supabase) {
@@ -147,7 +148,7 @@ export async function markAllNotificationsAsRead(userId: string): Promise<number
         return data.length;
       }
     } catch (sbErr) {
-      console.warn('Supabase mark all read error:', sbErr);
+      console.warn('Supabase mark all read error:', logSanitizer.safeMessage(sbErr));
     }
   }
 
@@ -171,7 +172,7 @@ export async function dispatchNotification(
       return data.notification;
     }
   } catch (err) {
-    console.warn('API dispatch notification failed:', err);
+    console.warn('API dispatch notification failed:', logSanitizer.safeMessage(err));
   }
 
   if (isSupabaseConfigured() && supabase) {
@@ -197,7 +198,7 @@ export async function dispatchNotification(
         return data as Notification;
       }
     } catch (sbErr) {
-      console.warn('Supabase dispatch notification failed:', sbErr);
+      console.warn('Supabase dispatch notification failed:', logSanitizer.safeMessage(sbErr));
     }
   }
 

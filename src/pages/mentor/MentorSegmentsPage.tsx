@@ -166,7 +166,7 @@ export const MentorSegmentsPage: React.FC = () => {
                 </div>
                 <p className="text-xs text-zinc-500">
                   {seg.status === 'APPROVED'
-                    ? `Approved · {seg.gigsCount} Active Gig{seg.gigsCount !== 1 ? 's' : ''} Published`
+                    ? `Approved · ${seg.gigsCount} Active Gig${seg.gigsCount !== 1 ? 's' : ''} Published`
                     : `Application submitted · Under Administrative Review`}
                 </p>
               </div>

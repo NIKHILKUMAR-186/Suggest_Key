@@ -1,0 +1,23 @@
+node:internal/fs/watchers:323
+    const error = new UVException({
+                  ^
+
+Error: EBUSY: resource busy or locked, watch 'S:\suggest-key\Suggest_key\.agents\skills\fix-security-vulnerabilities-with-strix\SKILL.md'
+    at FSWatcher.<computed> (node:internal/fs/watchers:323:19)
+    at Object.watch (node:fs:3062:36)
+    at createFsWatchInstance (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:10735:16)
+    at setFsWatchListener (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:10777:14)
+    at NodeFsHandler._watchWithNodeFs (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:10892:20)
+    at NodeFsHandler._handleFile (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:10936:24)
+    at NodeFsHandler._addToNodeFs (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:11110:26)
+Emitted 'error' event on FSWatcher instance at:
+    at FSWatcher._handleError (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:11912:146)
+    at NodeFsHandler._addToNodeFs (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:11115:18) {
+  errno: -4082,
+  syscall: 'watch',
+  code: 'EBUSY',
+  path: 'S:\\suggest-key\\Suggest_key\\.agents\\skills\\fix-security-vulnerabilities-with-strix\\SKILL.md',
+  filename: 'S:\\suggest-key\\Suggest_key\\.agents\\skills\\fix-security-vulnerabilities-with-strix\\SKILL.md'
+}
+
+Node.js v26.7.0

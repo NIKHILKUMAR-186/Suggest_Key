@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
@@ -96,6 +98,7 @@ const formatFileSize = (bytes: number): string => {
 
 export const MentorVerificationPage: React.FC = () => {
   const { user, profile } = useAuth();
+  const toast = useToast();
   const { navigate } = useNavigation();
 
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
@@ -123,8 +126,7 @@ export const MentorVerificationPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch onboarding status');
       setOnboarding(data.onboarding);
     } catch (err: any) {
-      setError(err.message || 'Failed to load onboarding status');
-      console.error('Failed to fetch onboarding status:', err);
+      setError(toUserMessage(err, 'Failed to load onboarding status'));
     } finally {
       setLoading(false);
     }
@@ -197,9 +199,10 @@ export const MentorVerificationPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to save application');
       setOnboarding((prev) => prev ? { ...prev, application: data.application } : null);
+      toast.success('Draft saved.');
       return true;
     } catch (err: any) {
-      setError(err.message || 'Failed to save application');
+      setError(toUserMessage(err, 'Failed to save application'));
       return false;
     } finally {
       setSavingBio(false);
@@ -226,8 +229,9 @@ export const MentorVerificationPage: React.FC = () => {
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Unable to start your application.');
       await fetchOnboarding();
+      toast.success('Application started. Complete the remaining steps to submit.');
     } catch (err: any) {
-      setError(err.message || 'Unable to start your application.');
+      setError(toUserMessage(err, 'Unable to start your application.'));
     } finally {
       setSavingBio(false);
     }
@@ -248,8 +252,9 @@ export const MentorVerificationPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to submit application');
       await fetchOnboarding();
+      toast.success('Application submitted. Our team will review it shortly.');
     } catch (err: any) {
-      setError(err.message || 'Failed to submit application');
+      setError(toUserMessage(err, 'Failed to submit application'));
     } finally {
       setSubmitting(false);
     }
@@ -335,11 +340,12 @@ export const MentorVerificationPage: React.FC = () => {
       if (!recordData.success) throw new Error(recordData.error?.message || 'Failed to record document');
 
       await fetchOnboarding();
+      toast.success('Document uploaded.');
     } catch (err: any) {
       if (import.meta.env.DEV) {
         console.error('[MentorVerification] Upload error:', err);
       }
-      setError(err.message || 'Failed to upload document');
+      setError(toUserMessage(err, 'Failed to upload document'));
     } finally {
       setUploadingDoc(null);
       e.target.value = '';
@@ -347,16 +353,14 @@ export const MentorVerificationPage: React.FC = () => {
   };
 
   const removeDocument = async (docId: string) => {
-    // Note: The API doesn't have a delete endpoint yet, so we remove locally
-    // In a real implementation this would call DELETE /api/mentor/document/:id
     try {
       const res = await apiFetch(`/api/mentor/document/${docId}`, { method: 'DELETE' });
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to remove document');
       await fetchOnboarding();
+      toast.success('Document removed.');
     } catch (err: any) {
-      setError(err.message || 'Failed to remove document');
-      console.error('Failed to remove document:', err);
+      setError(toUserMessage(err, 'Failed to remove document'));
     }
   };
 

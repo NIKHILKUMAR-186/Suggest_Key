@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import {
@@ -96,7 +97,7 @@ export const SeekerWorkspacePage: React.FC = () => {
       const res = await fetchWorkspaceByBooking(bookingId, seekerId, 'seeker');
 
       if (res.error) {
-        setError(res.error.message || 'Failed to load workspace.');
+        setError(toUserMessage(res.error.message, 'Failed to load workspace.'));
         setWorkspace(null);
       } else if (res.isPending || !res.workspace || res.workspace.status === 'PENDING') {
         setIsPending(true);
@@ -115,7 +116,7 @@ export const SeekerWorkspacePage: React.FC = () => {
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Network error fetching workspace.');
+      setError(toUserMessage(err, 'We could not reach Suggest Key. Check your connection and try again.'));
     } finally {
       setLoading(false);
     }

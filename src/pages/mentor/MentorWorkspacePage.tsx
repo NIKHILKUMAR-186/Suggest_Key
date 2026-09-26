@@ -390,7 +390,7 @@ export const MentorWorkspacePage: React.FC = () => {
         <div className="rounded-xl border border-zinc-200 bg-white p-12 text-center space-y-3">
           <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
           <h3 className="text-sm font-semibold text-zinc-900">Loading Session Workspace...</h3>
-          <p className="text-xs text-zinc-500">Fetching authoritative Supabase records and session metadata.</p>
+          <p className="text-xs text-zinc-500">Loading the session record and your notes...</p>
         </div>
       ) : !overview ? (
         /* Empty State */
@@ -550,9 +550,16 @@ export const MentorWorkspacePage: React.FC = () => {
                 </p>
               )}
               {followUpNotes && <p className="text-xs text-blue-800 italic">"{followUpNotes}"</p>}
-              <div className="pt-2">
-                <Button size="sm" className="gap-1.5 text-xs bg-blue-900 text-white cursor-pointer">
-                  <span>Book Follow-up Session</span>
+              <p className="pt-2 text-xs text-blue-900">
+                Scheduling a follow-up is done from your bookings page.
+              </p>
+              <div className="pt-1">
+                <Button
+                  size="sm"
+                  className="gap-1.5 text-xs bg-blue-900 text-white cursor-pointer"
+                  onClick={() => navigate('/mentor/bookings')}
+                >
+                  <span>Go to Bookings</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
               </div>

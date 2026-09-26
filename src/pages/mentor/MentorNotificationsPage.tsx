@@ -18,7 +18,6 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
 import { NotificationCard } from '@/src/components/notifications/NotificationCard';
-import { NotificationSimulator } from '@/src/components/notifications/NotificationSimulator';
 import {
   fetchUserNotifications,
   markNotificationAsRead,
@@ -124,15 +123,6 @@ export const MentorNotificationsPage: React.FC = () => {
           </Button>
         </div>
       </div>
-
-      {/* Simulator bar for testing all 8 Mentor events */}
-      {mentorId && (
-        <NotificationSimulator
-          userId={mentorId}
-          role="mentor"
-          onEventDispatched={loadNotifs}
-        />
-      )}
 
       {/* Filter Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">

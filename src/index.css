@@ -919,6 +919,25 @@
 .seeker-segment {
   position: relative;
   display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: 14px;
+  border: 1px solid var(--color-shell-border);
+  background: var(--color-shell-surface);
+  color: var(--color-shell-text-muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 180ms cubic-bezier(0.23, 1, 0.31, 1),
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
 
 /* Time window row ---------------------------------------------------------- */
 .av-window {
@@ -1040,25 +1059,6 @@
   background: color-mix(in srgb, var(--color-shell-primary) 6%, var(--color-shell-surface));
 }
 
-  align-items: center;
-  gap: 8px;
-  min-height: 46px;
-  padding: 0 20px;
-  border-radius: 14px;
-  border: 1px solid var(--color-shell-border);
-  background: var(--color-shell-surface);
-  color: var(--color-shell-text-muted);
-  font-size: 0.875rem;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    transform 180ms cubic-bezier(0.23, 1, 0.31, 1),
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease;
-}
 .seeker-segment:hover {
   color: var(--color-shell-text);
   border-color: var(--color-shell-border-strong);
@@ -1143,4 +1143,106 @@
 .seeker-rail::-webkit-scrollbar {
   display: none;
 }
+
+/* ============================================================
+   RESPONSIVE / OVERFLOW SAFETY NET
+   These rules remove the *cause* of horizontal page scroll rather
+   than hiding it: unbreakable tokens wrap, flex/grid children may
+   shrink, and genuinely tabular content scrolls inside its own box.
+   `overflow-x: hidden` is deliberately NOT used on html/body - a
+   hidden overflow would simply clip content and make it
+   unreachable.
+   ============================================================ */
+
+html {
+  /* The document element establishes the scroll container; capping it keeps a
+     stray wide child from creating a second, unusable scroll axis. */
+  max-width: 100%;
+}
+
+body {
+  max-width: 100%;
+  /* UUIDs, URLs, email addresses and long log lines have no break
+     opportunities of their own. `overflow-wrap` lets them wrap at any
+     character when they would otherwise overflow, without affecting words. */
+  overflow-wrap: break-word;
+}
+
+#root {
+  max-width: 100%;
+  min-height: 100%;
+  /* The app is a single column of shells; isolate it so a page-level
+     transform/filter cannot create a containing block for fixed overlays. */
+  isolation: isolate;
+}
+
+/* Children of a flex/grid row default to min-width:auto, which lets a long
+   token or a wide table push the whole row past the viewport. Opting the
+   child out is a one-class fix at the point of the actual cause. */
+.flex-safe > *,
+.grid-safe > * {
+  min-width: 0;
+}
+
+/* Any place that can legitimately show a very long unbroken string
+   (request ids, meeting URLs, signed payload excerpts). */
+.token-wrap {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* Code / stack / log output: scroll inside its own box, keep the page still. */
+.log-scroll {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre;
+  font-family: var(--font-dotdigital);
+}
+
+/* Tabular content keeps a readable minimum width and scrolls horizontally
+   inside its own rounded container instead of overflowing the page. */
+.table-scroll {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+.table-scroll > table {
+  min-width: 36rem;
+}
+
+/* Identifiers, badges and inline code that must never be broken mid-token but
+   also must never widen their parent. */
+.no-wrap-token {
+  white-space: nowrap;
+}
+
+/* ============================================================
+   MOBILE TOUCH TARGETS
+   Desktop keeps the compact density; touch devices get WCAG-friendly
+   minimums so primary actions are easy to hit.
+   ============================================================ */
+@media (pointer: coarse) {
+  .min-touch {
+    min-height: 44px;
+  }
+  .min-touch-icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Wide-screen hover effects must not stick after a tap on touch devices. */
+@media (hover: none) {
+  .no-sticky-hover:hover {
+    transform: none;
+  }
+}
+
 

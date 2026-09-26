@@ -1,0 +1,6 @@
+Failed to approve payment: {
+  code: 'P0001',
+  details: null,
+  hint: null,
+  message: 'Payment was already processed (code: PAYMENT_ALREADY_PROCESSED)'
+}

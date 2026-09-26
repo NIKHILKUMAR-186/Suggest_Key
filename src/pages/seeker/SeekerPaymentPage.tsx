@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ArrowLeft, Clock, QrCode, Upload, ShieldCheck, CheckCircle2, Copy, Check, AlertCircle, FileImage, X, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Clock, QrCode, Upload, ShieldCheck, CheckCircle2, Copy, Check, AlertCircle, FileImage, X, RefreshCw, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Input } from '@/src/components/ui/Input';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useAuth } from '@/src/context/AuthContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { formatInr } from '@/src/lib/seekerFormat';
@@ -20,6 +23,8 @@ import type { Payment } from '@/src/types/database';
 
 export const SeekerPaymentPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const { user } = useAuth();
+  const toast = useToast();
 
   const getBookingIdFromUrl = (): string => {
     const params = new URLSearchParams(currentPath.includes('?') ? currentPath.split('?')[1] : '');
@@ -40,6 +45,9 @@ export const SeekerPaymentPage: React.FC = () => {
 
   const [copiedUpi, setCopiedUpi] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Distinguishes "file chosen" from "file actually uploaded to storage", so a
+  // local selection is never presented as a successful server upload.
+  const [isUploading, setIsUploading] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +73,7 @@ export const SeekerPaymentPage: React.FC = () => {
       const state = await fetchPaymentState(bookingId);
       if (state.success) setPayment(state.payment);
     } catch (err: any) {
-      setError(err.message || 'Failed to load booking details.');
+      setError(toUserMessage(err, 'Failed to load booking details.'));
     } finally {
       setLoading(false);
     }
@@ -122,17 +130,25 @@ export const SeekerPaymentPage: React.FC = () => {
       setProofError(proof.message);
       return;
     }
+    if (!user?.id) {
+      setSubmitError('You need to be signed in to submit a payment proof.');
+      return;
+    }
 
     setIsSubmitting(true);
+    setIsUploading(true);
     try {
       const result = await submitPaymentProof({
         bookingId,
         transactionReference: reference.value,
         file: proofFile!,
+        seekerId: user.id,
       });
 
       if (!result.success) {
-        setSubmitError(result.error?.message || 'We could not submit your payment proof. Please try again.');
+        setSubmitError(
+          toUserMessage(result.error?.message, 'We could not submit your payment proof. Please try again.'),
+        );
         // A verified payment is a terminal state: reflect it instead of
         // pretending the form can still be submitted.
         if (result.payment) setPayment(result.payment);
@@ -145,8 +161,12 @@ export const SeekerPaymentPage: React.FC = () => {
       clearProofFile();
       // Re-read from the server so the summary reflects the real stored state.
       await loadBooking();
+      toast.success('Payment proof submitted. We will verify it shortly.');
+    } catch (err: any) {
+      setSubmitError(toUserMessage(err, 'We could not submit your payment proof. Please try again.'));
     } finally {
       setIsSubmitting(false);
+      setIsUploading(false);
     }
   };
 
@@ -202,7 +222,7 @@ export const SeekerPaymentPage: React.FC = () => {
         </button>
         <ErrorState
           title="Booking Not Found"
-          message={error || `Could not find booking ${bookingId}. It may have been cancelled or does not exist.`}
+          message={error || 'This booking could not be found. It may have been cancelled, or the link may be incorrect.'}
           onRetry={loadBooking}
         />
       </div>
@@ -288,16 +308,18 @@ export const SeekerPaymentPage: React.FC = () => {
             </div>
 
             <div className="rounded-xl bg-[var(--color-shell-surface-elevated)] border border-[var(--color-shell-border)]/80 p-3.5 text-[11px] text-[var(--color-shell-text-muted)] space-y-1">
-              <span className="font-bold text-[var(--color-shell-text)] block">Payment Invariant Note:</span>
+              <span className="font-bold text-[var(--color-shell-text)] block">How verification works:</span>
               <p className="leading-relaxed">
-                MVP uses Manual QR verification. The payment layer is provider-abstracted for future Razorpay integration without altering availability or booking state machines.
+                Pay using the UPI QR code above, then upload your payment screenshot. Our team
+                verifies the payment manually, usually within a few miniutes. You will see the status
+                update on your booking page.
               </p>
             </div>
           </div>
 
           <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-2xs space-y-5">
             <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 font-display">
-              Manual QR Payment (MVP)
+              Manual QR Payment
             </h2>
 
             <div className="flex flex-col items-center justify-center p-4 border border-[var(--color-shell-border)] rounded-xl bg-[var(--color-shell-surface-elevated)] text-center space-y-2.5">
@@ -367,7 +389,14 @@ export const SeekerPaymentPage: React.FC = () => {
                       {proofFile.name}
                     </p>
                     <p className="text-[11px] text-[var(--color-shell-text-muted)]">
-                      {formatFileSize(proofFile.size)} · Ready to upload
+                      {isUploading ? (
+                        <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--color-shell-text)]">
+                          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                          Uploading…
+                        </span>
+                      ) : (
+                        `${formatFileSize(proofFile.size)} · Ready to upload`
+                      )}
                     </p>
                   </div>
                   <Button
@@ -441,7 +470,7 @@ export const SeekerPaymentPage: React.FC = () => {
             <Button
               disabled={isSubmitting}
               isLoading={isSubmitting}
-              loadingText={isSubmitting ? 'Uploading & submitting proof...' : undefined}
+              loadingText={isUploading ? 'Uploading screenshot...' : 'Submitting proof...'}
               onClick={handleSubmit}
               className="w-full text-xs font-semibold shadow-xs min-h-[40px]"
               size="md"

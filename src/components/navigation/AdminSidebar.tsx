@@ -33,7 +33,12 @@ export const AdminSidebar: React.FC = () => {
     }),
   };
 
-  // Close on Escape key
+  // Close on Escape key and whenever the route changes, so the drawer is never
+  // left open over a page the user has already navigated away from.
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [currentPath]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -115,7 +120,7 @@ export const AdminSidebar: React.FC = () => {
                   onClick={() => handleNavClick(item.href)}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'group flex w-full items-center justify-between px-3 py-2.5 text-xs font-medium rounded-xl transition-all text-left cursor-pointer min-h-[40px]',
+                    'group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-xs font-medium rounded-xl transition-all text-left cursor-pointer min-h-[44px]',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
                     isActive
                       ? 'bg-[var(--color-shell-primary)] text-white shadow-xs font-semibold'
@@ -158,13 +163,23 @@ export const AdminSidebar: React.FC = () => {
           <div className="h-8 w-8 rounded-lg bg-[var(--color-shell-primary)] text-white flex items-center justify-center font-bold text-xs shrink-0 ring-1 ring-[var(--color-shell-primary)]/50">
             {profile?.full_name?.charAt(0) || 'A'}
           </div>
-          <div className="overflow-hidden flex-1">
+          <div className="overflow-hidden flex-1 min-w-0">
             <span className="text-xs font-bold text-[var(--color-shell-text)] truncate block">
-              {profile?.full_name || 'Admin User'}
+              {profile?.full_name || 'Signed in'}
             </span>
-            <span className="text-xs text-[var(--color-shell-text-subtle)] truncate block">
-              {user?.email || 'admin@suggestkey.com'}
-            </span>
+            {user?.email ? (
+              <a
+                href={`mailto:${user.email}`}
+                title={user.email}
+                className="block truncate text-xs text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-accent)] transition-colors"
+              >
+                {user.email}
+              </a>
+            ) : (
+              <span className="block truncate text-xs text-[var(--color-shell-text-subtle)]">
+                No email on file
+              </span>
+            )}
           </div>
           <span className="px-1.5 py-0.5 rounded bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-accent)] text-[9px] font-bold uppercase tracking-wider">
             Admin
@@ -202,9 +217,10 @@ export const AdminSidebar: React.FC = () => {
           <ThemeToggle />
           <button
             onClick={() => setMobileSidebarOpen(true)}
-            className="p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
-            aria-label="Open Sidebar"
+            className="min-touch-icon flex items-center justify-center p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+            aria-label="Open navigation menu"
             aria-expanded={mobileSidebarOpen}
+            aria-controls="admin-mobile-sidebar"
           >
             <Menu className="h-5 w-5" />
           </button>
@@ -219,7 +235,7 @@ export const AdminSidebar: React.FC = () => {
       {/* Mobile Sidebar Overlay with Framer Motion */}
       <AnimatePresence>
         {mobileSidebarOpen && (
-          <div className="fixed inset-0 z-50 md:hidden flex">
+          <div id="admin-mobile-sidebar" className="fixed inset-0 z-50 md:hidden flex">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -233,7 +249,10 @@ export const AdminSidebar: React.FC = () => {
               animate={{ x: 0 }}
               exit={{ x: -280 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-              className="relative flex w-72 flex-col bg-[var(--color-shell-surface)] shadow-2xl z-10"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Admin navigation"
+              className="relative flex w-[min(18rem,85vw)] flex-col bg-[var(--color-shell-surface)] shadow-2xl z-10"
             >
               {navContent}
             </motion.div>

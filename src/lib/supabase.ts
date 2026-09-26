@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Profile, UserRole } from '@/src/types/auth';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 
 const getEnvVar = (key: string): string | undefined => {
   try {
@@ -66,7 +67,7 @@ export async function fetchUserProfile(userId: string): Promise<{ profile: Profi
     if (error) throw error;
     return { profile: data as Profile | null, error: null };
   } catch (err: any) {
-    console.error('Error fetching user profile from profiles table:', err);
+    console.error('Error fetching user profile from profiles table:', logSanitizer.safeMessage(err));
     return { profile: null, error: err };
   }
 }
@@ -90,7 +91,7 @@ export async function fetchUserRoles(userId: string): Promise<{ roles: UserRole[
     const roles = (data || []).map((r: { role: UserRole }) => r.role);
     return { roles, error: null };
   } catch (err: any) {
-    console.error('Error fetching user roles from user_roles table:', err);
+    console.error('Error fetching user roles from user_roles table:', logSanitizer.safeMessage(err));
     return { roles: [], error: err };
   }
 }

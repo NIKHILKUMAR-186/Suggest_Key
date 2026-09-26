@@ -85,7 +85,13 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
   navigate,
   className,
 }) => {
-  if (featuredMentors.length === 0 && regularMentors.length === 0) return null;
+  if (featuredMentors.length === 0 && regularMentors.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-6 text-center text-xs text-[var(--color-shell-text-subtle)]">
+        No mentors match these filters yet. Try another segment or date.
+      </p>
+    );
+  }
 
   const renderCard = (mentor: DiscoverableMentor, key: string, featured: boolean) => (
     <MentorCard

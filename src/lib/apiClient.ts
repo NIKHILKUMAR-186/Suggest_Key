@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from './supabase';
+import { logSanitizer, scrubForLog } from './logSanitizer';
 
 const DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth';
 
@@ -65,11 +66,12 @@ export interface ClientErrorInfo {
 }
 
 export function captureClientError(error: Error | unknown, context?: Record<string, any>): ClientErrorInfo {
+  const safeContext = scrubForLog({ ...(context || {}) });
   const info: ClientErrorInfo = {
-    error: error instanceof Error ? error.message : String(error || 'Unknown error'),
+    error: logSanitizer.safeMessage(error),
     requestId: lastResponseRequestId || undefined,
     timestamp: new Date().toISOString(),
-    ...context,
+    ...safeContext,
   };
 
   console.error('[Client Error]', JSON.stringify(info));

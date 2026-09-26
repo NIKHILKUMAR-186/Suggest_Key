@@ -246,6 +246,66 @@ if (mode === 'purge-e2e') {
   console.log('remaining:', JSON.stringify(await get('profiles?email=like.*e2e*&select=id,email')));
 }
 
+if (mode === 'storage-clean') {
+  // Removes payment-proof objects left behind by an interrupted E2E run.
+  const listRes = await fetch(`${URL_BASE}/storage/v1/object/list/payment-proofs`, {
+    method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefix: '', limit: 1000 }),
+  });
+  const folders = (await listRes.json()) || [];
+  let removed = 0;
+  for (const folder of folders) {
+    const sub = await fetch(`${URL_BASE}/storage/v1/object/list/payment-proofs/${folder.name}`, {
+      method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: '', limit: 1000 }),
+    });
+    const files = (await sub.json()) || [];
+    if (!files.length) continue;
+    for (const f of files) {
+      const path = `${folder.name}/${f.name}`;
+      const r = await fetch(`${URL_BASE}/storage/v1/object/payment-proofs/${path}`, { method: 'DELETE', headers: H });
+      if (r.ok) { removed++; console.log('removed', path); }
+    }
+  }
+  console.log('total removed:', removed);
+  const check = await fetch(`${URL_BASE}/storage/v1/object/list/payment-proofs`, {
+    method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefix: '', limit: 1000 }),
+  });
+  console.log('remaining folders:', JSON.stringify(await check.json()));
+}
+
+if (mode === 'storage-audit') {
+  // Reports exactly which proof objects exist in the private bucket.
+  const folders = (await (await fetch(`${URL_BASE}/storage/v1/object/list/payment-proofs`, {
+    method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefix: '', limit: 1000 }),
+  })).json()) || [];
+
+  let total = 0;
+  for (const folder of folders) {
+    const files = (await (await fetch(`${URL_BASE}/storage/v1/object/list/payment-proofs/${folder.name}`, {
+      method: 'POST', headers: { ...H, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: '', limit: 1000 }),
+    })).json()) || [];
+    // An empty prefix returns an error object rather than [] for a folder that
+    // holds no objects, so normalise to a list either way.
+    const list = Array.isArray(files) ? files : [];
+    total += list.length;
+    console.log(`folder ${folder.name}: ${list.length} object(s)`, list.map((f) => f.name), Array.isArray(files) ? '' : JSON.stringify(files).slice(0, 120));
+  }
+  console.log(`TOTAL real proof objects in bucket: ${total}`);
+
+  // Empty "folder" placeholders are storage-internal markers, not files. They
+  // hold no payment evidence and are removed automatically with their owner.
+  if (process.argv[3] === 'prune-empty' && total === 0) {
+    for (const folder of folders) {
+      const r = await fetch(`${URL_BASE}/storage/v1/object/payment-proofs/${folder.name}`, { method: 'DELETE', headers: H });
+      console.log('pruned', folder.name, r.status);
+    }
+  }
+}
+
 if (mode === 'q') {
   const { status, body } = await get(process.argv[3]);
   console.log(status, body.slice(0, 4000));

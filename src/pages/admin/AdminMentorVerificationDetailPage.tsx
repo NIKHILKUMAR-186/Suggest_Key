@@ -16,6 +16,9 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useToast } from '@/src/context/ToastContext';
+import { mailtoHref } from '@/src/lib/contact';
+import { ShortId } from '@/src/components/shared/ShortId';
 import type {
   AdminMentorApplicationDetailResponse,
   MentorApplicationDetailRow,
@@ -52,6 +55,7 @@ const REQUIRED_DOC_TYPES = ['identity_proof', 'qualification_proof'];
 
 export const AdminMentorVerificationDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
+  const toast = useToast();
   const [applicationId] = useState<string>(() => {
     // Extract ID from path like /admin/mentor-verification/<id>
     const pathParts = currentPath.split('/');
@@ -102,6 +106,7 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
       const data = (await res.json()) as { success?: boolean; error?: { message?: string } };
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to review document');
       await fetchApplication();
+      toast.success(`Document ${status === 'approved' ? 'approved' : 'rejected'}.`);
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to review document'));
     } finally {
@@ -129,6 +134,7 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
       const data = (await res.json()) as { success?: boolean; error?: { message?: string } };
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to approve application');
       await fetchApplication();
+      toast.success('Application approved. The mentor can now create gigs.');
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to approve application'));
     } finally {
@@ -154,6 +160,7 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to reject application');
       await fetchApplication();
       setRejectionReason('');
+      toast.success('Application rejected and the mentor has been notified.');
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to reject application'));
     } finally {
@@ -266,14 +273,23 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
           </div>
           <div>
             <span className="text-[10px] text-[var(--color-shell-text-muted)] uppercase tracking-wider">Email</span>
-            <p className="text-sm font-medium text-[var(--color-shell-text)] mt-0.5">
-              {application.profile?.email || '—'}
+            <p className="text-sm font-medium text-[var(--color-shell-text)] mt-0.5 break-words">
+              {application.profile?.email ? (
+                <a
+                  href={mailtoHref(application.profile.email) || undefined}
+                  className="hover:underline underline-offset-2"
+                >
+                  {application.profile.email}
+                </a>
+              ) : (
+                '—'
+              )}
             </p>
           </div>
           <div>
             <span className="text-[10px] text-[var(--color-shell-text-muted)] uppercase tracking-wider">User ID</span>
             <p className="text-sm font-mono text-[var(--color-shell-text-subtle)] mt-0.5 break-all">
-              {application.user_id}
+              <ShortId value={application.user_id} label="User ID" className="text-sm" />
             </p>
           </div>
         </div>

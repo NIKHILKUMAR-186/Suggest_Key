@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { isKnownRoute } from '@/src/lib/pageMeta';
 import { SeekerShell } from '@/src/components/layout/SeekerShell';
 import { MentorShell } from '@/src/components/layout/MentorShell';
 import { AdminShell } from '@/src/components/layout/AdminShell';
@@ -10,7 +11,10 @@ const isPublicRoute = (pathname: string) => (
   pathname.startsWith('/auth') ||
   pathname === '/login' ||
   pathname === '/signup' ||
-  pathname === '/403'
+  pathname === '/403' ||
+  // Open to visitors who have no account yet, so it must not be wrapped in a
+  // role shell: an anonymous applicant would otherwise get seeker navigation.
+  pathname === '/mentor/signup'
 );
 
 /**
@@ -28,6 +32,12 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const pathname = currentPath.split('?')[0];
 
   if (isPublicRoute(pathname)) {
+    return <>{children}</>;
+  }
+
+  // The 404 page is self-contained (own header, own theme toggle, no role
+  // navigation), so it must not be wrapped in a role shell.
+  if (!isKnownRoute(pathname)) {
     return <>{children}</>;
   }
 

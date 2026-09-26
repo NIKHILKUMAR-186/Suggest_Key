@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { User, Session } from '@supabase/supabase-js';
 import type { Profile, UserRole, AuthContextType } from '@/src/types/auth';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { supabase, isSupabaseConfigured, fetchUserProfile, fetchUserRoles, upsertUserProfile } from '@/src/lib/supabase';
 import { apiFetch } from '@/src/lib/apiClient';
 
@@ -21,6 +22,21 @@ import type { MentorOnboardingData } from '@/src/types/database';
 const DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth';
 const LEGACY_DEMO_AUTH_STORAGE_KEY = 'suggestkey_demo_auth_user';
 const DEMO_LOGIN_URL = '/api/auth/demo-login';
+const LOGIN_FAILURE_URL = '/api/auth/login-failure';
+const LOGIN_SUCCESS_URL = '/api/auth/login-success';
+
+async function reportLoginOutcome(url: string, body: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive: true,
+    });
+  } catch {
+    // Telemetry must never block or break the sign-in flow.
+  }
+}
 
 const isUserRole = (value: unknown): value is UserRole => {
   return value === 'seeker' || value === 'mentor' || value === 'admin';
@@ -152,7 +168,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (rolesError) {
         // A failed role lookup must NOT be treated as "no roles" and must NOT
         // fall back to a default role. Surface the failure instead of guessing.
-        console.error('Unable to resolve user roles:', rolesError);
+        console.error('Unable to resolve user roles:', logSanitizer.safeMessage(rolesError));
         setRoles([]);
         setActiveRoleState(null);
         return null;
@@ -171,7 +187,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             : null;
       setActiveRoleState(primary);
     } catch (err: any) {
-      console.error('Error loading Supabase user data:', err);
+      console.error('Error loading Supabase user data:', logSanitizer.safeMessage(err));
     }
     return primary;
   }, []);
@@ -206,7 +222,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }
         } catch (err: any) {
-          console.error('Supabase getSession error:', err);
+          console.error('Supabase getSession error:', logSanitizer.safeMessage(err));
         } finally {
           if (isMounted) setIsLoading(false);
         }
@@ -297,12 +313,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (signInError) {
         setError(signInError.message);
         setIsLoading(false);
+        void reportLoginOutcome(LOGIN_FAILURE_URL, {
+          email: email.trim().toLowerCase(),
+          reason: 'INVALID_CREDENTIALS',
+        });
         return { error: signInError };
       }
 
       if (data.user) {
         setUser(data.user);
         setSession(data.session);
+        void reportLoginOutcome(LOGIN_SUCCESS_URL, { email: email.trim().toLowerCase() });
         // `undefined` (not null) so a genuinely role-less account is reported
         // as "no role resolved" rather than as a seeker.
         const role = await loadUserData(data.user);

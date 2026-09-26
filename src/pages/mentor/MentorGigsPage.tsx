@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Briefcase, Plus, Clock, IndianRupee, Check, AlertCircle, Edit, Trash2, Loader2 } from 'lucide-react';
+import { useNavigation } from '@/src/context/NavigationContext';
+import { Briefcase, Plus, Clock, Check, AlertCircle, Trash2, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Textarea } from '@/src/components/ui/Textarea';
@@ -7,6 +8,9 @@ import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useAuth } from '@/src/context/AuthContext';
+import { useToast } from '@/src/context/ToastContext';
+import { toUserMessage } from '@/src/lib/errorMessages';
+import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
 
 interface Gig {
@@ -28,6 +32,8 @@ interface SegmentOption {
 
 export const MentorGigsPage: React.FC = () => {
   const { user } = useAuth();
+  const toast = useToast();
+  const { navigate } = useNavigation();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [gigs, setGigs] = useState<Gig[]>([]);
   const [segments, setSegments] = useState<SegmentOption[]>([]);
@@ -53,7 +59,7 @@ export const MentorGigsPage: React.FC = () => {
       if (!data.success) throw new Error(data.error?.message || 'Failed to fetch gigs');
       setGigs(data.gigs || []);
     } catch (err: any) {
-      setError(err.message || 'Failed to load gigs');
+      setError(toUserMessage(err, 'Failed to load gigs'));
     } finally {
       setLoading(false);
     }
@@ -144,8 +150,9 @@ export const MentorGigsPage: React.FC = () => {
       setPrice('999');
       setDescription('');
       setIsCreateOpen(false);
+      toast.success('Gig published successfully.');
     } catch (err: any) {
-      setFormError(err.message || 'Failed to create gig');
+      setFormError(toUserMessage(err, 'Failed to create gig'));
     } finally {
       setSubmitting(false);
     }
@@ -153,18 +160,19 @@ export const MentorGigsPage: React.FC = () => {
 
   const handleToggleActive = async (gig: Gig) => {
     if (!user?.id) return;
+    const nextActive = !gig.isActive;
     try {
       const res = await apiFetch(`/api/mentor/gigs/${gig.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isActive: !gig.isActive }),
+        body: JSON.stringify({ isActive: nextActive }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to update gig');
       await fetchGigs();
+      toast.success(`Gig ${nextActive ? 'activated' : 'paused'}.`);
     } catch (err: any) {
-      console.error('Failed to toggle gig:', err);
-      alert('Failed to update gig: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to update gig'));
     }
   };
 
@@ -178,9 +186,9 @@ export const MentorGigsPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to delete gig');
       await fetchGigs();
+      toast.success('Gig deleted.');
     } catch (err: any) {
-      console.error('Failed to delete gig:', err);
-      alert('Failed to delete gig: ' + err.message);
+      toast.error(toUserMessage(err, 'Failed to delete gig'));
     }
   };
 
@@ -237,6 +245,7 @@ export const MentorGigsPage: React.FC = () => {
             onAction={() => setIsCreateOpen(true)}
           />
         ) : (
+          <div className="table-scroll">
           <table className="w-full text-left text-xs text-zinc-600">
             <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
               <tr>
@@ -259,7 +268,7 @@ export const MentorGigsPage: React.FC = () => {
                     <Clock className="h-3.5 w-3.5 inline-block mr-1 text-zinc-400" />
                     {gig.durationMinutes} min
                   </td>
-                  <td className="py-3 px-4 font-bold text-zinc-950">₹{gig.priceInr}</td>
+                  <td className="py-3 px-4 font-bold text-zinc-950">{formatInr(gig.priceInr)}</td>
                   <td className="py-3 px-4">
                     <Badge variant={gig.isActive ? 'success' : 'secondary'} className="text-[10px]">
                       {gig.isActive ? 'Active' : 'Inactive'}
@@ -291,6 +300,7 @@ export const MentorGigsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
@@ -329,7 +339,15 @@ export const MentorGigsPage: React.FC = () => {
             </select>
             {segments.length === 0 && (
               <p className="text-[11px] text-amber-700">
-                You have no approved segments. <Button variant="ghost" size="sm" className="p-0 h-auto text-[11px]" onClick={() => { setIsCreateOpen(false); }}>Apply for a segment first</Button>.
+                You have no approved segments.{' '}
+                <button
+                  type="button"
+                  className="font-semibold underline underline-offset-2"
+                  onClick={() => { setIsCreateOpen(false); navigate('/mentor/segments'); }}
+                >
+                  Apply for a segment
+                </button>{' '}
+                first.
               </p>
             )}
           </div>

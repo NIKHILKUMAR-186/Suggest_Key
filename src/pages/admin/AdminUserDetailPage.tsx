@@ -35,6 +35,7 @@ import { LoadingState } from '@/src/components/shared/LoadingState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
 import { ControlTabs } from '@/src/components/admin/ControlTabs';
 import { apiFetch } from '@/src/lib/apiClient';
+import { mailtoHref } from '@/src/lib/contact';
 import { useNavigation } from '@/src/context/NavigationContext';
 import {
   ACCOUNT_BADGE_LABELS,
@@ -675,8 +676,17 @@ export const AdminUserDetailPage: React.FC = () => {
               <h1 className="text-xl font-bold tracking-tight text-[var(--color-shell-text)]">
                 {detail.profile.full_name || 'Unnamed user'}
               </h1>
-              <p className="mt-0.5 font-mono text-xs text-[var(--color-shell-text-muted)]">
-                {detail.profile.email}
+              <p className="mt-0.5 font-mono text-xs text-[var(--color-shell-text-muted)] break-all">
+                {detail.profile.email ? (
+                  <a
+                    href={mailtoHref(detail.profile.email) || undefined}
+                    className="hover:underline underline-offset-2"
+                  >
+                    {detail.profile.email}
+                  </a>
+                ) : (
+                  '—'
+                )}
               </p>
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                 {detail.roles.map((role) => (
