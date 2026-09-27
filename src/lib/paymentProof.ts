@@ -37,8 +37,74 @@ export const PAYMENT_PROOF_MIME_TYPES = [
 
 export type PaymentProofMimeType = (typeof PAYMENT_PROOF_MIME_TYPES)[number];
 
+/**
+ * The public, admin-managed payment QR shown to seekers.
+ *
+ * This is a different asset from the proof bucket above and is deliberately
+ * PUBLIC: the QR and the UPI id are instructions a payer is meant to read, so
+ * they hold no secret. Only writes are restricted, to admins. It lives in its
+ * own bucket because "everyone can read this" and "each seeker can only read
+ * their own receipts" are opposite policies and cannot share one bucket.
+ */
+export const PAYMENT_QR_BUCKET = 'payment-qr';
+
+/** Mirrors the `payment-qr` bucket's own `allowed_mime_types`. */
+export const PAYMENT_QR_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+
+export type PaymentQrMimeType = (typeof PAYMENT_QR_MIME_TYPES)[number];
+
+/** Matches the bucket's `file_size_limit` (2 MB). */
+export const PAYMENT_QR_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Derived from the real byte ceiling so the message cannot drift from the limit. */
+export const PAYMENT_QR_MAX_LABEL = `${PAYMENT_QR_MAX_BYTES / (1024 * 1024)} MB`;
+
 /** The payment status a freshly submitted proof must carry. */
 export const PAYMENT_STATUS_PENDING = 'PENDING_VERIFICATION';
+
+/**
+ * Validates a payment QR image before it is uploaded.
+ *
+ * `application/pdf` is allowed by neither this check nor the bucket: a QR must
+ * be scannable straight off the seeker's screen.
+ */
+export function validateQrFile(file: ProofFileLike | null | undefined): Validated<ProofFileLike> {
+  if (!file) {
+    return { ok: false, message: 'Select a payment QR image.' };
+  }
+  if (file.size <= 0) {
+    return { ok: false, message: 'That file is empty.' };
+  }
+  if (!PAYMENT_QR_MIME_TYPES.includes(file.type as PaymentQrMimeType)) {
+    return { ok: false, message: 'Upload a PNG, JPEG or WebP image.' };
+  }
+  if (file.size > PAYMENT_QR_MAX_BYTES) {
+    return { ok: false, message: `That image is larger than ${PAYMENT_QR_MAX_LABEL}.` };
+  }
+  return { ok: true, value: file };
+}
+
+/**
+ * UPI handle shape: a local part of 2+ word characters, an `@`, and a provider
+ * handle. Deliberately shape-only - it rejects obvious typos without claiming
+ * to know which handles are actually registered on a UPI provider.
+ */
+export function validateUpiId(raw: unknown): Validated<string> {
+  if (typeof raw !== 'string') {
+    return { ok: false, message: 'Enter a UPI ID, for example name@bank.' };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: false, message: 'Enter a UPI ID, for example name@bank.' };
+  }
+  if (trimmed.length > 120) {
+    return { ok: false, message: 'That UPI ID is too long.' };
+  }
+  if (!/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(trimmed)) {
+    return { ok: false, message: 'Enter a valid UPI ID, for example name@bank.' };
+  }
+  return { ok: true, value: trimmed };
+}
 
 /**
  * Booking statuses that still accept a payment proof.

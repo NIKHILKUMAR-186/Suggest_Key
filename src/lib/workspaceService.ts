@@ -210,6 +210,19 @@ export interface SaveWorkspacePayload {
   publish?: boolean;
 }
 
+function toApiWorkspacePayload(payload: SaveWorkspacePayload) {
+  return {
+    bookingId: payload.booking_id,
+    mentorId: payload.mentor_id,
+    mentorNotes: payload.mentor_notes,
+    takeaways: payload.takeaways,
+    suggestions: payload.suggestions,
+    nextSteps: payload.next_steps,
+    followUpRecommendation: payload.follow_up_recommendation ?? null,
+    publish: payload.publish ?? false,
+  };
+}
+
 /**
  * Mentor or Admin creates, edits, and saves a session workspace.
  * Uses the authoritative server API endpoint to ensure consistency.
@@ -224,7 +237,7 @@ export async function saveWorkspaceAuthoritative(
     const res = await apiFetch('/api/workspaces', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(toApiWorkspacePayload(payload)),
     });
 
     if (res.ok) {

@@ -1,81 +1,122 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Send,
   ShieldAlert,
   Loader2,
   CheckCheck,
   RefreshCw,
-  CreditCard,
-  Calendar,
+  Radio,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
-import { Input } from '@/src/components/ui/Input';
-import { Textarea } from '@/src/components/ui/Textarea';
-import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { ErrorState } from '@/src/components/shared/ErrorState';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
+import { useNotificationSync } from '@/src/hooks/useNotificationSync';
 import { NotificationCard } from '@/src/components/notifications/NotificationCard';
-import { NotificationSimulator } from '@/src/components/notifications/NotificationSimulator';
 import {
   fetchUserNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
-  dispatchNotification,
 } from '@/src/lib/notificationService';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import type { Notification } from '@/src/types/database';
 
+type StatusFilter = 'all' | 'unread' | 'read';
+
+/**
+ * Alert categories this page can scope to. These are the `notifications.type`
+ * values the server actually writes, so a scope is a real database filter rather
+ * than a client-side bucket. `ADMIN` is included because the mentor
+ * verification flow writes that type.
+ */
+const ALERT_SCOPES = ['ALL', 'PAYMENT', 'SESSION', 'BOOKING', 'WORKSPACE', 'ADMIN', 'SYSTEM'] as const;
+
+const STATUS_FILTERS: readonly StatusFilter[] = ['all', 'unread', 'read'] as const;
+
+/**
+ * Real operational notifications for the signed-in administrator.
+ *
+ * Every row here was written by a real application event: a payment proof
+ * submission, a payment decision, a cancellation, a session ending, a mentor
+ * application being submitted. There is no simulator, no preset event catalogue
+ * and no way to compose an alert from this page - the only actions available are
+ * reading the real queue, scoping it, and marking what has been reviewed.
+ */
 export const AdminNotificationsPage: React.FC = () => {
   const { user } = useAuth();
   const { refreshNotifications: refreshContext } = useNotifications();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'read'>('all');
-  const [typeFilter, setTypeFilter] = useState<string>('ALL');
-
-  // Broadcast Modal State
-  const [isBroadcastOpen, setIsBroadcastOpen] = useState(false);
-  const [broadcastTitle, setBroadcastTitle] = useState('');
-  const [broadcastMsg, setBroadcastMsg] = useState('');
-  const [broadcastTarget, setBroadcastTarget] = useState<'all' | 'seekers' | 'mentors'>('all');
-  const [isBroadcasting, setIsBroadcasting] = useState(false);
-  const [broadcastSuccess, setBroadcastSuccess] = useState(false);
 
   const adminId = user?.id;
 
-  const loadNotifs = async () => {
-    if (!adminId) return;
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [scopeFilter, setScopeFilter] = useState<(typeof ALERT_SCOPES)[number]>('ALL');
+  // Bumped to request a reload from the realtime / visibility revalidation path,
+  // which reuses the same loader rather than duplicating the query.
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const loadNotifs = useCallback(async () => {
+    if (!adminId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setError(null);
     try {
       const data = await fetchUserNotifications(adminId, {
         status: statusFilter,
-        type: typeFilter,
+        type: scopeFilter,
       });
       setNotifications(data);
-      await refreshContext();
     } catch (err) {
-      console.error('Failed to load admin notifications:', err);
+      setError(toUserMessage(err, 'The notification queue could not be loaded.'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [adminId, statusFilter, scopeFilter]);
 
   useEffect(() => {
-    loadNotifs();
-  }, [adminId, statusFilter, typeFilter]);
+    void loadNotifs();
+  }, [loadNotifs, reloadToken]);
+
+  // A new real notification is written straight to `notifications`, so the
+  // realtime channel reloads the queue. The interval and focus revalidation cover
+  // environments without realtime.
+  useNotificationSync({ userId: adminId, onInvalidate: () => setReloadToken((n) => n + 1) });
+
+  // The context feeds the shell's unread badge, so it is kept in step with the
+  // queue this page shows. It is a separate query by design, so a failure here
+  // must not take the page down.
+  const syncBadge = useCallback(async () => {
+    try {
+      await refreshContext();
+    } catch (err) {
+      console.warn('Unable to refresh the notification badge:', err);
+    }
+  }, [refreshContext]);
+
+  useEffect(() => {
+    void syncBadge();
+  }, [syncBadge, reloadToken, notifications.length]);
 
   const handleMarkRead = async (id: string) => {
     if (!adminId) return;
+    // Optimistic: the card renders read immediately, and the reload below
+    // replaces it with what the database actually stored.
     setNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
     );
-    await markNotificationAsRead(id, adminId);
-    await refreshContext();
+    try {
+      await markNotificationAsRead(id, adminId);
+      await syncBadge();
+    } catch (err) {
+      setError(toUserMessage(err, 'That notification could not be marked as read.'));
+      void loadNotifs();
+    }
   };
 
   const handleMarkAllRead = async () => {
@@ -83,66 +124,37 @@ export const AdminNotificationsPage: React.FC = () => {
     setNotifications((prev) =>
       prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))
     );
-    await markAllNotificationsAsRead(adminId);
-    await refreshContext();
-  };
-
-  const handleSendBroadcast = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!broadcastTitle || !broadcastMsg) return;
-
-    setIsBroadcasting(true);
     try {
-      // Dispatch real broadcast notifications to seekers and mentors
-      const targetUserIds = adminId ? [adminId] : [];
-
-      for (const targetId of targetUserIds) {
-        await dispatchNotification({
-          userId: targetId,
-          title: `[Platform Broadcast] ${broadcastTitle}`,
-          message: broadcastMsg,
-          type: 'SYSTEM',
-          eventType: 'ADMIN_BROADCAST',
-          entityType: 'system',
-          link: targetId.includes('mentor') ? '/mentor' : targetId.includes('admin') ? '/admin' : '/seeker',
-          metadata: { broadcastTarget, dispatchedBy: 'admin' },
-        });
-      }
-
-      setBroadcastSuccess(true);
-      setTimeout(() => {
-        setBroadcastSuccess(false);
-        setIsBroadcastOpen(false);
-        setBroadcastTitle('');
-        setBroadcastMsg('');
-        loadNotifs();
-      }, 1500);
+      await markAllNotificationsAsRead(adminId);
+      await loadNotifs();
+      await syncBadge();
     } catch (err) {
-      console.error('Broadcast failed:', err);
-    } finally {
-      setIsBroadcasting(false);
+      setError(toUserMessage(err, 'The queue could not be marked as reviewed.'));
+      void loadNotifs();
     }
   };
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
+  // The unread badge reflects the WHOLE queue, not the filtered view, so
+  // switching to "read" never makes pending work look like it was cleared.
+  const unreadCount = useMemo(() => notifications.filter((n) => !n.is_read).length, [notifications]);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[var(--color-shell-border)] pb-5">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
-              Platform Operational Logs & Alerts
+            <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
+              Operational Alerts
             </h1>
             {unreadCount > 0 && (
               <Badge variant="destructive" className="text-xs font-semibold">
-                {unreadCount} action required
+                {unreadCount} unreviewed
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-xs text-zinc-500">
-            Real-time operational alerts for manual payment queues, mentor SLA link breaches, emergency cancellations, and booking intervention triggers.
+          <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
+            Real events written by the platform: payment proofs awaiting verification, payment decisions, booking
+            interventions and mentor verification activity.
           </p>
         </div>
 
@@ -162,7 +174,7 @@ export const AdminNotificationsPage: React.FC = () => {
 
           <Button
             id="admin-refresh-btn"
-            onClick={loadNotifs}
+            onClick={() => setReloadToken((n) => n + 1)}
             variant="outline"
             size="sm"
             className="text-xs gap-1.5 h-8"
@@ -171,58 +183,38 @@ export const AdminNotificationsPage: React.FC = () => {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
           </Button>
-
-          <Button
-            id="admin-new-broadcast-btn"
-            onClick={() => setIsBroadcastOpen(true)}
-            size="sm"
-            className="gap-1.5 text-xs h-8 bg-zinc-900 text-white"
-          >
-            <Send className="h-3.5 w-3.5" />
-            <span>New System Broadcast</span>
-          </Button>
         </div>
       </div>
 
-      {/* Simulator bar for testing all 4 Admin events */}
-      {adminId && (
-        <NotificationSimulator
-          userId={adminId}
-          role="admin"
-          onEventDispatched={loadNotifs}
-        />
-      )}
-
-      {/* Filter Tabs */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 p-2 rounded-xl border border-zinc-200">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-2">
         <div className="flex items-center gap-1 overflow-x-auto">
-          {(['all', 'unread', 'read'] as const).map((st) => (
+          {STATUS_FILTERS.map((st) => (
             <button
               key={st}
               id={`admin-filter-${st}`}
               onClick={() => setStatusFilter(st)}
               className={`px-3 py-1.5 text-xs font-medium rounded-lg capitalize transition-colors cursor-pointer ${
                 statusFilter === st
-                  ? 'bg-white text-zinc-950 shadow-xs border border-zinc-200/80 font-semibold'
-                  : 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100'
+                  ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs border border-[var(--color-shell-border)] font-semibold'
+                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] hover:bg-[var(--color-shell-surface-hover)]'
               }`}
             >
-              {st} {st === 'unread' && unreadCount > 0 && `(${unreadCount})`}
+              {st}
             </button>
           ))}
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto">
-          <span className="text-[11px] font-medium text-zinc-400 pl-1">Alert Scope:</span>
-          {['ALL', 'PAYMENT', 'SESSION', 'BOOKING', 'SYSTEM'].map((cat) => (
+          <span className="text-[11px] font-medium text-[var(--color-shell-text-subtle)] pl-1">Alert scope:</span>
+          {ALERT_SCOPES.map((cat) => (
             <button
               key={cat}
               id={`admin-cat-${cat.toLowerCase()}`}
-              onClick={() => setTypeFilter(cat)}
+              onClick={() => setScopeFilter(cat)}
               className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors cursor-pointer ${
-                typeFilter === cat
-                  ? 'bg-zinc-900 text-white font-semibold'
-                  : 'bg-white text-zinc-600 border border-zinc-200 hover:bg-zinc-100'
+                scopeFilter === cat
+                  ? 'bg-[var(--color-shell-text)] text-[var(--color-shell-surface)] font-semibold'
+                  : 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)] hover:bg-[var(--color-shell-surface-hover)]'
               }`}
             >
               {cat === 'ALL' ? 'All Alerts' : cat}
@@ -231,20 +223,29 @@ export const AdminNotificationsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Notification List */}
+      {error && (
+        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]">
+          <ErrorState
+            title="Notification Queue Unavailable"
+            message={error}
+            onRetry={() => setReloadToken((n) => n + 1)}
+          />
+        </div>
+      )}
+
       {loading ? (
-        <div className="py-16 flex flex-col justify-center items-center text-zinc-400 text-xs gap-2">
-          <Loader2 className="h-6 w-6 animate-spin text-zinc-600" />
-          <span>Synchronizing operational audit queue...</span>
+        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
+          <span>Loading operational alerts…</span>
         </div>
       ) : notifications.length === 0 ? (
         <EmptyState
-          icon={ShieldAlert}
-          title={statusFilter === 'unread' ? 'Zero Pending Operational Escalations' : 'No Operational Alerts'}
+          icon={statusFilter === 'unread' ? CheckCheck : ShieldAlert}
+          title={statusFilter === 'unread' ? 'Nothing Awaiting Review' : 'No Alerts Match This Filter'}
           description={
             statusFilter === 'unread'
-              ? 'All SLA warnings, manual payment queues, and mentor escalations are cleared.'
-              : 'No operational logs found matching this filter criteria.'
+              ? 'Every payment queue, booking intervention and verification item has been reviewed.'
+              : 'No alerts exist for this status and scope combination.'
           }
         />
       ) : (
@@ -260,92 +261,13 @@ export const AdminNotificationsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Broadcast Modal */}
-      <Modal
-        isOpen={isBroadcastOpen}
-        onClose={() => setIsBroadcastOpen(false)}
-        title="Broadcast System Announcement"
-      >
-        <form onSubmit={handleSendBroadcast} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-zinc-800 mb-1">
-              Target Audience
-            </label>
-            <div className="flex gap-2">
-              {[
-                { id: 'all', label: 'All Users' },
-                { id: 'seekers', label: 'Seekers Only' },
-                { id: 'mentors', label: 'Mentors Only' },
-              ].map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setBroadcastTarget(t.id as any)}
-                  className={`flex-1 py-1.5 px-2 text-xs rounded-lg border font-medium cursor-pointer ${
-                    broadcastTarget === t.id
-                      ? 'bg-zinc-950 text-white border-zinc-950'
-                      : 'bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-zinc-800 mb-1">
-              Announcement Title
-            </label>
-            <Input
-              id="broadcast-title-input"
-              value={broadcastTitle}
-              onChange={(e) => setBroadcastTitle(e.target.value)}
-              placeholder="e.g., Scheduled Maintenance Window / Holiday Availability"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-zinc-800 mb-1">
-              Message Content
-            </label>
-            <Textarea
-              id="broadcast-msg-input"
-              value={broadcastMsg}
-              onChange={(e) => setBroadcastMsg(e.target.value)}
-              placeholder="Provide clear details and instructions for platform participants..."
-              rows={4}
-              required
-            />
-          </div>
-
-          <div className="pt-2 flex items-center justify-end gap-2 border-t border-zinc-100">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setIsBroadcastOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              id="broadcast-submit-btn"
-              type="submit"
-              size="sm"
-              disabled={isBroadcasting}
-              className="gap-1.5 bg-zinc-950 text-white"
-            >
-              {isBroadcasting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Send className="h-3.5 w-3.5" />
-              )}
-              <span>{broadcastSuccess ? 'Published!' : 'Send Broadcast'}</span>
-            </Button>
-          </div>
-        </form>
-      </Modal>
+      <p className="flex items-start gap-2 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3 text-[11px] text-[var(--color-shell-text-subtle)]">
+        <Radio className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+        <span>
+          This queue is fed only by real application events. Every action button resolves to the admin record the
+          event was written for — a payment notification opens the admin payment queue, never a seeker page.
+        </span>
+      </p>
     </div>
   );
 };

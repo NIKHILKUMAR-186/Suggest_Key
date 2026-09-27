@@ -370,7 +370,7 @@ export const SeekerBookingsPage: React.FC = () => {
                     </p>
                   </div>
                   <Button
-                    onClick={() => navigate('/seeker/workspace')}
+                    onClick={() => navigate(`/seeker/workspace?bookingId=${booking.id}`)}
                     size="sm"
                     className="gap-1.5 text-xs font-semibold"
                   >

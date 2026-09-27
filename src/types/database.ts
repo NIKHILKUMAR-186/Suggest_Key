@@ -155,6 +155,7 @@ export interface Booking {
    status: BookingStatus;
   meeting_url: string | null;
   actual_ended_at: string | null;
+  ended_by_role: 'mentor' | 'seeker' | 'admin' | null;
   cancellation_reason: string | null;
   created_at: string;
   updated_at: string;

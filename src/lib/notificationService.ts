@@ -206,274 +206,99 @@ export async function dispatchNotification(
 }
 
 /**
- * Event simulation preset definitions across all 3 roles (Seeker: 11, Mentor: 8, Admin: 4).
+ * Resolves where a notification's action button should navigate for the role
+ * reading it.
+ *
+ * `notifications.link` is written by whichever server-side event produced the
+ * row, and that event knows who it is talking to. The risk is an admin queue
+ * containing a link that was written for a participant: an admin clicking
+ * "Review Payment" must never land on a seeker page, which would both break the
+ * workflow and hand an operator a view scoped to someone else's booking.
+ *
+ * So the destination is resolved from the event's own subject, per role, rather
+ * than trusted from the stored string. An admin always gets an admin route; a
+ * link that cannot be mapped is replaced by that role's own home rather than
+ * navigated to verbatim.
+ *
+ * `entityId` is the real record id the notification was written for, so the
+ * destination identifies the actual record and never a hardcoded one.
  */
-export interface EventPreset {
-  eventType: NotificationEventType;
-  category: 'seeker' | 'mentor' | 'admin';
-  title: string;
-  messageTemplate: (bookingCode: string) => string;
-  type: NotificationType;
-  entityType: string;
-  linkTemplate: (bookingCode: string) => string;
-  severity?: 'normal' | 'urgent' | 'action';
+export function resolveNotificationLink(
+  link: string | null | undefined,
+  role: 'seeker' | 'mentor' | 'admin',
+  entityId?: string | null,
+): string | null {
+  if (!link || typeof link !== 'string') return null;
+
+  const [rawPath, rawQuery = ''] = link.split('?');
+  const path = rawPath.trim();
+  if (!path) return null;
+
+  // Carries the notification's own record reference across, so the destination
+  // can focus the record the event is actually about.
+  const incoming = new URLSearchParams(rawQuery);
+  const bookingId = incoming.get('bookingId') || entityId || null;
+  const withBooking = (route: string) => (bookingId ? `${route}?bookingId=${encodeURIComponent(bookingId)}` : route);
+
+  if (role === 'admin') {
+    // Already an admin route: keep it, but drop any participant query that would
+    // only make sense on a seeker or mentor page.
+    if (path.startsWith('/admin/')) {
+      const params = new URLSearchParams(rawQuery);
+      params.delete('bookingId');
+      const query = params.toString();
+      return query ? `${path}?${query}` : path;
+    }
+
+    if (path.startsWith('/seeker/')) {
+      if (path.startsWith('/seeker/payment')) return withBooking('/admin/payments');
+      if (path.startsWith('/seeker/workspace')) return withBooking('/admin/workspaces');
+      return withBooking('/admin/bookings');
+    }
+
+    if (path.startsWith('/mentor/')) {
+      if (path.startsWith('/mentor/workspace')) return withBooking('/admin/workspaces');
+      if (path.startsWith('/mentor/bookings')) return withBooking('/admin/bookings');
+      return '/admin/mentors';
+    }
+
+    if (path === '/' || path === '') return '/admin';
+
+    // A payment event is about a payment row, so the review queue is the right
+    // destination even when the writer left a generic link.
+    if (/\/payment/i.test(path)) return withBooking('/admin/payments');
+    if (/\/booking/i.test(path)) return withBooking('/admin/bookings');
+
+    // Nothing recognisable: send the operator to their own console rather than
+    // to an unknown or participant-facing path.
+    return '/admin';
+  }
+
+  if (role === 'mentor') {
+    if (path.startsWith('/admin/')) return '/mentor';
+    return link;
+  }
+
+  if (path.startsWith('/admin/') || path.startsWith('/mentor/')) return '/seeker';
+  return link;
 }
 
-export const NOTIFICATION_EVENT_PRESETS: EventPreset[] = [
-  // --- SEEKER PRESETS (11) ---
-  {
-    eventType: 'BOOKING_CREATED',
-    category: 'seeker',
-    title: 'Booking Created',
-    messageTemplate: (code) => `Consultation slot reserved for #${code}. Complete payment verification within 15 minutes to secure your slot.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'PAYMENT_SUBMITTED',
-    category: 'seeker',
-    title: 'Payment Submitted',
-    messageTemplate: (code) => `Your UPI transfer screenshot for #${code} has been uploaded and queued for admin verification.`,
-    type: 'PAYMENT',
-    entityType: 'payment',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'PAYMENT_APPROVED',
-    category: 'seeker',
-    title: 'Payment Approved',
-    messageTemplate: (code) => `Your payment for #${code} was approved by operations. The session is confirmed awaiting mentor meeting link.`,
-    type: 'PAYMENT',
-    entityType: 'payment',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'PAYMENT_REJECTED',
-    category: 'seeker',
-    title: 'Payment Rejected',
-    messageTemplate: (code) => `Payment receipt for #${code} was rejected: Invalid transaction reference number. Please re-upload proof.`,
-    type: 'PAYMENT',
-    entityType: 'payment',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-    severity: 'action',
-  },
-  {
-    eventType: 'MENTOR_CONFIRMED',
-    category: 'seeker',
-    title: 'Mentor Confirmation',
-    messageTemplate: (code) => `Your mentor has accepted #${code} and locked the consultation into their official calendar.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'MEETING_LINK_AVAILABLE',
-    category: 'seeker',
-    title: 'Meeting Link Available',
-    messageTemplate: (code) => `Your Google Meet URL for #${code} is now verified. You may join room 5 minutes before scheduled start time.`,
-    type: 'SESSION',
-    entityType: 'session',
-    linkTemplate: (code) => `/seeker/session?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'SESSION_REMINDER',
-    category: 'seeker',
-    title: 'Session Reminder: 15m to Start',
-    messageTemplate: (code) => `Your 1:1 consultation #${code} begins in 15 minutes. Check camera and audio in the session prep room.`,
-    type: 'SESSION',
-    entityType: 'session',
-    linkTemplate: (code) => `/seeker/session?bookingId=${code.toLowerCase()}`,
-    severity: 'urgent',
-  },
-  {
-    eventType: 'CANCELLATION',
-    category: 'seeker',
-    title: 'Session Cancellation',
-    messageTemplate: (code) => `Booking #${code} has been cancelled. Any applicable credit balance has been logged to your account.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'RESCHEDULING',
-    category: 'seeker',
-    title: 'Session Rescheduled',
-    messageTemplate: (code) => `Consultation #${code} was successfully updated to your requested new time slot.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/seeker/bookings?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'SESSION_COMPLETED',
-    category: 'seeker',
-    title: 'Session Completed',
-    messageTemplate: (code) => `Your consultation #${code} is complete. Your mentor will publish post-session workspace takeaways shortly.`,
-    type: 'SESSION',
-    entityType: 'session',
-    linkTemplate: (code) => `/seeker/workspace?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'WORKSPACE_UPDATED',
-    category: 'seeker',
-    title: 'Workspace Notes Published',
-    messageTemplate: (code) => `Mentor notes, key takeaways, suggestions, and action items have been published for #${code}.`,
-    type: 'WORKSPACE',
-    entityType: 'workspace',
-    linkTemplate: (code) => `/seeker/workspace?bookingId=${code.toLowerCase()}`,
-  },
-
-  // --- MENTOR PRESETS (8) ---
-  {
-    eventType: 'PAYMENT_APPROVED',
-    category: 'mentor',
-    title: 'Seeker Payment Verified',
-    messageTemplate: (code) => `Payment for #${code} was verified by admin. Please provide your secure HTTPS meeting link.`,
-    type: 'PAYMENT',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/booking-detail?bookingId=${code.toLowerCase()}`,
-    severity: 'action',
-  },
-  {
-    eventType: 'NEW_BOOKING',
-    category: 'mentor',
-    title: 'New Booking Request',
-    messageTemplate: (code) => `You have a new booking request #${code} for 1:1 consultation guidance.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/booking-detail?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'MEETING_LINK_DEADLINE',
-    category: 'mentor',
-    title: 'Meeting Link Deadline (2h)',
-    messageTemplate: (code) => `Session #${code} starts in 2 hours. Platform policy requires adding the meeting link now.`,
-    type: 'SESSION',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/booking-detail?bookingId=${code.toLowerCase()}`,
-    severity: 'action',
-  },
-  {
-    eventType: 'OVERDUE_MEETING_LINK',
-    category: 'mentor',
-    title: 'URGENT: Meeting Link Overdue',
-    messageTemplate: (code) => `Session #${code} starts in less than 75 minutes and meeting link is missing. Please add URL immediately.`,
-    type: 'SESSION',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/booking-detail?bookingId=${code.toLowerCase()}`,
-    severity: 'urgent',
-  },
-  {
-    eventType: 'MENTOR_SESSION_REMINDER',
-    category: 'mentor',
-    title: 'Upcoming Session Reminder',
-    messageTemplate: (code) => `Session #${code} with your seeker starts in 15 minutes. Session access unlocks at T-5m.`,
-    type: 'SESSION',
-    entityType: 'session',
-    linkTemplate: (code) => `/mentor/booking-detail?bookingId=${code.toLowerCase()}`,
-  },
-  {
-    eventType: 'MENTOR_CANCELLATION',
-    category: 'mentor',
-    title: 'Consultation Cancelled',
-    messageTemplate: (code) => `Seeker has cancelled booking #${code}. Slot has been returned to your open calendar availability.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/bookings`,
-  },
-  {
-    eventType: 'MENTOR_RESCHEDULING',
-    category: 'mentor',
-    title: 'Consultation Rescheduled',
-    messageTemplate: (code) => `Booking #${code} has been adjusted to a new agreed time. Your calendar has updated automatically.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: (code) => `/mentor/bookings`,
-  },
-  {
-    eventType: 'SESSION_COMPLETION',
-    category: 'mentor',
-    title: 'Session Concluded: Prepare Workspace',
-    messageTemplate: (code) => `Consultation #${code} has ended. Please compile notes, suggestions, and next steps in the workspace.`,
-    type: 'WORKSPACE',
-    entityType: 'workspace',
-    linkTemplate: (code) => `/mentor/workspace?bookingId=${code.toLowerCase()}`,
-    severity: 'action',
-  },
-
-  // --- ADMIN PRESETS (4) ---
-  {
-    eventType: 'ADMIN_PAYMENT_PROOF_SUBMITTED',
-    category: 'admin',
-    title: 'Payment Verification Required',
-    messageTemplate: (code) => `New UPI screenshot submitted for booking #${code}. Awaiting admin ledger review.`,
-    type: 'PAYMENT',
-    entityType: 'payment',
-    linkTemplate: () => `/admin/payments`,
-    severity: 'action',
-  },
-  {
-    eventType: 'ADMIN_OVERDUE_MENTOR_LINK',
-    category: 'admin',
-    title: 'SLA Breach: Overdue Mentor Link',
-    messageTemplate: (code) => `Mentor has not provided meeting link for #${code} starting within 2 hours. SLA escalation triggered.`,
-    type: 'SESSION',
-    entityType: 'booking',
-    linkTemplate: () => `/admin/bookings`,
-    severity: 'urgent',
-  },
-  {
-    eventType: 'ADMIN_MENTOR_CANCELLATION',
-    category: 'admin',
-    title: 'Mentor Cancellation Logged',
-    messageTemplate: (code) => `Mentor submitted an emergency cancellation for consultation #${code}. Check seeker reassignment or refund.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: () => `/admin/bookings`,
-    severity: 'action',
-  },
-  {
-    eventType: 'ADMIN_BOOKING_INTERVENTION',
-    category: 'admin',
-    title: 'Booking Intervention Required',
-    messageTemplate: (code) => `Critical operational anomaly detected on #${code}: T-45m deadline breached. Direct outreach required.`,
-    type: 'BOOKING',
-    entityType: 'booking',
-    linkTemplate: () => `/admin/bookings`,
-    severity: 'urgent',
-  },
-];
-
 /**
- * Simulates and commits an authentic notification event to the real database.
+ * The action label for a notification button, chosen from the destination the
+ * link actually resolves to so the wording always matches the page it opens.
  */
-export async function simulateNotificationEvent(
-  eventType: NotificationEventType,
-  userId: string,
-   bookingCode: string = 'BK-CODE',
-  customMessage?: string
-): Promise<Notification | null> {
-  const preset = NOTIFICATION_EVENT_PRESETS.find((p) => p.eventType === eventType);
-  if (!preset) return null;
+export function notificationActionLabel(resolvedLink: string | null): string | null {
+  if (!resolvedLink) return null;
+  const path = resolvedLink.toLowerCase();
 
-  const payload: NotificationDispatchPayload = {
-    userId,
-    title: preset.title,
-    message: customMessage || preset.messageTemplate(bookingCode),
-    type: preset.type,
-    eventType: preset.eventType,
-    entityType: preset.entityType,
-    entityId: bookingCode.toLowerCase(),
-    link: preset.linkTemplate(bookingCode),
-    metadata: {
-      bookingCode,
-      simulatedAt: new Date().toISOString(),
-      category: preset.category,
-      severity: preset.severity || 'normal',
-    },
-  };
-
-  return await dispatchNotification(payload);
+  if (path.includes('/payments')) return 'Review Payment';
+  if (path.includes('/mentor-verification')) return 'Review Application';
+  if (path.includes('/workspace')) return 'Open Workspace';
+  if (path.includes('/session')) return 'Join Prep Room';
+  if (path.includes('/booking')) return 'View Booking';
+  if (path.includes('/mentor')) return 'View Mentor';
+  if (path.includes('/settings')) return 'Open Settings';
+  return 'View Details';
 }
 
 /**

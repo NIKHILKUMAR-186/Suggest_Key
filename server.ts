@@ -45,6 +45,11 @@ import {
   PAYMENT_PROOF_BUCKET,
   PAYMENT_PROOF_MAX_BYTES,
   PAYMENT_STATUS_PENDING,
+  PAYMENT_QR_BUCKET,
+  PAYMENT_QR_MIME_TYPES,
+  PAYMENT_QR_MAX_BYTES,
+  PAYMENT_QR_MAX_LABEL,
+  type PaymentQrMimeType,
   isPayableBookingStatus,
   normaliseTransactionReference,
   validateProofFile,
@@ -149,6 +154,54 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const UUID_SHAPE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MIN_MENTOR_BIO_LENGTH = 10;
 const MIN_PASSWORD_LENGTH = 6;
+
+/**
+ * A handler-thrown error that already knows the status and machine-readable code
+ * it should be reported with.
+ *
+ * The alternative - returning a 500 and logging a message - is wrong for a
+ * rejected admin setting: "that UPI ID is malformed" is a 400 with a specific
+ * code the UI can render next to the field, not an internal failure. Used only
+ * inside request handlers, so it never escapes to the global error handler.
+ */
+class HttpError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * Mints a short-lived signed URL for the stored payment QR.
+ *
+ * The bucket is public, so this is convenience rather than secrecy, but a
+ * stable asset URL is still better than nothing: it is scoped, it expires, and
+ * it keeps the raw object key out of the seeker payload.
+ *
+ * A signing failure yields `null` and is logged. The caller must treat that as
+ * "no QR configured" - never as "show a placeholder image".
+ */
+async function signQrImageUrl(admin: SupabaseClient, storagePath: string | null): Promise<string | null> {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await admin.storage
+      .from(PAYMENT_QR_BUCKET)
+      .createSignedUrl(storagePath, 3600);
+    if (error) {
+      console.error('Failed to sign the payment QR URL:', error.message);
+      return null;
+    }
+    return data?.signedUrl ?? null;
+  } catch (signErr) {
+    console.error('Failed to sign the payment QR URL:', logSanitizer.safeMessage(signErr));
+    return null;
+  }
+}
 
 /**
  * How many admin accounts are currently OPERATIONAL.
@@ -6554,6 +6607,365 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
+  // Admin API: Platform Configuration
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/platform-config
+  //
+  // Returns two deliberately different things in one round trip:
+  //
+  //  - `payment`: the admin-managed, PERSISTED payment configuration. These are
+  //    the only values on this page an admin can change, and each change is
+  //    written to `platform_config` and read back by the seeker payment page.
+  //
+  //  - `rules`: the booking/session rules. These are NOT editable, and they are
+  //    deliberately served from the same `APP_CONFIG` the booking engine and the
+  //    database functions enforce, rather than being duplicated in the browser.
+  //    The frontend holds no copy of any of these numbers, so this page cannot
+  //    drift from what the platform actually applies.
+  app.get('/api/admin/platform-config', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data, error } = await admin
+        .from('platform_config')
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      // `data` is null until an admin saves the payment configuration for the
+      // first time. That is a real "not configured yet" state, not an error,
+      // and no value is invented to fill it in.
+      return res.json({
+        success: true,
+        payment: {
+          upiId: data?.upi_id ?? null,
+          qrImageStoragePath: data?.qr_image_storage_path ?? null,
+          qrImageUrl: await signQrImageUrl(admin, data?.qr_image_storage_path ?? null),
+          instructions: data?.payment_instructions ?? null,
+          currency: data?.currency ?? null,
+          accountName: data?.payment_account_name ?? null,
+          updatedAt: data?.updated_at ?? null,
+        },
+        rules: {
+          holdDurationMinutes: APP_CONFIG.HOLD_DURATION_MS / 60000,
+          sessionAccessWindowMinutes: APP_CONFIG.SESSION_ACCESS_WINDOW_MS / 60000,
+          meetingLinkDeadlineHours: APP_CONFIG.MEETING_LINK_DEADLINE_MS / 3600000,
+          bookingCutoffMinutes: APP_CONFIG.BOOKING_CUTOFF_MS / 60000,
+          cancellationWindowMinutes: APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES,
+          defaultTimezone: APP_CONFIG.DEFAULT_TIMEZONE,
+          paymentMethod: APP_CONFIG.MVP_PAYMENT_METHOD,
+        },
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/admin/platform-config',
+        clientMessage: 'Unable to load the platform configuration.',
+      });
+    }
+  });
+
+  // GET /api/platform-config
+  //
+  // The single source of truth the seeker payment page reads. Same table, same
+  // row and therefore the same values an admin just saved - there is no second
+  // copy of the UPI id or the QR anywhere in the client.
+  //
+  // Only payer-facing, public payment details are returned: the UPI id, the QR
+  // asset and the instructions. No credential, key or storage path is exposed.
+  app.get('/api/platform-config', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data, error } = await admin
+        .from('platform_config')
+        .select('upi_id, qr_image_storage_path, payment_instructions, currency, payment_account_name')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        payment: {
+          upiId: data?.upi_id ?? null,
+          qrImageUrl: await signQrImageUrl(admin, data?.qr_image_storage_path ?? null),
+          instructions: data?.payment_instructions ?? null,
+          currency: data?.currency ?? null,
+          accountName: data?.payment_account_name ?? null,
+        },
+      });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'GET /api/platform-config',
+        clientMessage: 'Unable to load payment details.',
+      });
+    }
+  });
+
+  // PATCH /api/admin/platform-config
+  //
+  // The only writer of `platform_config`. Server-side admin authorization comes
+  // from `requireAdmin`, which resolves the role from the verified token, so a
+  // seeker or mentor calling this directly is refused before the handler runs.
+  // Every accepted change writes an `audit_logs` record through the existing
+  // `auditAction` helper - no parallel audit system is introduced.
+  //
+  // Values are assigned explicitly from a known field list rather than spread
+  // from the body, so an unrecognised key can never reach the database.
+  app.patch('/api/admin/platform-config', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+
+      // The QR object key must be one the server minted. A client cannot point
+      // the seeker payment page at an arbitrary object in the bucket.
+      const QR_PATH_PATTERN = /^platform\/payment-qr-[0-9]{13}-[a-z0-9]{6}\.(png|jpe?g|webp)$/i;
+
+      const optionalText = (maxLength: number) => (value: unknown, field: string) => {
+        if (value === undefined) return undefined;
+        if (value === null) return null;
+        if (typeof value !== 'string') throw new HttpError(400, 'VALIDATION_ERROR', `${field} must be a string.`);
+        const trimmed = value.trim();
+        if (trimmed.length > maxLength) {
+          throw new HttpError(400, 'VALIDATION_ERROR', `${field} must be ${maxLength} characters or fewer.`);
+        }
+        return trimmed === '' ? null : trimmed;
+      };
+
+      const updates: Record<string, unknown> = {};
+      const changedFields: string[] = [];
+
+      const upiId = optionalText(120)(body.upiId, 'UPI ID');
+      if (upiId !== undefined) {
+        if (upiId !== null && !/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(upiId)) {
+          throw new HttpError(400, 'VALIDATION_ERROR', 'Enter a valid UPI ID, for example name@bank.');
+        }
+        updates.upi_id = upiId;
+        changedFields.push('upi_id');
+      }
+
+      const accountName = optionalText(120)(body.accountName, 'Account name');
+      if (accountName !== undefined) {
+        updates.payment_account_name = accountName;
+        changedFields.push('payment_account_name');
+      }
+
+      const instructions = optionalText(1000)(body.instructions, 'Payment instructions');
+      if (instructions !== undefined) {
+        updates.payment_instructions = instructions;
+        changedFields.push('payment_instructions');
+      }
+
+      if (body.currency !== undefined) {
+        if (body.currency !== null && body.currency !== 'INR') {
+          // Every amount column in the product is an `*_inr` integer, so INR is
+          // the only currency the payment architecture actually supports.
+          throw new HttpError(400, 'VALIDATION_ERROR', 'Currency is fixed to INR: all amounts are stored in rupees.');
+        }
+        updates.currency = 'INR';
+        changedFields.push('currency');
+      }
+
+      if (body.qrImageStoragePath !== undefined) {
+        if (body.qrImageStoragePath === null) {
+          updates.qr_image_storage_path = null;
+        } else if (typeof body.qrImageStoragePath === 'string' && QR_PATH_PATTERN.test(body.qrImageStoragePath)) {
+          updates.qr_image_storage_path = body.qrImageStoragePath;
+        } else {
+          throw new HttpError(400, 'VALIDATION_ERROR', 'Unknown payment QR reference.');
+        }
+        changedFields.push('qr_image_storage_path');
+      }
+
+      if (changedFields.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'No editable payment setting was provided.' },
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      const adminId = req.auth!.user.id;
+
+      // Single-row table keyed on id = 1, so this upsert is the whole table.
+      const { data, error } = await admin
+        .from('platform_config')
+        .upsert({ id: 1, ...updates, updated_at: nowIso, updated_by: adminId }, { onConflict: 'id' })
+        .select('upi_id, qr_image_storage_path, payment_instructions, currency, payment_account_name, updated_at')
+        .single();
+
+      if (error) throw error;
+
+      auditAction(req.auth, 'ADMIN_UPDATED_PAYMENT_CONFIGURATION', {
+        entityType: 'platform_config',
+        entityId: '1',
+        requestId: req.requestId,
+        // Field NAMES only. Payment values are deliberately not copied into the
+        // audit trail, so the log cannot become a second copy of the config.
+        metadata: { fields: changedFields },
+      });
+
+      return res.json({
+        success: true,
+        payment: {
+          upiId: data.upi_id,
+          qrImageStoragePath: data.qr_image_storage_path,
+          qrImageUrl: await signQrImageUrl(admin, data.qr_image_storage_path),
+          instructions: data.payment_instructions,
+          currency: data.currency,
+          accountName: data.payment_account_name,
+          updatedAt: data.updated_at,
+        },
+        message: 'Payment configuration saved.',
+      });
+    } catch (err: any) {
+      if (err instanceof HttpError) {
+        return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+      }
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'PATCH /api/admin/platform-config',
+        clientMessage: 'Unable to save the payment configuration.',
+      });
+    }
+  });
+
+  // POST /api/admin/platform-config/qr-upload-url
+  //
+  // Mints a short-lived signed upload URL for a payment QR image. The image
+  // itself goes straight to Supabase Storage and never through this server, so
+  // the binary is never written into a database column and never lands in a
+  // request body. Only the resulting object key is persisted, by the PATCH
+  // above.
+  app.post('/api/admin/platform-config/qr-upload-url', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const body = (req.body ?? {}) as { fileName?: unknown; fileType?: unknown; fileSize?: unknown };
+      const name = typeof body.fileName === 'string' ? body.fileName : '';
+      const type = typeof body.fileType === 'string' ? body.fileType : '';
+      const size = typeof body.fileSize === 'number' ? body.fileSize : Number.NaN;
+
+      // The bucket is the real authority, but the same ceiling is enforced here
+      // so an oversized or wrong-type file is refused with a clear message
+      // instead of a generic upload failure.
+      if (!PAYMENT_QR_MIME_TYPES.includes(type as PaymentQrMimeType)) {
+        throw new HttpError(400, 'VALIDATION_ERROR', 'Upload a PNG, JPEG or WebP image.');
+      }
+      if (!Number.isFinite(size) || size <= 0) {
+        throw new HttpError(400, 'VALIDATION_ERROR', 'That file is empty.');
+      }
+      if (size > PAYMENT_QR_MAX_BYTES) {
+        throw new HttpError(400, 'VALIDATION_ERROR', `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`);
+      }
+
+      const extension = (name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+      // The key is generated here so the PATCH handler can verify it came from
+      // this route; the client's filename never reaches the object path.
+      const storagePath = `platform/payment-qr-${Date.now()}-${randomUUID().slice(0, 6)}.${extension}`;
+
+      const { data, error } = await admin.storage
+        .from(PAYMENT_QR_BUCKET)
+        .createSignedUploadUrl(storagePath);
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        uploadUrl: data.signedUrl,
+        token: data.token,
+        path: storagePath,
+      });
+    } catch (err: any) {
+      if (err instanceof HttpError) {
+        return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+      }
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'POST /api/admin/platform-config/qr-upload-url',
+        clientMessage: 'Unable to prepare the payment QR upload.',
+      });
+    }
+  });
+
+  // DELETE /api/admin/platform-config/qr
+  //
+  // Detaches the QR from the configuration first, then removes the object. A
+  // failure to delete the file is logged and does not fail the request: the
+  // seeker page must stop showing a QR even if the object lingers in the bucket.
+  app.delete('/api/admin/platform-config/qr', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const adminId = req.auth!.user.id;
+
+      const { data: current, error: readErr } = await admin
+        .from('platform_config')
+        .select('qr_image_storage_path')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (readErr) throw readErr;
+
+      const previousPath = current?.qr_image_storage_path ?? null;
+
+      // The configuration is the source of truth for what seekers see, so it is
+      // cleared even when there was no QR attached to begin with.
+      const { error: writeErr } = await admin
+        .from('platform_config')
+        .upsert(
+          { id: 1, qr_image_storage_path: null, updated_at: new Date().toISOString(), updated_by: adminId },
+          { onConflict: 'id' },
+        );
+
+      if (writeErr) throw writeErr;
+
+      if (previousPath) {
+        const { error: removeErr } = await admin.storage.from(PAYMENT_QR_BUCKET).remove([previousPath]);
+        if (removeErr) {
+          console.error('Failed to remove the previous payment QR object:', removeErr.message);
+        }
+      }
+
+      auditAction(req.auth, 'ADMIN_UPDATED_PAYMENT_CONFIGURATION', {
+        entityType: 'platform_config',
+        entityId: '1',
+        requestId: req.requestId,
+        metadata: { fields: ['qr_image_storage_path'], action: 'qr_removed' },
+      });
+
+      return res.json({ success: true, message: 'Payment QR removed.' });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'DELETE /api/admin/platform-config/qr',
+        clientMessage: 'Unable to remove the payment QR.',
+      });
+    }
+  });
+
+  // --------------------------------------------------------------------------
   // Phase 11: In-App Notifications Endpoints
   // --------------------------------------------------------------------------
 
@@ -6819,6 +7231,42 @@ async function startServer() {
          });
        }
 
+      // The notification must land in the REAL table. It used to be pushed into
+      // the in-memory dev store and returned with 201, so a caller was told an
+      // alert had been delivered when nothing was persisted and the alert
+      // vanished on restart. With a database configured there is no in-memory
+      // fallback here: if the write fails, the caller is told so.
+      const supabaseAdmin = getSupabaseAdmin();
+      if (supabaseAdmin) {
+        const { data: created, error: insertErr } = await supabaseAdmin
+          .from('notifications')
+          .insert({
+            user_id: userId,
+            title,
+            message,
+            type,
+            event_type: eventType ?? null,
+            entity_type: entityType ?? null,
+            entity_id: entityId ?? null,
+            link: link || null,
+            metadata: metadata ?? {},
+            is_read: false,
+          })
+          .select()
+          .single();
+
+        if (insertErr) {
+          return respondWithServerError({
+            req, res, error: insertErr,
+            context: 'POST /api/notifications/dispatch',
+            clientMessage: 'The notification could not be stored.',
+          });
+        }
+
+        return res.status(201).json({ success: true, notification: created });
+      }
+
+      // No database configured: this is the no-backend local preview only.
       const db = getLocalBookingEngineContext();
       if (!db.notifications) db.notifications = [];
 
@@ -9557,6 +10005,7 @@ async function startServer() {
     (module as any).exports = app;
   } else if (httpServer) {
     httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log('This website is buid by Nikhil Kumar ')
       console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
     });
   } else {

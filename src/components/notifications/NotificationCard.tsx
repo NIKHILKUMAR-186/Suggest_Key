@@ -17,7 +17,11 @@ import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { formatRelativeTime } from '@/src/lib/notificationService';
+import {
+  formatRelativeTime,
+  notificationActionLabel,
+  resolveNotificationLink,
+} from '@/src/lib/notificationService';
 import type { Notification } from '@/src/types/database';
 
 interface NotificationCardProps {
@@ -100,19 +104,14 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
     };
   };
 
-  const getActionLabel = () => {
-    if (!n.link) return null;
-    const path = n.link.toLowerCase();
-    if (path.includes('session')) return 'Join Prep Room';
-    if (path.includes('workspace')) return 'Open Workspace';
-    if (path.includes('payment')) return 'Review Payment';
-    if (path.includes('booking')) return 'View Booking';
-    return 'View Details';
-  };
+  // The destination is resolved for the role reading the notification, so an
+  // admin is always sent to an admin route and never to a participant page. The
+  // label is derived from that resolved route so the button wording matches the
+  // page it actually opens.
+  const targetLink = resolveNotificationLink(n.link, role, n.entity_id);
+  const actionLabel = notificationActionLabel(targetLink);
 
   const badgeStyle = getBadgeStyle();
-  const actionLabel = getActionLabel();
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -195,12 +194,12 @@ export const NotificationCard: React.FC<NotificationCardProps> = ({
 
         {/* Action Controls */}
         <div className="flex items-center sm:flex-col sm:items-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[var(--color-shell-border)]">
-          {actionLabel && n.link && (
+          {actionLabel && targetLink && (
             <Button
               id={`action-btn-${n.id}`}
               onClick={() => {
                 if (!n.is_read) onMarkRead(n.id);
-                navigate(n.link!);
+                navigate(targetLink);
               }}
               size="sm"
               variant={!n.is_read ? 'default' : 'outline'}

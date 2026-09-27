@@ -12,3 +12,5 @@
 \i migrations/20260921000002_phase11_notifications.sql
 \i migrations/20260924000000_phase12_mentor_onboarding.sql
 \i migrations/20260924000001_phase13_system_logs.sql
+\i migrations/20260927030000_phase22_session_end_tracking.sql
+\i migrations/20260927040000_phase23_session_end_by_role.sql

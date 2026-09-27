@@ -7,20 +7,19 @@ import {
   Save,
   Send,
   Eye,
-  Edit3,
   Plus,
   Trash2,
   CheckCircle2,
   Clock,
   AlertCircle,
-  AlertTriangle,
   ArrowLeft,
   Calendar,
   User,
   Sparkles,
   Loader2,
   RefreshCw,
-  ExternalLink,
+  HelpCircle,
+  ChevronDown,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -31,27 +30,29 @@ import {
   saveWorkspaceAuthoritative,
   deriveSessionOverview,
 } from '@/src/lib/workspaceService';
-import { fetchMentorBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import {
   SessionWorkspace,
   NextStepItem,
   FollowUpRecommendation,
+  WorkspaceStatus,
 } from '@/src/types/database';
 
+type WorkspaceDraftStatus = 'PENDING' | 'DRAFT' | 'PUBLISHED';
+
 export const MentorWorkspacePage: React.FC = () => {
-  const { currentPath, navigate } = useNavigation();
+  const getWorkspaceStatus = (): WorkspaceDraftStatus => {
+    if (!workspace) return 'PENDING';
+    if (workspace.status === 'PUBLISHED') return 'PUBLISHED';
+    return 'DRAFT';
+  };
+  const { navigate } = useNavigation();
   const { user } = useAuth();
   const mentorId = user?.id;
 
-  // Read bookingId from query parameter if present
   const queryBookingId = new URLSearchParams(window.location.search || '').get('bookingId') || '';
 
-  // Bookings list for mentor selection
-  const [mentorBookings, setMentorBookings] = useState<EnrichedBookingRecord[]>([]);
-  const [selectedBookingId, setSelectedBookingId] = useState<string>(queryBookingId);
-  const [selectedBooking, setSelectedBooking] = useState<EnrichedBookingRecord | null>(null);
-
-  // Workspace form state
+  const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [workspace, setWorkspace] = useState<SessionWorkspace | null>(null);
   const [mentorNotes, setMentorNotes] = useState<string>('');
   const [takeaways, setTakeaways] = useState<string[]>([]);
@@ -62,56 +63,71 @@ export const MentorWorkspacePage: React.FC = () => {
   const [followUpTopic, setFollowUpTopic] = useState<string>('');
   const [followUpNotes, setFollowUpNotes] = useState<string>('');
 
-  // UI state
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [feedbackSuccess, setFeedbackSuccess] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<boolean>(false);
+  const [showPublishConfirm, setShowPublishConfirm] = useState<boolean>(false);
 
-  // New item draft inputs
   const [newTakeaway, setNewTakeaway] = useState<string>('');
   const [newSuggestion, setNewSuggestion] = useState<string>('');
   const [newNextStepText, setNewNextStepText] = useState<string>('');
   const [newNextStepDue, setNewNextStepDue] = useState<string>('In 7 days');
 
-  // Load mentor's eligible bookings (completed or active)
+  const [authorizationError, setAuthorizationError] = useState<string | null>(null);
+  const [bookingNotFound, setBookingNotFound] = useState<boolean>(false);
+
   useEffect(() => {
     let mounted = true;
-    const loadBookings = async () => {
-      if (!mentorId) return;
-      try {
-        const bookings = await fetchMentorBookings(mentorId);
+    const loadBooking = async () => {
+      if (!queryBookingId || !mentorId) {
         if (mounted) {
-          setMentorBookings(bookings);
-
-          // Find requested or first completed booking
-          let target = bookings.find((b) => b.id === queryBookingId || b.booking_code === queryBookingId);
-          if (!target && bookings.length > 0) {
-            target = bookings.find((b) => b.status === 'COMPLETED') || bookings[0];
-          }
-
-          if (target) {
-            setSelectedBookingId(target.id);
-            setSelectedBooking(target);
-          }
+          setLoading(false);
+          setBookingNotFound(!queryBookingId);
         }
+        return;
+      }
+
+      setLoading(true);
+      setBookingNotFound(false);
+      setAuthorizationError(null);
+
+      try {
+        const data = await fetchBookingDetail(queryBookingId, mentorId);
+        if (!mounted) return;
+
+        if (!data) {
+          setBookingNotFound(true);
+          setBooking(null);
+          return;
+        }
+
+        if (data.mentor_id !== mentorId) {
+          setAuthorizationError('You do not have access to this workspace.');
+          setBooking(null);
+          return;
+        }
+
+        setBooking(data);
       } catch (err: any) {
-        console.error('Failed to load mentor bookings:', err);
+        if (mounted) {
+          setBookingNotFound(true);
+          setBooking(null);
+        }
       } finally {
         if (mounted) setLoading(false);
       }
     };
 
-    loadBookings();
+    loadBooking();
     return () => {
       mounted = false;
     };
-  }, [mentorId, queryBookingId]);
+  }, [queryBookingId, mentorId]);
 
-  // Load workspace for selected booking
   useEffect(() => {
-    if (!selectedBookingId) return;
+    if (!booking?.id) return;
 
     let mounted = true;
     const loadWorkspace = async () => {
@@ -120,7 +136,7 @@ export const MentorWorkspacePage: React.FC = () => {
       setFeedbackSuccess(null);
 
       try {
-        const res = await fetchWorkspaceByBooking(selectedBookingId, mentorId, 'mentor');
+        const res = await fetchWorkspaceByBooking(booking.id, mentorId, 'mentor');
         if (!mounted) return;
 
         if (res.workspace) {
@@ -141,7 +157,6 @@ export const MentorWorkspacePage: React.FC = () => {
             setFollowUpNotes('');
           }
         } else {
-          // Initialize empty draft for this booking
           setWorkspace(null);
           setMentorNotes('');
           setTakeaways([]);
@@ -160,19 +175,12 @@ export const MentorWorkspacePage: React.FC = () => {
       }
     };
 
-    // Update selected booking object
-    const foundBooking = mentorBookings.find((b) => b.id === selectedBookingId);
-    if (foundBooking) {
-      setSelectedBooking(foundBooking);
-    }
-
     loadWorkspace();
     return () => {
       mounted = false;
     };
-  }, [selectedBookingId, mentorBookings, mentorId]);
+  }, [booking?.id, mentorId]);
 
-  // Handler: Add Takeaway
   const handleAddTakeaway = () => {
     if (!newTakeaway.trim()) return;
     setTakeaways([...takeaways, newTakeaway.trim()]);
@@ -183,7 +191,6 @@ export const MentorWorkspacePage: React.FC = () => {
     setTakeaways(takeaways.filter((_, i) => i !== index));
   };
 
-  // Handler: Add Suggestion
   const handleAddSuggestion = () => {
     if (!newSuggestion.trim()) return;
     setSuggestions([...suggestions, newSuggestion.trim()]);
@@ -194,7 +201,6 @@ export const MentorWorkspacePage: React.FC = () => {
     setSuggestions(suggestions.filter((_, i) => i !== index));
   };
 
-  // Handler: Add Next Step
   const handleAddNextStep = () => {
     if (!newNextStepText.trim()) return;
     const newItem: NextStepItem = {
@@ -211,15 +217,14 @@ export const MentorWorkspacePage: React.FC = () => {
     setNextSteps(nextSteps.filter((item) => item.id !== id));
   };
 
-  // Handler: Save workspace (Draft or Publish)
   const handleSave = async (publish: boolean) => {
-    if (!selectedBookingId || !mentorId) {
-      setFeedbackError('Please select a session booking first.');
+    if (!booking?.id || !mentorId) {
+      setFeedbackError('Missing booking information. Please refresh and try again.');
       return;
     }
 
     if (publish && !mentorNotes.trim()) {
-      setFeedbackError('Please provide mentor notes before publishing to the seeker.');
+      setFeedbackError('Please provide session notes before publishing to the seeker.');
       return;
     }
 
@@ -239,7 +244,7 @@ export const MentorWorkspacePage: React.FC = () => {
     try {
       const result = await saveWorkspaceAuthoritative(
         {
-          booking_id: selectedBookingId,
+          booking_id: booking.id,
           mentor_id: mentorId,
           mentor_notes: mentorNotes.trim(),
           takeaways,
@@ -256,8 +261,8 @@ export const MentorWorkspacePage: React.FC = () => {
         setWorkspace(result.workspace);
         setFeedbackSuccess(
           publish
-            ? 'Workspace published successfully! Seeker has been alerted via in-app notification.'
-            : 'Workspace draft saved successfully. Only you and admins can view it.'
+            ? 'Workspace published successfully! The seeker has been notified.'
+            : 'Draft saved successfully.'
         );
       } else {
         setFeedbackError(result.error?.message || 'Failed to save workspace.');
@@ -266,52 +271,147 @@ export const MentorWorkspacePage: React.FC = () => {
       setFeedbackError(err.message || 'Unexpected network error.');
     } finally {
       setSaving(false);
+      setShowPublishConfirm(false);
     }
   };
 
-  const overview = selectedBooking ? deriveSessionOverview(selectedBooking) : workspace?.session_overview;
+  const workspaceStatus = getWorkspaceStatus();
+
+  const sessionStatusLabel =
+    workspaceStatus === 'PUBLISHED'
+      ? 'PUBLISHED'
+      : workspaceStatus === 'DRAFT'
+      ? 'DRAFT'
+      : 'NOT_STARTED';
+
+  const sessionStatusVariant =
+    workspaceStatus === 'PUBLISHED'
+      ? 'success'
+      : workspaceStatus === 'DRAFT'
+      ? 'secondary'
+      : 'warning';
+
+  const overview = booking ? deriveSessionOverview(booking) : workspace?.session_overview;
+
+  const renderMissingBookingId = () => (
+    <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+      <HelpCircle className="h-10 w-10 text-amber-600 mx-auto" />
+      <h2 className="text-lg font-bold text-zinc-950">Workspace Unavailable</h2>
+      <p className="text-sm text-zinc-600">
+        Please open a workspace from your booking history.
+      </p>
+      <Button onClick={() => navigate('/mentor/bookings')} variant="outline" size="sm">
+        Back to Mentor Bookings
+      </Button>
+    </div>
+  );
+
+  const renderBookingNotFound = () => (
+    <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+      <AlertCircle className="h-10 w-10 text-rose-600 mx-auto" />
+      <h2 className="text-lg font-bold text-zinc-950">Booking Not Found</h2>
+      <p className="text-sm text-zinc-600">
+        This booking may have been cancelled or is no longer available.
+      </p>
+      <Button onClick={() => navigate('/mentor/bookings')} variant="outline" size="sm">
+        Back to Mentor Bookings
+      </Button>
+    </div>
+  );
+
+  const renderAuthorizationError = () => (
+    <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+      <AlertCircle className="h-10 w-10 text-rose-600 mx-auto" />
+      <h2 className="text-lg font-bold text-zinc-950">Access Denied</h2>
+      <p className="text-sm text-zinc-600">
+        {authorizationError || "You don't have access to this workspace."}
+      </p>
+      <Button onClick={() => navigate('/mentor/bookings')} variant="outline" size="sm">
+        Back to Mentor Bookings
+      </Button>
+    </div>
+  );
+
+  if (!queryBookingId) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        {renderMissingBookingId()}
+      </div>
+    );
+  }
+
+  if (bookingNotFound) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        {renderBookingNotFound()}
+      </div>
+    );
+  }
+
+  if (authorizationError) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        {renderAuthorizationError()}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="rounded-xl border border-zinc-200 bg-white p-12 text-center space-y-3">
+          <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
+          <h3 className="text-sm font-semibold text-zinc-900">Loading Session Workspace...</h3>
+          <p className="text-xs text-zinc-500">Loading booking details and workspace...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!booking || !overview) {
+    return (
+      <div className="max-w-5xl mx-auto">
+        {renderBookingNotFound()}
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-12">
-      {/* Header & Navigation */}
+    <div className="max-w-5xl mx-auto space-y-6 pb-24">
+      {/* TOP HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 pb-4">
-        <div>
+        <div className="space-y-1">
           <button
             onClick={() => navigate('/mentor/bookings')}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors mb-2 cursor-pointer"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors cursor-pointer mb-2"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             <span>Back to Mentor Bookings</span>
           </button>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
-              Mentor Session Workspace
+              Session Workspace
             </h1>
-            {workspace?.status === 'PUBLISHED' ? (
-              <Badge variant="success" className="text-xs">
-                PUBLISHED
-              </Badge>
-            ) : (
-              <Badge variant="secondary" className="text-xs">
-                DRAFT / PENDING
-              </Badge>
-            )}
+            <Badge variant={sessionStatusVariant} className="text-xs">
+              {sessionStatusLabel}
+            </Badge>
           </div>
-          <p className="text-xs text-zinc-500 mt-1">
-            Author and publish post-consultation takeaways, action items, and follow-up guidance.
+          <p className="text-xs text-zinc-500 max-w-xl">
+            Capture the outcome of this mentoring session and turn it into useful follow-up guidance for
+            the seeker.
           </p>
         </div>
 
-        {/* View mode toggle */}
         <div className="flex items-center gap-2 self-start sm:self-auto">
           <div className="flex items-center bg-zinc-100 p-1 rounded-lg text-xs">
             <button
               onClick={() => setPreviewMode(false)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-colors cursor-pointer ${
-                !previewMode ? 'bg-white text-zinc-950 shadow-xs font-bold' : 'text-zinc-600 hover:text-zinc-900'
+                !previewMode
+                  ? 'bg-white text-zinc-950 shadow-xs font-bold'
+                  : 'text-zinc-600 hover:text-zinc-900'
               }`}
             >
-              <Edit3 className="h-3.5 w-3.5" />
               <span>Editor</span>
             </button>
             <button
@@ -327,34 +427,7 @@ export const MentorWorkspacePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Session Booking Selector */}
-      <div className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <label className="text-xs font-bold text-zinc-700 block">
-            Select Consultation Session
-          </label>
-          <p className="text-[11px] text-zinc-500">
-            Workspaces attach directly to individual confirmed or completed bookings.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <select
-            id="select-mentor-booking"
-            value={selectedBookingId}
-            onChange={(e) => setSelectedBookingId(e.target.value)}
-            className="w-full md:w-80 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-900 focus:border-zinc-900 focus:outline-hidden"
-          >
-            {mentorBookings.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.booking_code} · {b.seeker?.full_name || 'Seeker'} ({b.status})
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Feedback Alerts */}
+      {/* FEEDBACK ALERTS */}
       {feedbackSuccess && (
         <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4 text-xs text-emerald-900 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -363,7 +436,7 @@ export const MentorWorkspacePage: React.FC = () => {
           </div>
           <button
             onClick={() => setFeedbackSuccess(null)}
-            className="text-emerald-700 hover:text-emerald-900 text-xs font-bold"
+            className="text-emerald-700 hover:text-emerald-900 text-xs font-bold cursor-pointer"
           >
             Dismiss
           </button>
@@ -378,53 +451,30 @@ export const MentorWorkspacePage: React.FC = () => {
           </div>
           <button
             onClick={() => setFeedbackError(null)}
-            className="text-rose-700 hover:text-rose-900 text-xs font-bold"
+            className="text-rose-700 hover:text-rose-900 text-xs font-bold cursor-pointer"
           >
             Dismiss
           </button>
         </div>
       )}
 
-      {/* Loading State */}
-      {loading ? (
-        <div className="rounded-xl border border-zinc-200 bg-white p-12 text-center space-y-3">
-          <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
-          <h3 className="text-sm font-semibold text-zinc-900">Loading Session Workspace...</h3>
-          <p className="text-xs text-zinc-500">Loading the session record and your notes...</p>
-        </div>
-      ) : !overview ? (
-        /* Empty State */
-        <div className="rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-12 text-center space-y-3">
-          <Calendar className="h-8 w-8 text-zinc-400 mx-auto" />
-          <h3 className="text-base font-semibold text-zinc-900">No Booking Selected</h3>
-          <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-            Please choose an eligible consultation from your bookings list above to begin drafting workspace notes.
-          </p>
-        </div>
-      ) : previewMode ? (
-        /* ------------------------------------------------------------- */
-        /* SEEKER PREVIEW MODE                                           */
-        /* ------------------------------------------------------------- */
+      {previewMode ? (
+        /* SEEKER PREVIEW */
         <div className="space-y-6">
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-center gap-2">
             <Eye className="h-4 w-4 text-amber-700 shrink-0" />
             <span>
-              <strong>Seeker Preview Mode:</strong> This is an accurate simulation of what your seeker client will see when they access this workspace. Private contact information is strictly hidden.
+              <strong>Seeker Preview:</strong> This preview shows exactly what the seeker will see after
+              you publish.
             </span>
           </div>
 
-          {/* Section 1: Session Overview */}
           <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 pb-4">
               <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-bold text-zinc-950">Session Workspace</h2>
-                  <Badge variant={overview.bookingStatus === 'COMPLETED' ? 'secondary' : 'default'}>
-                    {overview.bookingStatus}
-                  </Badge>
-                </div>
+                <h2 className="text-lg font-bold text-zinc-950">Session Workspace</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">
-                  Booking #{overview.bookingCode} · Conducted on{' '}
+                  Booking #{overview.bookingCode} ·{' '}
                   {new Date(overview.startTime).toLocaleDateString('en-IN', {
                     day: 'numeric',
                     month: 'short',
@@ -432,16 +482,13 @@ export const MentorWorkspacePage: React.FC = () => {
                   })}
                 </p>
               </div>
-
-              <div className="text-right text-xs">
-                <span className="text-zinc-400 block text-[11px]">Mentor Advisor</span>
-                <span className="font-semibold text-zinc-900">{overview.mentorName}</span>
-              </div>
+              <Badge variant={overview.bookingStatus === 'COMPLETED' ? 'secondary' : 'default'}>
+                {overview.bookingStatus}
+              </Badge>
             </div>
-
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs bg-zinc-50 p-4 rounded-lg">
               <div>
-                <span className="text-zinc-400 block text-[11px]">Client</span>
+                <span className="text-zinc-400 block text-[11px]">Seeker</span>
                 <span className="font-medium text-zinc-900">{overview.seekerName}</span>
               </div>
               <div>
@@ -449,7 +496,7 @@ export const MentorWorkspacePage: React.FC = () => {
                 <span className="font-medium text-zinc-900">{overview.segmentTitle}</span>
               </div>
               <div>
-                <span className="text-zinc-400 block text-[11px]">Topic / Gig</span>
+                <span className="text-zinc-400 block text-[11px]">Gig</span>
                 <span className="font-medium text-zinc-900">{overview.gigTitle}</span>
               </div>
               <div>
@@ -459,11 +506,10 @@ export const MentorWorkspacePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 2: Mentor Notes */}
           <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-2">
             <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
               <FileText className="h-4 w-4 text-zinc-500" />
-              Mentor Session Summary & Notes
+              Session Summary
             </h3>
             {mentorNotes ? (
               <p className="text-xs text-zinc-700 leading-relaxed whitespace-pre-line pt-1">
@@ -474,7 +520,6 @@ export const MentorWorkspacePage: React.FC = () => {
             )}
           </div>
 
-          {/* Section 3: Key Takeaways */}
           <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-3">
             <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
               <Target className="h-4 w-4 text-emerald-600" />
@@ -494,11 +539,10 @@ export const MentorWorkspacePage: React.FC = () => {
             )}
           </div>
 
-          {/* Section 4: Suggestions */}
           <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-3">
             <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
               <Lightbulb className="h-4 w-4 text-amber-500" />
-              Practical Suggestions & Recommendations
+              Practical Suggestions
             </h3>
             {suggestions.length > 0 ? (
               <ul className="space-y-2 text-xs text-zinc-700">
@@ -514,11 +558,10 @@ export const MentorWorkspacePage: React.FC = () => {
             )}
           </div>
 
-          {/* Section 5: Next Steps */}
           <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-xs space-y-3">
             <h3 className="text-sm font-bold text-zinc-950 flex items-center gap-2">
               <ArrowRight className="h-4 w-4 text-zinc-700" />
-              Actionable Next Steps
+              Next Steps
             </h3>
             {nextSteps.length > 0 ? (
               <div className="space-y-2 text-xs">
@@ -537,101 +580,112 @@ export const MentorWorkspacePage: React.FC = () => {
             )}
           </div>
 
-          {/* Section 6: Optional Follow-up Recommendation */}
           {recommendFollowUp && (
             <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-6 space-y-2">
-              <h3 className="text-sm font-bold text-blue-950">Mentor Follow-up Recommendation</h3>
+              <h3 className="text-sm font-bold text-blue-950">Follow-up Recommendation</h3>
               <p className="text-xs text-blue-900">
-                <strong>Recommended Cadence:</strong> {followUpTimeframe}
+                <strong>Timeframe:</strong> {followUpTimeframe}
               </p>
               {followUpTopic && (
                 <p className="text-xs text-blue-900">
-                  <strong>Recommended Topic:</strong> {followUpTopic}
+                  <strong>Topic:</strong> {followUpTopic}
                 </p>
               )}
               {followUpNotes && <p className="text-xs text-blue-800 italic">"{followUpNotes}"</p>}
-              <p className="pt-2 text-xs text-blue-900">
-                Scheduling a follow-up is done from your bookings page.
-              </p>
-              <div className="pt-1">
-                <Button
-                  size="sm"
-                  className="gap-1.5 text-xs bg-blue-900 text-white cursor-pointer"
-                  onClick={() => navigate('/mentor/bookings')}
-                >
-                  <span>Go to Bookings</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </Button>
-              </div>
             </div>
           )}
         </div>
       ) : (
-        /* ------------------------------------------------------------- */
-        /* MENTOR EDIT MODE                                              */
-        /* ------------------------------------------------------------- */
+        /* MENTOR EDITOR */
         <div className="space-y-6">
-          {/* Section 1: Session Overview (Read-only Card) */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
               <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
                 <Calendar className="h-4 w-4 text-zinc-500" />
-                Section 1: Session Overview
+                Active Session
               </h2>
-              <span className="text-xs font-mono text-zinc-400">{overview.bookingCode}</span>
+              <span className="text-xs font-mono text-zinc-500">Booking #{overview.bookingCode}</span>
             </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-zinc-50 p-3.5 rounded-lg border border-zinc-100">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <div>
-                <span className="text-zinc-400 block text-[11px]">Seeker Name</span>
+                <span className="text-zinc-400 block text-[11px]">Seeker</span>
                 <span className="font-semibold text-zinc-900">{overview.seekerName}</span>
+              </div>
+              <div>
+                <span className="text-zinc-400 block text-[11px]">Gig</span>
+                <span className="font-medium text-zinc-900">{overview.gigTitle}</span>
               </div>
               <div>
                 <span className="text-zinc-400 block text-[11px]">Segment</span>
                 <span className="font-medium text-zinc-900">{overview.segmentTitle}</span>
               </div>
               <div>
-                <span className="text-zinc-400 block text-[11px]">Session Topic</span>
-                <span className="font-medium text-zinc-900">{overview.gigTitle}</span>
-              </div>
-              <div>
-                <span className="text-zinc-400 block text-[11px]">Scheduled Duration</span>
+                <span className="text-zinc-400 block text-[11px]">Duration</span>
                 <span className="font-medium text-zinc-900">{overview.durationMinutes} Minutes</span>
               </div>
             </div>
+            <div className="text-[11px] text-zinc-500 space-y-0.5">
+              <p>
+                <span className="font-semibold text-zinc-600">Mentor:</span> {overview.mentorName}
+              </p>
+              <p>
+                <span className="font-semibold text-zinc-600">Date:</span>{' '}
+                {new Date(overview.startTime).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })}
+              </p>
+              <p>
+                <span className="font-semibold text-zinc-600">Time:</span>{' '}
+                {new Date(overview.startTime).toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true,
+                })}{' '}
+                –{' '}
+                {new Date(overview.endTime).toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true,
+                })}{' '}
+                IST
+              </p>
+            </div>
           </div>
 
-          {/* Section 2: Mentor Notes */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
-                <FileText className="h-4 w-4 text-zinc-500" />
-                Section 2: Mentor Notes & Session Summary
-              </h2>
-              <span className="text-[11px] text-zinc-400">{mentorNotes.length} characters</span>
-            </div>
-
+            <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
+              <FileText className="h-4 w-4 text-zinc-500" />
+              Session Summary
+            </h2>
+            <p className="text-[11px] text-zinc-500">
+              Summarize the key themes, observations and context from the conversation.
+            </p>
             <textarea
-              id="input-mentor-notes"
-              rows={4}
+              rows={5}
               value={mentorNotes}
               onChange={(e) => setMentorNotes(e.target.value)}
               placeholder="Summarize the core conversation themes, client strengths observed, and mindset shifts discussed during the session..."
               className="w-full rounded-lg border border-zinc-300 p-3 text-xs text-zinc-900 focus:border-zinc-900 focus:outline-hidden leading-relaxed"
             />
+            <p className="text-[11px] text-zinc-400 text-right">{mentorNotes.length} characters</p>
           </div>
 
-          {/* Section 3: Key Takeaways */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
                 <Target className="h-4 w-4 text-emerald-600" />
-                Section 3: Key Takeaways ({takeaways.length})
+                Key Takeaways
               </h2>
-              <span className="text-[11px] text-zinc-400">High-impact insights for the seeker</span>
+              <span className="text-[11px] text-zinc-400">
+                Key Takeaways ({takeaways.length})
+              </span>
             </div>
+            <p className="text-[11px] text-zinc-500">
+              What should the seeker remember after today's session?
+            </p>
 
-            {/* List */}
             {takeaways.length > 0 && (
               <div className="space-y-2">
                 {takeaways.map((item, idx) => (
@@ -646,7 +700,6 @@ export const MentorWorkspacePage: React.FC = () => {
                     <button
                       onClick={() => handleRemoveTakeaway(idx)}
                       className="text-zinc-400 hover:text-rose-600 p-1 cursor-pointer"
-                      title="Remove takeaway"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -655,10 +708,8 @@ export const MentorWorkspacePage: React.FC = () => {
               </div>
             )}
 
-            {/* Add Input */}
             <div className="flex items-center gap-2 pt-1">
               <input
-                id="input-new-takeaway"
                 type="text"
                 value={newTakeaway}
                 onChange={(e) => setNewTakeaway(e.target.value)}
@@ -679,17 +730,20 @@ export const MentorWorkspacePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 4: Suggestions */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
                 <Lightbulb className="h-4 w-4 text-amber-500" />
-                Section 4: Practical Suggestions ({suggestions.length})
+                Practical Suggestions
               </h2>
-              <span className="text-[11px] text-zinc-400">Tactical guidance and habits</span>
+              <span className="text-[11px] text-zinc-400">
+                Suggestions ({suggestions.length})
+              </span>
             </div>
+            <p className="text-[11px] text-zinc-500">
+              Turn the conversation into actionable guidance.
+            </p>
 
-            {/* List */}
             {suggestions.length > 0 && (
               <div className="space-y-2">
                 {suggestions.map((item, idx) => (
@@ -704,7 +758,6 @@ export const MentorWorkspacePage: React.FC = () => {
                     <button
                       onClick={() => handleRemoveSuggestion(idx)}
                       className="text-zinc-400 hover:text-rose-600 p-1 cursor-pointer"
-                      title="Remove suggestion"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -713,10 +766,8 @@ export const MentorWorkspacePage: React.FC = () => {
               </div>
             )}
 
-            {/* Add Input */}
             <div className="flex items-center gap-2 pt-1">
               <input
-                id="input-new-suggestion"
                 type="text"
                 value={newSuggestion}
                 onChange={(e) => setNewSuggestion(e.target.value)}
@@ -737,17 +788,20 @@ export const MentorWorkspacePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 5: Next Steps */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-zinc-950 flex items-center gap-1.5">
                 <ArrowRight className="h-4 w-4 text-zinc-700" />
-                Section 5: Actionable Next Steps ({nextSteps.length})
+                Action Plan
               </h2>
-              <span className="text-[11px] text-zinc-400">Clear deliverables with target timeframes</span>
+              <span className="text-[11px] text-zinc-400">
+                Next Steps ({nextSteps.length})
+              </span>
             </div>
+            <p className="text-[11px] text-zinc-500">
+              Clear deliverables with target timeframes.
+            </p>
 
-            {/* List */}
             {nextSteps.length > 0 && (
               <div className="space-y-2">
                 {nextSteps.map((item) => (
@@ -762,7 +816,6 @@ export const MentorWorkspacePage: React.FC = () => {
                     <button
                       onClick={() => handleRemoveNextStep(item.id)}
                       className="text-zinc-400 hover:text-rose-600 p-1 cursor-pointer"
-                      title="Remove step"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -771,10 +824,8 @@ export const MentorWorkspacePage: React.FC = () => {
               </div>
             )}
 
-            {/* Add Input */}
             <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
               <input
-                id="input-next-step-text"
                 type="text"
                 value={newNextStepText}
                 onChange={(e) => setNewNextStepText(e.target.value)}
@@ -783,7 +834,6 @@ export const MentorWorkspacePage: React.FC = () => {
                 className="w-full sm:flex-1 rounded-lg border border-zinc-300 px-3 py-2 text-xs text-zinc-900 focus:border-zinc-900 focus:outline-hidden"
               />
               <select
-                id="select-next-step-due"
                 value={newNextStepDue}
                 onChange={(e) => setNewNextStepDue(e.target.value)}
                 className="w-full sm:w-36 rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-xs text-zinc-900 focus:border-zinc-900 focus:outline-hidden"
@@ -807,19 +857,14 @@ export const MentorWorkspacePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 6: Optional Follow-up Recommendation */}
           <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-blue-600" />
-                <h2 className="text-sm font-bold text-zinc-950">
-                  Section 6: Follow-up Recommendation (Optional)
-                </h2>
+                <h2 className="text-sm font-bold text-zinc-950">Follow-up Recommendation</h2>
               </div>
-
               <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-zinc-700">
                 <input
-                  id="toggle-follow-up"
                   type="checkbox"
                   checked={recommendFollowUp}
                   onChange={(e) => setRecommendFollowUp(e.target.checked)}
@@ -837,7 +882,6 @@ export const MentorWorkspacePage: React.FC = () => {
                       Recommended Timeframe
                     </label>
                     <select
-                      id="select-follow-up-timeframe"
                       value={followUpTimeframe}
                       onChange={(e) => setFollowUpTimeframe(e.target.value)}
                       className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs text-zinc-900 focus:border-zinc-900 focus:outline-hidden"
@@ -848,13 +892,11 @@ export const MentorWorkspacePage: React.FC = () => {
                       <option value="As needed">As needed / On-demand</option>
                     </select>
                   </div>
-
                   <div>
                     <label className="text-[11px] font-bold text-zinc-700 block mb-1">
-                      Recommended Follow-up Topic / Goal
+                      Recommended Topic / Goal
                     </label>
                     <input
-                      id="input-follow-up-topic"
                       type="text"
                       value={followUpTopic}
                       onChange={(e) => setFollowUpTopic(e.target.value)}
@@ -863,13 +905,11 @@ export const MentorWorkspacePage: React.FC = () => {
                     />
                   </div>
                 </div>
-
                 <div>
                   <label className="text-[11px] font-bold text-zinc-700 block mb-1">
                     Guidance Notes for Client
                   </label>
                   <textarea
-                    id="input-follow-up-notes"
                     rows={2}
                     value={followUpNotes}
                     onChange={(e) => setFollowUpNotes(e.target.value)}
@@ -880,22 +920,60 @@ export const MentorWorkspacePage: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
 
-          {/* Action Footer: Save Draft & Publish Buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-zinc-200">
+      {/* PUBLISH CONFIRMATION MODAL */}
+      {showPublishConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+          onClick={() => setShowPublishConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-zinc-950">Publish this workspace?</h2>
+            <p className="text-xs text-zinc-600">
+              Once published, the seeker will be able to view the session notes and guidance.
+            </p>
+            <div className="flex gap-3 pt-2">
+              <Button
+                onClick={() => setShowPublishConfirm(false)}
+                variant="outline"
+                size="sm"
+                className="flex-1"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => handleSave(true)}
+                size="sm"
+                className="flex-1 bg-zinc-900 text-white hover:bg-zinc-800 cursor-pointer"
+                disabled={saving}
+              >
+                {saving ? 'Publishing...' : 'Publish'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BOTTOM ACTION BAR */}
+      {!previewMode && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/70">
+          <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3">
             <div className="text-xs text-zinc-500">
               {workspace?.updated_at && (
-                <span>Last updated: {new Date(workspace.updated_at).toLocaleTimeString('en-IN')}</span>
+                <span>Last saved: {new Date(workspace.updated_at).toLocaleTimeString('en-IN')}</span>
               )}
+              {!workspace && <span>Draft not started</span>}
             </div>
-
             <div className="flex items-center gap-3 w-full sm:w-auto">
-              {/* Save as Draft */}
               <Button
-                id="btn-save-draft"
                 type="button"
                 variant="outline"
-                size="md"
+                size="sm"
                 disabled={saving}
                 onClick={() => handleSave(false)}
                 className="w-full sm:w-auto gap-2 text-xs cursor-pointer"
@@ -905,24 +983,17 @@ export const MentorWorkspacePage: React.FC = () => {
                 ) : (
                   <Save className="h-3.5 w-3.5" />
                 )}
-                <span>Save as Draft</span>
+                <span>Save Draft</span>
               </Button>
-
-              {/* Publish to Seeker */}
               <Button
-                id="btn-publish-workspace"
                 type="button"
-                size="md"
+                size="sm"
                 disabled={saving}
-                onClick={() => handleSave(true)}
+                onClick={() => setShowPublishConfirm(true)}
                 className="w-full sm:w-auto gap-2 text-xs bg-zinc-900 text-white hover:bg-zinc-800 cursor-pointer shadow-xs"
               >
-                {saving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Send className="h-3.5 w-3.5" />
-                )}
-                <span>Publish to Seeker</span>
+                <Send className="h-3.5 w-3.5" />
+                <span>Publish Workspace</span>
               </Button>
             </div>
           </div>
