@@ -355,6 +355,8 @@ describe('Phase 6: Concurrency-Safe Booking & Slot Holds', () => {
         status: 'CONFIRMED',
         meeting_url: null,
         actual_ended_at: null,
+        ended_by_role: null,
+        end_reason: null,
         cancellation_reason: null,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',

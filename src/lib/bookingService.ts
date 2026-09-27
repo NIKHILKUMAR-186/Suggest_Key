@@ -14,11 +14,33 @@ import {
   joinSessionAuthoritative,
   SessionAccessResult,
   SessionAccessState,
+  SessionLifecycleState,
+  lifecycleFromAccessState,
   AuthoritativeJoinResult,
 } from './bookingEngine';
 
-export type { SessionAccessResult, SessionAccessState, AuthoritativeJoinResult };
-export { validateSessionAccess, joinSessionAuthoritative };
+export type {
+  SessionAccessResult,
+  SessionAccessState,
+  SessionLifecycleState,
+  AuthoritativeJoinResult,
+};
+export { validateSessionAccess, joinSessionAuthoritative, lifecycleFromAccessState };
+
+// Re-exported so every page imports its session vocabulary from one place
+// rather than redefining the five states locally.
+export {
+  resolveSessionLifecycle,
+  isAccessGranted,
+  isBookingUpcoming,
+  secondsUntilAccessOpens,
+  secondsUntilSessionEnd,
+  formatSessionDate,
+  formatClockTime,
+  formatZoneLabel,
+  sessionDurationMinutes,
+} from '@/src/lib/sessionState';
+export type { SessionLifecycleState as ClientSessionState } from '@/src/lib/sessionState';
 
 const isDevMode = process.env.NODE_ENV !== 'production';
 
@@ -381,6 +403,7 @@ status: 'MENTOR_PENDING',
             meeting_url: null,
             actual_ended_at: null,
             ended_by_role: null,
+            end_reason: null,
             cancellation_reason: null,
             created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
            updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
@@ -402,6 +425,7 @@ status: 'MENTOR_PENDING',
             meeting_url: null,
             actual_ended_at: null,
             ended_by_role: null,
+            end_reason: null,
             cancellation_reason: null,
             created_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
@@ -419,11 +443,13 @@ status: 'MENTOR_PENDING',
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-           status: 'CONFIRMED',
-           meeting_url: 'https://meet.google.com/hrc-qjtv-zsk',
-           actual_ended_at: null,
-           cancellation_reason: null,
-           created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+status: 'CONFIRMED',
+            meeting_url: 'https://meet.google.com/hrc-qjtv-zsk',
+            actual_ended_at: null,
+            ended_by_role: null,
+            end_reason: null,
+            cancellation_reason: null,
+            created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
            updated_at: new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString(),
          },
         // Phase 9 Test Booking 1: In T-5 early arrival window (starts in 3 minutes)
@@ -440,11 +466,13 @@ status: 'MENTOR_PENDING',
           seeker_timezone: 'Asia/Kolkata',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
-           status: 'CONFIRMED',
-           meeting_url: 'https://meet.google.com/early-access-room',
-           actual_ended_at: null,
-          cancellation_reason: null,
-          created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+status: 'CONFIRMED',
+            meeting_url: 'https://meet.google.com/early-access-room',
+            actual_ended_at: null,
+            ended_by_role: null,
+            end_reason: null,
+           cancellation_reason: null,
+           created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
         },
         // Phase 9 Test Booking 2: Active in-progress session (started 12 minutes ago)
@@ -462,10 +490,12 @@ status: 'MENTOR_PENDING',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
            status: 'CONFIRMED',
-           meeting_url: 'https://meet.google.com/live-session-room',
-           actual_ended_at: null,
-          cancellation_reason: null,
-          created_at: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
+meeting_url: 'https://meet.google.com/live-session-room',
+            actual_ended_at: null,
+            ended_by_role: null,
+            end_reason: null,
+           cancellation_reason: null,
+           created_at: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
         },
         // Phase 9 Test Booking 3: Completed / ended session (ended 20 minutes ago)
@@ -483,10 +513,12 @@ status: 'MENTOR_PENDING',
           mentor_timezone: 'Asia/Kolkata',
           amount_inr: 999,
            status: 'COMPLETED',
-           meeting_url: 'https://meet.google.com/past-session-room',
-           actual_ended_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
-          cancellation_reason: null,
-          created_at: new Date(Date.now() - 180 * 60 * 1000).toISOString(),
+meeting_url: 'https://meet.google.com/past-session-room',
+            actual_ended_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+            ended_by_role: null,
+            end_reason: null,
+           cancellation_reason: null,
+           created_at: new Date(Date.now() - 180 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
         },
         // Phase 22 Test Booking: Mentor ended session early (actual_ended_at before end_time)
@@ -506,6 +538,8 @@ status: 'MENTOR_PENDING',
           status: 'COMPLETED',
           meeting_url: 'https://meet.google.com/early-ended-room',
           actual_ended_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // Ended 10 mins ago, 20 mins before scheduled end
+          ended_by_role: 'mentor',
+          end_reason: null,
           cancellation_reason: null,
           created_at: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
           updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
@@ -575,7 +609,7 @@ status: 'MENTOR_PENDING',
           id: 'notif-seeker-2',
           user_id: 'usr-8801',
           title: 'Payment Submitted',
-          message: 'Your payment screenshot for BK-9021 (₹999) has been submitted for admin verification.',
+          message: 'Your payment screenshot for BK-9021 (Ã¢â€šÂ¹999) has been submitted for admin verification.',
           type: 'PAYMENT',
           event_type: 'PAYMENT_SUBMITTED',
           entity_type: 'payment',
@@ -826,7 +860,7 @@ status: 'MENTOR_PENDING',
           id: 'notif-admin-1',
           user_id: 'usr-8800',
           title: 'Payment Verification Required',
-          message: 'New manual UPI receipt uploaded for BK-9021 (₹999) by Aman Kumar. Awaiting ledger verification.',
+          message: 'New manual UPI receipt uploaded for BK-9021 (Ã¢â€šÂ¹999) by Aman Kumar. Awaiting ledger verification.',
           type: 'PAYMENT',
           event_type: 'ADMIN_PAYMENT_PROOF_SUBMITTED',
           entity_type: 'payment',
@@ -1160,17 +1194,21 @@ export async function fetchUserNotifications(userId: string): Promise<Notificati
 // ----------------------------------------------------------------------------
 
 /**
- * Fetches authoritative session access information:
- * Calls server GET /api/sessions/:id/access, with fallback to in-memory validation.
+ * Fetches authoritative session access information from the server.
+ *
+ * There is deliberately no way to pass a clock from here. The previous
+ * `simulatedTime` argument was appended to the query string as `currentTime`;
+ * the server ignores it, but keeping the parameter would invite a future
+ * caller to trust a client-side clock again, and would make the request shape
+ * look like a supported override. Countdown drift is handled by
+ * `useSessionSync`, which corrects a local clock instead of replacing it.
  */
 export async function fetchSessionAccess(
   bookingId: string,
-  userId: string,
-  simulatedTime?: Date
+  userId: string
 ): Promise<SessionAccessResult> {
-  const timeParam = simulatedTime ? `&currentTime=${encodeURIComponent(simulatedTime.toISOString())}` : '';
   try {
-    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/access?userId=${encodeURIComponent(userId)}${timeParam}`);
+    const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/access?userId=${encodeURIComponent(userId)}`);
     const data = await res.json();
     if (res.ok && data.success !== undefined) {
       return data;
@@ -1183,6 +1221,7 @@ export async function fetchSessionAccess(
     return {
       success: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       canJoin: false,
       meetingUrl: null,
       sessionTitle: '',
@@ -1208,7 +1247,6 @@ export async function fetchSessionAccess(
     {
       bookingId,
       userId,
-      currentUtcTime: simulatedTime,
     },
     db
   );
@@ -1218,20 +1256,20 @@ export async function fetchSessionAccess(
  * Authoritative join action:
  * When user clicks "Join Session", sends request to server for verification.
  * Server strictly rejects before T-5 or after end_time.
+ *
+ * No clock is ever sent. The server re-reads its own time on every call, which
+ * is what makes a stale page, a wrong browser clock or a replayed request
+ * incapable of producing a join.
  */
 export async function joinSessionRequest(
   bookingId: string,
-  userId: string,
-  simulatedTime?: Date
+  userId: string
 ): Promise<AuthoritativeJoinResult> {
   try {
     const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        currentTime: simulatedTime ? simulatedTime.toISOString() : undefined,
-      }),
+      body: JSON.stringify({ userId }),
     });
     const data = await res.json();
     return data;
@@ -1244,6 +1282,7 @@ export async function joinSessionRequest(
       success: false,
       canJoin: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       error: { code: 'NO_BACKEND', message: 'Session join service is unavailable.' },
     };
   }
@@ -1253,7 +1292,6 @@ export async function joinSessionRequest(
     {
       bookingId,
       userId,
-      currentUtcTime: simulatedTime,
     },
     db
   );
@@ -1284,6 +1322,8 @@ export async function markSessionCompleted(bookingId: string): Promise<boolean> 
   if (b) {
     b.status = 'COMPLETED';
     b.actual_ended_at = new Date().toISOString();
+    (b as any).ended_by_role = 'mentor';
+    (b as any).end_reason = null;
     b.updated_at = new Date().toISOString();
     return true;
   }
@@ -1291,19 +1331,42 @@ export async function markSessionCompleted(bookingId: string): Promise<boolean> 
 }
 
 /**
+ * Result of an End Session action. The server is authoritative on whether the
+ * action succeeded, but the response carries the role that ended the session
+ * and the recorded end time so the UI can update optimistically without a
+ * second round-trip.
+ */
+export interface EndSessionResult {
+  success: boolean;
+  booking?: {
+    id: string;
+    booking_code: string;
+    status: string;
+    ended_by_role?: 'mentor' | 'seeker' | 'admin' | null;
+    actual_ended_at?: string | null;
+  };
+  endedByRole?: 'mentor' | 'seeker' | 'admin';
+  error?: { code: string; message: string };
+}
+
+/**
  * Mentor-initiated End Session action. Delegates to the same server endpoint
  * as `markSessionCompleted`, but is named to reflect the mentor workflow and
  * returns a richer result for UI consumption.
  */
-export async function endSessionByMentor(bookingId: string): Promise<{ success: boolean; booking?: { id: string; booking_code: string; status: string }; error?: { code: string; message: string } }> {
+export async function endSessionByMentor(
+  bookingId: string,
+  endReason?: string
+): Promise<EndSessionResult> {
   try {
     const res = await apiFetch(`/api/sessions/${encodeURIComponent(bookingId)}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endReason: endReason ?? null }),
     });
     const data = await res.json();
     if (res.ok && data.success) {
-      return { success: true, booking: data.booking };
+      return { success: true, booking: data.booking, endedByRole: data.endedByRole };
     }
     return {
       success: false,
@@ -1315,5 +1378,31 @@ export async function endSessionByMentor(bookingId: string): Promise<{ success: 
       error: { code: 'NO_BACKEND', message: err?.message || 'Session service is unavailable.' },
     };
   }
+}
+
+/**
+ * Seeker-initiated End Session action. The seeker is allowed to end their own
+ * CONFIRMED session (the room is a shared space; either participant may
+ * conclude it). Delegates to the same endpoint as `endSessionByMentor` so the
+ * server's authorization, state and time checks are the single source of
+ * truth.
+ */
+export async function endSessionBySeeker(
+  bookingId: string,
+  endReason?: string
+): Promise<EndSessionResult> {
+  return endSessionByMentor(bookingId, endReason);
+}
+
+/**
+ * Unified End Session helper. Picks the caller's role so the UI does not need
+ * to branch on who is ending the session; the server re-derives the role from
+ * the verified token anyway.
+ */
+export async function endSession(
+  bookingId: string,
+  endReason?: string
+): Promise<EndSessionResult> {
+  return endSessionByMentor(bookingId, endReason);
 }
 

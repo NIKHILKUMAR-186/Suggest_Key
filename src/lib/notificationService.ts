@@ -235,10 +235,18 @@ export function resolveNotificationLink(
   if (!path) return null;
 
   // Carries the notification's own record reference across, so the destination
-  // can focus the record the event is actually about.
+  // can focus the record the event is actually about. A `payments` event carries
+  // a payment id, so it is forwarded as `paymentId` rather than as a booking id.
   const incoming = new URLSearchParams(rawQuery);
-  const bookingId = incoming.get('bookingId') || entityId || null;
+  const isUuid = (value: string | null): value is string =>
+    !!value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  const recordId = entityId ?? null;
+  const bookingId = incoming.get('bookingId') || (isUuid(recordId) ? recordId : null);
   const withBooking = (route: string) => (bookingId ? `${route}?bookingId=${encodeURIComponent(bookingId)}` : route);
+  // Admin payment review is keyed on the payment row, so the notification's own
+  // record id is passed as `paymentId` and the queue opens that exact record.
+  const withPayment = (route: string) =>
+    isUuid(recordId) ? `${route}?paymentId=${encodeURIComponent(recordId)}` : route;
 
   if (role === 'admin') {
     // Already an admin route: keep it, but drop any participant query that would
@@ -251,7 +259,7 @@ export function resolveNotificationLink(
     }
 
     if (path.startsWith('/seeker/')) {
-      if (path.startsWith('/seeker/payment')) return withBooking('/admin/payments');
+      if (path.startsWith('/seeker/payment')) return withPayment('/admin/payments');
       if (path.startsWith('/seeker/workspace')) return withBooking('/admin/workspaces');
       return withBooking('/admin/bookings');
     }
@@ -266,7 +274,7 @@ export function resolveNotificationLink(
 
     // A payment event is about a payment row, so the review queue is the right
     // destination even when the writer left a generic link.
-    if (/\/payment/i.test(path)) return withBooking('/admin/payments');
+    if (/\/payment/i.test(path)) return withPayment('/admin/payments');
     if (/\/booking/i.test(path)) return withBooking('/admin/bookings');
 
     // Nothing recognisable: send the operator to their own console rather than

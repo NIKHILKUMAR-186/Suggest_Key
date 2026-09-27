@@ -761,6 +761,20 @@ export const apiSchemas = {
     currentTime: isoDateTimeField.optional(),
   }),
 
+  /**
+   * POST /api/sessions/:bookingId/complete — End a CONFIRMED session.
+   *
+   * Either the mentor or the seeker may end their own session (the room is a
+   * shared space), and an admin may end any session. The caller's identity and
+   * role come from the verified bearer token, never from the body, so the
+   * fields below are all optional. `endReason` is free text: stripped of markup
+   * and bounded so it cannot smuggle HTML into the audit trail or overflow the
+   * column.
+   */
+  sessionComplete: z.strictObject({
+    endReason: optionalText({ max: MAX_REASON_LENGTH, label: 'Reason', multiline: true }),
+  }),
+
   workspace: z.strictObject({
     bookingId: idField,
     mentorId: uuidField.optional(),

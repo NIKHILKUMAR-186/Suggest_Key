@@ -451,10 +451,12 @@ export async function executeAtomicBookingWithHold(
       seeker_timezone: seekerTz,
       mentor_timezone: mentorTz,
       amount_inr: gig.price_inr,
-     status: 'PAYMENT_PENDING',
-     meeting_url: null,
-     actual_ended_at: null,
-     cancellation_reason: null,
+status: 'PAYMENT_PENDING',
+      meeting_url: null,
+      actual_ended_at: null,
+      ended_by_role: null,
+      end_reason: null,
+      cancellation_reason: null,
       created_at: currentUtcTime.toISOString(),
       updated_at: currentUtcTime.toISOString(),
       gig,
@@ -742,6 +744,40 @@ export type SessionAccessState =
   | 'ENDED' // mentor manually ended the session before scheduled end_time
   | 'COMPLETED'; // now >= end_time: join denied, link hidden, transitioned to COMPLETED
 
+/**
+ * The five lifecycle states, mirroring `public.resolve_session_state(...)` in
+ * the database. `accessState` above is the wire-level view the existing tests
+ * and UI already speak; `sessionState` is the product vocabulary (SCHEDULED /
+ * ACCESS_OPEN / IN_PROGRESS / COMPLETED / CANCELLED) that the session pages
+ * render. Both are derived from the same server clock in the same pass, so
+ * they cannot disagree.
+ */
+export type SessionLifecycleState =
+  | 'SCHEDULED'
+  | 'ACCESS_OPEN'
+  | 'IN_PROGRESS'
+  | 'COMPLETED'
+  | 'CANCELLED';
+
+/** Narrows an access state to the product lifecycle vocabulary. */
+export function lifecycleFromAccessState(accessState: SessionAccessState): SessionLifecycleState {
+  switch (accessState) {
+    case 'BEFORE_T5':
+      return 'SCHEDULED';
+    case 'T5_WINDOW':
+      return 'ACCESS_OPEN';
+    case 'IN_PROGRESS':
+      return 'IN_PROGRESS';
+    // A manual early end and a natural completion are both terminal: access is
+    // closed and the room is gone. The distinction is carried by `accessState`.
+    case 'ENDED':
+    case 'COMPLETED':
+      return 'COMPLETED';
+    default:
+      return 'COMPLETED';
+  }
+}
+
 export interface SessionAccessRequest {
   bookingId: string;
   userId: string;
@@ -752,6 +788,8 @@ export interface SessionAccessResult {
   success: boolean;
   canJoin: boolean;
   accessState: SessionAccessState;
+  /** Product-vocabulary state, always present alongside `accessState`. */
+  sessionState: SessionLifecycleState;
   meetingUrl: string | null; // Strictly null unless in T5_WINDOW or IN_PROGRESS
   sessionTitle: string;
   mentorName: string;
@@ -778,6 +816,8 @@ export interface AuthoritativeJoinResult {
   canJoin: boolean;
   meetingUrl?: string;
   accessState: SessionAccessState;
+  /** Product-vocabulary state, present so a caller never has to re-derive it. */
+  sessionState: SessionLifecycleState;
   bookingCode?: string;
   error?: {
     code: string;
@@ -859,6 +899,7 @@ export function validateSessionAccess(
       success: false,
       canJoin: false,
       accessState: 'COMPLETED',
+      sessionState: 'COMPLETED',
       meetingUrl: null,
       sessionTitle: 'Session Not Found',
       mentorName: '',
@@ -897,6 +938,7 @@ export function validateSessionAccess(
       success: false,
       canJoin: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       meetingUrl: null,
       sessionTitle,
       mentorName,
@@ -925,6 +967,7 @@ export function validateSessionAccess(
       success: false,
       canJoin: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       meetingUrl: null,
       sessionTitle,
       mentorName,
@@ -952,6 +995,7 @@ export function validateSessionAccess(
       success: false,
       canJoin: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       meetingUrl: null,
       sessionTitle,
       mentorName,
@@ -979,6 +1023,7 @@ export function validateSessionAccess(
       success: false,
       canJoin: false,
       accessState: 'COMPLETED',
+      sessionState: 'CANCELLED',
       meetingUrl: null,
       sessionTitle,
       mentorName,
@@ -1010,28 +1055,35 @@ export function validateSessionAccess(
   const secondsUntilStart = Math.max(0, Math.ceil((startMs - nowMs) / 1000));
   const secondsUntilEnd = Math.max(0, Math.ceil((endMs - nowMs) / 1000));
 
-  // CASE 1: At or after session end (now >= end_time)
-  // "At or after session end: join denied"
-  // "After end_time: booking/session should transition appropriately toward COMPLETED."
-  // Also catches status === 'COMPLETED' (incl. manual end).
-  if (nowMs >= endMs || booking.status === 'COMPLETED') {
+  // CASE 1: The room is closed.
+  //   - now >= end_time                            -> natural expiry
+  //   - status === 'COMPLETED'                     -> already concluded
+  //   - actual_ended_at is set                     -> manually ended early
+  // The third condition is what makes a manual end terminal the instant it
+  // happens, even though the scheduled end_time is still in the future. Without
+  // it this engine would disagree with `public.resolve_session_state`, which
+  // treats any recorded end as terminal, and a mentor who ended the session at
+  // T+20min would leave the room joinable until the scheduled hour was up.
+  const manualEndedAtMs = booking.actual_ended_at
+    ? new Date(booking.actual_ended_at).getTime()
+    : 0;
+  const hasManualEnd = Number.isFinite(manualEndedAtMs) && manualEndedAtMs > 0;
+
+  if (nowMs >= endMs || booking.status === 'COMPLETED' || hasManualEnd) {
     if (booking.status !== 'COMPLETED') {
       booking.status = 'COMPLETED';
       booking.updated_at = now.toISOString();
     }
 
-    // Distinguish a mentor manual end (actual_ended_at recorded) that occurred
-    // *before* the scheduled end_time from a natural completion.
-    const endedAtMs = booking.actual_ended_at
-      ? new Date(booking.actual_ended_at).getTime()
-      : 0;
-    const endedBeforeScheduledEnd =
-      Number.isFinite(endedAtMs) && endedAtMs > 0 && endedAtMs < endMs;
+    // Distinguish a manual end that occurred *before* the scheduled end_time
+    // from a natural completion. Both are terminal; only the label differs.
+    const endedBeforeScheduledEnd = hasManualEnd && manualEndedAtMs < endMs;
 
     return {
       success: true,
       canJoin: false,
       accessState: endedBeforeScheduledEnd ? 'ENDED' : 'COMPLETED',
+      sessionState: 'COMPLETED',
       meetingUrl: null, // Strictly hidden / inactive
       sessionTitle,
       mentorName,
@@ -1065,6 +1117,7 @@ export function validateSessionAccess(
       success: true,
       canJoin: false,
       accessState: 'BEFORE_T5',
+      sessionState: 'SCHEDULED',
       meetingUrl: null, // Strictly hidden!
       sessionTitle,
       mentorName,
@@ -1094,6 +1147,7 @@ export function validateSessionAccess(
       success: true,
       canJoin: true,
       accessState: 'T5_WINDOW',
+      sessionState: 'ACCESS_OPEN',
       meetingUrl: booking.meeting_url, // Available!
       sessionTitle,
       mentorName,
@@ -1118,6 +1172,7 @@ export function validateSessionAccess(
     success: true,
     canJoin: true,
     accessState: 'IN_PROGRESS',
+    sessionState: 'IN_PROGRESS',
     meetingUrl: booking.meeting_url, // Available!
     sessionTitle,
     mentorName,
@@ -1152,6 +1207,7 @@ export function joinSessionAuthoritative(
       success: false,
       canJoin: false,
       accessState: result.accessState,
+      sessionState: result.sessionState,
       bookingCode: result.bookingCode,
       error: result.error || {
         code: result.accessState === 'BEFORE_T5' ? 'TOO_EARLY' : 'SESSION_ENDED',
@@ -1165,6 +1221,7 @@ export function joinSessionAuthoritative(
     canJoin: true,
     meetingUrl: result.meetingUrl || undefined,
     accessState: result.accessState,
+    sessionState: result.sessionState,
     bookingCode: result.bookingCode,
   };
 }

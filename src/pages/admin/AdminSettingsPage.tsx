@@ -303,7 +303,10 @@ const PaymentConfigurationCard: React.FC<{
   };
 
   const hasQr = Boolean(payment.qrImageUrl);
-  const isConfigured = Boolean(payment.upiId) && hasQr;
+  // A UPI id is what makes payment possible at all, so that is what the warning
+  // keys on. The QR is an additional convenience, and its absence is called out
+  // separately rather than being treated as a broken configuration.
+  const canCollectPayment = Boolean(payment.upiId);
 
   return (
     <SectionCard
@@ -330,12 +333,23 @@ const PaymentConfigurationCard: React.FC<{
         )
       }
     >
-      {!isConfigured && !isEditing && (
+      {!canCollectPayment && !isEditing && (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-3 text-xs text-[var(--color-shell-text)]">
           <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-[var(--color-shell-warning)]" aria-hidden="true" />
           <span>
-            Payment collection is not fully configured yet. Seekers cannot complete a payment until a UPI ID and a
-            payment QR are both saved.
+            No UPI ID is configured, so seekers currently cannot complete a payment. Their payment page shows a
+            "payment not yet available" notice instead of a form, so nobody can transfer to an address that does not
+            exist.
+          </span>
+        </div>
+      )}
+
+      {canCollectPayment && !hasQr && !isEditing && (
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3 text-xs text-[var(--color-shell-text-muted)]">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+          <span>
+            No payment QR is uploaded. Seekers can still pay by entering the UPI ID in their app, but uploading a QR
+            makes the payment page easier to complete.
           </span>
         </div>
       )}

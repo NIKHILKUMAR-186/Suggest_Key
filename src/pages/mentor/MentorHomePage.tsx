@@ -8,6 +8,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { fetchMentorBookings } from '@/src/lib/bookingService';
 import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { isBookingUpcoming } from '@/src/lib/sessionState';
 
 interface Booking {
   id: string;
@@ -59,9 +60,23 @@ export const MentorHomePage: React.FC = () => {
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
 
+      // "Today" is a date label and stays on the local calendar day, but whether
+      // a session is still actionable must come from the server. Filtering on
+      // `status === 'CONFIRMED'` alone listed sessions that had already ended
+      // earlier the same day, leaving a dead Join button on the mentor's home
+      // screen. The server annotates every row with `sessionState` /
+      // `isUpcoming`; the local resolver is only a fallback for a cached row
+      // that predates that field.
+      const stillActionable = (b: Booking): boolean => {
+        const server = (b as Booking & { isUpcoming?: boolean }).isUpcoming;
+        if (typeof server === 'boolean') return server;
+        return isBookingUpcoming(b, Date.now());
+      };
+
       const today = bookings.filter((b) => {
         const start = new Date(b.start_time);
-        return start >= todayStart && start < todayEnd && b.status === 'CONFIRMED';
+        if (Number.isNaN(start.getTime())) return false;
+        return start >= todayStart && start < todayEnd && stillActionable(b);
       });
       setTodaySessions(today);
 

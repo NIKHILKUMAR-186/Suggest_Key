@@ -20,6 +20,7 @@ import {
   isBookingIdShape,
   isSafeBookingIdentifier,
   redactMeetingUrlForParticipant,
+  SESSION_ACCESS_WINDOW_MS,
 } from './src/lib/sessionAccess';
 import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingService';
 import {
@@ -113,7 +114,7 @@ import {
 } from './src/lib/adminAccountControl';
 import { APP_CONFIG } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
-import { apiSchemas, formatValidationFailure, validateBody } from './src/lib/validation';
+import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -771,7 +772,7 @@ async function computeMentorSlotsForDate(
 const SESSION_BOOKING_SELECT = `
   id, booking_code, mentor_id, seeker_id, gig_id, segment_id, hold_id,
   start_time, end_time, seeker_timezone, mentor_timezone, amount_inr,
-  status, meeting_url, actual_ended_at, cancellation_reason, created_at, updated_at,
+  status, meeting_url, actual_ended_at, ended_by_role, cancellation_reason, created_at, updated_at,
   gig:gigs(id, title),
   seeker:profiles!bookings_seeker_id_fkey(id, full_name, timezone),
   mentor:profiles!bookings_mentor_id_fkey(id, full_name, timezone)
@@ -865,6 +866,256 @@ function buildSessionEngineContext(
       : base.gigs.filter((g: any) => g.id === engineBooking.gig_id),
     profiles: [engineBooking.seeker, engineBooking.mentor].filter(Boolean),
   } as BookingEngineContext;
+}
+
+/**
+ * Persists the automatic COMPLETED transition that `validateSessionAccess`
+ * performs in memory when a CONFIRMED session has reached its scheduled
+ * end_time.
+ *
+ * The engine mutates the in-memory context object, but the context is rebuilt
+ * from the database on every request, so without this the transition would be
+ * lost between calls and a seeker polling the access endpoint would keep
+ * seeing IN_PROGRESS forever. This runs a conditional UPDATE scoped to the
+ * still-CONFIRMED row so two concurrent polls cannot double-apply, and it
+ * leaves `actual_ended_at` NULL (and `ended_by_role` NULL) because a natural
+ * expiry is not a manual end.
+ */
+async function persistNaturalSessionCompletion(
+  admin: SupabaseClient,
+  engineBooking: any,
+  nowIso: string
+): Promise<boolean> {
+  if (!engineBooking) return false;
+  if (engineBooking.status !== 'CONFIRMED') return false;
+  const endMs = new Date(engineBooking.end_time).getTime();
+  if (!Number.isFinite(endMs) || new Date(nowIso).getTime() < endMs) return false;
+
+  // `actual_ended_at` is set to `end_time`, NOT `nowIso`, and this must match
+  // `complete_expired_sessions()` exactly. A natural expiry is recorded as the
+  // moment the session was scheduled to end, so the value is identical whether
+  // pg_cron or this read path got there first. Writing `nowIso` here would make
+  // the recorded end depend on which path won the race, and would push the end
+  // time forward by up to a full cron interval.
+  const { data, error } = await admin
+    .from('bookings')
+    .update({
+      status: 'COMPLETED',
+      actual_ended_at: engineBooking.end_time,
+      updated_at: nowIso,
+    })
+    .eq('id', engineBooking.id)
+    .eq('status', 'CONFIRMED')
+    .select('id, status')
+    .maybeSingle();
+
+  if (error) {
+    console.error('Failed to persist natural session completion:', error.message);
+    return false;
+  }
+  return !!data;
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative session logging
+// ---------------------------------------------------------------------------
+// Structured, greppable lines for the four decisions that matter when a session
+// time bug is investigated: what state the server resolved, why a join was
+// refused, and when a row was auto-completed.
+//
+// Only non-sensitive fields are logged. Meeting URLs are never written, and no
+// payment data is touched, so these lines are safe to keep in a log aggregator.
+
+type SessionLogEvent =
+  | 'SESSION_STATE_RESOLVED'
+  | 'SESSION_ACCESS_DENIED'
+  | 'SESSION_ACCESS_GRANTED'
+  | 'SESSION_AUTO_COMPLETED'
+  | 'SESSION_MANUAL_END'
+  | 'SESSION_RECONCILE_FAILED';
+
+function logSessionEvent(
+  event: SessionLogEvent,
+  fields: Record<string, string | number | boolean | null | undefined>
+): void {
+  const parts: string[] = [event];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    parts.push(`${key}=${value}`);
+  }
+  console.log(parts.join(' '));
+}
+
+/**
+ * Runs the database reconciliation for a single booking and returns the
+ * server-resolved lifecycle state.
+ *
+ * This is the read-path half of the fix. `complete_expired_sessions()` is
+ * driven by pg_cron every minute, which guarantees a past session cannot stay
+ * open indefinitely. This call guarantees something stronger: the row is
+ * corrected *before the first request that touches the booking is answered*, so
+ * a stale CONFIRMED row can never even be served - not even for the first 59
+ * seconds of a cron interval, and not at all if cron is unavailable.
+ *
+ * It delegates to `public.reconcile_expired_sessions(uuid)`, which is scoped to
+ * one authorized booking (indexed by primary key) rather than scanning the
+ * table, and which uses the caller's own JWT so RLS still decides whether the
+ * caller may see the booking at all.
+ *
+ * A failure is logged and swallowed: reconciliation is an optimisation layered
+ * on top of the resolver, and the resolver already refuses a join for an
+ * elapsed booking on its own. A database hiccup must not turn a read into a
+ * 500.
+ */
+async function reconcileBookingSessionState(
+  admin: SupabaseClient,
+  bookingId: string
+): Promise<string | null> {
+  if (!isSafeBookingIdentifier(bookingId) || !isBookingIdShape(bookingId)) return null;
+
+  try {
+    const { data, error } = await admin.rpc('reconcile_expired_sessions', {
+      p_booking_id: bookingId,
+    });
+    if (error) {
+      logSessionEvent('SESSION_RECONCILE_FAILED', {
+        bookingId,
+        detail: error.message,
+      });
+      return null;
+    }
+    return typeof data === 'string' ? data : null;
+  } catch (err: any) {
+    logSessionEvent('SESSION_RECONCILE_FAILED', {
+      bookingId,
+      detail: err?.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Bulk reconciles a page of already-fetched booking rows and annotates each with
+ * its server-resolved lifecycle state.
+ *
+ * Used by the list endpoints, where calling the per-booking RPC once per row
+ * would turn one page request into N round trips. Instead the expiry predicate
+ * is evaluated here against the same server clock, and the transitions are
+ * applied in a SINGLE conditional UPDATE scoped to `status = 'CONFIRMED'`.
+ *
+ * The predicate here is the same rule as `public.resolve_session_state` and
+ * `public.complete_expired_sessions`: an elapsed `end_time` on a still-CONFIRMED
+ * row means the session is over, whatever the row still says. The UPDATE is
+ * idempotent (a second call matches zero rows) and sets `actual_ended_at` to the
+ * booking's own `end_time`, so re-running can never move the recorded instant.
+ *
+ * `isUpcoming` is included because the spec requires Upcoming and History to be
+ * separated by server time, not by the stored status - a stale CONFIRMED row
+ * used to land in Upcoming forever.
+ *
+ * Notification emission is deliberately NOT done here. The cron job and
+ * `reconcileBookingSessionState` own that, so a list request can never be the
+ * thing that produces a completion notification.
+ */
+async function reconcileAndAnnotateBookingRows(
+  admin: SupabaseClient,
+  rows: any[],
+  nowMs: number = Date.now()
+): Promise<any[]> {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const expiredIds: string[] = [];
+  for (const row of rows) {
+    if (row?.status !== 'CONFIRMED') continue;
+    const endMs = row.end_time ? new Date(row.end_time).getTime() : Number.NaN;
+    // Fail closed on an unparseable window: treat it as elapsed rather than
+    // leaving a row that can never be resolved.
+    if (!Number.isFinite(endMs) || nowMs >= endMs) {
+      expiredIds.push(row.id);
+    }
+  }
+
+  if (expiredIds.length > 0) {
+    // A single `.update()` cannot write a per-row value, and `actual_ended_at`
+    // must be each booking's OWN `end_time` - collapsing the batch onto one
+    // timestamp would misrecord every row in it. So the transition goes through
+    // a scoped RPC that applies the same per-row expression as
+    // `complete_expired_sessions()`, restricted to the ids on this page rather
+    // than scanning the table.
+    const { data, error } = await admin.rpc('reconcile_expired_bookings', {
+      p_booking_ids: expiredIds,
+    });
+    if (error) {
+      // Non-fatal: the annotation below still reports these rows as COMPLETED
+      // from the clock, so the UI is correct even if the write failed.
+      console.error('Bulk session reconciliation failed:', error.message);
+    } else {
+      const completed = Array.isArray(data) ? data.length : 0;
+      if (completed > 0) {
+        logSessionEvent('SESSION_AUTO_COMPLETED', {
+          count: completed,
+          reason: 'bulk_reconcile',
+          serverNow: new Date(nowMs).toISOString(),
+        });
+      }
+      // Reflect the transition locally so the response we return matches the row
+      // we just wrote, without re-querying the page.
+      const expiredSet = new Set(expiredIds);
+      for (const row of rows) {
+        if (!expiredSet.has(row.id)) continue;
+        row.status = 'COMPLETED';
+        // Mirror the write so the annotation below reads a consistent row. Left
+        // NULL when the stored end is unparseable, which is also what
+        // `annotateSessionState` treats as "elapsed but unrecorded".
+        if (typeof row.end_time === 'string' && Number.isFinite(new Date(row.end_time).getTime())) {
+          row.actual_ended_at = row.end_time;
+        }
+      }
+    }
+  }
+
+  // Annotate unconditionally, including when nothing expired. Without this the
+  // list endpoints would ship raw `status` with no `sessionState` / `isUpcoming`
+  // at all, which is precisely the field the pages group on.
+  for (const row of rows) annotateSessionState(row, nowMs);
+
+  return rows;
+}
+
+/**
+ * Attaches the server-resolved lifecycle state to a booking projection.
+ *
+ * This is the read-only half of the fix, and it is the reason an expired session
+ * cannot be shown as joinable even if every write path has failed: the
+ * annotation is derived from the server clock and `end_time`, never from the
+ * stored status alone.
+ */
+function annotateSessionState<T extends Record<string, any>>(row: T, nowMs: number = Date.now()): T {
+  const startMs = row.start_time ? new Date(row.start_time).getTime() : Number.NaN;
+  const endMs = row.end_time ? new Date(row.end_time).getTime() : Number.NaN;
+
+  let sessionState: 'SCHEDULED' | 'ACCESS_OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  let isUpcoming: boolean;
+
+  if (row.status === 'CANCELLED' || row.status === 'REJECTED') {
+    sessionState = 'CANCELLED';
+    isUpcoming = false;
+  } else if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    // Fail closed: an unreadable window is treated as closed, never as open.
+    sessionState = 'COMPLETED';
+    isUpcoming = false;
+  } else if (row.actual_ended_at || row.status === 'COMPLETED' || nowMs >= endMs) {
+    sessionState = 'COMPLETED';
+    isUpcoming = false;
+  } else if (nowMs >= startMs - SESSION_ACCESS_WINDOW_MS) {
+    sessionState = nowMs >= startMs ? 'IN_PROGRESS' : 'ACCESS_OPEN';
+    isUpcoming = true;
+  } else {
+    sessionState = 'SCHEDULED';
+    isUpcoming = true;
+  }
+
+  return { ...row, sessionState, isUpcoming };
 }
 
 async function startServer() {
@@ -1501,11 +1752,18 @@ async function startServer() {
           paymentByBooking.set(payment.booking_id, payment);
         }
 
-        const enriched = (bookings || []).map((booking: any) =>
+        // Reconcile expired sessions before projecting, then annotate each row
+        // with its server-resolved lifecycle state. The mentor's Upcoming tab
+        // must never contain a session that has already ended.
+        const reconciledMentor = await reconcileAndAnnotateBookingRows(
+          supabaseAdmin,
+          [...(bookings || [])]
+        );
+        const enriched = reconciledMentor.map((booking: any) =>
           enrichMentorBookingProjection(booking, paymentByBooking.get(booking.id) || null)
         );
 
-        return res.json({ success: true, bookings: enriched });
+        return res.json({ success: true, bookings: enriched, serverNow: new Date().toISOString() });
       }
 
       // Fallback to the in-memory dev DB only when Supabase is not configured.
@@ -1570,9 +1828,14 @@ async function startServer() {
           : { data: null, error: null };
         if (holdErr) throw holdErr;
 
+        // Reconcile + annotate so a detail page opened the next morning shows
+        // COMPLETED immediately, on the very first request.
+        const [reconciledDetail] = await reconcileAndAnnotateBookingRows(supabaseAdmin, [booking]);
+
         return res.json({
           success: true,
-          booking: enrichMentorBookingProjection(booking, payment || null, hold || null),
+          booking: enrichMentorBookingProjection(reconciledDetail, payment || null, hold || null),
+          serverNow: new Date().toISOString(),
         });
       }
 
@@ -1671,20 +1934,25 @@ async function startServer() {
           if (!holdErr) hold = holdData;
         }
 
+        // Reconcile + annotate before projecting. Opening an old session URL
+        // tomorrow must show COMPLETED on the first request, with no meeting
+        // URL in the payload.
+        const [reconciledSeekerDetail] = await reconcileAndAnnotateBookingRows(admin, [booking]);
+
         const enriched = redactMeetingUrlForParticipant(
           {
-            ...booking,
-            gig: booking.gig || null,
-            segment: booking.segment || null,
-            seeker: booking.seeker || null,
-            mentor: booking.mentor || null,
+            ...reconciledSeekerDetail,
+            gig: reconciledSeekerDetail.gig || null,
+            segment: reconciledSeekerDetail.segment || null,
+            seeker: reconciledSeekerDetail.seeker || null,
+            mentor: reconciledSeekerDetail.mentor || null,
             payment: payment || null,
             hold: hold || null,
           },
           { isAdmin, isMentor: false }
         );
 
-        return res.json({ success: true, booking: enriched });
+        return res.json({ success: true, booking: enriched, serverNow: new Date().toISOString() });
       }
 
       // Fallback to in-memory dev DB
@@ -1754,9 +2022,13 @@ async function startServer() {
           paymentByBooking.set(payment.booking_id, payment);
         }
 
-        // The meeting link is only released inside the session access window,
-        // so a seeker cannot read it out of their own booking list at leisure.
-        const enriched = (bookings || []).map((booking: any) =>
+        // Reconcile expired sessions BEFORE projecting, so a session whose
+        // window closed is written back as COMPLETED and annotated from the
+        // server clock. This is what moves an expired booking out of "Upcoming"
+        // and off the join path without anyone clicking End Session.
+        const reconciled = await reconcileAndAnnotateBookingRows(admin, [...(bookings || [])]);
+
+        const enriched = reconciled.map((booking: any) =>
           redactMeetingUrlForParticipant(
             {
               ...booking,
@@ -1766,11 +2038,13 @@ async function startServer() {
               mentor: booking.mentor || null,
               payment: paymentByBooking.get(booking.id) || null,
             },
+            // A seeker never receives the link from a list payload; only the
+            // access/join endpoints can release it, and only inside the window.
             { isAdmin, isMentor: false }
           )
         );
 
-        return res.json({ success: true, bookings: enriched });
+        return res.json({ success: true, bookings: enriched, serverNow: new Date().toISOString() });
       }
 
       // Fallback to in-memory dev DB
@@ -2490,6 +2764,16 @@ async function startServer() {
 
       if (bookingsErr) throw bookingsErr;
 
+      // Reconcile and annotate before building the ledger, so an admin never
+      // sees a stale CONFIRMED row for a session that has already ended. The
+      // cron job would have corrected it within a minute, but an operational
+      // ledger that disagrees with the seeker and mentor views in the meantime
+      // is exactly the kind of mismatch that makes people chase phantom bugs.
+      const reconciledBookings = await reconcileAndAnnotateBookingRows(
+        admin,
+        [...(bookings || [])]
+      );
+
       // Get payment info for all bookings
       const bookingIds = (bookings || []).map((b: any) => b.id);
       const { data: payments, error: paymentsErr } = bookingIds.length
@@ -2504,7 +2788,7 @@ async function startServer() {
 
       // Calculate deadline info for each booking
       const now = new Date();
-      const enrichedBookings = (bookings || []).map((booking: any) => {
+      const enrichedBookings = reconciledBookings.map((booking: any) => {
         const payment = paymentByBooking.get(booking.id);
         const startTime = new Date(booking.start_time);
         const deadlineMs = startTime.getTime() - 2 * 60 * 60 * 1000; // 2 hours before
@@ -6859,8 +7143,10 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const body = (req.body ?? {}) as { fileName?: unknown; fileType?: unknown; fileSize?: unknown };
-      const name = typeof body.fileName === 'string' ? body.fileName : '';
+      // The filename is deliberately not part of this contract. It is not needed
+      // to build the object key, and accepting it would mean a client-supplied
+      // name reaches the public QR bucket.
+      const body = (req.body ?? {}) as { fileType?: unknown; fileSize?: unknown };
       const type = typeof body.fileType === 'string' ? body.fileType : '';
       const size = typeof body.fileSize === 'number' ? body.fileSize : Number.NaN;
 
@@ -6877,10 +7163,18 @@ async function startServer() {
         throw new HttpError(400, 'VALIDATION_ERROR', `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`);
       }
 
-      const extension = (name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+      // The extension is derived from the validated MIME type, never from the
+      // client-supplied filename. Taking it from the name would let a file called
+      // `payload.exe` be uploaded to the public QR bucket under an `.exe` object
+      // key, and would produce a key the PATCH handler then rejects as unknown.
+      const extensionByMimeType: Record<PaymentQrMimeType, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/webp': 'webp',
+      };
       // The key is generated here so the PATCH handler can verify it came from
       // this route; the client's filename never reaches the object path.
-      const storagePath = `platform/payment-qr-${Date.now()}-${randomUUID().slice(0, 6)}.${extension}`;
+      const storagePath = `platform/payment-qr-${Date.now()}-${randomUUID().slice(0, 6)}.${extensionByMimeType[type as PaymentQrMimeType]}`;
 
       const { data, error } = await admin.storage
         .from(PAYMENT_QR_BUCKET)
@@ -7186,7 +7480,7 @@ async function startServer() {
   // primitive. `requireAdmin` is now server-side authoritative; the
   // self-targeting branch is retained only so the endpoint stays honest about
   // who it may notify.
-  app.post('/api/notifications/dispatch', requireAuth, requireAdmin, validateBody(apiSchemas.notificationDispatch), (req: AuthRequest, res) => {
+  app.post('/api/notifications/dispatch', requireAuth, requireAdmin, validateBody(apiSchemas.notificationDispatch), async (req: AuthRequest, res) => {
      try {
        const {
          userId: bodyUserId,
@@ -7314,10 +7608,18 @@ async function startServer() {
       // Server clock. Never `req.query.currentTime`.
       const currentUtcTime = new Date();
 
-      const db = getSupabaseAdmin()
+      // Reconcile BEFORE resolving, so an expired booking is already COMPLETED
+      // by the time the engine reads it. This is what makes an old session URL
+      // resolve correctly on first paint rather than on a later poll.
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        await reconcileBookingSessionState(admin, bookingId);
+      }
+
+      const db = admin
         ? await (async () => {
             const loaded = await loadAuthoritativeSessionBooking(
-              getSupabaseAdmin()!,
+              admin,
               bookingId,
               userId
             );
@@ -7344,6 +7646,44 @@ async function startServer() {
         db
       );
 
+      // `validateSessionAccess` may transition the in-memory booking to
+      // COMPLETED when now >= end_time. Persist that natural expiry to the
+      // database so the state survives across requests.
+      if (accessResult.success && admin && db.bookings[0]) {
+        const persisted = await persistNaturalSessionCompletion(admin, db.bookings[0], currentUtcTime.toISOString());
+        if (persisted) {
+          logSessionEvent('SESSION_AUTO_COMPLETED', {
+            bookingId,
+            reason: 'end_time_elapsed',
+            serverNow: currentUtcTime.toISOString(),
+            endTime: db.bookings[0].end_time,
+          });
+        }
+      }
+
+      // Structured trail for every resolution: which state, against which
+      // window, at which server clock. This is the line to grep when a session
+      // time bug is reported.
+      logSessionEvent('SESSION_STATE_RESOLVED', {
+        bookingId,
+        state: accessResult.sessionState,
+        accessState: accessResult.accessState,
+        canJoin: accessResult.canJoin,
+        bookingStatus: accessResult.bookingStatus,
+        serverNow: currentUtcTime.toISOString(),
+        startTime: accessResult.startTime,
+        endTime: accessResult.endTime,
+      });
+
+      if (!accessResult.canJoin && accessResult.error) {
+        logSessionEvent('SESSION_ACCESS_DENIED', {
+          bookingId,
+          reason: accessResult.error.code,
+          state: accessResult.sessionState,
+          serverNow: currentUtcTime.toISOString(),
+          endTime: accessResult.endTime,
+        });
+      }
 
       if (!accessResult.success) {
         const code = accessResult.error?.code;
@@ -7386,6 +7726,13 @@ async function startServer() {
       const currentUtcTime = new Date();
 
       const supabase = getSupabaseAdmin();
+
+      // Reconcile BEFORE resolving, so an expired booking is already COMPLETED
+      // by the time the engine reads it.
+      if (supabase) {
+        await reconcileBookingSessionState(supabase, bookingId);
+      }
+
       const db = supabase
         ? await (async () => {
             const loaded = await loadAuthoritativeSessionBooking(supabase, bookingId, userId);
@@ -7412,8 +7759,29 @@ async function startServer() {
         db
       );
 
+      // Persist the natural COMPLETED transition the engine may have applied
+      // in memory when now >= end_time, so the state survives across requests.
+      if (supabase && db.bookings[0]) {
+        const persisted = await persistNaturalSessionCompletion(supabase, db.bookings[0], currentUtcTime.toISOString());
+        if (persisted) {
+          logSessionEvent('SESSION_AUTO_COMPLETED', {
+            bookingId,
+            reason: 'end_time_elapsed',
+            serverNow: currentUtcTime.toISOString(),
+            endTime: db.bookings[0].end_time,
+          });
+        }
+      }
+
       if (!joinResult.canJoin) {
         const code = joinResult.error?.code;
+        logSessionEvent('SESSION_ACCESS_DENIED', {
+          bookingId,
+          reason: code,
+          state: joinResult.accessState,
+          serverNow: currentUtcTime.toISOString(),
+          endTime: db.bookings[0]?.end_time,
+        });
         if (code === 'TOO_EARLY') {
           return res.status(403).json({
             success: false,
@@ -7451,6 +7819,14 @@ async function startServer() {
         return res.status(400).json(joinResult);
       }
 
+      logSessionEvent('SESSION_ACCESS_GRANTED', {
+        bookingId,
+        accessState: joinResult.accessState,
+        serverNow: currentUtcTime.toISOString(),
+        startTime: db.bookings[0]?.start_time,
+        endTime: db.bookings[0]?.end_time,
+      });
+
       return res.json({
         success: true,
         canJoin: true,
@@ -7463,7 +7839,6 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err });
     }
   });
-
   // POST /api/sessions/:bookingId/complete: End a CONFIRMED session by mentor (or admin).
   //
   // Four things are checked server-side, all of them from trusted state:
@@ -7488,6 +7863,14 @@ async function startServer() {
       const userId = req.auth!.user.id;
       const isAdmin = req.auth!.roles.includes('admin');
       const isMentor = req.auth!.roles.includes('mentor');
+      const isSeeker = req.auth!.roles.includes('seeker');
+
+      // Optional free-text reason for why the session was ended early. Stripped
+      // of markup and bounded so it cannot be used to smuggle HTML into the
+      // audit trail or overflow the column.
+      const parsedBody = parseBody(req, res, apiSchemas.sessionComplete);
+      if (parsedBody === null) return;
+      const endReason = parsedBody.endReason ?? null;
 
       const supabase = getSupabaseAdmin();
       if (!supabase) {
@@ -7509,16 +7892,26 @@ async function startServer() {
 
       const booking = loaded.booking;
       const isBookingMentor = booking.mentor_id === userId;
+      const isBookingSeeker = booking.seeker_id === userId;
 
-      // Only the booking's mentor or an admin may end the session.
-      // A seeker hitting this is refused with the same 404 as a non-existent
-      // booking so that role probing is not possible.
-      if (!isAdmin && !isBookingMentor) {
+      // Either the booking's mentor, the booking's seeker, or an admin may end
+      // the session. Seekers were previously refused with a 404; the room is a
+      // shared space and either participant should be able to conclude it
+      // (for example when the mentor has gone offline). The refusal is still
+      // indistinguishable from a non-existent booking so role probing is not
+      // possible.
+      if (!isAdmin && !isBookingMentor && !isBookingSeeker) {
         return res.status(404).json({
           success: false,
           error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' },
         });
       }
+
+      const endedByRole: 'mentor' | 'seeker' | 'admin' = isAdmin
+        ? 'admin'
+        : isBookingMentor
+          ? 'mentor'
+          : 'seeker';
 
       if (booking.status === 'COMPLETED') {
         return res.json({
@@ -7553,10 +7946,16 @@ async function startServer() {
       const nowIso = new Date().toISOString();
       const { data: updated, error: updateErr } = await supabase
         .from('bookings')
-        .update({ status: 'COMPLETED', actual_ended_at: nowIso, updated_at: nowIso })
+        .update({
+          status: 'COMPLETED',
+          actual_ended_at: nowIso,
+          ended_by_role: endedByRole,
+          end_reason: endReason,
+          updated_at: nowIso,
+        })
         .eq('id', booking.id)
         .eq('status', 'CONFIRMED')
-        .select('id, booking_code, status, updated_at')
+        .select('id, booking_code, status, updated_at, ended_by_role, actual_ended_at')
         .maybeSingle();
 
       if (updateErr) throw updateErr;
@@ -7569,11 +7968,18 @@ async function startServer() {
         });
       }
 
-      // Notify the seeker that the session has ended.
+      // Notify the OTHER participant that the session has ended. The caller is
+      // already aware (they clicked the button), so the notification targets the
+      // counterparty: a mentor ending notifies the seeker, a seeker ending
+      // notifies the mentor.
+      const counterpartyId = endedByRole === 'mentor' ? booking.seeker_id : booking.mentor_id;
+      const counterpartyLabel = endedByRole === 'mentor' ? 'Seeker' : 'Mentor';
+      const endedByLabel = endedByRole === 'mentor' ? 'Your mentor' : 'You';
+
       await supabase.from('notifications').insert({
-        user_id: booking.seeker_id,
+        user_id: counterpartyId,
         title: 'Session Ended',
-        message: `Your mentor has ended session ${booking.booking_code}. The meeting link has been deactivated.`,
+        message: `${endedByLabel} has ended session ${booking.booking_code}. The meeting link has been deactivated.`,
         type: 'SESSION',
         event_type: 'SESSION_COMPLETED',
         entity_type: 'booking',
@@ -7587,12 +7993,23 @@ async function startServer() {
         entityType: 'booking',
         entityId: booking.id,
         requestId: req.requestId,
-        metadata: { bookingCode: booking.booking_code },
+        metadata: {
+          bookingCode: booking.booking_code,
+          endedByRole,
+          endReason: endReason ?? null,
+        },
       });
 
       return res.json({
         success: true,
-        booking: updated,
+        booking: {
+          id: updated.id,
+          booking_code: updated.booking_code,
+          status: updated.status,
+          ended_by_role: updated.ended_by_role,
+          actual_ended_at: updated.actual_ended_at,
+        },
+        endedByRole,
         message: 'Booking marked as COMPLETED.',
       });
     } catch (err: any) {

@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { CreditCard, CheckCircle2, XCircle, FileImage, ShieldCheck, AlertCircle, Eye, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ShortId } from '@/src/components/shared/ShortId';
+import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
@@ -39,6 +40,7 @@ const formatSubmittedAt = (value: string | null): string => {
 };
 
 export const AdminPaymentsPage: React.FC = () => {
+  const { currentPath } = useNavigation();
   const [selectedPayment, setSelectedPayment] = useState<PaymentItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
@@ -46,6 +48,18 @@ export const AdminPaymentsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
+
+  /**
+   * The payment id an admin notification was written for, taken from the URL.
+   *
+   * This is how "Review Payment" lands on the exact record the event concerns
+   * instead of dropping the operator at the top of an undifferentiated queue. It
+   * is a real id from a real notification row; nothing here is a default.
+   */
+  const focusedPaymentId = useMemo(() => {
+    const query = currentPath.includes('?') ? currentPath.split('?')[1] : '';
+    return new URLSearchParams(query).get('paymentId');
+  }, [currentPath]);
 
   const fetchPayments = useCallback(async () => {
     setLoading(true);
@@ -65,6 +79,17 @@ export const AdminPaymentsPage: React.FC = () => {
   useEffect(() => {
     fetchPayments();
   }, [fetchPayments]);
+
+  // Open the referenced record once the real rows have arrived. Matching is by
+  // id against the fetched payments, so the review modal can only ever show a
+  // payment that actually exists in the database.
+  useEffect(() => {
+    if (!focusedPaymentId || loading) return;
+    const match = payments.find((p) => p.id === focusedPaymentId);
+    if (!match) return;
+    setSelectedPayment(match);
+    setIsRejecting(false);
+  }, [focusedPaymentId, payments, loading]);
 
   const handleApprove = async (id: string) => {
     setSelectedPayment(null);

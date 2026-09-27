@@ -54,11 +54,11 @@ return (
           </Button>
           <Button
             variant="outline"
-            size="md"
-            onClick={() => navigate('/seeker')}
+            size="md" 
+            onClick={() => navigate('/')}
             className="text-xs w-full sm:w-auto"
           >
-            Back to Public Home
+            Back to Home 
           </Button>
         </div>
       </div>
@@ -95,10 +95,10 @@ return (
           <Button
             variant="outline"
             size="md"
-            onClick={() => navigate('/seeker')}
+            onClick={() => navigate('/mentor')}
             className="text-xs w-full sm:w-auto"
           >
-            Back to Seeker View
+            Reload
           </Button>
         </div>
       </div>

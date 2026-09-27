@@ -175,7 +175,7 @@ export const MentorNotificationsPage: React.FC = () => {
           description={
             statusFilter === 'unread'
               ? 'You have completed all pending action items. Great job staying on top of your schedule!'
-              : 'You have no alerts matching your active filter. Use the event simulator above to test specific scenarios.'
+              : 'You have no alerts matching your active filter. Try a different status or category.'
           }
         />
       ) : (

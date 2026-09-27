@@ -199,7 +199,9 @@ export async function requestQrUploadTicket(file: File): Promise<QrUploadTicket>
   const res = await apiFetch('/api/admin/platform-config/qr-upload-url', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name, fileType: file.type, fileSize: file.size }),
+    // Only the type and size are sent: the server derives the object key itself,
+    // so the client's filename is never transmitted or trusted.
+    body: JSON.stringify({ fileType: file.type, fileSize: file.size }),
   });
   if (!res.ok) throw new Error(await readApiError(res));
 

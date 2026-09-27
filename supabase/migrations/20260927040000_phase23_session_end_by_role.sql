@@ -17,11 +17,25 @@ ALTER TABLE public.bookings
   ADD COLUMN IF NOT EXISTS ended_by_role text;
 
 -- Constrain the column to the three roles that may ever end a session.
--- `CHECK` is added with a name so a re-run of this migration cannot fail on
--- an already-existing constraint.
+-- Check if constraint exists first to allow idempotent migration runs.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'bookings_ended_by_role_check'
+    AND conrelid = 'public.bookings'::regclass
+  ) THEN
+    ALTER TABLE public.bookings
+      ADD CONSTRAINT bookings_ended_by_role_check
+      CHECK (ended_by_role IS NULL OR ended_by_role IN ('mentor', 'seeker', 'admin'));
+  END IF;
+END $$;
+
+-- Free-text reason recorded when a participant ends a session early. Kept
+-- nullable and bounded so it is an optional audit field rather than a
+-- required input.
 ALTER TABLE public.bookings
-  ADD CONSTRAINT bookings_ended_by_role_check
-  CHECK (ended_by_role IS NULL OR ended_by_role IN ('mentor', 'seeker', 'admin'));
+  ADD COLUMN IF NOT EXISTS end_reason text;
 
 -- Index to accelerate "who ended this session" lookups for admin reporting.
 CREATE INDEX IF NOT EXISTS idx_bookings_ended_by_role

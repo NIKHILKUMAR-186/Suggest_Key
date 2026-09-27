@@ -1,11 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { AlertTriangle, Loader2, Clock } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
+import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { MentorBookingCard } from '@/src/components/mentor/MentorBookingCard';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchMentorBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import {
+  isBookingUpcoming,
+  resolveSessionLifecycle,
+  secondsUntilAccessOpens,
+  secondsUntilSessionEnd,
+  formatCountdown,
+  type SessionLifecycleState,
+} from '@/src/lib/sessionState';
 
 export const MentorBookingsPage: React.FC = () => {
   const { navigate } = useNavigation();
@@ -17,6 +26,74 @@ export const MentorBookingsPage: React.FC = () => {
 
   const mentorId = user?.id;
 
+  // Server clock reference, sampled once when the ledger first arrives. The list
+  // endpoint reconciles expired CONFIRMED rows to COMPLETED and attaches
+  // `isUpcoming` / `sessionState` to every booking, so grouping prefers those
+  // server fields; the sample is only the fallback when they are absent.
+  const serverNowMsRef = useRef<number | null>(null);
+  const serverNowMs = (): number => serverNowMsRef.current ?? Date.now();
+
+  // Display-only ticking clock so the "Starts in" / "Access opens in" hint and
+  // the IN_PROGRESS live indicator advance without a manual refresh. It never
+  // drives tab grouping, which is server-authoritative.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const resolveUpcoming = (b: EnrichedBookingRecord): boolean => {
+    const server = (b as EnrichedBookingRecord & { isUpcoming?: boolean }).isUpcoming;
+    if (typeof server === 'boolean') return server;
+    return isBookingUpcoming(b, serverNowMs());
+  };
+
+  const resolveLifecycleLive = (b: EnrichedBookingRecord): SessionLifecycleState => {
+    const inline = (b as EnrichedBookingRecord & { sessionState?: SessionLifecycleState }).sessionState;
+    if (inline !== undefined && inline !== null) return inline;
+    return resolveSessionLifecycle(b, nowMs);
+  };
+
+  const renderSessionHint = (b: EnrichedBookingRecord): React.ReactNode => {
+    const state = resolveLifecycleLive(b);
+    if (state === 'IN_PROGRESS') {
+      const endsIn = formatCountdown(Math.max(0, Math.ceil(secondsUntilSessionEnd(b, nowMs))));
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-success)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-shell-success)] animate-pulse" />
+          ● LIVE · Ends in {endsIn}
+        </span>
+      );
+    }
+    if (state === 'SCHEDULED') {
+      const opensIn = formatCountdown(Math.max(0, Math.ceil(secondsUntilAccessOpens(b, nowMs))));
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-warning)]">
+          <Clock className="h-3 w-3" />
+          Access opens in {opensIn}
+        </span>
+      );
+    }
+    if (state === 'ACCESS_OPEN') {
+      const startMs = new Date(b.start_time).getTime();
+      const startsIn = formatCountdown(Math.max(0, Math.ceil((startMs - nowMs) / 1000)));
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-info)]">
+          <Clock className="h-3 w-3" />
+          Starts in {startsIn}
+        </span>
+      );
+    }
+    if (state === 'COMPLETED') {
+      return (
+        <Badge variant="outline" className="text-xs text-[var(--color-shell-text-muted)] border-[var(--color-shell-border-strong)]">
+          Meeting Access Closed
+        </Badge>
+      );
+    }
+    return null;
+  };
+
   const loadData = useCallback(async () => {
     if (!mentorId) return;
     setLoading(true);
@@ -25,6 +102,7 @@ export const MentorBookingsPage: React.FC = () => {
       // No status filter: every tab is derived from the same live booking rows
       // so a booking can never be in one tab and missing from another.
       const data = await fetchMentorBookings(mentorId);
+      if (serverNowMsRef.current === null) serverNowMsRef.current = Date.now();
       setBookings(data);
     } catch (err) {
       // A failed load is NOT an empty ledger. Reporting it as "no bookings"
@@ -48,10 +126,13 @@ export const MentorBookingsPage: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  // Tab filtering
+  // Tab filtering. Upcoming/Completed are server-resolved (isUpcoming with the
+  // isBookingUpcoming fallback); an expired CONFIRMED row is never "upcoming".
   const pendingBookings = bookings.filter((b) => b.status === 'MENTOR_PENDING');
-  const upcomingBookings = bookings.filter((b) => b.status === 'CONFIRMED');
-  const completedBookings = bookings.filter((b) => b.status === 'COMPLETED');
+  const upcomingBookings = bookings.filter((b) => b.status === 'CONFIRMED' && resolveUpcoming(b));
+  const completedBookings = bookings.filter(
+    (b) => b.status === 'COMPLETED' || (b.status === 'CONFIRMED' && !resolveUpcoming(b))
+  );
   const cancelledBookings = bookings.filter((b) => b.status === 'CANCELLED' || b.status === 'REJECTED');
 
   const getFilteredBookings = () => {
@@ -186,20 +267,29 @@ export const MentorBookingsPage: React.FC = () => {
             onAction={activeTab === 'pending' ? () => navigate('/mentor/availability') : undefined}
           />
         ) : (
-          currentList.map((booking) => (
-            <MentorBookingCard
-              key={booking.id}
-              booking={booking}
-              onAction={(b) => {
-                if (b.status === 'COMPLETED') {
-                  navigate(`/mentor/workspace?bookingId=${b.id}`);
-                  return;
-                }
-                navigate(`/mentor/booking-detail?bookingId=${b.id}`);
-              }}
-              onSecondaryAction={(b) => navigate(`/mentor/booking-detail?bookingId=${b.id}`)}
-            />
-          ))
+          currentList.map((booking) => {
+            const hint = renderSessionHint(booking);
+            return (
+              <div key={booking.id}>
+                {hint ? (
+                  <div className="px-1 pb-1 flex items-center gap-1.5">
+                    {hint}
+                  </div>
+                ) : null}
+                <MentorBookingCard
+                  booking={booking}
+                  onAction={(b) => {
+                    if (b.status === 'COMPLETED' || resolveLifecycleLive(b) === 'COMPLETED') {
+                      navigate(`/mentor/workspace?bookingId=${b.id}`);
+                      return;
+                    }
+                    navigate(`/mentor/booking-detail?bookingId=${b.id}`);
+                  }}
+                  onSecondaryAction={(b) => navigate(`/mentor/booking-detail?bookingId=${b.id}`)}
+                />
+              </div>
+            );
+          })
         )}
       </div>
     </div>

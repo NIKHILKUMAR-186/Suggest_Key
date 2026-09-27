@@ -35,6 +35,7 @@ import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingServ
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { fetchPaymentState, submitPaymentProof } from '@/src/lib/paymentService';
+import { fetchPaymentConfiguration, type PublicPaymentConfiguration } from '@/src/lib/platformConfig';
 import {
   PAYMENT_PROOF_MIME_TYPES,
   formatFileSize,
@@ -59,6 +60,17 @@ export const SeekerPaymentPage: React.FC = () => {
   const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [payment, setPayment] = useState<Payment | null>(null);
   const [holdExpiresAt, setHoldExpiresAt] = useState<string | null>(null);
+
+  /**
+   * Where to actually pay, as configured by an admin in the admin console.
+   *
+   * There is no fallback UPI id, stock QR or canned instruction in this file: if
+   * the platform has not been configured, the payment form is not shown at all.
+   * Showing a plausible-looking placeholder would let a seeker transfer money to
+   * an address nobody controls.
+   */
+  const [paymentDetails, setPaymentDetails] = useState<PublicPaymentConfiguration | null>(null);
+  const [paymentDetailsError, setPaymentDetailsError] = useState<string | null>(null);
 
   const [transactionRef, setTransactionRef] = useState('');
   const [referenceError, setReferenceError] = useState<string | null>(null);
@@ -113,6 +125,30 @@ export const SeekerPaymentPage: React.FC = () => {
     loadBooking();
   }, [loadBooking]);
 
+  // Loaded once per page, independently of the booking: these are the platform's
+  // current payment instructions, not anything about this booking.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const config = await fetchPaymentConfiguration();
+        if (!cancelled) {
+          setPaymentDetails(config);
+          setPaymentDetailsError(null);
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        setPaymentDetails(null);
+        setPaymentDetailsError(
+          toUserMessage(err, 'Payment details are temporarily unavailable. Please try again shortly.'),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!holdExpiresAt || payment) return;
 
@@ -140,7 +176,10 @@ export const SeekerPaymentPage: React.FC = () => {
   }, [holdExpiresAt, payment, loadBooking]);
 
   const handleCopyUpi = () => {
-    navigator.clipboard.writeText('suggestkey@upi');
+    // Copies whatever the admin actually configured. With no configured UPI id
+    // the form is not rendered, so this can never copy a placeholder.
+    if (!paymentDetails?.upiId) return;
+    navigator.clipboard.writeText(paymentDetails.upiId);
     setCopiedUpi(true);
     setTimeout(() => setCopiedUpi(false), 2000);
   };
@@ -288,6 +327,12 @@ export const SeekerPaymentPage: React.FC = () => {
   const isCancelled = booking.status === 'CANCELLED' || booking.status === 'REJECTED';
   const canShowPaymentForm = (isPaymentPending || isPendingVerification) && !payment && !isExpired;
 
+  // Payment is only offered once the platform has configured WHERE to pay. A
+  // UPI id is the minimum: it is what the seeker transfers to, and it is enough
+  // on its own. The QR is an additional convenience rendered only when one is
+  // configured, so a UPI-only setup still works rather than being blocked.
+  const hasPaymentDestination = Boolean(paymentDetails?.upiId);
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <button
@@ -312,9 +357,15 @@ export const SeekerPaymentPage: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <BookingSummaryCard booking={booking} />
 
-          {canShowPaymentForm ? (
+          {paymentDetailsError && canShowPaymentForm ? (
+            <ErrorState
+              title="Payment Details Unavailable"
+              message={paymentDetailsError}
+            />
+          ) : canShowPaymentForm && hasPaymentDestination ? (
             <PaymentFormCard
               booking={booking}
+              paymentDetails={paymentDetails!}
               holdExpiresAt={holdExpiresAt}
               countdownSeconds={countdownSeconds}
               isExpired={isExpired}
@@ -337,6 +388,8 @@ export const SeekerPaymentPage: React.FC = () => {
               handleCopyUpi={handleCopyUpi}
               handleSubmit={handleSubmit}
             />
+          ) : canShowPaymentForm ? (
+            <PaymentUnavailableCard onBackToBookings={() => navigate('/seeker/bookings')} />
           ) : isExpired && isPaymentPending && !payment ? (
             <ExpiredStateCard onFindAnother={() => navigate('/seeker')} onBackToBookings={() => navigate('/seeker/bookings')} />
           ) : payment ? (
@@ -442,6 +495,7 @@ const BookingSummaryCard: React.FC<BookingSummaryCardProps> = ({ booking }) => {
 
 interface PaymentFormCardProps {
   booking: EnrichedBookingRecord;
+  paymentDetails: PublicPaymentConfiguration;
   holdExpiresAt: string | null;
   countdownSeconds: number;
   isExpired: boolean;
@@ -467,6 +521,7 @@ interface PaymentFormCardProps {
 
 const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
   booking,
+  paymentDetails,
   holdExpiresAt,
   countdownSeconds,
   isExpired,
@@ -506,14 +561,25 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
         </h2>
 
         <div className="flex flex-col items-center justify-center p-4 border border-[var(--color-shell-border)] rounded-xl bg-[var(--color-shell-surface-elevated)] text-center space-y-3">
-          <div className="h-36 w-36 bg-[var(--color-shell-surface)] border border-zinc-300 dark:border-zinc-600 rounded-xl flex items-center justify-center shadow-xs relative overflow-hidden">
-            <QrCode className="h-24 w-24 text-[var(--color-shell-text)]" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-shell-surface)]/80 to-transparent pointer-events-none" />
-          </div>
+          {/* The QR is the image an admin uploaded, served from Supabase Storage.
+              There is no decorative stand-in: this branch only renders when a
+              real QR is configured. */}
+          {paymentDetails.qrImageUrl && (
+            <img
+              src={paymentDetails.qrImageUrl}
+              alt="Payment QR code — scan with any UPI app"
+              className="h-36 w-36 rounded-xl border border-[var(--color-shell-border)] bg-white object-contain p-1"
+            />
+          )}
           <span className="text-xs font-bold text-[var(--color-shell-text)]">Scan via Any UPI App</span>
+          {paymentDetails.accountName && (
+            <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
+              Payee: {paymentDetails.accountName}
+            </span>
+          )}
           <div className="flex items-center gap-1.5">
-            <span className="text-xs font-mono text-[var(--color-shell-text-muted)] bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] px-2.5 py-1 rounded-lg">
-              suggestkey@upi
+            <span className="text-xs font-mono text-[var(--color-shell-text-muted)] bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] px-2.5 py-1 rounded-lg break-all">
+              {paymentDetails.upiId}
             </span>
             <button
               onClick={handleCopyUpi}
@@ -525,6 +591,16 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
             </button>
           </div>
         </div>
+
+        {paymentDetails.instructions && (
+          <div
+            role="note"
+            className="flex items-start gap-2 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3 text-[11px] leading-relaxed text-[var(--color-shell-text-muted)]"
+          >
+            <HelpCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+            <span className="whitespace-pre-wrap">{paymentDetails.instructions}</span>
+          </div>
+        )}
 
         <PaymentStepsCard />
 
@@ -770,6 +846,33 @@ interface ExpiredStateCardProps {
   onFindAnother: () => void;
   onBackToBookings: () => void;
 }
+
+/**
+ * Shown instead of the payment form when the platform has no configured payment
+ * destination.
+ *
+ * There is deliberately no form here: without a real UPI id a seeker has no way
+ * to pay, and offering a form with a placeholder address would invite a transfer
+ * to an account nobody controls. The hold still expires normally, so this is a
+ * temporary state the admin resolves in the console.
+ */
+const PaymentUnavailableCard: React.FC<{ onBackToBookings: () => void }> = ({ onBackToBookings }) => (
+  <div className="flex flex-col items-center justify-center rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] p-10 text-center space-y-4">
+    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-shell-warning)]/10 text-[var(--color-shell-warning)]">
+      <AlertCircle className="h-8 w-8" />
+    </div>
+    <div>
+      <h3 className="text-lg font-bold text-[var(--color-shell-text)]">Payment Not Yet Available</h3>
+      <p className="text-sm text-[var(--color-shell-text-muted)] mt-1 max-w-sm mx-auto">
+        This booking is waiting for payment, but the platform has not finished setting up its payment details yet.
+        Your slot is still reserved. Please check back shortly or contact support.
+      </p>
+    </div>
+    <Button onClick={onBackToBookings} variant="outline" className="w-full sm:w-auto">
+      Back to My Bookings
+    </Button>
+  </div>
+);
 
 const ExpiredStateCard: React.FC<ExpiredStateCardProps> = ({ onFindAnother, onBackToBookings }) => (
   <div className="flex flex-col items-center justify-center rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-10 text-center space-y-4">

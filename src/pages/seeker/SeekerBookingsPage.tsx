@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard, RotateCcw, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard, RotateCcw, Trash2, Timer } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -9,6 +9,16 @@ import { useAuth } from '@/src/context/AuthContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { usePaymentSync } from '@/src/hooks/seeker/usePaymentSync';
+import {
+  isBookingUpcoming,
+  isAccessGranted,
+  resolveSessionLifecycle,
+  formatSessionDate,
+  formatClockTime,
+  formatZoneLabel,
+  sessionDurationMinutes,
+  type SessionLifecycleState,
+} from '@/src/lib/sessionState';
 import type { BookingStatus, Payment } from '@/src/types/database';
 import { APP_CONFIG } from '@/src/config/app';
 
@@ -67,6 +77,29 @@ export const SeekerBookingsPage: React.FC = () => {
 
   const seekerId = user?.id;
 
+  // Authoritative server clock. The list endpoint reconciles expired CONFIRMED
+  // rows to COMPLETED and attaches `isUpcoming` / `sessionState` to every
+  // booking, so grouping never reads `status` alone. The server clock is only
+  // consulted by the isBookingUpcoming fallback when those server fields are
+  // absent (older cached shape / dev fixture).
+  const serverNowMsRef = useRef<number | null>(null);
+  const serverNowMs = (): number => serverNowMsRef.current ?? Date.now();
+
+  const resolveUpcoming = (b: EnrichedBookingRecord): boolean => {
+    const server = (b as EnrichedBookingRecord & { isUpcoming?: boolean }).isUpcoming;
+    if (typeof server === 'boolean') return server;
+    return isBookingUpcoming(b, serverNowMs());
+  };
+
+  const resolveLifecycle = (b: EnrichedBookingRecord): SessionLifecycleState => {
+    const inline = (b as EnrichedBookingRecord & { sessionState?: SessionLifecycleState }).sessionState;
+    if (inline !== undefined && inline !== null) return inline;
+    return resolveSessionLifecycle(b, serverNowMs());
+  };
+
+  const isCancelledBooking = (b: EnrichedBookingRecord): boolean =>
+    b.status === 'CANCELLED' || b.status === 'REJECTED';
+
   // A silent refetch used by the payment sync: it must not blank the list or
   // raise the skeleton, otherwise an admin's approval would make the whole
   // page flash while the seeker is reading it.
@@ -74,6 +107,7 @@ export const SeekerBookingsPage: React.FC = () => {
     if (!seekerId) return;
     try {
       const data = await fetchSeekerBookings(seekerId);
+      if (serverNowMsRef.current === null) serverNowMsRef.current = Date.now();
       setBookings(data);
       setError(null);
     } catch {
@@ -88,6 +122,7 @@ export const SeekerBookingsPage: React.FC = () => {
     setError(null);
     try {
       const data = await fetchSeekerBookings(seekerId);
+      if (serverNowMsRef.current === null) serverNowMsRef.current = Date.now();
       setBookings(data);
     } catch (err: any) {
       setError(toUserMessage(err, 'Failed to load bookings.'));
@@ -104,22 +139,13 @@ export const SeekerBookingsPage: React.FC = () => {
   }, [loadBookings]);
 
   const filteredBookings = bookings.filter((b) => {
-    if (activeTab === 'upcoming') {
-      return ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(b.status);
-    }
-    if (activeTab === 'history') {
-      return b.status === 'COMPLETED';
-    }
-    if (activeTab === 'cancelled') {
-      return b.status === 'CANCELLED' || b.status === 'REJECTED';
-    }
-    return false;
+    if (activeTab === 'cancelled') return isCancelledBooking(b);
+    if (activeTab === 'history') return !isCancelledBooking(b) && !resolveUpcoming(b);
+    return !isCancelledBooking(b) && resolveUpcoming(b);
   });
 
-  const upcomingCount = bookings.filter((b) =>
-    ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(b.status)
-  ).length;
-  const cancelledCount = bookings.filter((b) => b.status === 'CANCELLED' || b.status === 'REJECTED').length;
+  const upcomingCount = bookings.filter((b) => !isCancelledBooking(b) && resolveUpcoming(b)).length;
+  const cancelledCount = bookings.filter(isCancelledBooking).length;
 
   const getBookingStatusBadge = (status: BookingStatus) => {
     const display = getStatusDisplay(status);
@@ -219,9 +245,11 @@ export const SeekerBookingsPage: React.FC = () => {
         >
           {activeTab === 'upcoming' &&
             filteredBookings.map((booking) => {
-              const minutesUntilStart = Math.max(0, Math.floor((new Date(booking.start_time).getTime() - Date.now()) / (1000 * 60)));
+              const minutesUntilStart = Math.max(0, Math.floor((new Date(booking.start_time).getTime() - serverNowMs()) / (1000 * 60)));
               const canCancelNormally = minutesUntilStart >= APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES &&
                 ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(booking.status);
+              const sessionState = resolveLifecycle(booking);
+              const canJoinNow = isAccessGranted(sessionState);
               return (
                 <motion.div
                   key={booking.id}
@@ -235,7 +263,7 @@ export const SeekerBookingsPage: React.FC = () => {
                         Booking #{booking.booking_code}
                       </span>
                     </div>
-                    {booking.status === 'CONFIRMED' && (
+                    {booking.status === 'CONFIRMED' && !canJoinNow && (
                       <span className="text-xs font-semibold text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] border border-[var(--color-shell-warning)]/20 px-2.5 py-1 rounded-full">
                         Meeting unlocks at T-5 minutes
                       </span>
@@ -262,26 +290,13 @@ export const SeekerBookingsPage: React.FC = () => {
                       <div className="flex items-center gap-3 text-xs text-[var(--color-shell-text-muted)] mt-2 font-medium flex-wrap">
                         <span className="flex items-center gap-1.5">
                           <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
-                          {new Date(booking.start_time).toLocaleDateString('en-IN', {
-                            weekday: 'short',
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                          })}
+                          {formatSessionDate(booking.start_time, booking.seeker_timezone)}
                         </span>
                         <span>·</span>
                         <span className="flex items-center gap-1.5">
                           <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
-                          {new Date(booking.start_time).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}{' '}
-                          –{' '}
-                          {new Date(booking.end_time).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}{' '}
-                          (IST)
+                          {formatClockTime(booking.start_time, booking.seeker_timezone)} – {formatClockTime(booking.end_time, booking.seeker_timezone)}{' '}
+                          {formatZoneLabel(booking.seeker_timezone)}
                         </span>
                       </div>
                     </div>
@@ -320,7 +335,7 @@ export const SeekerBookingsPage: React.FC = () => {
                           <span>Cancel</span>
                         </Button>
                       )}
-                      {booking.status === 'CONFIRMED' && (
+                      {canJoinNow && (
                         <Button
                           onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
                           size="sm"
@@ -337,49 +352,72 @@ export const SeekerBookingsPage: React.FC = () => {
             })}
 
           {activeTab === 'history' &&
-            filteredBookings.map((booking) => (
-              <motion.div
-                key={booking.id}
-                variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
-              >
-                <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
-                  <div className="flex items-center gap-2">
-                    {getBookingStatusBadge(booking.status)}
-                    <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
-                      {new Date(booking.start_time).toLocaleDateString('en-IN', {
-                        day: 'numeric',
-                        month: 'short',
-                        year: 'numeric',
-                      })}
+            filteredBookings.map((booking) => {
+              const duration = sessionDurationMinutes(booking);
+              const durationLabel = duration >= 60
+                ? `${Math.floor(duration / 60)}h ${duration % 60}m`
+                : `${duration} Minutes`;
+              return (
+                <motion.div
+                  key={booking.id}
+                  variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
+                  className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
+                >
+                  <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
+                    <div className="flex items-center gap-2">
+                      {resolveLifecycle(booking) === 'COMPLETED' ? (
+                        <Badge variant="secondary" className="text-[10px] font-bold">Completed</Badge>
+                      ) : (
+                        getBookingStatusBadge(booking.status)
+                      )}
+                      <span className="text-xs text-[var(--color-shell-text-subtle)] font-mono">
+                        {formatSessionDate(booking.start_time, booking.seeker_timezone)}
+                      </span>
+                    </div>
+                    <span className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                      <FileText className="h-3.5 w-3.5" /> Workspace Notes Available
                     </span>
                   </div>
-                  <span className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <FileText className="h-3.5 w-3.5" /> Workspace Notes Available
-                  </span>
-                </div>
 
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-bold text-[var(--color-shell-text)]">
-                      {booking.gig?.title || '1:1 Guidance Session'}
-                    </h2>
-                    <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
-                      Mentor: {booking.mentor?.full_name || 'Mentor'} ·{' '}
-                      {booking.segment?.name || 'N/A'}
-                    </p>
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h2 className="text-base font-bold text-[var(--color-shell-text)]">
+                        {booking.gig?.title || '1:1 Guidance Session'}
+                      </h2>
+                      <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
+                        Mentor: {booking.mentor?.full_name || 'Mentor'} · Segment:{' '}
+                        {booking.segment?.name || 'N/A'}
+                      </p>
+                      <div className="flex items-center gap-3 text-xs text-[var(--color-shell-text-muted)] mt-2 font-medium flex-wrap">
+                        <span className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                          {formatSessionDate(booking.start_time, booking.seeker_timezone)}
+                        </span>
+                        <span>·</span>
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                          {formatClockTime(booking.start_time, booking.seeker_timezone)} – {formatClockTime(booking.end_time, booking.seeker_timezone)}{' '}
+                          {formatZoneLabel(booking.seeker_timezone)}
+                        </span>
+                        <span>·</span>
+                        <span className="flex items-center gap-1.5">
+                          <Timer className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                          {durationLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={() => navigate(`/seeker/workspace?bookingId=${booking.id}`)}
+                      size="sm"
+                      className="gap-1.5 text-xs font-semibold"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      <span>Open Session Workspace</span>
+                    </Button>
                   </div>
-                  <Button
-                    onClick={() => navigate(`/seeker/workspace?bookingId=${booking.id}`)}
-                    size="sm"
-                    className="gap-1.5 text-xs font-semibold"
-                  >
-                    <FileText className="h-3.5 w-3.5" />
-                    <span>Open Session Workspace</span>
-                  </Button>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
 
           {activeTab === 'cancelled' &&
             filteredBookings.map((booking) => (
