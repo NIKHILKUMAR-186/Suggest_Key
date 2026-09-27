@@ -208,7 +208,7 @@ export const LoginPage: React.FC = () => {
       </div>
 
       {/* Development-only test personas */}
-      {import.meta.env?.DEV && (
+      {/* {import.meta.env?.DEV && (
         <div className="mt-6 rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase tracking-wider">Development Only</span>
@@ -248,7 +248,7 @@ export const LoginPage: React.FC = () => {
             ))}
           </div>
         </div>
-      )}
+      )} */}
     </AuthLayout>
   );
 };
