@@ -48,7 +48,7 @@ Status: MVP
 6. Failed validation creates no partial booking.
 
 ### Hold
-- Duration: 15 minutes.
+- Duration: 5 minutes (`platform_config.hold_duration_minutes`).
 - ACTIVE → EXPIRED or RELEASED.
 - Expiration is server-side.
 - Expired holds release slots.

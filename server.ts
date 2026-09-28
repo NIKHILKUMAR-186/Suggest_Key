@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type Response } from 'express';
 import path from 'path';
 import { timingSafeEqual, randomUUID } from 'crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
@@ -55,6 +55,16 @@ import {
   normaliseTransactionReference,
   validateProofFile,
 } from './src/lib/paymentProof';
+import { isRazorpayEnabled, getRazorpayKeyId } from './src/lib/razorpayConfig';
+import { extractWebhookSignature } from './src/lib/razorpaySignature';
+import {
+  createRazorpayGatewayClient,
+  runCreateRazorpayOrder,
+  runRazorpayWebhook,
+  runVerifyRazorpayPayment,
+  type RazorpayFailure,
+} from './src/lib/razorpayService';
+import { createSupabaseRazorpayStore } from './src/lib/razorpayStore';
 import {
   DASHBOARD_RANGES,
   DEFAULT_RANGE,
@@ -112,7 +122,7 @@ import {
   validateAccountStatusAction,
   type AccountStatusAction,
 } from './src/lib/adminAccountControl';
-import { APP_CONFIG } from './src/config/app';
+import { APP_CONFIG, HOLDOUT_MINUTES } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
 import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
@@ -244,7 +254,7 @@ interface PaymentNotificationInput {
   userIds: string[];
   title: string;
   message: string;
-  type: 'BOOKING' | 'PAYMENT' | 'SESSION' | 'WORKSPACE' | 'SYSTEM';
+  type: 'BOOKING' | 'PAYMENT' | 'SESSION' | 'WORKSPACE' | 'SYSTEM' | 'REMINDER' | 'ADMIN';
   eventType: string;
   entityType: 'booking' | 'payment' | string;
   entityId: string;
@@ -369,6 +379,59 @@ async function notifyPaymentReviewed(
     });
   } catch (notifyErr) {
     console.error('Failed to notify seeker of payment review outcome:', logSanitizer.safeMessage(notifyErr));
+  }
+}
+
+/**
+ * Tells the mentor their booking is paid and awaiting their confirmation.
+ *
+ * Only ever called by the caller that WON the conditional
+ * `PAYMENT_PENDING -> MENTOR_PENDING` update, which is what makes a duplicate
+ * notification impossible: the webhook, the browser verification, and a retried
+ * webhook all contend for that single update, and only the winner reaches this
+ * function. The notification therefore goes out at most once per booking, and
+ * never for a failed or uncaptured payment.
+ *
+ * `notifications.user_id` is NOT NULL, so the existing per-recipient insert
+ * helper is used rather than a single row.
+ */
+async function notifyMentorOfPaymentCaptured(
+  admin: SupabaseClient,
+  input: { mentorId: string; bookingId: string; paymentId: string; amountInr: number; source: 'razorpay' },
+): Promise<void> {
+  try {
+    const { data: booking, error: bookingErr } = await admin
+      .from('bookings')
+      .select('id, booking_code, mentor_id, start_time')
+      .eq('id', input.bookingId)
+      .maybeSingle();
+    if (bookingErr) throw bookingErr;
+    if (!booking) return;
+
+    const amountLabel = `₹${Number(input.amountInr ?? 0).toLocaleString('en-IN')}`;
+    const codeSuffix = booking.booking_code ? ` for booking ${booking.booking_code}` : '';
+
+    await insertPaymentNotifications(admin, {
+      userIds: [input.mentorId],
+      title: 'New paid booking',
+      message: `Payment received${codeSuffix} (${amountLabel}). Please confirm the session and add the meeting link.`,
+      type: 'BOOKING',
+      eventType: 'NEW_BOOKING',
+      entityType: 'booking',
+      entityId: input.bookingId,
+      link: '/mentor/bookings',
+      metadata: {
+        bookingId: input.bookingId,
+        bookingCode: booking.booking_code,
+        paymentId: input.paymentId,
+        amountInr: input.amountInr,
+        source: input.source,
+      },
+    });
+  } catch (notifyErr) {
+    // The payment is already durably confirmed, so a failed notification must
+    // never be reported as a failed payment. Logged and swallowed.
+    console.error('Failed to notify mentor of captured payment:', logSanitizer.safeMessage(notifyErr));
   }
 }
 
@@ -1239,7 +1302,20 @@ async function startServer() {
   // /payment-proof, so a large base64 image can never reach the body limit
   // again — that was the cause of the 413. The cap is kept small and explicit
   // rather than removed, so a single oversized request is still refused early.
-  app.use(express.json({ limit: '256kb' }));
+  //
+  // `verify` stashes the exact bytes that arrived on the request. The Razorpay
+  // webhook signs those raw bytes, so re-serialising the parsed JSON would
+  // produce different bytes (key order, whitespace, unicode escaping) and the
+  // signature would never verify. Keeping the buffer alongside the parsed body
+  // means only the webhook needs it and every other route is unaffected.
+  app.use(
+    express.json({
+      limit: '256kb',
+      verify: (req, _res, buf) => {
+        (req as AuthRequest).rawBody = Buffer.isBuffer(buf) ? buf : Buffer.from(String(buf));
+      },
+    }),
+  );
 
   // --------------------------------------------------------------------------
   // Request ID + Centralized Request Logging Middleware
@@ -2348,6 +2424,290 @@ async function startServer() {
     }
   });
 
+  // ==========================================================================
+  // RAZORPAY ONLINE PAYMENT (Phase 2 backend)
+  // ==========================================================================
+  //
+  // These three routes sit ALONGSIDE the manual QR flow above, never instead of
+  // it. Every one of them is gated on `RAZORPAY_ENABLED`, so the integration can
+  // ship and be tested while the manual UPI/QR path remains the default until
+  // the Phase 3 frontend is ready. Nothing below changes the existing manual
+  // payment behaviour, the slot hold, or the mentor confirmation flow.
+  //
+  // The business rules live in `src/lib/razorpayService.ts` so they are unit
+  // tested without a database or a network; these handlers only do
+  // authentication, dependency wiring and response shaping.
+
+  /**
+   * Shared failure responder so all three routes report a rejected Razorpay
+   * call identically: the service decides the status and the code, this only
+   * shapes the envelope.
+   */
+  const respondRazorpayFailure = (res: Response, error: RazorpayFailure) =>
+    res.status(error.httpStatus).json({
+      success: false,
+      error: { code: error.code, message: error.message },
+    });
+
+  // POST /api/seeker/bookings/:id/razorpay/order
+  //
+  // Creates a Razorpay order for a booking, or returns the existing one so a
+  // double-tap cannot mint two orders. Everything that decides whether this may
+  // happen lives in the service: ownership, payability, slot validity, hold
+  // validity, and a SERVER-DERIVED amount.
+  //
+  // The key id in the response is public by design (Razorpay's checkout needs
+  // it). The key secret and webhook secret never leave the server.
+  app.post(
+    '/api/seeker/bookings/:id/razorpay/order',
+    requireAuth,
+    requireRole('seeker'),
+    expensiveRouteLimiter,
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({
+          success: false,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' },
+        });
+      }
+
+      try {
+        const result = await runCreateRazorpayOrder({
+          bookingId: req.params.id,
+          callerId: req.auth!.user.id,
+          gateway: createRazorpayGatewayClient(),
+          store: createSupabaseRazorpayStore(admin),
+        });
+
+        if (!result.ok) {
+          auditAction(req.auth, 'razorpay_order_rejected', {
+            entityType: 'booking',
+            entityId: req.params.id,
+            requestId: req.requestId,
+            metadata: { code: result.error.code },
+          });
+          return respondRazorpayFailure(res, result.error);
+        }
+
+        auditAction(req.auth, 'razorpay_order_created', {
+          entityType: 'payment',
+          entityId: result.value.paymentId,
+          requestId: req.requestId,
+          metadata: {
+            bookingId: result.value.bookingId ?? req.params.id,
+            amountInr: result.value.amountInr,
+            reusedExistingOrder: result.value.alreadyCreated,
+          },
+        });
+
+        return res.status(result.value.alreadyCreated ? 200 : 201).json({
+          success: true,
+          // Enough for the browser to open Razorpay checkout. No secret.
+          razorpayOrderId: result.value.razorpayOrderId,
+          razorpayKeyId: result.value.razorpayKeyId,
+          amountInr: result.value.amountInr,
+          currency: result.value.currency,
+          paymentId: result.value.paymentId,
+          message: 'Payment order created.',
+        });
+      } catch (err: any) {
+        return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/razorpay/order' });
+      }
+    },
+  );
+
+  // POST /api/seeker/bookings/:id/razorpay/verify
+  //
+  // The browser reports the payment it just made. The Razorpay signature is
+  // verified SERVER-SIDE against the key secret before anything is written, and
+  // nothing the browser claims about amount, status, user or booking is trusted
+  // — those are only used to look up the real rows, and the amount is compared
+  // against the stored server-derived value.
+  //
+  // This is deliberately safe to call repeatedly: the second call sees the
+  // payment already captured, reports success, and does NOT notify the mentor a
+  // second time.
+  app.post(
+    '/api/seeker/bookings/:id/razorpay/verify',
+    requireAuth,
+    requireRole('seeker'),
+    expensiveRouteLimiter,
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({
+          success: false,
+          error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' },
+        });
+      }
+
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const result = await runVerifyRazorpayPayment({
+          bookingId: req.params.id,
+          callerId: req.auth!.user.id,
+          razorpayOrderId: body.razorpayOrderId,
+          razorpayPaymentId: body.razorpayPaymentId,
+          razorpaySignature: body.razorpaySignature,
+          gateway: createRazorpayGatewayClient(),
+          store: createSupabaseRazorpayStore(admin),
+        });
+
+        if (!result.ok) {
+          // A rejected signature or amount is security-relevant, so it is
+          // audited. Only the code is recorded - never the signature, which is
+          // proof material.
+          auditAction(req.auth, 'razorpay_payment_verification_failed', {
+            entityType: 'booking',
+            entityId: req.params.id,
+            requestId: req.requestId,
+            metadata: { code: result.error.code },
+          });
+          return respondRazorpayFailure(res, result.error);
+        }
+
+        if (result.value.mentorNotified) {
+          const { data: booking } = await admin
+            .from('bookings')
+            .select('mentor_id, amount_inr')
+            .eq('id', result.value.bookingId)
+            .maybeSingle();
+          if (booking) {
+            await notifyMentorOfPaymentCaptured(admin, {
+              mentorId: booking.mentor_id,
+              bookingId: result.value.bookingId,
+              paymentId: result.value.paymentId,
+              amountInr: booking.amount_inr,
+              source: 'razorpay',
+            });
+          }
+        }
+
+        auditAction(req.auth, 'razorpay_payment_verified', {
+          entityType: 'payment',
+          entityId: result.value.paymentId,
+          requestId: req.requestId,
+          metadata: {
+            bookingId: result.value.bookingId,
+            duplicate: result.value.duplicate,
+            mentorNotified: result.value.mentorNotified,
+          },
+        });
+
+        return res.json({
+          success: true,
+          paymentId: result.value.paymentId,
+          bookingId: result.value.bookingId,
+          bookingStatus: result.value.bookingStatus,
+          paymentStatus: result.value.paymentStatus,
+          message: 'Payment confirmed.',
+        });
+      } catch (err: any) {
+        return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/razorpay/verify' });
+      }
+    },
+  );
+
+  // POST /api/webhooks/razorpay
+  //
+  // Unauthenticated by necessity: the caller is Razorpay, not a signed-in user.
+  // The request is authorised entirely by the webhook signature, which is
+  // computed over the RAW body captured by the JSON `verify` hook above. Using
+  // `req.body` here would fail verification, so it is never used for it.
+  //
+  // Responds 200 for anything already seen so Razorpay stops retrying, and only
+  // reports a failure for a genuinely unverifiable request.
+  app.post('/api/webhooks/razorpay', async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Webhook handler is not configured.' } });
+    }
+
+    // The raw bytes, exactly as Razorpay sent them. Never `req.body`.
+    const rawBody = (req as AuthRequest).rawBody?.toString('utf8') ?? '';
+    if (!rawBody) {
+      return res.status(400).json({ success: false, error: { code: 'RAZORPAY_WEBHOOK_EMPTY', message: 'Empty webhook body.' } });
+    }
+
+    try {
+      const result = await runRazorpayWebhook({
+        rawBody,
+        signature: extractWebhookSignature(req.headers as unknown as Record<string, unknown>),
+        gateway: createRazorpayGatewayClient(),
+        store: createSupabaseRazorpayStore(admin),
+      });
+
+      if (!result.ok) {
+        // The event id is safe to log (it is a gateway identifier, not proof
+        // material) but the signature never is.
+        logger.auth('razorpay_webhook_rejected', {
+          requestId: req.requestId,
+          path: '/api/webhooks/razorpay',
+          result: 'failure',
+          reason: result.error.code,
+        });
+        return respondRazorpayFailure(res, result.error);
+      }
+
+      if (result.mentorNotified && result.bookingId) {
+        const { data: booking } = await admin
+          .from('bookings')
+          .select('mentor_id, amount_inr')
+          .eq('id', result.bookingId)
+          .maybeSingle();
+        if (booking) {
+          await notifyMentorOfPaymentCaptured(admin, {
+            mentorId: booking.mentor_id,
+            bookingId: result.bookingId,
+            // The real payment row, so the notification links to it.
+            paymentId: result.paymentId ?? '',
+            amountInr: booking.amount_inr,
+            source: 'razorpay',
+          });
+        }
+      }
+
+      logger.auth('razorpay_webhook_processed', {
+        requestId: req.requestId,
+        path: '/api/webhooks/razorpay',
+        result: 'success',
+        reason: `${result.handled}${result.duplicateEvent ? ':duplicate' : ''}`,
+      });
+
+      return res.json({ success: true, handled: result.handled, duplicate: result.duplicateEvent });
+    } catch (err: any) {
+      // Rethrowing the cause of an unexpected failure lets Razorpay retry, which
+      // is safe because processing is idempotent.
+      logger.auth('razorpay_webhook_error', {
+        requestId: req.requestId,
+        path: '/api/webhooks/razorpay',
+        result: 'failure',
+        reason: 'WEBHOOK_PROCESSING_FAILED',
+      });
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/webhooks/razorpay' });
+    }
+  });
+
+  // GET /api/payments/razorpay/config
+  //
+  // Non-secret availability probe for the frontend. Returns only whether the
+  // gateway is switched on and which key id to use - never a secret, and never
+  // enough to verify a signature. Lets the UI hide the gateway option while
+  // RAZORPAY_ENABLED is off, without the manual flow being affected.
+  app.get('/api/payments/razorpay/config', requireAuth, async (_req: AuthRequest, res) => {
+    const enabled = isRazorpayEnabled();
+    return res.json({
+      success: true,
+      enabled,
+      currency: enabled ? 'INR' : null,
+      // Read through the config module so this can never drift from what the
+      // order-creation path uses. Absent rather than a placeholder when
+      // disabled: an empty value must never be mistaken for a real key.
+      razorpayKeyId: enabled ? getRazorpayKeyId() || null : null,
+    });
+  });
+
   // --------------------------------------------------------------------------
   // Seeker Cancellation & Rescheduling
   // --------------------------------------------------------------------------
@@ -2574,15 +2934,6 @@ async function startServer() {
       // Create new hold and update booking atomically via RPC
       // We reuse the atomic booking function but need a variant that updates existing booking
       // For simplicity, we'll do the checks and updates in a transaction-like manner
-      // Acquire mentor lock
-      await admin.rpc('acquire_slot_hold', {
-        p_mentor_id: booking.mentor_id,
-        p_seeker_id: booking.seeker_id,
-        p_gig_id: targetGigId,
-        p_start_time: newStartTime,
-        p_end_time: newEndTime,
-      });
-
       // The RPC will fail if slot is not available; if it succeeds, we have a new hold
       const { data: holdResult, error: holdErr } = await admin.rpc('acquire_slot_hold', {
         p_mentor_id: booking.mentor_id,
@@ -2634,7 +2985,7 @@ async function startServer() {
       await admin.from('notifications').insert({
         user_id: booking.seeker_id,
         title: 'Booking Rescheduled',
-        message: `Your booking ${booking.booking_code} has been rescheduled. Please complete payment for the new slot within 15 minutes.`,
+        message: `Your booking ${booking.booking_code} has been rescheduled. Please complete payment for the new slot within ${HOLDOUT_MINUTES} minutes.`,
         type: 'BOOKING',
         event_type: 'RESCHEDULING',
         entity_type: 'booking',
@@ -8436,10 +8787,8 @@ async function startServer() {
         .upsert({
           id: userId,
           headline: typeof headline === 'string' ? headline.trim() : '',
-          bio: typeof bio === 'string' ? bio.trim() : '',
-          years_experience: Number.isInteger(experienceYears) ? experienceYears : 0,
+          about: typeof bio === 'string' ? bio.trim() : '',
           experience_years: Number.isInteger(experienceYears) ? experienceYears : 0,
-          timezone: typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'Asia/Kolkata',
           updated_at: new Date().toISOString(),
         }, { onConflict: 'id' });
       if (mentorProfileErr) throw mentorProfileErr;
@@ -8572,20 +8921,23 @@ async function startServer() {
         metadata: { previous_status: application.status },
       });
 
-      // Create notification for administrators
-      const { error: notifErr } = await admin.from('notifications').insert({
-        user_id: null,
-        title: 'New Mentor Verification Submitted',
-        message: `A new mentor application from ${updatedApp.full_name} requires review.`,
-        type: 'ADMIN',
-        event_type: 'ADMIN_MENTOR_APPLICATION_SUBMITTED',
-        entity_type: 'mentor_application',
-        entity_id: updatedApp.id,
-        link: `/admin/mentor-verification/${updatedApp.id}`,
-        is_read: false,
-      });
-
-      if (notifErr) console.error('Failed to create admin notification:', notifErr.message);
+      // Create notifications for active administrators
+      try {
+        const adminIds = await resolveActiveAdminIds(admin);
+        await insertPaymentNotifications(admin, {
+          userIds: adminIds,
+          title: 'New Mentor Verification Submitted',
+          message: `A new mentor application from ${updatedApp.full_name} requires review.`,
+          type: 'ADMIN',
+          eventType: 'ADMIN_MENTOR_APPLICATION_SUBMITTED',
+          entityType: 'mentor_application',
+          entityId: updatedApp.id,
+          link: `/admin/mentor-verification/${updatedApp.id}`,
+          metadata: {},
+        });
+      } catch (adminNotifErr) {
+        console.error('Failed to create admin notification:', logSanitizer.safeMessage(adminNotifErr));
+      }
 
       return res.json({ success: true, application: updatedApp });
     } catch (err: any) {

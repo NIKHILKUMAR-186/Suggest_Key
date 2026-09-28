@@ -22,6 +22,7 @@ import {
 } from '@/src/lib/discoveryService';
 import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
+import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
 
@@ -206,7 +207,8 @@ export const SeekerMentorListPage: React.FC = () => {
       : [];
 
   return (
-    <div className="seeker-page space-y-8">
+    <SegmentThemeProvider initialSegment={selectedSegment}>
+    <div className="seeker-page section-container space-y-8">
       {/* Back to Discovery & Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -231,7 +233,7 @@ export const SeekerMentorListPage: React.FC = () => {
       </div>
 
       {/* Discovery controls */}
-      <div className="seeker-panel space-y-5 rounded-3xl p-4 sm:p-5">
+      <div className="seeker-panel surface-float space-y-5 rounded-3xl p-4 sm:p-5">
         <div className="space-y-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)]">
             Explore segments
@@ -245,7 +247,7 @@ export const SeekerMentorListPage: React.FC = () => {
           />
         </div>
 
-        <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
+        <div className="divider-gradient" aria-hidden="true" />
 
         <DateSelector
           selectedDate={selectedDate}
@@ -269,7 +271,7 @@ export const SeekerMentorListPage: React.FC = () => {
         onClearFilters={clearAllFilters}
       />
 
-      <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
+      <div className="divider-gradient" aria-hidden="true" />
 
       <AvailableMentorsHeader
         segmentName={selectedSegment?.name || null}
@@ -280,16 +282,16 @@ export const SeekerMentorListPage: React.FC = () => {
 
       {/* Error */}
       {(error || mentorError) && (
-        <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)]">
+        <div className="error-banner">
           <div className="flex items-center gap-2 font-semibold">
-            <AlertCircle className="h-4 w-4" />
+            <AlertCircle className="h-4 w-4" aria-hidden="true" />
             <span>{error || mentorError}</span>
           </div>
           <Button
             onClick={() => setReloadToken((t) => t + 1)}
             variant="outline"
             size="sm"
-            className="mt-3"
+            className="mt-2 sm:mt-0"
           >
             Try Again
           </Button>
@@ -325,7 +327,7 @@ export const SeekerMentorListPage: React.FC = () => {
           transition={{ duration: 0.3, delay: 0.15 }}
           className="flex items-start gap-3 rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 text-xs text-[var(--color-shell-text-muted)]"
         >
-          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-text-muted)]" />
+          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-text-muted)]" aria-hidden="true" />
           <div>
             <span className="font-bold text-[var(--color-shell-text)]">Global Mentor Invariant:</span>
             <p className="mt-0.5 leading-relaxed text-[var(--color-shell-text-muted)]">
@@ -337,6 +339,7 @@ export const SeekerMentorListPage: React.FC = () => {
         </motion.div>
       )}
     </div>
+    </SegmentThemeProvider>
   );
 };
 

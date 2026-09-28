@@ -14,51 +14,32 @@ import { formatInr, formatNextAvailableLabel } from '@/src/lib/seekerFormat';
 import { getInitials } from '@/src/lib/avatar';
 import type { DiscoverableMentor, DirectoryMentor, GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
+import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 const EASE = [0.23, 1, 0.31, 1] as const;
 
-/**
- * The single mentor presentation used by BOTH seeker discovery sections.
- *
- * `variant="availability"` renders a mentor who genuinely has a bookable slot
- * on the selected date, so it exposes the live session price, duration and
- * next-available slot taken from the same slot engine the detail page uses.
- * `variant="discovery"` renders a mentor who merely belongs to the segment, so
- * it shows only the fields that exist without a date (gigs, starting price).
- *
- * There is deliberately NO decorative gradient banner. The identity block is
- * the visual focus: a circular avatar, the name, a live verification badge
- * and the headline, all on the card surface itself.
- */
 export type MentorCardVariant = 'availability' | 'discovery';
 
 export interface MentorCardProps {
   variant: MentorCardVariant;
   navigate: (path: string) => void;
-  /** Segment slug (human-readable) used to build the mentor detail route. */
   segmentSlug: string;
-  /** The real selected date, forwarded to the detail page's date picker. */
   selectedDate: string;
-  /**
-   * The seeker's "today", in their own timezone. Used to render the live
-   * "Today"/"Tomorrow" wording for the next available slot.
-   */
   today: string;
-  /** `availability` variant only — carries gig + slot data. */
   availableMentor?: DiscoverableMentor;
-  /** `discovery` variant only — carries segment membership, no slot data. */
   directoryMentor?: DirectoryMentor;
   isFeatured?: boolean;
   className?: string;
 }
 
-/** Local card avatar using the shared getInitials utility. */
+const EASE_CURVE = [0.23, 1, 0.31, 1] as const;
+
 const MentorAvatar: React.FC<{ name: string; avatarUrl: string | null }> = ({
   name,
   avatarUrl,
 }) => {
   const frame =
-    'h-14 w-14 shrink-0 rounded-full sm:h-[68px] sm:w-[68px] border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]';
+    'h-14 w-14 shrink-0 rounded-full sm:h-[68px] sm:w-[68px] border-2 border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] avatar-ring';
 
   if (avatarUrl) {
     return (
@@ -85,7 +66,6 @@ const MentorAvatar: React.FC<{ name: string; avatarUrl: string | null }> = ({
   );
 };
 
-/** Compact chip row for real expertise / language values. */
 const ChipRow: React.FC<{ items: string[]; limit: number; label: string }> = ({
   items,
   limit,
@@ -97,12 +77,9 @@ const ChipRow: React.FC<{ items: string[]; limit: number; label: string }> = ({
   if (visible.length === 0) return null;
 
   return (
-    <ul className="flex flex-wrap items-center gap-1.5" aria-label={label}>
+    <ul className="chip-row" aria-label={label}>
       {visible.map((item) => (
-        <li
-          key={item}
-          className="rounded-md border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-2 py-[3px] text-[11px] font-medium leading-4 text-[var(--color-shell-text-muted)]"
-        >
+        <li key={item} className="chip">
           {item}
         </li>
       ))}
@@ -113,21 +90,30 @@ const ChipRow: React.FC<{ items: string[]; limit: number; label: string }> = ({
   );
 };
 
-/** Live verification state. Rendered only when the database says approved. */
 const VerifiedBadge: React.FC = () => (
-  <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] px-2 py-[3px] text-[10px] font-semibold text-[var(--color-shell-success)]">
-    <BadgeCheck className="h-3 w-3" aria-hidden="true" />
+  <span className="badge badge-success">
+    <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
     Verified
   </span>
 );
 
 const FeaturedBadge: React.FC = () => (
-  <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-warning)]/35 bg-[var(--color-shell-warning-soft)] px-2 py-[3px] text-[10px] font-semibold text-[var(--color-shell-warning)]">
+  <span className="badge" style={{ background: 'var(--color-shell-warning-soft)', color: 'var(--color-shell-warning)', border: '1px solid color-mix(in srgb, var(--color-shell-warning) 30%, transparent)' }}>
     <Star className="h-3 w-3 fill-current" aria-hidden="true" />
     Featured
   </span>
 );
 
+/**
+ * The single mentor presentation used by BOTH seeker discovery sections.
+ *
+ * Premium card design with:
+ * - Segment-aware accent touches
+ * - Better visual hierarchy
+ * - Improved pricing display
+ * - Enhanced CTA buttons
+ * - Smooth hover animations
+ */
 export const MentorCard: React.FC<MentorCardProps> = ({
   variant,
   navigate,
@@ -156,9 +142,6 @@ export const MentorCard: React.FC<MentorCardProps> = ({
     timezone,
   } = mentor;
 
-  // `is_approved` only exists on the availability shape; the directory query
-  // already filters to approved + active + approved-status mentors, so that
-  // variant is verified by construction.
   const isVerified =
     variant === 'availability'
       ? Boolean((mentor as DiscoverableMentor).is_approved)
@@ -169,10 +152,8 @@ export const MentorCard: React.FC<MentorCardProps> = ({
 
   const detailPath = `/seeker/mentor-detail?mentorId=${id}&segmentSlug=${segmentSlug}&date=${selectedDate}`;
 
-  // Guards against rendering a fabricated "0.0" rating for an unrated mentor.
   const hasRating = Number(rating) > 0 && (reviewCount || 0) > 0;
 
-  // ---- Availability-variant commerce data, all from the live gig + slots ----
   const gig = variant === 'availability' ? (mentor as DiscoverableMentor).gig : null;
   const nextSlot: GeneratedSlot | null =
     variant === 'availability' ? (mentor as DiscoverableMentor).next_available_slot : null;
@@ -188,7 +169,6 @@ export const MentorCard: React.FC<MentorCardProps> = ({
   const sessionPrice = gig ? formatInr(gig.price_inr) : '';
   const sessionDuration = gig?.duration_minutes ?? 0;
 
-  // ---- Discovery-variant commerce data, from real active gigs ----
   const directoryGigs = variant === 'discovery' ? (mentor as DirectoryMentor).gigs : [];
   const directoryStartingPrice = formatInr(
     variant === 'discovery' ? (mentor as DirectoryMentor).starting_price_inr : null
@@ -197,22 +177,26 @@ export const MentorCard: React.FC<MentorCardProps> = ({
 
   return (
     <motion.article
-      initial={{ opacity: 0, y: 10 }}
+      initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.28, ease: EASE }}
+      transition={{ duration: 0.35, ease: EASE_CURVE }}
       className={cn(
-        'seeker-card flex h-full flex-col rounded-2xl',
-        isFeatured && 'ring-1 ring-[var(--color-shell-warning)]/30',
+        'seeker-card-premium relative flex h-full flex-col',
+        isFeatured && 'seeker-card-featured',
         className
       )}
+      style={cardStyle}
     >
-      <div className="flex flex-1 flex-col p-5 sm:p-6">
-        {/* ---------------- Identity ---------------- */}
+      {/* Segment color indicator */}
+      <div className="segment-indicator" aria-hidden="true" />
+
+      <div className="mentor-card-body">
+        {/* Identity header */}
         <div className="flex items-center gap-4">
           <MentorAvatar name={fullName} avatarUrl={avatarUrl} />
 
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
               <h3 className="font-display text-lg font-bold leading-tight tracking-tight text-[var(--color-shell-text)]">
                 {fullName}
               </h3>
@@ -221,50 +205,50 @@ export const MentorCard: React.FC<MentorCardProps> = ({
             </div>
 
             {headline && (
-              <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-[var(--color-shell-text-muted)]">
+              <p className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-[var(--color-shell-text-muted)]">
                 {headline}
               </p>
             )}
 
-            {/* Live rating, only when the database actually holds reviews. */}
+            {/* Live rating */}
             {hasRating && (
-              <p className="mt-1.5 inline-flex items-center gap-1 text-[12px] text-[var(--color-shell-text-muted)]">
+              <div className="mt-2 inline-flex items-center gap-1.5">
                 <Star
                   className="h-3.5 w-3.5 fill-[var(--color-shell-warning)] text-[var(--color-shell-warning)]"
                   aria-hidden="true"
                 />
-                <span className="font-semibold text-[var(--color-shell-text)]">
+                <span className="text-[12px] font-semibold text-[var(--color-shell-text)]">
                   {Number(rating).toFixed(1)}
                 </span>
-                <span className="text-[var(--color-shell-text-subtle)]">
+                <span className="text-[12px] text-[var(--color-shell-text-subtle)]">
                   ({reviewCount} {reviewCount === 1 ? 'review' : 'reviews'})
                 </span>
-              </p>
+              </div>
             )}
           </div>
         </div>
 
-        {/* ---------------- Bio preview ---------------- */}
+        {/* Bio preview */}
         {about && about.trim() && (
           <p className="mt-4 line-clamp-3 text-[13px] leading-relaxed text-[var(--color-shell-text-muted)]">
             {about.trim()}
           </p>
         )}
 
-        {/* ---------------- Expertise chips ---------------- */}
+        {/* Expertise chips */}
         {expertiseList.length > 0 && (
           <div className="mt-4">
             <ChipRow items={expertiseList} limit={3} label="Expertise" />
           </div>
         )}
 
-        {/* ---------------- Segments (discovery variant only) ---------------- */}
+        {/* Segments (discovery variant only) */}
         {variant === 'discovery' && (mentor as DirectoryMentor).segments.length > 0 && (
           <ul className="mt-4 flex flex-wrap gap-1.5" aria-label="Segments">
             {(mentor as DirectoryMentor).segments.map((segment) => (
               <li
                 key={segment.id}
-                className="rounded-md border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-2 py-[3px] text-[11px] font-medium leading-4 text-[var(--color-shell-text)]"
+                className="chip"
               >
                 {segment.name}
               </li>
@@ -272,7 +256,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
           </ul>
         )}
 
-        {/* ---------------- Language + timezone ---------------- */}
+        {/* Language + timezone */}
         {(languageList.length > 0 || timezone) && (
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-[var(--color-shell-text-muted)]">
             {languageList.length > 0 && (
@@ -304,54 +288,48 @@ export const MentorCard: React.FC<MentorCardProps> = ({
           </div>
         )}
 
-        {/* ---------------- Divider + commerce footer ---------------- */}
-        <div className="mt-auto pt-5">
-          <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
-
+        {/* Commerce footer */}
+        <div className="mentor-card-footer">
           {variant === 'availability' && availableMentor && (
-            <div className="pt-4">
-              <div className="flex items-end justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
-                    <CalendarClock className="h-3 w-3 shrink-0" aria-hidden="true" />
-                    Next available
+            <div className="flex items-end justify-between gap-4">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
+                  <CalendarClock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  Next available
+                </p>
+                {nextAvailableLabel ? (
+                  <p className="mt-1.5 text-[13px] font-semibold text-[var(--color-shell-text)]">
+                    {nextAvailableLabel}
                   </p>
-                  {nextAvailableLabel ? (
-                    <p className="mt-1 text-[13px] font-semibold text-[var(--color-shell-text)]">
-                      {nextAvailableLabel}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-[13px] font-semibold text-[var(--color-shell-text-subtle)]">
-                      No upcoming availability
-                    </p>
-                  )}
-                </div>
+                ) : (
+                  <p className="mt-1.5 text-[13px] font-semibold text-[var(--color-shell-text-subtle)]">
+                    No upcoming availability
+                  </p>
+                )}
+              </div>
 
-                <div className="shrink-0 text-right">
-                  {sessionDuration > 0 && (
-                    <p className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-shell-text-muted)]">
-                      <Clock
-                        className="h-3.5 w-3.5 shrink-0 text-[var(--color-shell-text-subtle)]"
-                        aria-hidden="true"
-                      />
-                      {sessionDuration} min
-                    </p>
-                  )}
-                  {sessionPrice && (
-                    <p className="mt-1 text-[15px] font-bold leading-tight text-[var(--color-shell-text)]">
-                      <span className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
-                        From{' '}
-                      </span>
-                      {sessionPrice}
-                    </p>
-                  )}
-                </div>
+              <div className="shrink-0 text-right">
+                {sessionDuration > 0 && (
+                  <div className="flex items-center gap-1.5 text-[12px] text-[var(--color-shell-text-muted)]">
+                    <Clock
+                      className="h-3.5 w-3.5 shrink-0 text-[var(--color-shell-text-subtle)]"
+                      aria-hidden="true"
+                    />
+                    {sessionDuration} min
+                  </div>
+                )}
+                {sessionPrice && (
+                  <p className="price-display mt-1">
+                    <span className="price-label">From </span>
+                    <span className="price-amount">{sessionPrice}</span>
+                  </p>
+                )}
               </div>
             </div>
           )}
 
           {variant === 'discovery' && directoryMentor && (
-            <div className="flex items-end justify-between gap-4 pt-4">
+            <div className="flex items-end justify-between gap-4">
               <div className="min-w-0 text-[12px] text-[var(--color-shell-text-subtle)]">
                 {directoryGigs.length > 0 ? (
                   <p className="truncate">
@@ -365,35 +343,30 @@ export const MentorCard: React.FC<MentorCardProps> = ({
                 {directoryDuration > 0 && <p className="mt-0.5">{directoryDuration} min</p>}
               </div>
               {directoryStartingPrice && (
-                <p className="shrink-0 text-right text-[15px] font-bold leading-tight text-[var(--color-shell-text)]">
-                  <span className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
-                    From{' '}
-                  </span>
-                  {directoryStartingPrice}
+                <p className="price-display shrink-0 text-right">
+                  <span className="price-label">From </span>
+                  <span className="price-amount">{directoryStartingPrice}</span>
                 </p>
               )}
             </div>
           )}
 
-          {/* ---------------- Calls to action ---------------- */}
+          {/* CTA buttons */}
           <div className="mt-4 flex flex-col gap-2.5 sm:flex-row">
             <button
               type="button"
               onClick={() => navigate(detailPath)}
-              className="inline-flex min-h-[44px] cursor-pointer items-center justify-center rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-4 text-[13px] font-semibold text-[var(--color-shell-text)] transition-colors duration-150 hover:border-[var(--color-shell-primary)]/50 hover:bg-[var(--color-shell-surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--seeker-card-bg)] sm:flex-1"
+              className="btn-secondary flex-1"
             >
-              View profile
+              <span>View profile</span>
             </button>
             <button
               type="button"
               onClick={() => navigate(detailPath)}
-              className="group inline-flex min-h-[44px] cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[var(--color-shell-primary)] px-5 text-[13px] font-semibold text-[var(--color-shell-text-contrast)] shadow-[var(--shadow-sm)] transition-all duration-150 hover:bg-[var(--color-shell-primary-hover)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--seeker-card-bg)] sm:flex-1"
+              className="btn-primary-segment flex-1"
             >
               <span>Book session</span>
-              <ArrowRight
-                className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
-                aria-hidden="true"
-              />
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

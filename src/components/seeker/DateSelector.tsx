@@ -16,8 +16,7 @@ export interface DateSelectorProps {
 }
 
 /**
- * Formats an existing 'YYYY-MM-DD' string for display. No date is ever
- * invented here — only the value the app already resolved is formatted.
+ * Formats an existing 'YYYY-MM-DD' string for display.
  */
 export const formatSelectedDateLabel = (value: string): string => {
   if (!value) return '';
@@ -31,10 +30,13 @@ export const formatSelectedDateLabel = (value: string): string => {
 };
 
 /**
- * Booking date discovery control.
+ * Booking date discovery control with premium chip design.
  *
- * All values ("Today", "Tomorrow", the selected date) come from the date logic
- * already in the page. This component only changes presentation.
+ * Enhanced with:
+ * - Larger, more tappable date chips
+ * - Better selected state with segment accent
+ * - Improved date input trigger
+ * - Smoother transitions
  */
 export const DateSelector: React.FC<DateSelectorProps> = ({
   selectedDate,
@@ -65,9 +67,9 @@ export const DateSelector: React.FC<DateSelectorProps> = ({
               onClick={() => onSelect(d.value)}
               aria-pressed={isSelected}
               data-selected={isSelected}
-              className="seeker-date-chip focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
+              className="seeker-date-chip min-h-[44px] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--segment-accent)] focus-visible:outline-offset-2"
             >
-              {isSelected && <Check className="h-3.5 w-3.5 text-[var(--color-shell-primary)]" aria-hidden="true" />}
+              {isSelected && <Check className="h-3.5 w-3.5 text-[var(--segment-accent)]" aria-hidden="true" />}
               <span>{d.label}</span>
             </button>
           );
@@ -79,7 +81,7 @@ export const DateSelector: React.FC<DateSelectorProps> = ({
             data-selected="true"
             aria-current="date"
           >
-            <Check className="h-3.5 w-3.5 text-[var(--color-shell-primary)]" aria-hidden="true" />
+            <Check className="h-3.5 w-3.5 text-[var(--segment-accent)]" aria-hidden="true" />
             <span>{selectedLabel}</span>
           </span>
         )}
@@ -87,7 +89,7 @@ export const DateSelector: React.FC<DateSelectorProps> = ({
         <span className="mx-1 hidden h-6 w-px bg-[var(--color-shell-border)] sm:block" aria-hidden="true" />
 
         <div className="relative flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl px-4 text-[var(--color-shell-text-muted)] sm:flex-none">
-          <CalendarDays className="h-4 w-4 shrink-0 text-[var(--color-shell-primary)]" aria-hidden="true" />
+          <CalendarDays className="h-4 w-4 shrink-0 text-[var(--segment-accent)]" aria-hidden="true" />
           <span className="truncate text-[13px] font-semibold">{selectedLabel}</span>
           {/* Real, still-native date input layered invisibly over the visual
               trigger so keyboard and pointer both open the existing picker. */}

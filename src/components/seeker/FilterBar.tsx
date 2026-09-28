@@ -27,9 +27,13 @@ const triggerBase =
   'inline-flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-[13px] font-semibold transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2';
 
 /**
- * Compact filter row that sits directly above the results section.
- * Exposes only filters the app already supports; the language list is built
- * from real mentor/eligible-language data by the caller.
+ * Compact filter row with premium chip design.
+ *
+ * Enhanced with:
+ * - Better active state indicators
+ * - Smoother dropdown animation
+ * - Clear visual hierarchy
+ * - Segment-aware active states
  */
 export const FilterBar: React.FC<FilterBarProps> = ({
   availableLanguages,
@@ -47,7 +51,6 @@ export const FilterBar: React.FC<FilterBarProps> = ({
 }) => {
   const languageTriggerRef = useRef<HTMLButtonElement>(null);
 
-  // Escape closes the language menu and returns focus to its trigger.
   useEffect(() => {
     if (!languageMenuOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -67,7 +70,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         Refine
       </span>
 
-      {/* Language */}
+      {/* Language filter */}
       <div className="relative">
         <button
           ref={languageTriggerRef}
@@ -78,7 +81,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           className={cn(
             triggerBase,
             languageFilter !== 'all'
-              ? 'border-[var(--seeker-date-active-border)] bg-[var(--seeker-date-active-bg)] text-[var(--color-shell-text)]'
+              ? 'border-[var(--seeker-date-active-border)] bg-[var(--seeker-date-active-bg)] text-[var(--color-shell-text)] shadow-sm'
               : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] hover:border-[var(--color-shell-border-strong)] hover:text-[var(--color-shell-text)]'
           )}
         >
@@ -150,7 +153,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         </AnimatePresence>
       </div>
 
-      {/* Experience */}
+      {/* Experience filter */}
       <div className="relative">
         <SlidersHorizontal
           className="pointer-events-none absolute left-3 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-shell-text-subtle)]"
@@ -164,7 +167,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
             triggerBase,
             'appearance-none pl-9 pr-9',
             experienceFilter !== 'all'
-              ? 'border-[var(--seeker-date-active-border)] bg-[var(--seeker-date-active-bg)] text-[var(--color-shell-text)]'
+              ? 'border-[var(--seeker-date-active-border)] bg-[var(--seeker-date-active-bg)] text-[var(--color-shell-text)] shadow-sm'
               : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] hover:border-[var(--color-shell-border-strong)] hover:text-[var(--color-shell-text)]'
           )}
         >
@@ -180,6 +183,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         />
       </div>
 
+      {/* Clear all */}
       {hasActiveFilters && (
         <button
           type="button"

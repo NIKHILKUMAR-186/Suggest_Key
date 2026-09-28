@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Calendar, Clock, Video, FileText, AlertTriangle, CheckCheck, CreditCard, RotateCcw, Trash2, Timer } from 'lucide-react';
+import { Calendar, Clock, Video, FileText, AlertTriangle, CreditCard, Trash2, Timer, Lock, ArrowRight } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
-import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { PageHeading } from '@/src/components/booking/PageHeading';
+import { StatusPill } from '@/src/components/booking/StatusPill';
+import { InlineNotice } from '@/src/components/booking/StatePanel';
+import { describeBookingStatus, describePaymentStatus } from '@/src/components/booking/statusTone';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
@@ -23,50 +26,16 @@ import type { BookingStatus, Payment } from '@/src/types/database';
 import { APP_CONFIG } from '@/src/config/app';
 
 /**
- * Maps a stored payment status to the label My Bookings shows.
+ * The label My Bookings shows for a payment.
  *
- * The label is derived from the `payments` row only. It never depends on
- * whether the user happened to open the payment page, so a refresh or an
- * admin decision always yields the true state.
+ * The wording comes from the shared status vocabulary, so the same `REJECTED`
+ * payment reads identically here, on the payment page and on the booking detail
+ * page. It is derived from the `payments` row only, so it never depends on
+ * whether the seeker happened to open the payment page: a refresh or an admin
+ * decision always yields the true state.
  */
-const paymentStateLabel = (payment: Payment | null | undefined): string | null => {
-  if (!payment) return null;
-  switch (payment.status) {
-    case 'VERIFIED':
-      return 'Payment verified';
-    case 'REJECTED':
-      return 'Payment action required';
-    default:
-      return 'Payment pending verification';
-  }
-};
-
-const paymentStateTone = (payment: Payment | null | undefined): string => {
-  if (!payment) return '';
-  switch (payment.status) {
-    case 'VERIFIED':
-      return 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:border-emerald-800/50';
-    case 'REJECTED':
-      return 'bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-900/20 dark:text-rose-200 dark:border-rose-800/50';
-    default:
-      return 'bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-900/20 dark:text-sky-200 dark:border-sky-800/50';
-  }
-};
-
-const getStatusDisplay = (status: BookingStatus): { label: string; variant: 'success' | 'warning' | 'secondary' | 'destructive' | 'outline' } => {
-  switch (status) {
-    case 'CONFIRMED': return { label: 'Confirmed', variant: 'success' };
-    case 'MENTOR_PENDING': return { label: 'Waiting for Mentor', variant: 'warning' };
-    case 'PENDING_VERIFICATION': return { label: 'Verification Pending', variant: 'secondary' };
-    case 'PAYMENT_PENDING': return { label: 'Payment Required', variant: 'warning' };
-    case 'COMPLETED': return { label: 'Completed', variant: 'secondary' };
-    case 'CANCELLED': return { label: 'Cancelled', variant: 'destructive' };
-    case 'REJECTED': return { label: 'Rejected', variant: 'destructive' };
-    default: return { label: status, variant: 'outline' };
-  }
-};
-
-
+const paymentStateLabel = (payment: Payment | null | undefined): string | null =>
+  payment ? describePaymentStatus(payment.status).label : null;
 export const SeekerBookingsPage: React.FC = () => {
   const { navigate } = useNavigation();
   const { user } = useAuth();
@@ -148,8 +117,8 @@ export const SeekerBookingsPage: React.FC = () => {
   const cancelledCount = bookings.filter(isCancelledBooking).length;
 
   const getBookingStatusBadge = (status: BookingStatus) => {
-    const display = getStatusDisplay(status);
-    return <Badge variant={display.variant} className="text-[10px] font-bold">{display.label}</Badge>;
+    const descriptor = describeBookingStatus(status);
+    return <StatusPill tone={descriptor.tone} label={descriptor.label} />;
   };
 
   return (
@@ -159,25 +128,21 @@ export const SeekerBookingsPage: React.FC = () => {
       transition={{ duration: 0.4, ease: [0.23, 1, 0.31, 1] }}
       className="space-y-6"
     >
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
-          My Bookings
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
-          View active sessions, countdown timers, historical notes, and session workspaces.
-        </p>
-      </div>
+      <PageHeading
+        title="My Bookings"
+        description="Active sessions, upcoming countdowns, past notes and session workspaces."
+      />
 
       <div
-        className="flex border-b border-[var(--color-shell-border)] gap-6 text-xs sm:text-sm font-semibold"
+        className="flex overflow-x-auto border-b border-[var(--color-shell-border)] text-xs sm:text-sm sm:gap-6"
         role="tablist"
         aria-label="Booking tabs"
       >
         {(
           [
-            { id: 'upcoming', label: 'Upcoming' },
-            { id: 'history', label: 'History' },
-            { id: 'cancelled', label: 'Cancelled' },
+            { id: 'upcoming', label: 'Upcoming', count: upcomingCount },
+            { id: 'history', label: 'History', count: 0 },
+            { id: 'cancelled', label: 'Cancelled', count: cancelledCount },
           ] as const
         ).map((tab) => (
           <button
@@ -185,51 +150,48 @@ export const SeekerBookingsPage: React.FC = () => {
             role="tab"
             aria-selected={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`pb-3 capitalize transition-all cursor-pointer relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-xs ${
+            className={`relative flex shrink-0 cursor-pointer items-center gap-2 border-b-2 px-1 pb-3 font-semibold capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] sm:px-0 ${
               activeTab === tab.id
-                ? 'text-[var(--color-shell-text)] font-bold border-amber-600 border-b-2'
-                : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
+                ? 'border-[var(--segment-accent)] text-[var(--color-shell-text)]'
+                : 'border-transparent text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
             }`}
           >
             <span>{tab.label}</span>
-            {tab.id === 'upcoming' && upcomingCount > 0 && activeTab !== 'upcoming' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 text-[var(--color-shell-text-muted)]">
-                {upcomingCount}
-              </Badge>
-            )}
-            {tab.id === 'cancelled' && cancelledCount > 0 && activeTab !== 'cancelled' && (
-              <Badge className="ml-1.5 text-[10px] bg-zinc-100 dark:bg-zinc-800 text-[var(--color-shell-text-muted)]">
-                {cancelledCount}
-              </Badge>
+            {tab.count > 0 && activeTab !== tab.id && (
+              <StatusPill tone="neutral" label={String(tab.count)} className="tabular-nums" />
             )}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
-          <Calendar className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-col items-center justify-center gap-2 py-16 text-xs text-[var(--color-shell-text-subtle)]"
+        >
+          <Calendar className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)] motion-reduce:animate-none" aria-hidden="true" />
           <span>Synchronizing bookings with real database...</span>
         </div>
       ) : error ? (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-xs text-[var(--color-shell-text)] flex items-center justify-between gap-3"
+        <InlineNotice
+          tone="danger"
+          role="alert"
+          icon={AlertTriangle}
+          title="Could not load your bookings"
+          actions={
+            <Button size="sm" variant="outline" onClick={loadBookings}>
+              Retry
+            </Button>
+          }
         >
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0" />
-            <span>{error}</span>
-          </div>
-          <Button size="sm" variant="outline" onClick={loadBookings}>
-            Retry
-          </Button>
-        </motion.div>
+          {error}
+        </InlineNotice>
       ) : filteredBookings.length === 0 ? (
         <EmptyState
           icon={Calendar}
           title={`No ${activeTab} Bookings`}
-          description="Bookings will reflect your authoritative database records. T-5 minute session unlock countdown will activate upon confirmation."
+          description="Bookings will reflect your authoritative database records. Meeting access opens 5 minutes before a confirmed session."
           actionLabel="Find Mentors"
           onAction={() => navigate('/seeker')}
         />
@@ -263,19 +225,20 @@ export const SeekerBookingsPage: React.FC = () => {
                         Booking #{booking.booking_code}
                       </span>
                     </div>
-                    {booking.status === 'CONFIRMED' && !canJoinNow && (
-                      <span className="text-xs font-semibold text-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)] border border-[var(--color-shell-warning)]/20 px-2.5 py-1 rounded-full">
-                        Meeting unlocks at T-5 minutes
-                      </span>
-                    )}
-                    {paymentStateLabel(booking.payment) && (
-                      <span
-                        className={`inline-flex items-center gap-1.5 text-[11px] font-semibold border px-2.5 py-1 rounded-full ${paymentStateTone(booking.payment)}`}
-                      >
-                        <CreditCard className="h-3 w-3" aria-hidden="true" />
-                        {paymentStateLabel(booking.payment)}
-                      </span>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {booking.status === 'CONFIRMED' && !canJoinNow && (
+                        <StatusPill
+                          tone="neutral"
+                          label="Meeting unlocks at T-5 minutes"
+                        />
+                      )}
+                      {paymentStateLabel(booking.payment) && (
+                        <StatusPill
+                          tone={describePaymentStatus(booking.payment!.status).tone}
+                          label={paymentStateLabel(booking.payment)!}
+                        />
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -306,43 +269,45 @@ export const SeekerBookingsPage: React.FC = () => {
                         <Button
                           onClick={() => navigate(`/seeker/payment?bookingId=${booking.id}`)}
                           size="sm"
-                          className="gap-1.5 text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                          className="gap-1.5 text-xs font-semibold shadow-xs"
                         >
-                          <CreditCard className="h-3.5 w-3.5" />
+                          <CreditCard className="h-3.5 w-3.5" aria-hidden="true" />
                           <span>
                             {booking.status === 'PAYMENT_PENDING' ? 'Pay now' : 'View payment status'}
                           </span>
                         </Button>
                       )}
-                      <Button
-                        onClick={() =>
-                          navigate(`/seeker/booking-detail?bookingId=${booking.id}`)
-                        }
-                        variant="outline"
-                        size="sm"
-                        className="text-xs font-medium"
-                      >
-                        Booking Details
-                      </Button>
+                      {canJoinNow ? (
+                        <Button
+                          onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                          size="sm"
+                          className="gap-1.5 text-xs font-semibold shadow-xs"
+                        >
+                          <Video className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Join Session Room</span>
+                        </Button>
+                      ) : (
+                        <Button
+                          onClick={() =>
+                            navigate(`/seeker/booking-detail?bookingId=${booking.id}`)
+                          }
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 text-xs font-medium"
+                        >
+                          <span>Booking Details</span>
+                          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                        </Button>
+                      )}
                       {canCancelNormally && (
                         <Button
                           onClick={() => navigate(`/seeker/booking-detail?bookingId=${booking.id}`)}
                           variant="outline"
                           size="sm"
-                          className="text-xs font-medium gap-1.5 text-[var(--color-shell-error)] border-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)]"
+                          className="gap-1.5 text-xs font-medium text-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)]"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                           <span>Cancel</span>
-                        </Button>
-                      )}
-                      {canJoinNow && (
-                        <Button
-                          onClick={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
-                          size="sm"
-                          className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs"
-                        >
-                          <Video className="h-3.5 w-3.5" />
-                          <span>Join Session Room</span>
                         </Button>
                       )}
                     </div>
@@ -363,10 +328,10 @@ export const SeekerBookingsPage: React.FC = () => {
                   variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
                   className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
                 >
-                  <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
                     <div className="flex items-center gap-2">
                       {resolveLifecycle(booking) === 'COMPLETED' ? (
-                        <Badge variant="secondary" className="text-[10px] font-bold">Completed</Badge>
+                        <StatusPill tone="neutral" label="Completed" />
                       ) : (
                         getBookingStatusBadge(booking.status)
                       )}
@@ -374,9 +339,7 @@ export const SeekerBookingsPage: React.FC = () => {
                         {formatSessionDate(booking.start_time, booking.seeker_timezone)}
                       </span>
                     </div>
-                    <span className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                      <FileText className="h-3.5 w-3.5" /> Workspace Notes Available
-                    </span>
+                    <StatusPill tone="success" label="Workspace notes available" />
                   </div>
 
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -411,7 +374,7 @@ export const SeekerBookingsPage: React.FC = () => {
                       size="sm"
                       className="gap-1.5 text-xs font-semibold"
                     >
-                      <FileText className="h-3.5 w-3.5" />
+                      <FileText className="h-3.5 w-3.5" aria-hidden="true" />
                       <span>Open Session Workspace</span>
                     </Button>
                   </div>
@@ -424,9 +387,9 @@ export const SeekerBookingsPage: React.FC = () => {
               <motion.div
                 key={booking.id}
                 variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-2"
+                className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-2.5"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   {getBookingStatusBadge(booking.status)}
                   <span className="text-xs text-[var(--color-shell-text-subtle)] font-medium">
                     {booking.cancellation_reason || 'Cancelled'}
@@ -436,7 +399,15 @@ export const SeekerBookingsPage: React.FC = () => {
                   {booking.gig?.title || '1:1 Guidance Session'}
                 </h2>
                 <p className="text-xs text-[var(--color-shell-text-muted)]">
-                  Normal cancellation policy: Permitted ≥{APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before start.
+                  {booking.mentor?.full_name || 'Mentor'} ·{' '}
+                  {formatSessionDate(booking.start_time, booking.seeker_timezone)}
+                </p>
+                <p className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                  <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span>
+                    Normal cancellation policy: permitted up to{' '}
+                    {APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before the session starts.
+                  </span>
                 </p>
               </motion.div>
             ))}

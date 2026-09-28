@@ -168,9 +168,19 @@ export interface Booking {
 }
 
 // ----------------------------------------------------------------------
-// 10. PAYMENTS (Manual QR & Proof Verification)
+// 10. PAYMENTS (Manual QR & Proof Verification + Razorpay gateway)
 // ----------------------------------------------------------------------
-export type PaymentStatus = 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
+export type PaymentStatus =
+  | 'PENDING_VERIFICATION'
+  | 'VERIFIED'
+  | 'REJECTED'
+  | 'PAYMENT_PENDING'
+  | 'PAYMENT_PROCESSING'
+  | 'FAILED'
+  | 'REFUNDED'
+  | 'REFUND_FAILED';
+
+export type PaymentGateway = 'manual' | 'razorpay';
 
 export interface Payment {
   id: string;
@@ -178,16 +188,55 @@ export interface Payment {
   seeker_id: string;
   amount_inr: number;
   status: PaymentStatus;
-  proof_storage_path: string;
+  gateway: PaymentGateway;
+  proof_storage_path: string | null;
   transaction_reference: string | null;
   verified_by: string | null;
   verified_at: string | null;
   rejection_reason: string | null;
+  razorpay_order_id: string | null;
+  razorpay_payment_id: string | null;
+  razorpay_signature: string | null;
+  captured_at: string | null;
+  refund_id: string | null;
+  refund_status: string | null;
+  failure_reason: string | null;
+  gateway_payload: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
   // Joined fields
   booking?: Booking;
   seeker?: Profile;
+}
+
+// ----------------------------------------------------------------------
+// 10b. PAYMENT_EVENTS — append-only payment lifecycle log
+// ----------------------------------------------------------------------
+export interface PaymentEvent {
+  id: string;
+  payment_id: string;
+  status: string;
+  event_type: string;
+  gateway: string | null;
+  gateway_payment_id: string | null;
+  amount_inr: number | null;
+  reason: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+// ----------------------------------------------------------------------
+// 10c. WEBHOOK_EVENTS — idempotent gateway-event store
+// ----------------------------------------------------------------------
+export interface WebhookEvent {
+  id: string;
+  gateway: string;
+  event_id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  processed: boolean;
+  processed_at: string | null;
+  created_at: string;
 }
 
 // ----------------------------------------------------------------------
@@ -305,6 +354,20 @@ export interface SessionWorkspace {
   // Joined fields
   booking?: Booking;
   session_overview?: SessionOverviewData;
+}
+
+// ----------------------------------------------------------------------
+// 12. PLATFORM_CONFIG — persisted payment/QR configuration + hold duration
+// ----------------------------------------------------------------------
+export interface PlatformConfig {
+  id: number;
+  upi_id: string | null;
+  qr_image_storage_path: string | null;
+  payment_instructions: string | null;
+  currency: string | null;
+  payment_account_name: string | null;
+  hold_duration_minutes: number;
+  updated_at: string;
 }
 
 // Re-export auth types for convenience

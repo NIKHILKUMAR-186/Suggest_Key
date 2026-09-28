@@ -21,6 +21,11 @@ import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { Textarea } from '@/src/components/ui/Textarea';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { StatePanel } from '@/src/components/booking/StatePanel';
+import { StatusPill } from '@/src/components/booking/StatusPill';
+import { describeSessionState } from '@/src/components/booking/statusTone';
+import { TONE_SURFACE, TONE_TEXT } from '@/src/components/booking/tokens';
+import { cn } from '@/src/lib/utils';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { useAuth } from '@/src/context/AuthContext';
@@ -423,9 +428,13 @@ export const SeekerSessionPage: React.FC = () => {
       {banner && (
         <div
           role="alert"
-          className="rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-xs text-[var(--color-shell-error)] flex items-start gap-2.5"
+          className={cn(
+            'flex items-start gap-2.5 rounded-xl border p-4 text-xs',
+            TONE_SURFACE.danger,
+            TONE_TEXT.danger
+          )}
         >
-          <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="space-y-1">
             <span className="font-semibold">Session service notice</span>
             <p className="text-[var(--color-shell-text-muted)]">{banner}</p>
@@ -436,9 +445,13 @@ export const SeekerSessionPage: React.FC = () => {
       {notice && !banner && (
         <div
           role="status"
-          className="rounded-xl border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] p-3.5 text-xs text-[var(--color-shell-success)] flex items-center gap-2"
+          className={cn(
+            'flex items-center gap-2 rounded-xl border p-3.5 text-xs',
+            TONE_SURFACE.success,
+            TONE_TEXT.success
+          )}
         >
-          <Check className="h-4 w-4 shrink-0" />
+          <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{notice}</span>
         </div>
       )}
@@ -453,69 +466,44 @@ export const SeekerSessionPage: React.FC = () => {
         <SectionLabel>Session status</SectionLabel>
 
         {state === 'SCHEDULED' && (
-          <StatusBlock
+          <StatePanel
             tone="warning"
             icon={Timer}
-            headline="Scheduled"
-            detail="Meeting access opens 5 minutes before your session."
-            aside={
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-shell-warning)]">
-                  Access opens in
-                </div>
-                <div className="text-2xl font-mono font-bold tabular-nums text-[var(--color-shell-text)]">
-                  {formatCountdown(secondsToAccess)}
-                </div>
-              </div>
-            }
+            title="Scheduled"
+            description="Meeting access opens 5 minutes before your session."
+            live="polite"
+            actions={<CountdownStat caption="Access opens in" value={formatCountdown(secondsToAccess)} />}
           />
         )}
 
         {state === 'ACCESS_OPEN' && (
-          <StatusBlock
+          <StatePanel
             tone="warning"
             icon={Radio}
-            headline="Meeting access open"
-            detail="You can enter the room now and test your audio and video before the session begins."
-            aside={
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-shell-warning)]">
-                  Starts in
-                </div>
-                <div className="text-2xl font-mono font-bold tabular-nums text-[var(--color-shell-text)]">
-                  {formatCountdown(secondsToStart)}
-                </div>
-              </div>
-            }
+            title="Meeting access open"
+            description="You can enter the room now and test your audio and video before the session begins."
+            live="polite"
+            actions={<CountdownStat caption="Starts in" value={formatCountdown(secondsToStart)} />}
           />
         )}
 
         {state === 'IN_PROGRESS' && (
-          <StatusBlock
+          <StatePanel
             tone="success"
             icon={Video}
-            headline="Live"
-            detail="Your session is in progress. Meeting access is open until the scheduled end time."
-            live
-            aside={
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-shell-success)]">
-                  Remaining
-                </div>
-                <div className="text-2xl font-mono font-bold tabular-nums text-[var(--color-shell-text)]">
-                  {formatCountdown(secondsToEnd)}
-                </div>
-              </div>
-            }
+            title="Live"
+            description="Your session is in progress. Meeting access is open until the scheduled end time."
+            live="polite"
+            actions={<CountdownStat caption="Remaining" value={formatCountdown(secondsToEnd)} />}
           />
         )}
 
         {state === 'COMPLETED' && (
-          <StatusBlock
-            tone="muted"
+          <StatePanel
+            tone="neutral"
             icon={Check}
-            headline="Session completed"
-            detail={
+            title="Session completed"
+            description={
               access?.endTime
                 ? `Your session ended at ${formatClockTime(access.endTime, timeZone)}.`
                 : 'Your session has ended.'
@@ -524,11 +512,11 @@ export const SeekerSessionPage: React.FC = () => {
         )}
 
         {state === 'CANCELLED' && (
-          <StatusBlock
-            tone="error"
+          <StatePanel
+            tone="danger"
             icon={XCircle}
-            headline="Session cancelled"
-            detail="This session was cancelled and no meeting was held."
+            title="Session cancelled"
+            description="This session was cancelled and no meeting was held."
           />
         )}
       </section>
@@ -575,11 +563,11 @@ export const SeekerSessionPage: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-xl border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] p-4">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-[var(--color-shell-text-muted)]">
-                  Your meeting access is active.
-                </p>
+        <div className={cn('rounded-xl border p-4', TONE_SURFACE.success)}>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-[var(--color-shell-text-muted)]">
+              Your meeting access is active.
+            </p>
                 <Button
                   onClick={handleJoin}
                   disabled={joining}
@@ -742,78 +730,34 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function StateBadge({ state }: { state: SessionLifecycleState }) {
-  if (state === 'IN_PROGRESS') {
-    return (
-      <Badge variant="success" className="gap-1.5 text-[11px]">
-        <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-shell-success)] animate-pulse" aria-hidden="true" />
-        LIVE
-      </Badge>
-    );
-  }
-  if (state === 'ACCESS_OPEN') return <Badge variant="warning" className="text-[11px]">ACCESS OPEN</Badge>;
-  if (state === 'COMPLETED') return <Badge variant="secondary" className="text-[11px]">COMPLETED</Badge>;
-  if (state === 'CANCELLED') return <Badge variant="destructive" className="text-[11px]">CANCELLED</Badge>;
-  return <Badge variant="outline" className="text-[11px]">CONFIRMED</Badge>;
+  // Label and tint come from the shared vocabulary, so a session state reads the
+  // same here as it does on the bookings list and the booking detail page.
+  const descriptor = describeSessionState(state);
+  return (
+    <StatusPill
+      tone={descriptor.tone}
+      label={state === 'IN_PROGRESS' ? 'Live' : descriptor.label}
+      dot
+      pulse={state === 'IN_PROGRESS'}
+    />
+  );
 }
 
-type Tone = 'success' | 'warning' | 'muted' | 'error';
-
-const TONE_CLASSES: Record<Tone, { wrap: string; icon: string }> = {
-  success: {
-    wrap: 'border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)]',
-    icon: 'text-[var(--color-shell-success)]',
-  },
-  warning: {
-    wrap: 'border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]',
-    icon: 'text-[var(--color-shell-warning)]',
-  },
-  muted: {
-    wrap: 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]',
-    icon: 'text-[var(--color-shell-text-muted)]',
-  },
-  error: {
-    wrap: 'border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)]',
-    icon: 'text-[var(--color-shell-error)]',
-  },
-};
-
-function StatusBlock({
-  tone,
-  icon: Icon,
-  headline,
-  detail,
-  aside,
-  live = false,
-}: {
-  tone: Tone;
-  icon: React.ComponentType<{ className?: string }>;
-  headline: string;
-  detail: string;
-  aside?: React.ReactNode;
-  live?: boolean;
-}) {
-  const t = TONE_CLASSES[tone];
+/**
+ * A single countdown value with the label that says what it counts down to.
+ *
+ * The three call sites ("access opens in", "starts in", "remaining") measure
+ * different things, so the caption is always passed in rather than derived — a
+ * bare clock reading is never shown on its own.
+ */
+function CountdownStat({ caption, value }: { caption: string; value: string }) {
   return (
-    <div className={`rounded-xl border p-4 sm:p-5 ${t.wrap}`}>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-start gap-3 min-w-0">
-          <span
-            className={`h-10 w-10 rounded-full bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] flex items-center justify-center shrink-0 ${t.icon}`}
-            aria-hidden="true"
-          >
-            <Icon className="h-5 w-5" />
-          </span>
-          <div className="min-w-0">
-            <h3 className="flex items-center gap-2 text-sm font-bold text-[var(--color-shell-text)]">
-              {headline}
-              {live && (
-                <span className="h-2 w-2 rounded-full bg-[var(--color-shell-success)] animate-ping" aria-hidden="true" />
-              )}
-            </h3>
-            <p className="mt-1 text-xs leading-relaxed text-[var(--color-shell-text-muted)]">{detail}</p>
-          </div>
-        </div>
-        {aside && <div className="shrink-0">{aside}</div>}
+    <div className="text-center sm:text-right">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
+        {caption}
+      </div>
+      <div className="text-2xl font-mono font-bold tabular-nums text-[var(--color-shell-text)]">
+        {value}
       </div>
     </div>
   );
@@ -884,15 +828,16 @@ function Timeline({
           <li key={stage.label} className="flex gap-3">
             <div className="flex flex-col items-center shrink-0">
               <span
-                className={
+                className={cn(
+                  'h-6 w-6 flex items-center justify-center rounded-full',
                   stage.done
-                    ? 'h-6 w-6 rounded-full bg-[var(--color-shell-success-soft)] border border-[var(--color-shell-success)]/40 flex items-center justify-center'
-                    : 'h-6 w-6 rounded-full border border-[var(--color-shell-border-strong)] flex items-center justify-center'
-                }
+                    ? TONE_SURFACE.success
+                    : 'border border-[var(--color-shell-border-strong)]'
+                )}
                 aria-hidden="true"
               >
                 {stage.done ? (
-                  <Check className="h-3.5 w-3.5 text-[var(--color-shell-success)]" />
+                  <Check className={cn('h-3.5 w-3.5', TONE_TEXT.success)} />
                 ) : (
                   <Circle className="h-2 w-2 text-[var(--color-shell-text-subtle)]" />
                 )}

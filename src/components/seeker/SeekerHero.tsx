@@ -24,11 +24,13 @@ export interface SeekerHeroProps {
 const EASE = [0.23, 1, 0.31, 1] as const;
 
 /**
- * Seeker hero composition.
+ * Seeker hero composition — premium editorial control surface.
  *
- * Layered as: decorative SVG artwork → real HTML content. The artwork frames
- * the content from the edges; the centre stays calm so the headline, search,
- * segment controls and date controls remain fully readable and interactive.
+ * The hero frames discovery as a calm, trustworthy experience:
+ * - MarketplaceBadge establishes credibility
+ * - Headline uses display type with refined gradient
+ * - Search is the primary action, visually dominant
+ * - Control deck (segments + date) is a cohesive glass panel
  */
 export const SeekerHero: React.FC<SeekerHeroProps> = ({
   searchQuery,
@@ -41,66 +43,70 @@ export const SeekerHero: React.FC<SeekerHeroProps> = ({
   minDate,
   quickDates,
   onSelectDate,
-}) => (
-  <motion.section
-    initial={{ opacity: 0, y: 16 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ duration: 0.5, ease: EASE }}
-    aria-labelledby="seeker-hero-heading"
-    className="seeker-hero relative isolate overflow-hidden rounded-[28px] sm:rounded-[32px]"
-  >
-    <HeroVisual />
+}) => {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6, ease: EASE }}
+      aria-labelledby="seeker-hero-heading"
+      className="seeker-hero relative isolate overflow-hidden rounded-[28px] sm:rounded-[32px]"
+    >
+      <HeroVisual />
 
-    {/* Content-driven height. The hero is a control surface, not a showcase:
-        it is deliberately kept short so the mentor results stay close to the
-        top of the page instead of being pushed below a screen of decoration. */}
-    <div className="relative mx-auto flex w-full max-w-4xl flex-col items-center px-5 py-8 text-center sm:px-8 sm:py-10">
-      <MarketplaceBadge className="mb-4" />
+      {/* Content-driven height — control surface, not showcase */}
+      <div className="relative mx-auto flex w-full max-w-4xl flex-col items-center px-5 py-10 text-center sm:px-8 sm:py-12 lg:py-14">
+        {/* Badge */}
+        <MarketplaceBadge className="mb-5" />
 
-      <h1
-        id="seeker-hero-heading"
-        className="font-display text-[2.1rem] font-bold leading-[1.08] tracking-[-0.03em] text-[var(--color-shell-text)] sm:text-[3rem] lg:text-[3.25rem]"
-      >
-        Find the right mentor
-        <br />
-        <span className="bg-gradient-to-br from-[var(--color-shell-text)] via-[var(--color-shell-text)] to-[var(--color-shell-primary)] bg-clip-text text-transparent">
-          for your journey
-        </span>
-      </h1>
-
-      <p className="mt-3 max-w-xl text-[14px] leading-relaxed text-[var(--color-shell-text-muted)] sm:text-[15px]">
-        Real guidance. Meaningful conversations. One session at a time.
-      </p>
-
-      <MentorSearch
-        value={searchQuery}
-        onChange={onSearchChange}
-        className="mt-5 w-full max-w-2xl"
-      />
-
-      {/* Control deck: keeps segments and date visually related to the search */}
-      <div className="seeker-panel mt-4 w-full max-w-2xl space-y-3.5 rounded-3xl p-4 text-left sm:p-5">
-        <div className="space-y-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)]">
-            Explore by segment
+        {/* Headline — refined typographic hierarchy */}
+        <div className="max-w-3xl">
+          <h1
+            id="seeker-hero-heading"
+            className="heading-display heading-display-lg tracking-[-0.03em]"
+          >
+            Find the right mentor
+            <br />
+            <span className="text-gradient-brand">for your journey</span>
+          </h1>
+          <p className="mt-4 max-w-xl mx-auto text-[15px] leading-relaxed text-[var(--color-shell-text-muted)] sm:text-base">
+            Real guidance. Meaningful conversations. One session at a time.
           </p>
-          <SegmentSelector
-            segments={segments}
-            selected={selectedSegment}
-            onSelect={onSelectSegment}
-            isLoading={isLoadingSegments}
+        </div>
+
+        {/* Search — primary action, visually dominant */}
+        <div className="mt-7 w-full max-w-2xl">
+          <MentorSearch
+            value={searchQuery}
+            onChange={onSearchChange}
+            className="w-full"
           />
         </div>
 
-        <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
+        {/* Control deck — cohesive glass panel */}
+        <div className="seeker-panel surface-float mt-5 w-full max-w-2xl space-y-4 rounded-3xl p-4 text-left sm:p-5">
+          {/* Segment selector with eyebrow */}
+          <div className="space-y-2.5">
+            <p className="section-eyebrow-premium">Explore by segment</p>
+            <SegmentSelector
+              segments={segments}
+              selected={selectedSegment}
+              onSelect={onSelectSegment}
+              isLoading={isLoadingSegments}
+            />
+          </div>
 
-        <DateSelector
-          selectedDate={selectedDate}
-          minDate={minDate}
-          quickDates={quickDates}
-          onSelect={onSelectDate}
-        />
+          <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
+
+          {/* Date selector */}
+          <DateSelector
+            selectedDate={selectedDate}
+            minDate={minDate}
+            quickDates={quickDates}
+            onSelect={onSelectDate}
+          />
+        </div>
       </div>
-    </div>
-  </motion.section>
-);
+    </motion.section>
+  );
+};

@@ -14,9 +14,13 @@ export interface SegmentSelectorProps {
 }
 
 /**
- * Marketplace category navigation driven by the real active segments returned
- * by the backend. Selection state is communicated by colour, weight, elevation
- * and a check glyph so it never relies on colour alone.
+ * Marketplace category navigation driven by the real active segments.
+ *
+ * Premium pill design with:
+ * - Segment color indicator (left border accent on selected)
+ * - Smooth hover/selected transitions
+ * - Check glyph for selected state
+ * - Proper ARIA tab semantics
  */
 export const SegmentSelector: React.FC<SegmentSelectorProps> = ({
   segments,
@@ -38,9 +42,9 @@ export const SegmentSelector: React.FC<SegmentSelectorProps> = ({
 
   if (segments.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-3 text-center text-xs text-[var(--color-shell-text-subtle)]">
+      <div className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-3 text-center text-xs text-[var(--color-shell-text-subtle)]">
         No mentorship segments are available right now. Please check back soon.
-      </p>
+      </div>
     );
   }
 
@@ -64,10 +68,21 @@ export const SegmentSelector: React.FC<SegmentSelectorProps> = ({
             aria-selected={isSelected}
             onClick={() => onSelect(seg)}
             data-selected={isSelected}
-            className="seeker-segment"
+            className={cn(
+              'seeker-segment relative',
+              isSelected && 'segment-selected-pill'
+            )}
           >
-            {isSelected && <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-            <span>{seg.name}</span>
+            {/* Segment color indicator — visible only when selected */}
+            {isSelected && (
+              <span
+                className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full"
+                style={{ background: 'var(--segment-gradient-primary)' }}
+                aria-hidden="true"
+              />
+            )}
+            {isSelected && <Check className="h-3.5 w-3.5 shrink-0 relative z-10" aria-hidden="true" />}
+            <span className="relative z-10">{seg.name}</span>
           </button>
         );
       })}

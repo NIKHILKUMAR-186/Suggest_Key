@@ -37,6 +37,13 @@ Thumbs.db
 *.spec.ts
 *.spec.tsx
 tests/
+# The test suites here guard real money flows, so they are tracked rather than
+# discarded. The directory is re-included first, because git will not descend
+# into an excluded directory, and the file globs after that so the patterns
+# above do not re-ignore them.
+!tests/
+!tests/*.test.ts
+!tests/**/*.test.ts
 __tests__/
 test/
 spec/

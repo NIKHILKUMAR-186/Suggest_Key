@@ -27,8 +27,13 @@ import {
 } from '@/src/lib/discoveryService';
 import { getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { DirectoryMentor, DirectoryPagination, Segment } from '@/src/types/database';
+import { SegmentThemeProvider, useSegmentTheme } from '@/src/context/SegmentThemeContext';
+import { cn } from '@/src/lib/utils';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
+
+const triggerBase =
+  'inline-flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-[13px] font-semibold transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2';
 
 const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
   { value: 'all', label: 'All Experience' },
@@ -53,13 +58,91 @@ const EMPTY_PAGINATION: DirectoryPagination = {
   hasNextPage: false,
 };
 
-/**
- * "View All Mentors" directory.
- *
- * Lists every mentor that is approved + active + not suspended + not
- * deactivated. Bookability on a specific date is NOT a requirement here, which
- * is what separates this page from the seeker home "Available Mentors" list.
- */
+const DirectoryPageInner: React.FC<{
+  segments: Segment[];
+  selectedSegmentId: string;
+  setSelectedSegmentId: (id: string) => void;
+  isLoadingSegments: boolean;
+}> = ({ segments, selectedSegmentId, setSelectedSegmentId, isLoadingSegments }) => {
+  const { activeSegmentSlug } = useSegmentTheme();
+
+  if (isLoadingSegments) {
+    return (
+      <div className="seeker-rail flex gap-2.5 overflow-x-auto" aria-hidden="true">
+        <Skeleton className="h-[42px] w-32 shrink-0 rounded-[14px]" />
+        <Skeleton className="h-[42px] w-28 shrink-0 rounded-[14px]" />
+        <Skeleton className="h-[42px] w-36 shrink-0 rounded-[14px]" />
+      </div>
+    );
+  }
+
+  if (segments.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-3 text-center text-xs text-[var(--color-shell-text-subtle)]">
+        No mentorship segments are available right now.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className="seeker-rail flex gap-2.5 overflow-x-auto pb-1"
+      role="tablist"
+      aria-label="Filter by segment"
+    >
+      <button
+        role="tab"
+        aria-selected={!selectedSegmentId}
+        onClick={() => setSelectedSegmentId('')}
+        className={cn(
+          'seeker-segment',
+          !selectedSegmentId && 'segment-selected-pill'
+        )}
+      >
+        <span>All Segments</span>
+      </button>
+      {segments.map((seg) => {
+        const isSelected = selectedSegmentId === seg.id;
+        return (
+          <button
+            key={seg.id}
+            role="tab"
+            aria-selected={isSelected}
+            onClick={() => setSelectedSegmentId(seg.id)}
+            className={cn(
+              'seeker-segment',
+              isSelected && 'segment-selected-pill'
+            )}
+            style={
+              isSelected && activeSegmentSlug
+                ? ({
+                    '--segment-accent': `var(--segment-accent)`,
+                    '--segment-accent-hover': `var(--segment-accent-hover)`,
+                    '--segment-accent-soft': `var(--segment-accent-soft)`,
+                    '--segment-gradient-primary': `var(--segment-gradient-primary)`,
+                  } as React.CSSProperties)
+                : undefined
+            }
+          >
+            {isSelected && (
+              <span
+                className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full"
+                style={{
+                  background: activeSegmentSlug
+                    ? 'var(--segment-gradient-primary)'
+                    : 'var(--segment-accent)',
+                }}
+                aria-hidden="true"
+              />
+            )}
+            <span className="relative z-10">{seg.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 export const MentorDirectoryPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
   const { profile } = useAuth();
@@ -169,7 +252,6 @@ export const MentorDirectoryPage: React.FC = () => {
     loadMentors();
   }, [loadMentors]);
 
-  // Any filter change returns to the first page.
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch, selectedSegmentId, languageFilter, experienceFilter]);
@@ -194,278 +276,274 @@ export const MentorDirectoryPage: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <motion.button
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3 }}
-          onClick={() => navigate('/seeker')}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors rounded-md p-1 -ml-1 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-text)]"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Discovery</span>
-        </motion.button>
-        <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display mt-2 flex items-center gap-2">
-          <Users className="h-6 w-6 text-[var(--color-shell-text-muted)]" />
-          All Mentors
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
-          Every approved and active mentor on the platform. Availability for a specific
-          date is shown on each mentor&apos;s profile.
-        </p>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-[var(--color-shell-text-subtle)]" />
-        <label className="sr-only" htmlFor="mentor-directory-search">
-          Search mentors
-        </label>
-        <input
-          id="mentor-directory-search"
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search mentors by name, headline, expertise, or language…"
-          className="w-full rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] pl-12 pr-4 py-3.5 text-base text-[var(--color-shell-text)] placeholder:text-[var(--color-shell-text-subtle)] focus:border-[var(--color-shell-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-shell-accent)]/15 shadow-xs"
-        />
-      </div>
-
-      {/* Segment filter */}
-      {isLoadingSegments ? (
-        <div className="flex gap-2">
-          <Skeleton className="h-9 w-32 rounded-lg" />
-          <Skeleton className="h-9 w-28 rounded-lg" />
-          <Skeleton className="h-9 w-36 rounded-lg" />
-        </div>
-      ) : segments.length > 0 ? (
-        <div
-          className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-none"
-          role="tablist"
-          aria-label="Filter by segment"
-        >
-          <button
-            role="tab"
-            aria-selected={!selectedSegmentId}
-            onClick={() => setSelectedSegmentId('')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all whitespace-nowrap border cursor-pointer min-h-[38px] ${
-              !selectedSegmentId
-                ? 'border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] shadow-xs'
-                : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)]'
-            }`}
-          >
-            All Segments
-          </button>
-          {segments.map((seg) => {
-            const isSelected = selectedSegmentId === seg.id;
-            return (
-              <button
-                key={seg.id}
-                role="tab"
-                aria-selected={isSelected}
-                onClick={() => setSelectedSegmentId(seg.id)}
-                className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all whitespace-nowrap border cursor-pointer min-h-[38px] ${
-                  isSelected
-                    ? 'border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] shadow-xs'
-                    : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] hover:border-[var(--color-shell-border-strong)]'
-                }`}
-              >
-                {seg.name}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-
-      {/* Filters */}
-      <div className="flex items-center gap-2.5 flex-wrap">
-        {/* Language */}
-        <div className="relative">
-          <button
-            onClick={() => setShowLanguageDropdown((v) => !v)}
-            aria-haspopup="listbox"
-            aria-expanded={showLanguageDropdown}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] hover:border-[var(--color-shell-border-strong)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
-          >
-            <Filter className="h-3.5 w-3.5" />
-            <span>Language</span>
-            {languageFilter !== 'all' && (
-              <Badge variant="default" className="text-[9px] py-0 px-1.5">
-                {languageFilter}
-              </Badge>
-            )}
-            <ChevronDown className={`h-3 w-3 transition-transform ${showLanguageDropdown ? 'rotate-180' : ''}`} />
-          </button>
-          <AnimatePresence>
-            {showLanguageDropdown && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowLanguageDropdown(false)} />
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute left-0 top-full mt-1 z-20 w-44 max-h-64 overflow-y-auto rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] shadow-lg p-1 space-y-0.5"
-                  role="listbox"
-                >
-                  <button
-                    onClick={() => {
-                      setLanguageFilter('all');
-                      setShowLanguageDropdown(false);
-                    }}
-                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
-                      languageFilter === 'all'
-                        ? 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] font-semibold'
-                        : 'hover:bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
-                    }`}
-                  >
-                    All Languages
-                  </button>
-                  {languages.map((lang) => (
-                    <button
-                      key={lang}
-                      role="option"
-                      aria-selected={languageFilter === lang}
-                      onClick={() => {
-                        setLanguageFilter(lang);
-                        setShowLanguageDropdown(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs cursor-pointer ${
-                        languageFilter === lang
-                          ? 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-text)] font-semibold'
-                          : 'hover:bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
-                      }`}
-                    >
-                      {lang}
-                    </button>
-                  ))}
-                </motion.div>
-              </>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Experience */}
-        <div className="relative flex items-center">
-          <SlidersHorizontal className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)] mr-1.5" />
-          <select
-            value={experienceFilter}
-            onChange={(e) => setExperienceFilter(e.target.value as ExperienceFilter)}
-            aria-label="Filter by experience"
-            className="appearance-none rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] pr-8"
-          >
-            {EXPERIENCE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--color-shell-text-subtle)] pointer-events-none" />
-        </div>
-
-        {hasActiveFilters && (
-          <button
-            onClick={clearAllFilters}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs font-medium text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface-elevated)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
-          >
-            <X className="h-3 w-3" />
-            Clear
-          </button>
-        )}
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)] shadow-xs">
-          <div className="flex items-center gap-2 font-semibold">
-            <AlertCircle className="h-4 w-4" />
-            <span>{error}</span>
+    <SegmentThemeProvider initialSegment={null}>
+      <div className="seeker-page section-container space-y-8">
+        {/* Header */}
+        <div className="section-header">
+          <div className="section-header-content">
+            <motion.button
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.3 }}
+              onClick={() => navigate('/seeker')}
+              className="-ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded-md p-1 text-xs font-semibold text-[var(--color-shell-text-muted)] transition-colors hover:text-[var(--color-shell-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>Back to Discovery</span>
+            </motion.button>
+            <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl flex items-center gap-2">
+              <Users className="h-6 w-6 text-[var(--color-shell-text-muted)]" />
+              All Mentors
+            </h1>
+            <p className="mt-1.5 text-sm text-[var(--color-shell-text-muted)]">
+              Every approved and active mentor on the platform. Availability for a specific
+              date is shown on each mentor&apos;s profile.
+            </p>
           </div>
-          <Button onClick={loadMentors} variant="outline" size="sm" className="mt-3">
-            Try Again
-          </Button>
         </div>
-      )}
 
-      {/* Results header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-[var(--color-shell-text)]">All Mentors</h2>
+        {/* Search */}
+        <div className="relative">
+          <div className="seeker-panel pointer-events-none absolute inset-0 rounded-2xl" aria-hidden="true" />
+          <div className="relative flex items-center">
+            <span
+              className="pointer-events-none absolute left-3.5 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-primary)]"
+              aria-hidden="true"
+            >
+              <Search className="h-[20px] w-[20px]" />
+            </span>
+            <input
+              id="mentor-directory-search"
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search mentors by name, headline, expertise, or language…"
+              className="input-glass h-[56px] sm:h-[60px] rounded-2xl pl-16 pr-4 text-[15px] sm:text-base font-medium"
+            />
+            {searchQuery.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+                className="absolute right-3 flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg text-[var(--color-shell-text-subtle)] transition-all duration-150 hover:bg-[var(--color-shell-bg-hover)] hover:text-[var(--color-shell-text)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Controls panel */}
+        <div className="seeker-panel surface-float space-y-5 rounded-3xl p-4 sm:p-5">
+          {/* Segment filter */}
+          <div className="space-y-2.5">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)]">
+              Explore segments
+            </p>
+            <DirectoryPageInner
+              segments={segments}
+              selectedSegmentId={selectedSegmentId}
+              setSelectedSegmentId={setSelectedSegmentId}
+              isLoadingSegments={isLoadingSegments}
+            />
+          </div>
+
+          <div className="divider-gradient" aria-hidden="true" />
+
+          {/* Filters */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Language */}
+            <div className="relative">
+              <button
+                onClick={() => setShowLanguageDropdown((v) => !v)}
+                aria-haspopup="listbox"
+                aria-expanded={showLanguageDropdown}
+                className="trigger-base"
+              >
+                <Filter className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Language</span>
+                {languageFilter !== 'all' && (
+                  <Badge variant="default" className="text-[9px] py-0 px-1.5">
+                    {languageFilter}
+                  </Badge>
+                )}
+                <ChevronDown
+                  className={cn('h-3 w-3 transition-transform', showLanguageDropdown && 'rotate-180')}
+                  aria-hidden="true"
+                />
+              </button>
+              <AnimatePresence>
+                {showLanguageDropdown && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowLanguageDropdown(false)} aria-hidden="true" />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute left-0 top-full mt-1 z-20 w-44 max-h-64 overflow-y-auto rounded-xl border border-[var(--seeker-panel-border)] bg-[var(--color-shell-surface-elevated)] shadow-[var(--shadow-xl)] p-1.5"
+                      role="listbox"
+                    >
+                      <button
+                        onClick={() => {
+                          setLanguageFilter('all');
+                          setShowLanguageDropdown(false);
+                        }}
+                        className={cn(
+                          'w-full text-left px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors',
+                          languageFilter === 'all'
+                            ? 'bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-text)] font-semibold'
+                            : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg-hover)]'
+                        )}
+                      >
+                        All Languages
+                      </button>
+                      {languages.map((lang) => (
+                        <button
+                          key={lang}
+                          role="option"
+                          aria-selected={languageFilter === lang}
+                          onClick={() => {
+                            setLanguageFilter(lang);
+                            setShowLanguageDropdown(false);
+                          }}
+                          className={cn(
+                            'w-full text-left px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors',
+                            languageFilter === lang
+                              ? 'bg-[var(--color-shell-primary-soft)] text-[var(--color-shell-text)] font-semibold'
+                              : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-bg-hover)]'
+                          )}
+                        >
+                          {lang}
+                        </button>
+                      ))}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Experience */}
+            <div className="relative flex items-center">
+              <SlidersHorizontal className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)] mr-1.5" aria-hidden="true" />
+              <select
+                value={experienceFilter}
+                onChange={(e) => setExperienceFilter(e.target.value as ExperienceFilter)}
+                aria-label="Filter by experience"
+                className="trigger-base appearance-none pl-9 pr-8"
+              >
+                {EXPERIENCE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--color-shell-text-subtle)] pointer-events-none" aria-hidden="true" />
+            </div>
+
+            {hasActiveFilters && (
+              <button
+                onClick={clearAllFilters}
+                className="trigger-base text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-error)] hover:border-[var(--color-shell-error)]/40"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+                Clear all
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="error-banner">
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertCircle className="h-4 w-4" aria-hidden="true" />
+              <span>{error}</span>
+            </div>
+            <Button onClick={loadMentors} variant="outline" size="sm" className="mt-2 sm:mt-0">
+              Try Again
+            </Button>
+          </div>
+        )}
+
+        {/* Results header */}
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-xl font-bold text-[var(--color-shell-text)] sm:text-2xl">
+            {selectedSegmentId ? segments.find(s => s.id === selectedSegmentId)?.name || 'Mentors' : 'All Mentors'}
+          </h2>
+          {isLoading ? (
+            <Skeleton className="h-3 w-16" />
+          ) : (
+            <span className="badge badge-neutral">
+              {pagination.total} mentor{pagination.total !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+
+        {/* Content */}
         {isLoading ? (
-          <Skeleton className="h-3 w-16" />
+          <MentorGridSkeleton count={6} />
+        ) : error ? null : mentors.length === 0 ? (
+          <EmptyState
+            icon={Search}
+            title={
+              hasActiveFilters
+                ? 'No mentors match your filters'
+                : 'No mentors are currently available'
+            }
+            description={
+              hasActiveFilters
+                ? 'No approved and active mentors match your current search and filters.'
+                : 'There are no approved, active mentors on the platform yet. Please check back later.'
+            }
+            actionLabel={hasActiveFilters ? 'Clear filters' : undefined}
+            onAction={hasActiveFilters ? clearAllFilters : undefined}
+          />
         ) : (
-          <span className="text-xs text-[var(--color-shell-text-muted)]">
-            {pagination.total} mentor{pagination.total !== 1 ? 's' : ''}
-          </span>
+          <div className={MENTOR_GRID_CLASS}>
+            {mentors.map((mentor) => (
+              <MentorCard
+                key={mentor.id}
+                variant="discovery"
+                directoryMentor={mentor}
+                segmentSlug={mentor.segments[0]?.slug || ''}
+                selectedDate={today}
+                today={today}
+                navigate={navigate}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {!error && pagination.totalPages > 1 && (
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pagination.page <= 1 || isLoading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="gap-1.5"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Previous</span>
+            </Button>
+            <span className="text-xs text-[var(--color-shell-text-muted)]">
+              Page {pagination.page} of {pagination.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!pagination.hasNextPage || isLoading}
+              onClick={() => setPage((p) => p + 1)}
+              className="gap-1.5"
+            >
+              <span>Next</span>
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Button>
+          </div>
         )}
       </div>
-
-      {/* Content */}
-      {isLoading ? (
-        <MentorGridSkeleton count={6} />
-      ) : error ? null : mentors.length === 0 ? (
-        <EmptyState
-          icon={Search}
-          title={
-            hasActiveFilters
-              ? 'No mentors match your filters'
-              : 'No mentors are currently available'
-          }
-          description={
-            hasActiveFilters
-              ? 'No approved and active mentors match your current search and filters.'
-              : 'There are no approved, active mentors on the platform yet. Please check back later.'
-          }
-          actionLabel={hasActiveFilters ? 'Clear filters' : undefined}
-          onAction={hasActiveFilters ? clearAllFilters : undefined}
-        />
-      ) : (
-        <div className={MENTOR_GRID_CLASS}>
-          {mentors.map((mentor) => (
-            <MentorCard
-              key={mentor.id}
-              variant="discovery"
-              directoryMentor={mentor}
-              segmentSlug={mentor.segments[0]?.slug || ''}
-              selectedDate={today}
-              today={today}
-              navigate={navigate}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Pagination */}
-      {!error && pagination.totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 pt-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pagination.page <= 1 || isLoading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="gap-1"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span>Previous</span>
-          </Button>
-          <span className="text-xs text-[var(--color-shell-text-muted)]">
-            Page {pagination.page} of {pagination.totalPages}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!pagination.hasNextPage || isLoading}
-            onClick={() => setPage((p) => p + 1)}
-            className="gap-1"
-          >
-            <span>Next</span>
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      )}
-    </div>
+    </SegmentThemeProvider>
   );
 };
-
-export default MentorDirectoryPage;

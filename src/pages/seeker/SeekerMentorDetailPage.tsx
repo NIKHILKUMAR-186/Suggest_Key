@@ -9,6 +9,7 @@ import {
   Globe,
   Languages,
   Lock,
+  RefreshCw,
   Star,
   Timer,
   TriangleAlert,
@@ -26,7 +27,6 @@ import { getInitials } from '@/src/lib/avatar';
 import {
   createBookingWithHold,
   calculateRemainingHoldSeconds,
-  formatCountdown,
 } from '@/src/lib/bookingService';
 import {
   formatInr,
@@ -39,12 +39,15 @@ import {
   formatDate,
   getDateStringInTimezone,
 } from '@/src/lib/slotEngine';
-import { BOOKING_CUTOFF_MINUTES } from '@/src/config/app';
+import { BOOKING_CUTOFF_MINUTES, HOLDOUT_MINUTES } from '@/src/config/app';
 import { cn } from '@/src/lib/utils';
+import { SegmentScope } from '@/src/components/booking/SegmentScope';
+import { SectionCard, InlineNotice, DetailItem, DetailList, TotalRow } from '@/src/components/booking/StatePanel';
+import { HoldCountdown } from '@/src/components/booking/HoldCountdown';
+import { StatusPill } from '@/src/components/booking/StatusPill';
 
 const EASE = [0.23, 1, 0.31, 1] as const;
 
-/** Human label for a generated slot's real status. */
 const SLOT_STATUS_COPY: Record<GeneratedSlot['status'], string> = {
   AVAILABLE: 'Available',
   PAST: 'Past',
@@ -53,14 +56,23 @@ const SLOT_STATUS_COPY: Record<GeneratedSlot['status'], string> = {
   CLOSING_SOON: 'Closing',
 };
 
-/**
- * Copy for the slot panel, derived only from real generated slots.
- *
- * `availability` is the count of genuinely selectable slots, and it is the same
- * number rendered next to the heading and used for the empty-state decision — a
- * page can no longer say "0 slots" while offering a selectable button, and it
- * can no longer imply availability by listing times that are actually booked.
- */
+const SlotEmptyState: React.FC<{
+  title: string;
+  body: string;
+  actionLabel: string;
+  onAction: () => void;
+}> = ({ title, body, actionLabel, onAction }) => (
+  <div className="mt-3 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
+    <p className="text-[13px] font-semibold text-[var(--color-shell-text)]">{title}</p>
+    <p className="mx-auto mt-1 max-w-[30ch] text-[12px] leading-relaxed text-[var(--color-shell-text-muted)]">
+      {body}
+    </p>
+    <Button type="button" variant="secondary" size="sm" className="mt-3.5" onClick={onAction}>
+      {actionLabel}
+    </Button>
+  </div>
+);
+
 const describeSlotPanel = (
   availableCount: number,
   totalGenerated: number,
@@ -91,14 +103,6 @@ const describeSlotPanel = (
   };
 };
 
-/**
- * Maps a failed reservation onto a message a seeker can act on.
- *
- * The raw server text ("Role 'seeker' required.") is developer-facing, so it
- * is translated here instead of being dumped into the UI. Authorization
- * failures are NOT hidden: they get their own explicit explanation, because
- * the fix belongs on the account, not in the browser.
- */
 const describeBookingError = (code: string | undefined, message: string | undefined): string => {
   const text = (message || '').trim();
 
@@ -109,7 +113,6 @@ const describeBookingError = (code: string | undefined, message: string | undefi
     return 'Your session has expired. Sign in again to reserve this slot.';
   }
   if (code === 'SLOT_ALREADY_BOOKED' || code === 'SLOT_HELD_BY_OTHER' || code === 'BOOKING_CONFLICT') {
-    // The database decided the race; the browser never asserts success.
     return 'This slot was just taken. Please choose another time.';
   }
   if (code === 'PAST_SLOT_FORBIDDEN') {
@@ -145,18 +148,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
   const paramMentorId = searchParams.get('mentorId') || '';
-  // The mentor cards link here with the human-readable segment slug, while
-  // older/hand-built links may still carry the segment UUID. Both identify
-  // the same segment, so accept either rather than failing the required-param
-  // check on a slug-only link.
   const paramSegmentSlug = searchParams.get('segmentSlug') || '';
   const paramSegmentId = searchParams.get('segmentId') || '';
   const paramDate = searchParams.get('date') || '';
   const hasRequiredParams = Boolean(paramMentorId && (paramSegmentSlug || paramSegmentId));
 
-  // "Today" follows the seeker's own configured timezone, matching the
-  // calendar the date picker shows. Deriving it with `toISOString()` would use
-  // the UTC date and shift the selected day for anyone east or west of UTC.
   const userTimezone = profile?.timezone || 'UTC';
   const today = getDateStringInTimezone(new Date(), userTimezone);
 
@@ -164,19 +160,12 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [mentorData, setMentorData] = useState<DiscoverableMentor | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<GeneratedSlot | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  // Slot data is refreshed independently of the mentor's profile, so the two
-  // never share a single "loading" flag. Without this split a background
-  // revalidation would blank the whole page, and a still-loading slot list
-  // would be rendered as "0 slots".
   const [isSlotsLoading, setIsSlotsLoading] = useState<boolean>(true);
   const [slotsError, setSlotsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Earliest instant at which availability changes with no database write.
   const [nextBoundaryAt, setNextBoundaryAt] = useState<string | null>(null);
-  // Resolved internal segment UUID (slug → UUID) used by API calls.
   const [resolvedSegmentId, setResolvedSegmentId] = useState<string>('');
 
-  // Resolve the public segment slug to the internal UUID the backend requires.
   useEffect(() => {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const slugOrId = paramSegmentSlug || paramSegmentId;
@@ -186,13 +175,11 @@ export const SeekerMentorDetailPage: React.FC = () => {
       return;
     }
 
-    // A UUID can be used directly — supports both slug URLs and legacy UUID links.
     if (uuidRegex.test(slugOrId)) {
       setResolvedSegmentId(slugOrId);
       return;
     }
 
-    // Otherwise resolve the human-readable slug to a UUID via the API.
     if (paramSegmentSlug) {
       fetchSegmentBySlug(paramSegmentSlug).then((segment) => {
         setResolvedSegmentId(segment?.id || '');
@@ -200,26 +187,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
     } else {
       setResolvedSegmentId(paramSegmentId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramSegmentSlug, paramSegmentId]);
 
   const [isReserving, setIsReserving] = useState<boolean>(false);
   const [activeBooking, setActiveBooking] = useState<Booking | null>(null);
   const [activeHold, setActiveHold] = useState<SlotHold | null>(null);
   const [holdSecondsRemaining, setHoldSecondsRemaining] = useState<number>(0);
-  // Set ONLY after a real failed operation. There is no permanently rendered
-  // error banner on this page.
   const [bookingError, setBookingError] = useState<string | null>(null);
 
-  /**
-   * The single loader for this page. Every path into fresh availability goes
-   * through here: the first render, a date change, a realtime event, an expired
-   * hold, a failed reservation, and the conservative revalidation tick.
-   *
-   * Slots are never assembled here. `fetchMentorDetail` returns what the server
-   * generated from the live tables, and the only client-side decision is whether
-   * the current selection is still bookable.
-   */
   const loadMentor = useCallback(
     async (opts: { initial?: boolean } = {}) => {
       if (!hasRequiredParams || !resolvedSegmentId) {
@@ -247,9 +222,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
         setMentorData(mentor);
         setNextBoundaryAt(mentor?.next_hold_expires_at ?? mentor?.next_slot_start_at ?? null);
 
-        // Keep the selection only if it is still a real, selectable slot on the
-        // freshly generated list. A slot that just became BOOKED, HELD or PAST
-        // is dropped rather than left highlighted.
         setSelectedSlot((prev) => {
           if (!prev) return mentor?.available_slots?.[0] ?? null;
           const stillBookable = mentor?.all_slots?.find(
@@ -262,8 +234,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
         if (opts.initial) {
           setError(message);
         } else {
-          // A background refresh must not destroy a good render, but the seeker
-          // has to know the times on screen may be stale.
           setSlotsError(message);
         }
       } finally {
@@ -276,8 +246,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
 
   const reloadMentorSlots = useCallback(() => loadMentor(), [loadMentor]);
 
-  // Realtime + conservative revalidation. Scoped to this mentor, and torn down
-  // when the mentor changes, the date changes, or the page unmounts.
   useAvailabilitySync({
     mentorId: paramMentorId || null,
     enabled: hasRequiredParams && Boolean(resolvedSegmentId),
@@ -285,8 +253,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
     onInvalidate: reloadMentorSlots,
   });
 
-  // Live 15-minute countdown. The hold countdown is a UI affordance only: the
-  // authoritative expiry is `slot_holds.expires_at`, enforced by the database.
   useEffect(() => {
     if (!activeHold || holdSecondsRemaining <= 0) return;
 
@@ -296,7 +262,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
           clearInterval(interval);
           setActiveHold(null);
           setBookingError(
-            'Your 15-minute hold expired and the slot was released. Select a time to try again.'
+            `Your ${HOLDOUT_MINUTES}-minute hold expired and the slot was released. Select a time to try again.`
           );
           reloadMentorSlots();
           return 0;
@@ -315,8 +281,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
     setBookingError(null);
 
     try {
-      // The seeker identity is NOT sent from the browser: the server derives it
-      // from the authenticated Supabase session.
       const result = await createBookingWithHold({
         mentorId: mentorData.id,
         segmentId: mentorData.segment.id,
@@ -325,17 +289,35 @@ export const SeekerMentorDetailPage: React.FC = () => {
         endTime: selectedSlot.utc_end_time,
       });
 
-      // Only a successful database transaction may change what the UI claims.
-      // A click is never treated as a booking.
       if (!result.success || !result.booking || !result.hold) {
         setBookingError(describeBookingError(result.error?.code, result.error?.message));
         await reloadMentorSlots();
         return;
       }
 
+      // The server has just created the hold; `expires_at` is the only
+      // authority on how long it lasts. A remaining of zero means the hold is
+      // already gone (device/server clock skew, or a hold shorter than the
+      // round trip), so it is reported as released rather than presented as a
+      // fresh countdown — a seeker must never be shown time they do not have.
+      const remainingSeconds = calculateRemainingHoldSeconds(result.hold.expires_at);
+      if (remainingSeconds <= 0) {
+        setActiveBooking(null);
+        setActiveHold(null);
+        setHoldSecondsRemaining(0);
+        setBookingError(
+          describeBookingError(
+            'HOLD_EXPIRED',
+            'That slot was released before it could be held. Please choose another time.'
+          )
+        );
+        await reloadMentorSlots();
+        return;
+      }
+
       setActiveBooking(result.booking);
       setActiveHold(result.hold);
-      setHoldSecondsRemaining(calculateRemainingHoldSeconds(result.hold.expires_at) || 900);
+      setHoldSecondsRemaining(remainingSeconds);
       await reloadMentorSlots();
     } catch (err: any) {
       setBookingError(describeBookingError(undefined, err?.message));
@@ -349,9 +331,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
     loadMentor({ initial: true });
   }, [loadMentor]);
 
-  // ---------------------------------------------------------------------------
-  // Derived display values — every one of them comes from the loaded mentor.
-  // ---------------------------------------------------------------------------
   const gig = mentorData?.gig;
   const gigPrice = mentorData ? formatInr(mentorData.gig.price_inr) : '';
   const holdAmount = activeBooking ? formatInr(activeBooking.amount_inr) : '';
@@ -365,8 +344,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
     : '';
   const canReserve = Boolean(selectedSlot?.is_available) && !isReserving && !activeHold;
 
-  // The headline number and the empty state are derived from the SAME real slot
-  // list, so "N slots" can never disagree with the buttons underneath it.
   const slotPanel = describeSlotPanel(
     availableSlots.length,
     allSlots.length,
@@ -375,8 +352,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
   );
   const hasSelectableSlot = availableSlots.length > 0;
 
-  // "Choose another date" focuses the real date input instead of navigating
-  // away, so the seeker can retry the same mentor one day later.
   const focusDatePicker = useCallback(() => {
     const input = document.getElementById('session-date');
     if (input instanceof HTMLInputElement) {
@@ -385,8 +360,6 @@ export const SeekerMentorDetailPage: React.FC = () => {
     }
   }, []);
 
-  // SegmentMentorsSection links here as `/seeker/mentors?segmentSlug=...`, so
-  // prefer the slug for the back link and only fall back to the segment UUID.
   const backPath = paramSegmentSlug
     ? `/seeker/mentors?segmentSlug=${encodeURIComponent(paramSegmentSlug)}&date=${selectedDate}`
     : `/seeker/mentors?segmentId=${paramSegmentId}&date=${selectedDate}`;
@@ -398,6 +371,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
       transition={{ duration: 0.4, ease: EASE }}
       className="mx-auto w-full max-w-[1280px]"
     >
+      {/* Back navigation */}
       <button
         type="button"
         onClick={() => navigate(backPath)}
@@ -410,7 +384,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
       {isLoading ? (
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(340px,1fr)] lg:gap-8">
           <div className="space-y-6">
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+            <div className="detail-card">
               <div className="flex items-center gap-5">
                 <Skeleton variant="circular" className="h-20 w-20 shrink-0" />
                 <div className="flex-1 space-y-2">
@@ -419,12 +393,12 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 </div>
               </div>
             </div>
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+            <div className="detail-card">
               <Skeleton className="h-5 w-1/3" />
               <Skeleton className="mt-3 h-16 w-full" />
             </div>
           </div>
-          <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6">
+          <div className="detail-card">
             <Skeleton className="h-5 w-1/2" />
             <Skeleton className="mt-4 h-12 w-full" />
             <Skeleton className="mt-4 h-40 w-full" />
@@ -441,22 +415,22 @@ export const SeekerMentorDetailPage: React.FC = () => {
         </div>
       ) : (
         <div className="mt-6 grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.9fr)_minmax(340px,1fr)] lg:gap-8">
-          {/* ================= LEFT: profile, expertise, gig ================= */}
+          {/* LEFT: profile, expertise, gig */}
           <div className="min-w-0 space-y-6">
-            {/* ---- Identity header ---- */}
-            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+            {/* Identity header */}
+            <section className="detail-card">
               <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
                 {mentorData.avatar_url ? (
                   <img
                     src={mentorData.avatar_url}
                     alt={`${mentorData.full_name} profile photo`}
-                    className="h-20 w-20 shrink-0 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] object-cover sm:h-24 sm:w-24"
+                    className="h-20 w-20 shrink-0 rounded-full border-2 border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] object-cover sm:h-24 sm:w-24 avatar-ring"
                   />
                 ) : (
                   <div
                     role="img"
                     aria-label={`${mentorData.full_name} profile photo placeholder`}
-                    className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-2xl font-bold text-[var(--color-shell-text-muted)] sm:h-24 sm:w-24"
+                    className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-2xl font-bold text-[var(--color-shell-text-muted)] sm:h-24 sm:w-24"
                   >
                     {getInitials(mentorData.full_name)}
                   </div>
@@ -468,13 +442,13 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       {mentorData.full_name}
                     </h1>
                     {mentorData.is_approved && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-shell-success)]">
+                      <span className="badge badge-success">
                         <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
                         Verified
                       </span>
                     )}
                     {mentorData.is_featured && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-shell-warning)]/35 bg-[var(--color-shell-warning-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--color-shell-warning)]">
+                      <span className="badge" style={{ background: 'var(--color-shell-warning-soft)', color: 'var(--color-shell-warning)', border: '1px solid color-mix(in srgb, var(--color-shell-warning) 30%, transparent)' }}>
                         <Star className="h-3 w-3 fill-current" aria-hidden="true" />
                         Featured
                       </span>
@@ -482,7 +456,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   </div>
 
                   {mentorData.headline && (
-                    <p className="mt-1.5 text-[15px] leading-snug text-[var(--color-shell-text-muted)]">
+                    <p className="mt-2 text-[15px] leading-snug text-[var(--color-shell-text-muted)]">
                       {mentorData.headline}
                     </p>
                   )}
@@ -531,12 +505,9 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
                     Expertise
                   </h2>
-                  <ul className="mt-2.5 flex flex-wrap gap-2" aria-label="Expertise">
+                  <ul className="mt-2.5 chip-row" aria-label="Expertise">
                     {mentorData.expertise.map((item) => (
-                      <li
-                        key={item}
-                        className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-2.5 py-1 text-[12px] font-medium text-[var(--color-shell-text-muted)]"
-                      >
+                      <li key={item} className="chip">
                         {item}
                       </li>
                     ))}
@@ -545,13 +516,13 @@ export const SeekerMentorDetailPage: React.FC = () => {
               )}
             </section>
 
-            {/* ---- Active gig ---- */}
-            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+            {/* Active gig */}
+            <section className="detail-card">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
                   Active session offer
                 </h2>
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-shell-text-muted)]">
+                <span className="badge badge-neutral">
                   {mentorData.segment.name}
                 </span>
               </div>
@@ -583,8 +554,8 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   <dt className="text-[11px] font-medium text-[var(--color-shell-text-subtle)]">
                     Session price
                   </dt>
-                  <dd className="mt-1 text-[18px] font-bold leading-tight text-[var(--color-shell-text)]">
-                    {gigPrice}
+                  <dd className="price-display mt-1">
+                    <span className="price-amount">{gigPrice}</span>
                   </dd>
                 </div>
                 <div>
@@ -596,14 +567,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
                       className="h-4 w-4 shrink-0 text-[var(--color-shell-text-muted)]"
                       aria-hidden="true"
                     />
-                    15 minutes
+                    {HOLDOUT_MINUTES} minutes
                   </dd>
                 </div>
               </dl>
             </section>
 
-              {/* ---- Availability summary ---- */}
-            <section className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+            {/* Availability summary */}
+            <section className="detail-card">
               <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-shell-text-subtle)]">
                 Availability
               </h2>
@@ -636,25 +607,34 @@ export const SeekerMentorDetailPage: React.FC = () => {
             </section>
           </div>
 
-          {/* ================= RIGHT: sticky booking panel ================= */}
+          {/* RIGHT: sticky booking panel */}
           <div className="min-w-0 lg:sticky lg:top-20">
-            <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
-              <h2 className="font-display text-[17px] font-bold leading-tight text-[var(--color-shell-text)]">
-                Book a session
-              </h2>
-              <p className="mt-1 text-[13px] leading-relaxed text-[var(--color-shell-text-muted)]">
-                Times are shown in {mentorData.timezone}.
-              </p>
-
-              {/* ---- Date ---- */}
-              <div className="mt-5">
+            <SegmentScope slug={paramSegmentSlug}>
+            <SectionCard
+              title="Book a session"
+              description={`Times are shown in ${mentorData.timezone}.`}
+              icon={Calendar}
+              aside={
+                activeHold ? (
+                  <StatusPill tone="success" label="Slot held" dot />
+                ) : isReserving ? (
+                  <StatusPill tone="info" label="Reserving…" />
+                ) : hasSelectableSlot ? (
+                  <StatusPill tone="success" label={`${availableSlots.length} open`} />
+                ) : (
+                  <StatusPill tone="neutral" label="None open" />
+                )
+              }
+            >
+              {/* Date */}
+              <div>
                 <label
                   htmlFor="session-date"
                   className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]"
                 >
                   Session date
                 </label>
-                <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-3.5 py-2.5 focus-within:border-[var(--color-shell-primary)]/60 focus-within:ring-2 focus-within:ring-[var(--color-shell-focus)]">
+                <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface-elevated)] px-3.5 py-2.5 transition-colors focus-within:border-[var(--segment-accent)] focus-within:ring-2 focus-within:ring-[var(--color-shell-focus)]">
                   <Calendar
                     className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
                     aria-hidden="true"
@@ -674,7 +654,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* ---- Times ---- */}
+              {/* Times */}
               <div className="mt-5">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
@@ -695,67 +675,47 @@ export const SeekerMentorDetailPage: React.FC = () => {
                     ))}
                   </div>
                 ) : slotsError ? (
-                  // Never a fake slot: an explicit failure with a retry.
-                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
-                    <p className="text-[13px] font-medium text-[var(--color-shell-text-muted)]">
-                      Unable to load availability.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="mt-3"
-                      onClick={() => reloadMentorSlots()}
-                    >
-                      Retry
-                    </Button>
-                  </div>
+                  <InlineNotice
+                    tone="danger"
+                    role="alert"
+                    icon={TriangleAlert}
+                    title="Unable to load availability"
+                    className="mt-2.5"
+                    actions={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => reloadMentorSlots()}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Retry</span>
+                      </Button>
+                    }
+                  >
+                    The times below may be out of date. Retry before choosing a slot.
+                  </InlineNotice>
                 ) : allSlots.length === 0 ? (
-                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
-                    <p className="text-[13px] font-medium text-[var(--color-shell-text)]">
-                      No available slots for this date.
-                    </p>
-                    <p className="mt-1 text-[12px] text-[var(--color-shell-text-muted)]">
-                      {mentorData.full_name} has no operating hours on this day.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="mt-3"
-                      onClick={() => focusDatePicker()}
-                    >
-                      Choose another date
-                    </Button>
-                  </div>
+                  <SlotEmptyState
+                    title="No available slots for this date."
+                    body={`${mentorData.full_name} has no operating hours on this day.`}
+                    actionLabel="Choose another date"
+                    onAction={focusDatePicker}
+                  />
                 ) : !hasSelectableSlot ? (
-                  <div className="mt-2.5 rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-4 py-6 text-center">
-                    <p className="text-[13px] font-medium text-[var(--color-shell-text)]">
-                      All available times are currently booked.
-                    </p>
-                    <p className="mt-1 text-[12px] text-[var(--color-shell-text-muted)]">
-                      The times below are shown for context and cannot be selected.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="mt-3"
-                      onClick={() => focusDatePicker()}
-                    >
-                      Choose another date
-                    </Button>
-                  </div>
+                  <SlotEmptyState
+                    title="All available times are currently booked."
+                    body="The times below are shown for context and cannot be selected."
+                    actionLabel="Choose another date"
+                    onAction={focusDatePicker}
+                  />
                 ) : null}
 
-                {/* Only a real generated list is ever rendered — there is no
-                    fallback, demo or default slot array anywhere on this page. */}
                 {!isSlotsLoading && !slotsError && allSlots.length > 0 && (
                   <ul className="mt-2.5 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
                     {allSlots.map((slot) => {
                       const isSelected = selectedSlot?.id === slot.id;
-                      // Only AVAILABLE is selectable. HELD is not BOOKED and is
-                      // never presented as bookable.
                       const isDisabled = !slot.is_available;
 
                       return (
@@ -770,12 +730,12 @@ export const SeekerMentorDetailPage: React.FC = () => {
                               setBookingError(null);
                             }}
                             className={cn(
-                              'flex w-full min-h-[52px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2',
+                              'flex min-h-[52px] w-full cursor-pointer flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2',
                               isSelected
-                                ? 'border-[var(--color-shell-primary)] bg-[var(--color-shell-primary)] text-[var(--color-shell-text-contrast)]'
+                                ? 'border-[var(--segment-accent)] bg-[var(--segment-accent)] text-[var(--color-shell-text-contrast)]'
                                 : isDisabled
                                   ? 'cursor-not-allowed border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-subtle)]'
-                                  : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:border-[var(--color-shell-primary)]/50 hover:bg-[var(--color-shell-surface-elevated)]'
+                                  : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] hover:border-[var(--segment-accent)]/50 hover:bg-[var(--color-shell-surface-elevated)]'
                             )}
                           >
                             <span className="text-[12px] font-semibold leading-tight">
@@ -798,134 +758,122 @@ export const SeekerMentorDetailPage: React.FC = () => {
                   </ul>
                 )}
               </div>
-              {/* ---- Contextual error: only after a real failure ---- */}
+
+              {/* Booking error */}
               {bookingError && (
-                <div
+                <InlineNotice
+                  tone="danger"
                   role="alert"
-                  className="mt-5 flex items-start gap-2.5 rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-3.5"
+                  icon={TriangleAlert}
+                  title="That booking did not go through"
+                  className="mt-5"
                 >
-                  <TriangleAlert
-                    className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-error)]"
-                    aria-hidden="true"
-                  />
-                  <p className="text-[13px] leading-relaxed text-[var(--color-shell-error)]">
-                    {bookingError}
-                  </p>
-                </div>
+                  {bookingError}
+                </InlineNotice>
               )}
 
-              {/* ---- Active hold ---- */}
+              {/* Active hold */}
               {activeHold && activeBooking ? (
-                <div className="mt-5 rounded-xl border border-[var(--color-shell-success)]/35 bg-[var(--color-shell-success-soft)] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2 text-[13px] font-semibold text-[var(--color-shell-text)]">
-                      <Timer className="h-4 w-4 text-[var(--color-shell-success)]" aria-hidden="true" />
-                      Slot held for you
-                    </span>
-                    <span className="rounded-lg border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-surface)] px-2 py-1 font-mono text-[12px] font-semibold text-[var(--color-shell-text)]">
-                      {formatCountdown(holdSecondsRemaining)}
-                    </span>
-                  </div>
+                <div className="mt-5 space-y-4">
+                  <HoldCountdown
+                    secondsRemaining={holdSecondsRemaining}
+                    totalSeconds={HOLDOUT_MINUTES * 60}
+                    label="Slot held for you"
+                  />
 
-                  <dl className="mt-3.5 space-y-2 border-t border-[var(--color-shell-success)]/20 pt-3.5 text-[13px]">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-[var(--color-shell-text-muted)]">Booking code</dt>
-                      <dd className="font-mono font-semibold text-[var(--color-shell-text)]">
-                        {activeBooking.booking_code}
-                      </dd>
+                  <DetailList className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-4">
+                    <DetailItem label="Booking code" mono>
+                      {activeBooking.booking_code}
+                    </DetailItem>
+                    <DetailItem label="Session time">
+                      <span className="whitespace-nowrap">{selectedTimeLabel}</span>
+                    </DetailItem>
+                    <DetailItem label="Date">
+                      {formatShortDate(selectedDate)} · {mentorData.timezone}
+                    </DetailItem>
+                    <div className="sm:col-span-2">
+                      <TotalRow label="Amount due" value={holdAmount} />
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-[var(--color-shell-text-muted)]">Session time</dt>
-                      <dd className="text-right font-semibold text-[var(--color-shell-text)]">
-                        {selectedTimeLabel}
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3 border-t border-[var(--color-shell-success)]/20 pt-2">
-                      <dt className="font-semibold text-[var(--color-shell-text)]">Amount due</dt>
-                      <dd className="text-[16px] font-bold text-[var(--color-shell-text)]">
-                        {holdAmount}
-                      </dd>
-                    </div>
-                  </dl>
+                  </DetailList>
 
                   <Button
                     onClick={() => navigate(`/seeker/payment?bookingId=${activeBooking.id}`)}
                     size="lg"
-                    className="mt-4 w-full gap-2"
+                    className="btn-primary-segment w-full gap-2"
                   >
                     <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                    Continue to payment
+                    <span>Continue to payment</span>
                     <ArrowRight className="h-4 w-4" aria-hidden="true" />
                   </Button>
+
+                  <p className="text-center text-[11.5px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                    Your slot is released automatically when the timer runs out.
+                  </p>
                 </div>
               ) : (
                 <>
-                  {/* ---- Summary ---- */}
-                  <dl className="mt-5 space-y-2.5 border-t border-[var(--color-shell-border)] pt-5 text-[13px]">
-                    <div className="flex items-start justify-between gap-3">
-                      <dt className="text-[var(--color-shell-text-muted)]">Duration</dt>
-                      <dd className="text-right font-medium text-[var(--color-shell-text)]">
+                  {/* Summary */}
+                  <div className="mt-5 border-t border-[var(--color-shell-border)] pt-5">
+                    <DetailList columns={2} className="text-[13px]">
+                      <DetailItem label="Duration" icon={Clock}>
                         {gig?.duration_minutes} minutes
-                      </dd>
-                    </div>
-                    <div className="flex items-start justify-between gap-3">
-                      <dt className="text-[var(--color-shell-text-muted)]">Selected time</dt>
-                      <dd className="text-right font-medium text-[var(--color-shell-text)]">
+                      </DetailItem>
+                      <DetailItem label="Session price">
+                        {gigPrice}
+                      </DetailItem>
+                      <DetailItem label="Selected time" className="sm:col-span-2">
                         {selectedSlot ? (
                           <>
-                            {selectedTimeLabel}
-                            <span className="block text-[11px] font-normal text-[var(--color-shell-text-subtle)]">
+                            <span className="whitespace-nowrap">{selectedTimeLabel}</span>
+                            <span className="mt-0.5 block text-[11.5px] font-normal text-[var(--color-shell-text-subtle)]">
                               {formatShortDate(selectedDate)} · {mentorData.timezone}
                             </span>
                           </>
                         ) : (
-                          'Select an available time'
+                          <span className="font-normal text-[var(--color-shell-text-subtle)]">
+                            Select an available time
+                          </span>
                         )}
-                      </dd>
+                      </DetailItem>
+                    </DetailList>
+
+                    <div className="mt-4">
+                      <TotalRow label="Total" value={gigPrice} />
                     </div>
-                    <div className="flex items-center justify-between gap-3 border-t border-[var(--color-shell-border)] pt-3">
-                      <dt className="text-[14px] font-semibold text-[var(--color-shell-text)]">
-                        Total
-                      </dt>
-                      <dd className="text-[18px] font-bold text-[var(--color-shell-text)]">
-                        {gigPrice}
-                      </dd>
-                    </div>
-                  </dl>
+                  </div>
 
                   <Button
                     onClick={handleReserveSlot}
                     disabled={!canReserve}
                     isLoading={isReserving}
-                    loadingText="Reserving"
+                    loadingText="Reserving slot"
                     size="lg"
-                    className="mt-5 w-full gap-2"
+                    className="btn-primary-segment mt-5 w-full gap-2 font-semibold shadow-xs"
                   >
                     {!isReserving && <Lock className="h-4 w-4" aria-hidden="true" />}
                     <span>
                       {isReserving
                         ? 'Reserving slot'
-                        : 'Reserve slot (15-min hold)'}
+                        : `Reserve slot · ${HOLDOUT_MINUTES}-min hold`}
                     </span>
                     {!isReserving && <ArrowRight className="h-4 w-4" aria-hidden="true" />}
                   </Button>
 
-                  <p className="mt-2.5 text-center text-[11px] leading-relaxed text-[var(--color-shell-text-subtle)]">
-                    Reserving locks this time in the database for 15 minutes while you complete
-                    payment.
+                  <p className="mt-2.5 text-center text-[11.5px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                    Reserving locks this time in the database for {HOLDOUT_MINUTES} minutes while you
+                    complete payment.
                   </p>
-                  <p className="mt-1.5 text-center text-[11px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+                  <p className="mt-1.5 text-center text-[11.5px] leading-relaxed text-[var(--color-shell-text-subtle)]">
                     Bookings are available until {BOOKING_CUTOFF_MINUTES} minutes before the
                     session.
                   </p>
                 </>
               )}
-            </div>
+            </SectionCard>
+            </SegmentScope>
           </div>
         </div>
       )}
     </motion.div>
   );
 };
-
-export default SeekerMentorDetailPage;

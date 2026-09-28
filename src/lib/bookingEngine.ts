@@ -414,7 +414,7 @@ export async function executeAtomicBookingWithHold(
     }
 
     // ------------------------------------------------------------------------
-    // ATOMIC TRANSACTION: CREATE 15-MINUTE HOLD & PAYMENT_PENDING BOOKING
+    // ATOMIC TRANSACTION: CREATE THE HOLD & PAYMENT_PENDING BOOKING
     // ------------------------------------------------------------------------
     const holdExpiresAt = new Date(currentUtcTime.getTime() + APP_CONFIG.HOLD_DURATION_MS).toISOString();
     const holdId = 'hold-' + Math.random().toString(36).substring(2, 11);

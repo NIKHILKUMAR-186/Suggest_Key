@@ -1,17 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import {
   Bell,
-  Check,
   Loader2,
   CheckCheck,
+  RefreshCw,
+  TriangleAlert,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
-import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { PageHeading, SegmentedTabs } from '@/src/components/booking/PageHeading';
+import { StatusPill } from '@/src/components/booking/StatusPill';
+import { InlineNotice } from '@/src/components/booking/StatePanel';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
 import { NotificationCard } from '@/src/components/notifications/NotificationCard';
+import { toUserMessage } from '@/src/lib/errorMessages';
 import {
   fetchUserNotifications,
   markNotificationAsRead,
@@ -19,11 +23,14 @@ import {
 } from '@/src/lib/notificationService';
 import type { Notification } from '@/src/types/database';
 
+const CATEGORIES = ['ALL', 'BOOKING', 'PAYMENT', 'SESSION', 'WORKSPACE'] as const;
+
 export const SeekerNotificationsPage: React.FC = () => {
   const { user } = useAuth();
   const { refreshNotifications: refreshContext } = useNotifications();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'read'>('all');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
 
@@ -32,6 +39,7 @@ export const SeekerNotificationsPage: React.FC = () => {
   const loadNotifs = async () => {
     if (!seekerId) return;
     setLoading(true);
+    setError(null);
     try {
       const data = await fetchUserNotifications(seekerId, {
         status: statusFilter,
@@ -40,7 +48,11 @@ export const SeekerNotificationsPage: React.FC = () => {
       setNotifications(data);
       await refreshContext();
     } catch (err) {
-      console.error('Failed to load notifications:', err);
+      // A failed load is surfaced rather than swallowed. Leaving the list empty
+      // here would render "No notifications", which reads as "you have nothing"
+      // rather than "we could not check" — the exact wrong conclusion.
+      setNotifications([]);
+      setError(toUserMessage(err, 'Failed to load notifications.'));
     } finally {
       setLoading(false);
     }
@@ -80,104 +92,91 @@ export const SeekerNotificationsPage: React.FC = () => {
       className="max-w-4xl mx-auto space-y-6"
     >
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
-              Notifications
-            </h1>
+      <PageHeading
+        title="Notifications"
+        description="Authoritative in-app alerts for your bookings, payment verifications, session rooms and mentor workspace notes."
+        aside={
+          <>
             {unreadCount > 0 && (
-              <Badge variant="default" className="text-xs bg-zinc-900 text-white font-semibold">
-                {unreadCount} unread
-              </Badge>
+              <StatusPill tone="info" label={`${unreadCount} unread`} size="md" className="tabular-nums" />
             )}
-          </div>
-          <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
-            Authoritative in-app alerts for your bookings, payment verifications, session rooms,
-            and mentor workspace notes.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {unreadCount > 0 && (
+            {unreadCount > 0 && (
+              <Button
+                id="mark-all-read-btn"
+                onClick={handleMarkAllRead}
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+              >
+                <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Mark all as read</span>
+              </Button>
+            )}
             <Button
-              id="mark-all-read-btn"
-              onClick={handleMarkAllRead}
+              id="refresh-notifs-btn"
+              onClick={loadNotifs}
               variant="outline"
               size="sm"
-              className="text-xs gap-1.5 h-8"
+              className="h-8 gap-1.5 text-xs"
+              disabled={loading}
             >
-              <CheckCheck className="h-3.5 w-3.5" />
-              <span>Mark all as read</span>
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${loading ? 'motion-safe:animate-spin' : ''}`}
+                aria-hidden="true"
+              />
+              <span>Refresh</span>
             </Button>
-          )}
-          <Button
-            id="refresh-notifs-btn"
-            onClick={loadNotifs}
-            variant="outline"
-            size="sm"
-            className="text-xs gap-1.5 h-8"
-            disabled={loading}
-          >
-            {loading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Check className="h-3.5 w-3.5" />
-            )}
-            <span>Refresh</span>
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* Filter Tabs */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.05 }}
-        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[var(--color-shell-surface-elevated)] p-2 rounded-xl border border-[var(--color-shell-border)]"
-      >
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
-          {(['all', 'unread', 'read'] as const).map((st) => (
-            <button
-              key={st}
-              id={`filter-status-${st}`}
-              onClick={() => setStatusFilter(st)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all capitalize cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
-                statusFilter === st
-                  ? 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text)] shadow-xs border border-[var(--color-shell-border)] font-semibold'
-                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] hover:bg-zinc-100'
-              }`}
-            >
-              {st} {st === 'unread' && unreadCount > 0 && `(${unreadCount})`}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
-          <span className="text-[11px] font-medium text-[var(--color-shell-text-subtle)] pl-1">Category:</span>
-          {['ALL', 'BOOKING', 'PAYMENT', 'SESSION', 'WORKSPACE'].map((cat) => (
-            <button
-              key={cat}
-              id={`filter-cat-${cat.toLowerCase()}`}
-              onClick={() => setTypeFilter(cat)}
-              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] ${
-                typeFilter === cat
-                  ? 'bg-amber-900 text-white font-semibold'
-                  : 'bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] border border-[var(--color-shell-border)] hover:bg-zinc-100'
-              }`}
-            >
-              {cat === 'ALL' ? 'All Types' : cat}
-            </button>
-          ))}
-        </div>
-      </motion.div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <SegmentedTabs
+          value={statusFilter}
+          onChange={setStatusFilter}
+          ariaLabel="Filter by read status"
+          options={[
+            { id: 'all', label: 'All' },
+            { id: 'unread', label: 'Unread', count: unreadCount },
+            { id: 'read', label: 'Read' },
+          ]}
+        />
+        <SegmentedTabs
+          value={typeFilter}
+          onChange={setTypeFilter}
+          ariaLabel="Filter by category"
+          options={CATEGORIES.map((cat) => ({
+            id: cat,
+            label: cat === 'ALL' ? 'All Types' : cat.charAt(0) + cat.slice(1).toLowerCase(),
+          }))}
+        />
+      </div>
 
       {/* Notification List */}
       {loading ? (
-        <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
-          <Loader2 className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-col items-center justify-center gap-2 py-16 text-xs text-[var(--color-shell-text-subtle)]"
+        >
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)] motion-reduce:animate-none" aria-hidden="true" />
           <span>Synchronizing alerts with real database...</span>
         </div>
+      ) : error ? (
+        <InlineNotice
+          tone="danger"
+          role="alert"
+          icon={TriangleAlert}
+          title="Could not load your notifications"
+          actions={
+            <Button size="sm" variant="outline" onClick={loadNotifs}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </InlineNotice>
       ) : notifications.length === 0 ? (
         <EmptyState
           icon={Bell}

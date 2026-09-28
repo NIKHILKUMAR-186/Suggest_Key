@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Fix dark mode variant: bind `dark:` to the app's .dark class, not the OS preference */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
     /* Fonts (auth_design.md tokens with fallbacks) */
@@ -129,6 +132,20 @@
        EXTENDED SEMANTIC TOKENS (light)
        ============================================================ */
 
+    /* ============================================================
+       SEGMENT THEME TOKENS (light) — default brand theme fallback
+       These are overridden by SegmentThemeContext when a segment is active
+       ============================================================ */
+    --segment-accent: #663af3;
+    --segment-accent-hover: #5a30e0;
+    --segment-accent-soft: rgba(102, 57, 243, 0.10);
+    --segment-accent-secondary: #2563eb;
+    --segment-accent-secondary-hover: #1d4ed8;
+    --segment-accent-secondary-soft: rgba(37, 99, 235, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #663af3 0%, #7c3aed 50%, #2563eb 100%);
+    --segment-section-glow: rgba(102, 57, 243, 0.09);
+    --segment-border-accent: rgba(102, 57, 243, 0.42);
+
     /* Brand emphasis accents */
     --brand-primary-strong: #7c3aed;
     --brand-accent-strong: #2563eb;
@@ -251,6 +268,20 @@
     --brand-primary-strong: #8b5cf6;
     --brand-accent-strong: #b6d9fc;
 
+    /* ============================================================
+       SEGMENT THEME TOKENS (dark) — default brand theme fallback
+       These are overridden by SegmentThemeContext when a segment is active
+       ============================================================ */
+    --segment-accent: #8b5cf6;
+    --segment-accent-hover: #7c3aed;
+    --segment-accent-soft: rgba(139, 92, 246, 0.12);
+    --segment-accent-secondary: #60a5fa;
+    --segment-accent-secondary-hover: #4f8ad6;
+    --segment-accent-secondary-soft: rgba(96, 165, 250, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 50%, #60a5fa 100%);
+    --segment-section-glow: rgba(102, 57, 243, 0.16);
+    --segment-border-accent: rgba(139, 92, 246, 0.55);
+
     /* Status: success */
     --status-success-strong: #6ee7b7;
     --status-success-soft: rgba(52, 211, 153, 0.12);
@@ -287,6 +318,243 @@
     --hero-card-inset-highlight: inset 0 1px 1px rgba(216, 236, 248, 0.2), inset 0 24px 48px rgba(168, 216, 245, 0.06);
 
     color-scheme: dark;
+  }
+
+  /* ============================================================
+     SEGMENT THEME OVERRIDES via data-attribute
+     Apply a segment's visual theme by setting [data-segment="slug"]
+     on a parent element (e.g., <html>, <main>, or <section>).
+     These override the default --segment-* variables above.
+
+     Dark variants use a COMPOUND selector (.dark[data-segment="…"])
+     because ThemeContext writes both `.dark` and `data-segment` onto
+     the same element (<html>); a descendant selector would never match.
+     ============================================================ */
+
+  /* Relationship Advisor — warm pink/rose */
+  [data-segment="relationship-advisor"] {
+    --segment-accent: #db2777;
+    --segment-accent-hover: #be185d;
+    --segment-accent-soft: rgba(219, 39, 119, 0.10);
+    --segment-accent-secondary: #f43f5e;
+    --segment-accent-secondary-hover: #e11d48;
+    --segment-accent-secondary-soft: rgba(244, 63, 94, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #db2777 0%, #f43f5e 50%, #fb7185 100%);
+    --segment-section-glow: rgba(219, 39, 119, 0.09);
+    --segment-border-accent: rgba(219, 39, 119, 0.42);
+  }
+
+  /* Career Mentor — emerald/green */
+  [data-segment="career-mentor"] {
+    --segment-accent: #059669;
+    --segment-accent-hover: #047857;
+    --segment-accent-soft: rgba(5, 150, 105, 0.10);
+    --segment-accent-secondary: #10b981;
+    --segment-accent-secondary-hover: #059669;
+    --segment-accent-secondary-soft: rgba(16, 185, 129, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%);
+    --segment-section-glow: rgba(5, 150, 105, 0.09);
+    --segment-border-accent: rgba(5, 150, 105, 0.42);
+  }
+
+  /* Autism Mentor — purple/violet */
+  [data-segment="autism-mentor"] {
+    --segment-accent: #7c3aed;
+    --segment-accent-hover: #6d28d9;
+    --segment-accent-soft: rgba(124, 58, 237, 0.10);
+    --segment-accent-secondary: #a855f7;
+    --segment-accent-secondary-hover: #9333ea;
+    --segment-accent-secondary-soft: rgba(168, 85, 247, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #7c3aed 0%, #a855f7 50%, #c084fc 100%);
+    --segment-section-glow: rgba(124, 58, 237, 0.09);
+    --segment-border-accent: rgba(124, 58, 237, 0.42);
+  }
+
+  /* Parental Advisor — amber/orange */
+  [data-segment="parental-advisor"] {
+    --segment-accent: #d97706;
+    --segment-accent-hover: #b45309;
+    --segment-accent-soft: rgba(217, 119, 6, 0.10);
+    --segment-accent-secondary: #f59e0b;
+    --segment-accent-secondary-hover: #d97706;
+    --segment-accent-secondary-soft: rgba(245, 158, 11, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #d97706 0%, #f59e0b 50%, #fbbf24 100%);
+    --segment-section-glow: rgba(217, 119, 6, 0.09);
+    --segment-border-accent: rgba(217, 119, 6, 0.42);
+  }
+
+  /* Health Wellness — teal/cyan */
+  [data-segment="health-wellness"] {
+    --segment-accent: #0d9488;
+    --segment-accent-hover: #0f766e;
+    --segment-accent-soft: rgba(13, 148, 136, 0.10);
+    --segment-accent-secondary: #14b8a6;
+    --segment-accent-secondary-hover: #0d9488;
+    --segment-accent-secondary-soft: rgba(20, 184, 166, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #0d9488 0%, #14b8a6 50%, #2dd4bf 100%);
+    --segment-section-glow: rgba(13, 148, 136, 0.09);
+    --segment-border-accent: rgba(13, 148, 136, 0.42);
+  }
+
+  /* Finance Mentor — deep green */
+  [data-segment="finance-mentor"] {
+    --segment-accent: #166534;
+    --segment-accent-hover: #14532d;
+    --segment-accent-soft: rgba(22, 101, 52, 0.10);
+    --segment-accent-secondary: #22c55e;
+    --segment-accent-secondary-hover: #16a34a;
+    --segment-accent-secondary-soft: rgba(34, 197, 94, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #166534 0%, #22c55e 50%, #4ade80 100%);
+    --segment-section-glow: rgba(22, 101, 52, 0.09);
+    --segment-border-accent: rgba(22, 101, 52, 0.42);
+  }
+
+  /* Education Mentor — indigo/blue */
+  [data-segment="education-mentor"] {
+    --segment-accent: #4338ca;
+    --segment-accent-hover: #3730a3;
+    --segment-accent-soft: rgba(67, 56, 202, 0.10);
+    --segment-accent-secondary: #6366f1;
+    --segment-accent-secondary-hover: #4f46e5;
+    --segment-accent-secondary-soft: rgba(99, 102, 241, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #818cf8 100%);
+    --segment-section-glow: rgba(67, 56, 202, 0.09);
+    --segment-border-accent: rgba(67, 56, 202, 0.42);
+  }
+
+  /* Creativity Mentor — orange/red */
+  [data-segment="creativity-mentor"] {
+    --segment-accent: #c2410c;
+    --segment-accent-hover: #9a3412;
+    --segment-accent-soft: rgba(194, 65, 12, 0.10);
+    --segment-accent-secondary: #ea580c;
+    --segment-accent-secondary-hover: #c2410c;
+    --segment-accent-secondary-soft: rgba(234, 88, 12, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #c2410c 0%, #ea580c 50%, #fb923c 100%);
+    --segment-section-glow: rgba(194, 65, 12, 0.09);
+    --segment-border-accent: rgba(194, 65, 12, 0.42);
+  }
+
+  /* Technology Mentor — slate/blue */
+  [data-segment="technology-mentor"] {
+    --segment-accent: #1e40af;
+    --segment-accent-hover: #1e3a8a;
+    --segment-accent-soft: rgba(30, 64, 175, 0.10);
+    --segment-accent-secondary: #3b82f6;
+    --segment-accent-secondary-hover: #2563eb;
+    --segment-accent-secondary-soft: rgba(59, 130, 246, 0.10);
+    --segment-gradient-primary: linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #60a5fa 100%);
+    --segment-section-glow: rgba(30, 64, 175, 0.09);
+    --segment-border-accent: rgba(30, 64, 175, 0.42);
+  }
+
+  /* Dark mode segment theme overrides */
+  .dark[data-segment="relationship-advisor"] {
+    --segment-accent: #f472b6;
+    --segment-accent-hover: #f9a8d4;
+    --segment-accent-soft: rgba(244, 114, 182, 0.12);
+    --segment-accent-secondary: #fb7185;
+    --segment-accent-secondary-hover: #fda4af;
+    --segment-accent-secondary-soft: rgba(251, 113, 133, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #f472b6 0%, #fb7185 50%, #fda4af 100%);
+    --segment-section-glow: rgba(219, 39, 119, 0.16);
+    --segment-border-accent: rgba(244, 114, 182, 0.55);
+  }
+
+  .dark[data-segment="career-mentor"] {
+    --segment-accent: #34d399;
+    --segment-accent-hover: #6ee7b7;
+    --segment-accent-soft: rgba(52, 211, 153, 0.12);
+    --segment-accent-secondary: #6ee7b7;
+    --segment-accent-secondary-hover: #a7f3d0;
+    --segment-accent-secondary-soft: rgba(110, 231, 183, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #34d399 0%, #6ee7b7 50%, #a7f3d0 100%);
+    --segment-section-glow: rgba(5, 150, 105, 0.16);
+    --segment-border-accent: rgba(52, 211, 153, 0.55);
+  }
+
+  .dark[data-segment="autism-mentor"] {
+    --segment-accent: #a855f7;
+    --segment-accent-hover: #c084fc;
+    --segment-accent-soft: rgba(168, 85, 247, 0.12);
+    --segment-accent-secondary: #c084fc;
+    --segment-accent-secondary-hover: #d8b4fe;
+    --segment-accent-secondary-soft: rgba(192, 132, 252, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #a855f7 0%, #c084fc 50%, #d8b4fe 100%);
+    --segment-section-glow: rgba(124, 58, 237, 0.16);
+    --segment-border-accent: rgba(168, 85, 247, 0.55);
+  }
+
+  .dark[data-segment="parental-advisor"] {
+    --segment-accent: #fbbf24;
+    --segment-accent-hover: #fcd34d;
+    --segment-accent-soft: rgba(251, 191, 36, 0.12);
+    --segment-accent-secondary: #fcd34d;
+    --segment-accent-secondary-hover: #fde047;
+    --segment-accent-secondary-soft: rgba(253, 224, 71, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #fbbf24 0%, #fcd34d 50%, #fde047 100%);
+    --segment-section-glow: rgba(217, 119, 6, 0.16);
+    --segment-border-accent: rgba(251, 191, 36, 0.55);
+  }
+
+  .dark[data-segment="health-wellness"] {
+    --segment-accent: #2dd4bf;
+    --segment-accent-hover: #5eead4;
+    --segment-accent-soft: rgba(45, 212, 191, 0.12);
+    --segment-accent-secondary: #5eead4;
+    --segment-accent-secondary-hover: #99f6e4;
+    --segment-accent-secondary-soft: rgba(94, 234, 212, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #2dd4bf 0%, #5eead4 50%, #99f6e4 100%);
+    --segment-section-glow: rgba(13, 148, 136, 0.16);
+    --segment-border-accent: rgba(45, 212, 191, 0.55);
+  }
+
+  .dark[data-segment="finance-mentor"] {
+    --segment-accent: #4ade80;
+    --segment-accent-hover: #86efac;
+    --segment-accent-soft: rgba(74, 222, 128, 0.12);
+    --segment-accent-secondary: #86efac;
+    --segment-accent-secondary-hover: #bbf7d0;
+    --segment-accent-secondary-soft: rgba(134, 239, 172, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #4ade80 0%, #86efac 50%, #bbf7d0 100%);
+    --segment-section-glow: rgba(22, 101, 52, 0.16);
+    --segment-border-accent: rgba(74, 222, 128, 0.55);
+  }
+
+  .dark[data-segment="education-mentor"] {
+    --segment-accent: #818cf8;
+    --segment-accent-hover: #a5b4fc;
+    --segment-accent-soft: rgba(129, 140, 248, 0.12);
+    --segment-accent-secondary: #a5b4fc;
+    --segment-accent-secondary-hover: #c7d2fe;
+    --segment-accent-secondary-soft: rgba(165, 180, 252, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #818cf8 0%, #a5b4fc 50%, #c7d2fe 100%);
+    --segment-section-glow: rgba(67, 56, 202, 0.16);
+    --segment-border-accent: rgba(129, 140, 248, 0.55);
+  }
+
+  .dark[data-segment="creativity-mentor"] {
+    --segment-accent: #fb923c;
+    --segment-accent-hover: #fdba74;
+    --segment-accent-soft: rgba(251, 146, 60, 0.12);
+    --segment-accent-secondary: #fdba74;
+    --segment-accent-secondary-hover: #ffedd5;
+    --segment-accent-secondary-soft: rgba(253, 186, 116, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #fb923c 0%, #fdba74 50%, #ffedd5 100%);
+    --segment-section-glow: rgba(194, 65, 12, 0.16);
+    --segment-border-accent: rgba(251, 146, 60, 0.55);
+  }
+
+  .dark[data-segment="technology-mentor"] {
+    --segment-accent: #60a5fa;
+    --segment-accent-hover: #93c5fd;
+    --segment-accent-soft: rgba(96, 165, 250, 0.12);
+    --segment-accent-secondary: #93c5fd;
+    --segment-accent-secondary-hover: #bfdbfe;
+    --segment-accent-secondary-soft: rgba(147, 197, 253, 0.12);
+    --segment-gradient-primary: linear-gradient(135deg, #60a5fa 0%, #93c5fd 50%, #bfdbfe 100%);
+    --segment-section-glow: rgba(30, 64, 175, 0.16);
+    --segment-border-accent: rgba(96, 165, 250, 0.55);
   }
 
   html {
@@ -689,19 +957,113 @@
   --seeker-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 12px 30px -16px rgba(15, 23, 42, 0.24);
   --seeker-card-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 28px 52px -22px rgba(15, 23, 42, 0.34);
 
-  /* Selected segment pill */
-  --seeker-segment-active-bg: linear-gradient(135deg, #663af3 0%, #7c3aed 50%, #2563eb 100%);
-  --seeker-segment-active-shadow: 0 12px 28px -12px rgba(102, 57, 243, 0.85);
+/* Selected segment pill — uses segment accent, not hardcoded violet */
+--seeker-segment-active-bg: var(--segment-gradient-primary);
+--seeker-segment-active-shadow: 0 12px 28px -12px var(--segment-section-glow);
 
-  /* Selected date chip */
-  --seeker-date-active-bg: rgba(102, 57, 243, 0.12);
-  --seeker-date-active-border: rgba(102, 57, 243, 0.42);
+/* Selected date chip */
+--seeker-date-active-bg: var(--segment-accent-soft);
+--seeker-date-active-border: var(--segment-border-accent);
 
-  /* Empty state */
-  --seeker-empty-halo: rgba(102, 57, 243, 0.16);
+/* Empty state */
+--seeker-empty-halo: var(--segment-section-glow);
 
-  /* Section atmosphere (segment discovery zone) */
-  --seeker-section-glow: rgba(102, 57, 243, 0.09);
+/* Section atmosphere (segment discovery zone) */
+--seeker-section-glow: var(--segment-section-glow);
+
+/* New premium tokens */
+  --seeker-glow-a: var(--segment-section-glow);
+  --seeker-glow-b: var(--segment-accent-soft);
+
+  /* Card lift — uses segment accent for hover glow */
+  --seeker-card-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 28px 52px -22px color-mix(in srgb, var(--segment-accent) 55%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     ELEVATED SURFACE TOKENS (premium depth layer)
+     A small set of deliberately distinct surfaces so the UI reads as layered
+     without needing glassmorphism everywhere.
+     --------------------------------------------------------------------------- */
+  --surface-raise-1: 0 1px 2px -1px rgba(15, 23, 42, 0.06), 0 2px 4px -2px rgba(15, 23, 42, 0.08);
+  --surface-raise-2: 0 4px 8px -2px rgba(15, 23, 42, 0.10), 0 2px 4px -2px rgba(15, 23, 42, 0.06);
+  --surface-raise-3: 0 12px 24px -6px rgba(15, 23, 42, 0.14), 0 4px 8px -4px rgba(15, 23, 42, 0.08);
+
+  /* Depth ring — subtle inset highlight on elevated cards */
+  --surface-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --surface-inset-dark: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* ---------------------------------------------------------------------------
+     TYPOGRAPHY SCALE (premium editorial feel)
+     --------------------------------------------------------------------------- */
+  --text-hero clamp: clamp(2.1rem, 5.5vw, 3.25rem);
+  --text-section clamp: clamp(1.5rem, 2.5vw, 2rem);
+  --text-card-title: clamp(1rem, 1.4vw, 1.125rem);
+
+  /* ---------------------------------------------------------------------------
+     SEGMENT-AWARE HIGHLIGHT TOKENS
+     Used by mentor cards, detail page, and selected controls so the segment
+     accent feels integrated rather than bolted on.
+     --------------------------------------------------------------------------- */
+  --segment-highlight-soft: color-mix(in srgb, var(--segment-accent) 8%, transparent);
+  --segment-highlight-border: color-mix(in srgb, var(--segment-accent) 28%, transparent);
+  --segment-highlight-glow: color-mix(in srgb, var(--segment-accent) 14%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     SEGMENT ATMOSPHERE TOKENS (light)
+     Derived from the per-segment accent so every one of the nine segments gets
+     a clearly different atmosphere without any extra per-segment CSS. Strength
+     is intentionally higher than the raw --segment-* values: switching segments
+     must be visible at a glance, not just on the selected control.
+     --------------------------------------------------------------------------- */
+  --segment-page-tint: color-mix(in srgb, var(--segment-accent) 5%, transparent);
+  --segment-atmo-a: color-mix(in srgb, var(--segment-accent) 22%, transparent);
+  --segment-atmo-b: color-mix(in srgb, var(--segment-accent-secondary) 16%, transparent);
+  --segment-atmo-c: color-mix(in srgb, var(--segment-accent) 10%, transparent);
+  --segment-hero-wash: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--segment-accent) 14%, transparent) 0%,
+    color-mix(in srgb, var(--segment-accent-secondary) 8%, transparent) 42%,
+    transparent 78%
+  );
+  --segment-hero-edge: color-mix(in srgb, var(--segment-accent) 34%, transparent);
+  --segment-section-line: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--segment-accent) 42%, transparent) 30%,
+    color-mix(in srgb, var(--segment-accent-secondary) 34%, transparent) 70%,
+    transparent 100%
+  );
+  --segment-cta-bg: var(--segment-gradient-primary);
+  --segment-cta-shadow: 0 10px 28px -12px color-mix(in srgb, var(--segment-accent) 70%, transparent);
+  --segment-ring: color-mix(in srgb, var(--segment-accent) 40%, transparent);
+  --segment-card-bar: linear-gradient(
+    90deg,
+    var(--segment-accent) 0%,
+    var(--segment-accent-secondary) 100%
+  );
+  --segment-card-wash: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--segment-accent) 9%, transparent) 0%,
+    transparent 42%
+  );
+  --segment-badge-bg: color-mix(in srgb, var(--segment-accent) 12%, transparent);
+  --segment-badge-fg: color-mix(in srgb, var(--segment-accent) 82%, var(--color-shell-text));
+  --segment-badge-border: color-mix(in srgb, var(--segment-accent) 34%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     CONTROL SURFACE TOKENS
+     --------------------------------------------------------------------------- */
+  --control-bg: var(--color-shell-surface);
+  --control-bg-hover: var(--color-shell-surface-elevated);
+  --control-border: var(--color-shell-border);
+  --control-border-strong: var(--color-shell-border-strong);
+
+  /* ---------------------------------------------------------------------------
+     LOADING / SKELETON TOKENS
+     --------------------------------------------------------------------------- */
+  --skeleton-gradient: linear-gradient(90deg,
+    var(--color-shell-surface) 0%,
+    var(--color-shell-surface-elevated) 50%,
+    var(--color-shell-surface) 100%);
 }
 
 .dark {
@@ -737,25 +1099,105 @@
   --seeker-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 20px 44px -24px rgba(0, 0, 0, 0.95);
   --seeker-card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.55), 0 40px 70px -28px rgba(0, 0, 0, 1);
 
-  /* Selected segment pill */
-  --seeker-segment-active-bg: linear-gradient(135deg, #663af3 0%, #7c3aed 50%, #3b82f6 100%);
-  --seeker-segment-active-shadow: 0 14px 34px -14px rgba(102, 57, 243, 0.9);
+  /* Selected segment pill — uses segment accent, not hardcoded violet */
+  --seeker-segment-active-bg: var(--segment-gradient-primary);
+  --seeker-segment-active-shadow: 0 14px 34px -14px var(--segment-section-glow);
 
   /* Selected date chip */
-  --seeker-date-active-bg: rgba(102, 57, 243, 0.20);
-  --seeker-date-active-border: rgba(139, 92, 246, 0.55);
+  --seeker-date-active-bg: var(--segment-accent-soft);
+  --seeker-date-active-border: var(--segment-border-accent);
 
   /* Empty state */
-  --seeker-empty-halo: rgba(102, 57, 243, 0.28);
+  --seeker-empty-halo: var(--segment-section-glow);
 
   /* Section atmosphere */
-  --seeker-section-glow: rgba(102, 57, 243, 0.16);
+  --seeker-section-glow: var(--segment-section-glow);
+
+  /* New premium tokens */
+  --seeker-glow-a: var(--segment-section-glow);
+  --seeker-glow-b: var(--segment-accent-soft);
+
+  /* Card lift — uses segment accent for hover glow */
+  --seeker-card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.55), 0 40px 70px -28px color-mix(in srgb, var(--segment-accent) 60%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     ELEVATED SURFACE TOKENS (premium depth layer)
+     --------------------------------------------------------------------------- */
+  --surface-raise-1: 0 1px 2px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.5);
+  --surface-raise-2: 0 6px 12px -4px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+  --surface-raise-3: 0 16px 32px -8px rgba(0, 0, 0, 0.6), 0 6px 12px -6px rgba(0, 0, 0, 0.4);
+
+  /* Depth ring — subtle inset highlight on elevated cards */
+  --surface-inset-highlight: inset 0 1px 0 rgba(216, 236, 248, 0.06);
+  --surface-inset-dark: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+
+  /* ---------------------------------------------------------------------------
+     SEGMENT-AWARE HIGHLIGHT TOKENS
+     --------------------------------------------------------------------------- */
+  --segment-highlight-soft: color-mix(in srgb, var(--segment-accent) 10%, transparent);
+  --segment-highlight-border: color-mix(in srgb, var(--segment-accent) 32%, transparent);
+  --segment-highlight-glow: color-mix(in srgb, var(--segment-accent) 18%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     SEGMENT ATMOSPHERE TOKENS (dark)
+     Dark mode needs a touch more chroma to read against the near-black shell,
+     but stays layered/translucent so the surface never becomes a flat block.
+     --------------------------------------------------------------------------- */
+  --segment-page-tint: color-mix(in srgb, var(--segment-accent) 8%, transparent);
+  --segment-atmo-a: color-mix(in srgb, var(--segment-accent) 34%, transparent);
+  --segment-atmo-b: color-mix(in srgb, var(--segment-accent-secondary) 24%, transparent);
+  --segment-atmo-c: color-mix(in srgb, var(--segment-accent) 16%, transparent);
+  --segment-hero-wash: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--segment-accent) 26%, transparent) 0%,
+    color-mix(in srgb, var(--segment-accent-secondary) 14%, transparent) 44%,
+    transparent 80%
+  );
+  --segment-hero-edge: color-mix(in srgb, var(--segment-accent) 50%, transparent);
+  --segment-section-line: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--segment-accent) 55%, transparent) 30%,
+    color-mix(in srgb, var(--segment-accent-secondary) 44%, transparent) 70%,
+    transparent 100%
+  );
+  --segment-cta-bg: var(--segment-gradient-primary);
+  --segment-cta-shadow: 0 12px 34px -12px color-mix(in srgb, var(--segment-accent) 85%, transparent);
+  --segment-ring: color-mix(in srgb, var(--segment-accent) 52%, transparent);
+  --segment-card-bar: linear-gradient(
+    90deg,
+    var(--segment-accent) 0%,
+    var(--segment-accent-secondary) 100%
+  );
+  --segment-card-wash: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--segment-accent) 14%, transparent) 0%,
+    transparent 46%
+  );
+  --segment-badge-bg: color-mix(in srgb, var(--segment-accent) 18%, transparent);
+  --segment-badge-fg: var(--segment-accent);
+  --segment-badge-border: color-mix(in srgb, var(--segment-accent) 45%, transparent);
+
+  /* ---------------------------------------------------------------------------
+     CONTROL SURFACE TOKENS
+     --------------------------------------------------------------------------- */
+  --control-bg: var(--color-shell-surface);
+  --control-bg-hover: var(--color-shell-surface-elevated);
+  --control-border: var(--color-shell-border);
+  --control-border-strong: var(--color-shell-border-strong);
 }
 
 /* Atmospheric page background — sits behind all seeker content */
 .seeker-page {
   position: relative;
   isolation: isolate;
+  /* Segment tint: a wide, very soft wash, never a flat fill. */
+  background-image: linear-gradient(
+    180deg,
+    var(--segment-page-tint) 0%,
+    color-mix(in srgb, var(--segment-accent) 2%, transparent) 380px,
+    transparent 760px
+  );
 }
 .seeker-page::before {
   content: '';
@@ -763,13 +1205,14 @@
   top: 0;
   left: 0;
   right: 0;
-  height: 760px;
+  height: 820px;
   z-index: -2;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 55% 50% at 18% 0%, var(--seeker-glow-violet), transparent 70%),
-    radial-gradient(ellipse 45% 45% at 88% 8%, var(--seeker-glow-cyan), transparent 72%),
-    radial-gradient(ellipse 65% 55% at 50% 0%, var(--color-shell-primary-soft), transparent 78%);
+    radial-gradient(ellipse 62% 58% at 18% 0%, var(--segment-atmo-a), transparent 72%),
+    radial-gradient(ellipse 52% 52% at 88% 8%, var(--segment-atmo-b), transparent 74%),
+    radial-gradient(ellipse 80% 55% at 50% 0%, var(--segment-atmo-c), transparent 80%),
+    radial-gradient(ellipse 70% 60% at 50% 0%, var(--color-shell-primary-soft), transparent 80%);
 }
 .seeker-page::after {
   content: '';
@@ -781,30 +1224,39 @@
     linear-gradient(var(--seeker-grid-line) 1px, transparent 1px),
     linear-gradient(90deg, var(--seeker-grid-line) 1px, transparent 1px);
   background-size: 88px 88px;
-  -webkit-mask-image: linear-gradient(180deg, black 0%, transparent 42%);
-  mask-image: linear-gradient(180deg, black 0%, transparent 42%);
+  -webkit-mask-image: linear-gradient(180deg, black 0%, transparent 45%);
+  mask-image: linear-gradient(180deg, black 0%, transparent 45%);
 }
 
 /* Hero frame */
 .seeker-hero {
-  background: var(--color-shell-surface);
-  border: 1px solid var(--seeker-hero-border);
-  box-shadow: var(--seeker-hero-shadow);
+  background-color: var(--color-shell-surface);
+  background-image: var(--segment-hero-wash);
+  border: 1px solid var(--segment-hero-edge);
+  box-shadow: var(--seeker-hero-shadow), 0 0 0 1px var(--segment-highlight-glow);
 }
 .seeker-hero-scrim {
   background: var(--seeker-hero-scrim);
 }
+/* The hero headline's second line carries the segment gradient so the
+   atmosphere reads before any interaction. Scoped to the hero so the rest of
+   the app keeps the Suggest Key brand gradient. */
+.seeker-hero .text-gradient-brand {
+  background-image: var(--segment-gradient-primary);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
 @media (prefers-reduced-motion: no-preference) {
   .seeker-hero-drift {
-    animation: seeker-hero-drift 26s ease-in-out infinite alternate;
+    animation: seeker-hero-drift 28s ease-in-out infinite alternate;
   }
 }
 @keyframes seeker-hero-drift {
   from {
-    transform: scale(1.04) translate3d(-0.6%, 0.4%, 0);
+    transform: scale(1.03) translate3d(-0.5%, 0.3%, 0);
   }
   to {
-    transform: scale(1.09) translate3d(0.6%, -0.8%, 0);
+    transform: scale(1.08) translate3d(0.5%, -0.6%, 0);
   }
 }
 
@@ -813,22 +1265,35 @@
   background: var(--seeker-panel-bg);
   border: 1px solid var(--seeker-panel-border);
   box-shadow: var(--seeker-panel-shadow), var(--seeker-panel-inset);
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
 }
 
 /* =============================================================================
-   MENTOR AVAILABILITY — scheduling surface
-   Layered on top of the shell tokens (page -> surface -> elevated -> input).
+   PREMIUM MENTORSHIP MARKETPLACE — REFINED SURFACE LAYER
+   Layered tokens for the /seeker discovery experience.
    Every colour is token-driven so light and dark stay in sync.
    ========================================================================== */
 
 /* Section card: the weekly-hours / date-exceptions containers */
 .av-panel {
+  position: relative;
+  overflow: hidden;
   background: var(--color-shell-surface);
   border: 1px solid var(--color-shell-border);
   border-radius: 20px;
   box-shadow: var(--shadow-xs);
+}
+.av-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--segment-section-line);
+  background-image: var(--segment-section-line);
+  pointer-events: none;
 }
 
 /* Day row ------------------------------------------------------------------ */
@@ -915,15 +1380,15 @@
   outline-offset: 2px;
 }
 
-/* Segment pill */
+/* Segment pill — premium rounded pill with segment accent */
 .seeker-segment {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 46px;
-  padding: 0 20px;
-  border-radius: 14px;
+  min-height: 48px;
+  padding: 0 22px;
+  border-radius: 999px;
   border: 1px solid var(--color-shell-border);
   background: var(--color-shell-surface);
   color: var(--color-shell-text-muted);
@@ -1065,14 +1530,24 @@
   background: var(--color-shell-surface-elevated);
   transform: translateY(-1px);
 }
-.seeker-segment[data-selected='true'] {
-  background: var(--seeker-segment-active-bg);
+.seeker-segment[data-selected='true'],
+.seeker-segment.segment-selected-pill,
+.seeker-segment[data-selected='true']:hover,
+.seeker-segment.segment-selected-pill:hover,
+.segment-selected-pill,
+.segment-selected-pill:hover {
+  background: var(--segment-cta-bg);
+  background-image: var(--segment-cta-bg);
   border-color: transparent;
   color: #ffffff;
-  box-shadow: var(--seeker-segment-active-shadow);
+  box-shadow: var(--seeker-segment-active-shadow), 0 0 0 1px var(--segment-ring);
   transform: translateY(-1px);
+  padding-left: 28px;
 }
-.seeker-segment[data-selected='true']:hover {
+.seeker-segment[data-selected='true']:hover,
+.seeker-segment.segment-selected-pill:hover,
+.segment-selected-pill:hover {
+  filter: brightness(1.07) saturate(1.05);
   color: #ffffff;
 }
 /* Focus ring is drawn with `outline` so it is never clobbered by the
@@ -1110,6 +1585,7 @@
   background: var(--seeker-date-active-bg);
   border-color: var(--seeker-date-active-border);
   color: var(--color-shell-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--segment-accent) 18%, transparent);
 }
 
 /* Mentor card */
@@ -1126,7 +1602,7 @@
   .seeker-card:hover {
     transform: translateY(-4px);
     box-shadow: var(--seeker-card-shadow-hover);
-    border-color: var(--color-shell-border-strong);
+    border-color: color-mix(in srgb, var(--segment-accent) 40%, var(--color-shell-border-strong));
   }
 }
 
@@ -1136,13 +1612,194 @@
 }
 
 /* Horizontal scroll rails (segments) */
-.seeker-rail {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.seeker-rail::-webkit-scrollbar {
-  display: none;
-}
+  .seeker-rail {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .seeker-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* =============================================================================
+     PREMIUM SURFACE CLASSES
+     Reusable layered-surface utilities for the seeker marketplace.
+     Each is token-driven so light/dark stay in sync.
+     ========================================================================== */
+
+  /* A raised card that sits above the page background. */
+  .surface-raised {
+    background: var(--color-shell-surface);
+    border: 1px solid var(--color-shell-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--surface-raise-1);
+  }
+  .surface-raised:hover {
+    box-shadow: var(--surface-raise-2);
+  }
+
+  /* A deep surface — used for mentor cards and detail panels. */
+  .surface-deep {
+    background: var(--color-shell-surface);
+    border: 1px solid var(--color-shell-border);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--surface-raise-1), var(--surface-inset-highlight);
+    transition:
+      box-shadow 220ms ease,
+      border-color 220ms ease,
+      transform 220ms cubic-bezier(0.23, 1, 0.31, 1);
+  }
+  @media (hover: hover) and (prefers-reduced-motion: no-preference) {
+    .surface-deep:hover {
+      box-shadow: var(--surface-raise-3),
+        0 0 0 1px var(--segment-highlight-border),
+        var(--surface-inset-highlight);
+      transform: translateY(-3px);
+    }
+  }
+
+  /* A floating control panel — search, filter bars, date pickers. */
+  .surface-float {
+    background: var(--seeker-panel-bg);
+    border: 1px solid var(--seeker-panel-border);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--seeker-panel-shadow), var(--seeker-panel-inset);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+  }
+
+  /* Segment-tinted focus ring — used by controls inside segment context. */
+  .focus-segment {
+    --tw-ring-color: var(--segment-accent);
+  }
+  .focus-segment:focus-visible {
+    outline: 2px solid var(--segment-accent);
+    outline-offset: 2px;
+  }
+
+  /* Section heading eyebrow — consistent across all discovery sections. */
+  .section-eyebrow-premium {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-shell-text-subtle);
+  }
+  .section-eyebrow-premium::before {
+    content: '';
+    display: block;
+    width: 32px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--segment-card-bar);
+  }
+
+  /* Premium heading — editorial display type with tight tracking. */
+  .heading-display {
+    font-family: var(--font-aeonikpro);
+    font-weight: 500;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    color: var(--color-shell-text);
+  }
+  .heading-display-lg {
+    font-size: clamp(2.1rem, 5.5vw, 3.25rem);
+  }
+  .heading-display-md {
+    font-size: clamp(1.5rem, 2.5vw, 2rem);
+  }
+  .heading-display-sm {
+    font-size: clamp(1.15rem, 1.8vw, 1.35rem);
+  }
+
+  /* Subtle text gradient for hero headlines — uses brand primary, not a
+     random purple. */
+  .text-gradient-brand {
+    background: linear-gradient(180deg,
+      var(--color-shell-text) 0%,
+      var(--color-shell-text) 55%,
+      var(--color-shell-primary) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* A soft ambient glow behind a section — segment-aware. */
+  .ambient-glow {
+    position: relative;
+    isolation: isolate;
+  }
+  .ambient-glow::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: radial-gradient(ellipse 70% 60% at 50% 0%,
+      var(--segment-atmo-c), transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Stat callout — used for hero metrics and counts. */
+  .stat-callout {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat-callout-value {
+    font-family: var(--font-aeonikpro);
+    font-size: clamp(1.5rem, 3vw, 2.25rem);
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--color-shell-text);
+  }
+  .stat-callout-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-shell-text-subtle);
+  }
+
+  /* Premium skeleton — layered shimmer that respects theme. */
+  .skeleton-premium {
+    background: var(--skeleton-gradient);
+    border-radius: var(--radius-md);
+    position: relative;
+    overflow: hidden;
+  }
+  .skeleton-premium::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      var(--color-shell-surface-elevated) 50%,
+      transparent 100%);
+    animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  }
+  @keyframes skeleton-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* Card hover lift — segment-tinted glow on lift. */
+  .card-lift {
+    transition:
+      transform 220ms cubic-bezier(0.23, 1, 0.31, 1),
+      box-shadow 220ms ease,
+      border-color 220ms ease;
+  }
+  @media (hover: hover) and (prefers-reduced-motion: no-preference) {
+    .card-lift:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--surface-raise-3),
+        0 0 0 1px var(--segment-highlight-border);
+    }
+  }
 
 /* ============================================================
    RESPONSIVE / OVERFLOW SAFETY NET
@@ -1238,11 +1895,456 @@ body {
   }
 }
 
-/* Wide-screen hover effects must not stick after a tap on touch devices. */
-@media (hover: none) {
-  .no-sticky-hover:hover {
-    transform: none;
+  /* Wide-screen hover effects must not stick after a tap on touch devices. */
+  @media (hover: none) {
+    .no-sticky-hover:hover {
+      transform: none;
+    }
   }
-}
+
+  /* ============================================================
+     SEEKER MARKETPLACE — ENHANCED PREMIUM UTILITIES
+     ============================================================ */
+
+  /* Section container with consistent breathing room */
+  .section-container {
+    width: 100%;
+    max-width: 1200px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: clamp(16px, 4vw, 32px);
+    padding-right: clamp(16px, 4vw, 32px);
+  }
+
+  /* Consistent section vertical rhythm */
+  .section-gap {
+    margin-top: clamp(40px, 6vw, 80px);
+    margin-bottom: clamp(40px, 6vw, 80px);
+  }
+
+  /* Card with segment-aware accent bar and wash on hover */
+  .seeker-card-premium {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--seeker-card-bg);
+    background-image: var(--segment-card-wash);
+    border: 1px solid var(--color-shell-border);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--seeker-card-shadow);
+    transition:
+      transform 280ms cubic-bezier(0.23, 1, 0.31, 1),
+      box-shadow 280ms ease,
+      border-color 280ms ease;
+  }
+  .seeker-card-premium::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--segment-card-bar);
+    opacity: 0.5;
+    transition: opacity 280ms ease;
+  }
+  @media (hover: hover) and (prefers-reduced-motion: no-preference) {
+    .seeker-card-premium:hover {
+      transform: translateY(-6px);
+      box-shadow: var(--seeker-card-shadow-hover);
+      border-color: color-mix(in srgb, var(--segment-accent) 45%, var(--color-shell-border-strong));
+    }
+    .seeker-card-premium:hover::after {
+      opacity: 1;
+    }
+  }
+
+  /* Featured mentor card with subtle accent ring */
+  .seeker-card-featured {
+    background: var(--seeker-card-bg);
+    border: 1px solid var(--color-shell-border);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--seeker-card-shadow);
+    transition:
+      transform 280ms cubic-bezier(0.23, 1, 0.31, 1),
+      box-shadow 280ms ease,
+      border-color 280ms ease;
+  }
+  .seeker-card-featured::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, var(--color-shell-warning), var(--color-shell-warning) 50%, transparent 50%);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 280ms ease;
+    pointer-events: none;
+  }
+  @media (hover: hover) and (prefers-reduced-motion: no-preference) {
+    .seeker-card-featured:hover {
+      transform: translateY(-6px);
+      box-shadow: var(--seeker-card-shadow-hover);
+    }
+    .seeker-card-featured:hover::before {
+      opacity: 0.6;
+    }
+  }
+
+  /* Improved mentor card internal layout */
+  .mentor-card-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    padding: clamp(16px, 3vw, 24px);
+  }
+  @media (min-width: 640px) {
+    .mentor-card-body {
+      padding: clamp(20px, 3vw, 28px);
+    }
+  }
+
+  /* Mentor card footer with better visual separation */
+  .mentor-card-footer {
+    margin-top: auto;
+    padding-top: clamp(14px, 2.5vw, 20px);
+    border-top: 1px solid var(--color-shell-border);
+  }
+
+  /* Pricing display — makes the price the visual anchor */
+  .price-display {
+    font-family: var(--font-aeonikpro);
+    font-size: clamp(1.1rem, 1.8vw, 1.35rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--color-shell-text);
+    line-height: 1.2;
+  }
+  .price-display .price-amount {
+    font-weight: 700;
+  }
+  .price-display .price-label {
+    font-size: 0.7em;
+    font-weight: 500;
+    color: var(--color-shell-text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* Availability indicator — subtle but clear */
+  .availability-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: var(--color-shell-success);
+    box-shadow: 0 0 0 2px var(--color-shell-success-soft);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .availability-dot {
+      animation: none;
+    }
+  }
+
+  /* Section header — consistent across all discovery sections */
+  .section-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: clamp(12px, 2vw, 20px);
+    margin-bottom: clamp(20px, 3vw, 32px);
+  }
+  .section-header-content {
+    min-width: 0;
+    flex: 1;
+    position: relative;
+    padding-left: 18px;
+  }
+  .section-header-content::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 0;
+    width: 3px;
+    border-radius: 3px;
+    background: var(--segment-card-bar);
+  }
+  .section-header-actions {
+    display: flex;
+    align-items: center;
+    gap: clamp(8px, 1.5vw, 12px);
+    flex-shrink: 0;
+  }
+
+  /* Badge styles */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 9999px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+  .badge-success {
+    background: var(--color-shell-success-soft);
+    color: var(--color-shell-success);
+    border: 1px solid color-mix(in srgb, var(--color-shell-success) 20%, transparent);
+  }
+  .badge-neutral {
+    background: var(--color-shell-bg);
+    color: var(--color-shell-text-muted);
+    border: 1px solid var(--color-shell-border);
+  }
+  .badge-accent {
+    background: var(--segment-badge-bg);
+    color: var(--segment-badge-fg);
+    border: 1px solid var(--segment-badge-border);
+  }
+
+  /* Divider with gradient */
+  .divider-gradient {
+    height: 1px;
+    background: var(--segment-section-line);
+    background-image: var(--segment-section-line);
+    border: none;
+    margin: 0;
+  }
+
+  /* Error banner — consistent styling */
+  .error-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: clamp(14px, 2vw, 20px);
+    border-radius: var(--radius-xl);
+    border: 1px solid color-mix(in srgb, var(--color-shell-error) 25%, transparent);
+    background: var(--color-shell-error-soft);
+    color: var(--color-shell-error);
+  }
+  @media (min-width: 640px) {
+    .error-banner {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  /* Card with improved inner spacing for detail pages */
+  .detail-card {
+    background: var(--color-shell-surface);
+    border: 1px solid var(--color-shell-border);
+    border-radius: var(--radius-2xl);
+    padding: clamp(20px, 3vw, 28px);
+    box-shadow: var(--shadow-xs);
+    transition: box-shadow 200ms ease;
+  }
+  .detail-card:hover {
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* Sticky booking panel */
+  .booking-panel {
+    position: sticky;
+    top: clamp(16px, 3vw, 24px);
+  }
+  @media (max-width: 1023px) {
+    .booking-panel {
+      position: static;
+    }
+  }
+
+  /* Improved skeleton animation */
+  .skeleton-shimmer {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(90deg,
+      var(--color-shell-surface) 0%,
+      var(--color-shell-surface-elevated) 50%,
+      var(--color-shell-surface) 100%);
+    background-size: 200% 100%;
+    animation: skeleton-shift 1.5s ease-in-out infinite;
+  }
+  @keyframes skeleton-shift {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Avatar with subtle ring on hover */
+  .avatar-ring {
+    transition: box-shadow 200ms ease;
+  }
+  .seeker-card-premium:hover .avatar-ring,
+  .seeker-card-featured:hover .avatar-ring {
+    box-shadow: 0 0 0 3px var(--segment-accent-soft);
+  }
+
+  /* Chip row with better spacing */
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-shell-border);
+    background: var(--color-shell-surface-elevated);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-shell-text-muted);
+    line-height: 1.4;
+    transition: background 150ms ease, border-color 150ms ease;
+  }
+  .chip:hover {
+    background: var(--color-shell-bg-hover);
+    border-color: var(--color-shell-border-strong);
+  }
+
+  /* Primary CTA button — segment-aware */
+  .btn-primary-segment {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 12px 24px;
+    border-radius: var(--radius-xl);
+    border: none;
+    background: var(--segment-cta-bg);
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--segment-cta-shadow);
+    transition: background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+  }
+  .btn-primary-segment:hover {
+    background: var(--segment-gradient-primary);
+    background-image: var(--segment-gradient-primary);
+    filter: brightness(1.07) saturate(1.05);
+    transform: translateY(-1px);
+    box-shadow: 0 14px 34px -12px color-mix(in srgb, var(--segment-accent) 85%, transparent);
+  }
+  .btn-primary-segment:active {
+    transform: translateY(0) scale(0.98);
+  }
+  .btn-primary-segment:focus-visible {
+    outline: 2px solid var(--color-shell-focus);
+    outline-offset: 2px;
+  }
+
+  /* Secondary CTA — outline with segment accent on hover */
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 12px 24px;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-shell-border-strong);
+    background: var(--color-shell-surface);
+    color: var(--color-shell-text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+  .btn-secondary:hover {
+    background: var(--segment-badge-bg);
+    border-color: var(--segment-accent);
+    color: var(--segment-badge-fg);
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px var(--segment-highlight-glow);
+  }
+  .btn-secondary:active {
+    transform: translateY(0) scale(0.98);
+  }
+  .btn-secondary:focus-visible {
+    outline: 2px solid var(--color-shell-focus);
+    outline-offset: 2px;
+  }
+
+  /* Glass input with improved focus */
+  .input-glass {
+    width: 100%;
+    height: 56px;
+    padding: 0 16px 0 52px;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-shell-border-strong);
+    background: var(--color-shell-surface-elevated);
+    color: var(--color-shell-text);
+    font-size: 15px;
+    font-weight: 500;
+    transition: border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
+  }
+  .input-glass::placeholder {
+    color: var(--color-shell-text-subtle);
+    font-weight: 400;
+  }
+  .input-glass:hover {
+    border-color: color-mix(in srgb, var(--color-shell-primary) 40%, var(--color-shell-border-strong));
+  }
+  .input-glass:focus {
+    outline: none;
+    border-color: var(--color-shell-primary);
+    box-shadow: 0 0 0 3px var(--color-shell-primary-soft);
+    background: var(--color-shell-surface);
+  }
+
+  /* Segment indicator bar — left accent on cards */
+  .segment-indicator {
+    position: absolute;
+    top: 12px;
+    bottom: 12px;
+    left: 0;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--segment-gradient-primary);
+    opacity: 0;
+    transition: opacity 280ms ease;
+  }
+  .seeker-card-premium:hover .segment-indicator,
+  .seeker-card-featured:hover .segment-indicator {
+    opacity: 1;
+  }
+
+  /* Responsive utilities */
+  @media (max-width: 640px) {
+    .hide-mobile {
+      display: none !important;
+    }
+    .mobile-stack {
+      flex-direction: column !important;
+    }
+    .mobile-full {
+      width: 100% !important;
+    }
+  }
+  @media (min-width: 641px) and (max-width: 1024px) {
+    .hide-tablet {
+      display: none !important;
+    }
+  }
+  @media (min-width: 1025px) {
+    .hide-desktop {
+      display: none !important;
+    }
+  }
+
 
 

@@ -62,6 +62,21 @@ export const PAYMENT_QR_MAX_LABEL = `${PAYMENT_QR_MAX_BYTES / (1024 * 1024)} MB`
 /** The payment status a freshly submitted proof must carry. */
 export const PAYMENT_STATUS_PENDING = 'PENDING_VERIFICATION';
 
+/** Booking created, awaiting any payment attempt (manual or gateway). */
+export const PAYMENT_STATUS_PAYMENT_PENDING = 'PAYMENT_PENDING';
+
+/** Gateway payment is in flight (Razorpay processing). */
+export const PAYMENT_STATUS_PAYMENT_PROCESSING = 'PAYMENT_PROCESSING';
+
+/** Gateway payment failed or was rejected by the bank. */
+export const PAYMENT_STATUS_FAILED = 'FAILED';
+
+/** Full refund issued through the gateway. */
+export const PAYMENT_STATUS_REFUNDED = 'REFUNDED';
+
+/** Refund attempt failed. */
+export const PAYMENT_STATUS_REFUND_FAILED = 'REFUND_FAILED';
+
 /**
  * Validates a payment QR image before it is uploaded.
  *

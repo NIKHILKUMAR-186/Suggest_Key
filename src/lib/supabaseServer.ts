@@ -151,6 +151,14 @@ interface AuthRequest extends Request {
   };
   requestId?: string;
   logStart?: number;
+  /**
+   * The exact bytes the client sent, captured by the JSON body's `verify` hook.
+   *
+   * Only the Razorpay webhook reads this, and only because the gateway signs
+   * the raw bytes: re-serialising `req.body` would change the payload and the
+   * signature could never verify. Left undefined on every other route.
+   */
+  rawBody?: Buffer;
 }
 
 function isUserRole(value: unknown): value is UserRole {

@@ -1,5 +1,8 @@
 export const APP_CONFIG = {
-  HOLD_DURATION_MS: 15 * 60 * 1000,
+  // Canonical booking hold window. The database is authoritative and enforces
+  // the same value from `platform_config.hold_duration_minutes`; this constant
+  // only mirrors it for display and for the server's own copy of the timeline.
+  HOLD_DURATION_MS: 5 * 60 * 1000,
   SESSION_ACCESS_WINDOW_MS: 5 * 60 * 1000,
   // Authoritative booking cutoff. A slot stays bookable while
   // `slotStart - now >= BOOKING_CUTOFF_MS`, measured on absolute instants and

@@ -6,16 +6,19 @@ export interface MarketplaceBadgeProps {
   className?: string;
 }
 
-/**
- * Small trust / context indicator shown above the seeker hero headline.
- * Presentation only — carries no data of its own.
- */
 export const MarketplaceBadge: React.FC<MarketplaceBadgeProps> = ({ className }) => (
   <span
     className={cn(
-      'inline-flex items-center gap-2.5 rounded-full border border-[var(--seeker-trust-border)] bg-[var(--seeker-trust-bg)] px-3.5 py-1.5 text-[11px] font-semibold tracking-wide text-[var(--color-shell-text-muted)] backdrop-blur-sm',
+      'badge',
       className
     )}
+    style={{
+      background: 'var(--seeker-trust-bg)',
+      color: 'var(--color-shell-text-muted)',
+      border: '1px solid var(--seeker-trust-border)',
+      backdropFilter: 'blur(8px)',
+      WebkitBackdropFilter: 'blur(8px)',
+    }}
   >
     <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--seeker-trust-icon-bg)] text-[var(--color-shell-warning)]">
       <Sparkles className="h-3 w-3" aria-hidden="true" />

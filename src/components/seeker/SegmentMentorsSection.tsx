@@ -10,19 +10,16 @@ import {
 import { MENTOR_GRID_CLASS } from '@/src/components/seeker/MentorGrid';
 import type { DirectoryMentor, Segment } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
+import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 export interface SegmentMentorsSectionProps {
-  /** The ONE selected segment. Titles and data both derive from this. */
   segment: Segment | null;
   mentors: DirectoryMentor[];
-  /** Real server-side total for the segment, used for the count badge. */
   total: number;
   isLoading: boolean;
   error: string | null;
   onRetry: () => void;
-  /** Current selected date, only used to seed the detail route's date picker. */
   selectedDate: string;
-  /** The seeker's "today" in their own timezone. */
   today: string;
   navigate: (path: string) => void;
   className?: string;
@@ -31,10 +28,11 @@ export interface SegmentMentorsSectionProps {
 /**
  * EXPLORE THIS SEGMENT.
  *
- * This section answers a different question from the availability list above
- * it: "who are the mentors in this segment?", NOT "who can talk to me on the
- * selected date?". It therefore renders only real segment membership and
- * never claims a slot, a date, or any other availability signal.
+ * Premium section design with:
+ * - Better header with count badge and CTA
+ * - Subtle segment-aware ambient glow
+ * - Improved error/loading/empty states
+ * - Better visual separation from content above
  */
 export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
   segment,
@@ -49,15 +47,25 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
   className,
 }) => {
   const prefersReducedMotion = useReducedMotion();
+  const { activeSegmentSlug } = useSegmentTheme();
 
-  // Title comes from the real selected segment, pluralised for a heading.
   const title = segment?.name
     ? pluralizeSegmentName(segment.name)
     : 'Mentors';
   const hasMentors = mentors.length > 0;
-  // A "View all" action is only offered when it maps to the existing,
-  // already-routed `/mentors` directory page. Otherwise no dead button.
   const hasDirectoryRoute = !!segment?.id;
+
+  const sectionStyle = activeSegmentSlug
+    ? {
+        '--seeker-section-glow': `var(--segment-section-glow)`,
+        '--segment-accent': `var(--segment-accent)`,
+        'segment-accent': `var(--segment-accent)`,
+        '--segment-accent-hover': `var(--segment-accent-hover)`,
+        '--segment-accent-soft': `var(--segment-accent-soft)`,
+        '--segment-gradient-primary': `var(--segment-gradient-primary)`,
+        '--segment-border-accent': `var(--segment-border-accent)`,
+      } as React.CSSProperties
+    : {};
 
   return (
     <motion.section
@@ -66,11 +74,11 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
       initial={prefersReducedMotion ? false : { opacity: 0, y: 16 }}
       whileInView={prefersReducedMotion ? undefined : { opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-80px' }}
-      transition={{ duration: 0.45, ease: [0.23, 1, 0.31, 1] }}
-      className={cn('relative scroll-mt-24', className)}
+      transition={{ duration: 0.5, ease: [0.23, 1, 0.31, 1] }}
+      className={cn('relative scroll-mt-24 section-gap', className)}
+      style={sectionStyle}
     >
-      {/* Subtle radial atmosphere so the section reads as a distinct zone
-          without introducing another bordered container. */}
+      {/* Subtle radial atmosphere */}
       <div
         className="pointer-events-none absolute -inset-x-8 -top-10 -z-10 h-72 rounded-[40px] opacity-70"
         style={{
@@ -80,9 +88,9 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
         aria-hidden="true"
       />
 
-      {/* Section header — deliberately NOT a card, per the layout rules */}
-      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
-        <div className="min-w-0">
+      {/* Section header */}
+      <div className="section-header">
+        <div className="section-header-content">
           <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-shell-text-subtle)]">
             <Compass className="h-3.5 w-3.5" aria-hidden="true" />
             Explore this segment
@@ -98,10 +106,10 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="section-header-actions">
           {!isLoading && !error && (
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3.5 py-1.5 text-xs font-semibold text-[var(--color-shell-text-muted)]"
+              className="badge badge-neutral"
               aria-live="polite"
             >
               <Users className="h-3.5 w-3.5" aria-hidden="true" />
@@ -109,29 +117,24 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
             </span>
           )}
 
-          {/* Real secondary navigation CTA into the live mentor directory.
-              Only rendered when the existing directory route can be used. */}
           {hasDirectoryRoute && !error && (
             <button
               type="button"
               onClick={() => navigate(`/mentors?segmentSlug=${segment!.slug}`)}
-              className="group inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 rounded-xl border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-4 text-[13px] font-semibold text-[var(--color-shell-text)] transition-colors duration-150 hover:border-[var(--color-shell-primary)]/50 hover:bg-[var(--color-shell-surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
+              className="btn-secondary"
             >
               <span>View all</span>
-              <ArrowRight
-                className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-0.5"
-                aria-hidden="true"
-              />
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           )}
         </div>
       </div>
 
-      {/* Error state — surfaced, never hidden and never shown as "0 mentors" */}
+      {/* Error state */}
       {error ? (
         <div
           role="alert"
-          className="mt-8 flex flex-col items-start gap-3 rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-5 text-sm text-[var(--color-shell-error)] sm:flex-row sm:items-center sm:justify-between"
+          className="error-banner mt-8"
         >
           <span className="flex items-center gap-2 font-semibold">
             <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />

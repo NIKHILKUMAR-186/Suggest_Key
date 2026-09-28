@@ -118,7 +118,7 @@ export const AdminBookingsPage: React.FC = () => {
             Bookings Ledger
           </h1>
           <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
-            Authoritative state machine timeline of all 15-min holds, payments, and confirmations.
+            Authoritative state machine timeline of all slot holds, payments, and confirmations.
           </p>
         </div>
 

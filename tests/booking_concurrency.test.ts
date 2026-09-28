@@ -438,8 +438,8 @@ describe('Phase 6: Concurrency-Safe Booking & Slot Holds', () => {
   // --------------------------------------------------------------------------
   // Complete Booking Creation Flow & Atomicity
   // --------------------------------------------------------------------------
-  describe('Atomic Booking & 15-Minute Hold Creation', () => {
-    it('creates 15-minute hold and PAYMENT_PENDING booking atomically', async () => {
+  describe('Atomic Booking & 5-Minute Hold Creation', () => {
+    it('creates 5-minute hold and PAYMENT_PENDING booking atomically', async () => {
       const res = await executeAtomicBookingWithHold(
         {
           seekerId: 'seeker-1',
@@ -463,7 +463,7 @@ describe('Phase 6: Concurrency-Safe Booking & Slot Holds', () => {
       assert.equal(res.hold.seeker_id, 'seeker-1');
       const holdDurationMin =
         (new Date(res.hold.expires_at).getTime() - fixedCurrentUtc.getTime()) / 60000;
-      assert.equal(holdDurationMin, 15);
+      assert.equal(holdDurationMin, 5);
 
       // Verify Booking
       assert.equal(res.booking.status, 'PAYMENT_PENDING');

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { User, Shield, Check, Bell, KeyRound } from 'lucide-react';
+import { Shield, Check, Bell, KeyRound, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
-import { Badge } from '@/src/components/ui/Badge';
+import { PageHeading, SegmentedTabs } from '@/src/components/booking/PageHeading';
+import { SectionCard } from '@/src/components/booking/StatePanel';
+import { TONE_SURFACE, TONE_TEXT } from '@/src/components/booking/tokens';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
@@ -16,11 +18,41 @@ interface ProfileUpdate {
   avatar_url?: string;
 }
 
+type SettingsTab = 'profile' | 'security' | 'notifications';
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'security', label: 'Security' },
+  { id: 'notifications', label: 'Alerts' },
+];
+
+/**
+ * The notification types the platform actually sends.
+ *
+ * This is a description of what a seeker will receive, not a set of toggles:
+ * there is no per-type preference stored anywhere, so it is presented as
+ * information rather than as switches that would do nothing when pressed.
+ */
+const NOTIFICATION_KINDS = [
+  {
+    title: 'Payment verification',
+    desc: 'Sent when an admin approves or rejects your payment proof.',
+  },
+  {
+    title: 'Meeting link unlock',
+    desc: 'Sent 5 minutes before your session, when the video call room opens.',
+  },
+  {
+    title: 'Workspace published',
+    desc: 'Sent when your mentor posts takeaways and notes.',
+  },
+];
+
 export const SeekerSettingsPage: React.FC = () => {
   const { profile, user } = useAuth();
   const { navigate } = useNavigation();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'notifications'>('profile');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
   const [savedMessage, setSavedMessage] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -73,49 +105,30 @@ export const SeekerSettingsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl font-display">
-          Account Settings
-        </h1>
-        <p className="mt-1 text-sm text-[var(--color-shell-text-muted)]">
-          Manage your personal profile, local timezone, security credentials, and notifications.
-        </p>
-      </div>
+      <PageHeading
+        title="Account Settings"
+        description="Manage your profile, local timezone, security credentials and the alerts you receive."
+      />
 
       {/* Tabs */}
-      <div className="flex border-b border-[var(--color-shell-border)] gap-8 text-sm font-medium">
-        {[
-          { id: 'profile', label: 'Profile & Bio', icon: User },
-          { id: 'security', label: 'Security & Auth', icon: Shield },
-          { id: 'notifications', label: 'Preferences', icon: Bell },
-        ].map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 pb-3 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded-xs ${
-                activeTab === tab.id
-                  ? 'border-b-2 border-amber-600 text-[var(--color-shell-text)] font-bold'
-                  : 'text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)]'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      <SegmentedTabs
+        value={activeTab}
+        onChange={setActiveTab}
+        ariaLabel="Settings sections"
+        options={SETTINGS_TABS.map((t) => ({ id: t.id, label: t.label }))}
+      />
 
       <AnimatePresence>
         {savedMessage && (
           <motion.div
+            role="status"
+            aria-live="polite"
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800"
+            className={`flex items-center gap-2 rounded-lg border p-3 text-xs ${TONE_SURFACE.success} ${TONE_TEXT.success}`}
           >
-            <Check className="h-4 w-4 text-emerald-600" />
+            <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span>Profile updated successfully.</span>
           </motion.div>
         )}
@@ -126,115 +139,116 @@ export const SeekerSettingsPage: React.FC = () => {
           onSubmit={handleSave}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-6"
         >
-          <div className="flex items-center gap-5 border-b border-[var(--color-shell-border)] pb-6">
-            <div className="h-20 w-20 shrink-0 rounded-full bg-zinc-100 border border-[var(--color-shell-border)] flex items-center justify-center font-bold text-xl text-[var(--color-shell-text-muted)] font-display">
-              {userInitials}
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-[var(--color-shell-text)]">Profile Avatar</h3>
-              <p className="text-xs text-[var(--color-shell-text-subtle)] mt-0.5">
-                Your initials are shown until a photo is set on your account.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input
-              label="Display Name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your full name"
-            />
-            <div className="space-y-1.5">
-              <label className="block text-xs font-medium text-[var(--color-shell-text-muted)]">
-                Local Timezone
-              </label>
-              <select
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                className="flex h-10 w-full rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-sm text-[var(--color-shell-text)] focus:border-[var(--color-shell-accent)] focus:outline-hidden focus:ring-2 focus:ring-[var(--color-shell-accent)]/15"
+          <SectionCard title="Profile" description="How you appear to mentors and how your session times are shown.">
+            <div className="flex flex-wrap items-center gap-5 border-b border-[var(--color-shell-border)] pb-6">
+              <div
+                aria-hidden="true"
+                className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] font-display text-xl font-bold text-[var(--color-shell-text-muted)]"
               >
-                <option value="Asia/Kolkata">Asia/Kolkata (IST · UTC+5:30)</option>
-                <option value="America/New_York">America/New_York (EST · UTC-5:00)</option>
-                <option value="Europe/London">Europe/London (GMT · UTC+0:00)</option>
-                <option value="Asia/Singapore">Asia/Singapore (SGT · UTC+8:00)</option>
-              </select>
-              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
-                All booking slot selections are presented in your local timezone.
-              </p>
+                {userInitials}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-[var(--color-shell-text)]">Profile Avatar</h3>
+                <p className="mt-0.5 text-xs text-[var(--color-shell-text-subtle)]">
+                  Your initials are shown until a photo is set on your account.
+                </p>
+              </div>
             </div>
-          </div>
 
-          <div className="pt-2 flex justify-end">
-            <Button type="submit" size="md" className="text-xs gap-1.5" disabled={isSaving} isLoading={isSaving} loadingText="Saving…">
-              {!isSaving && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
-              <span>Save Settings</span>
-            </Button>
-          </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Input
+                label="Display Name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Your full name"
+              />
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="seeker-timezone"
+                  className="block text-xs font-medium text-[var(--color-shell-text-muted)]"
+                >
+                  Local Timezone
+                </label>
+                <select
+                  id="seeker-timezone"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  className="flex h-10 w-full cursor-pointer rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-sm text-[var(--color-shell-text)] focus:border-[var(--color-shell-accent)] focus:outline-hidden focus:ring-2 focus:ring-[var(--color-shell-accent)]/15"
+                >
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST · UTC+5:30)</option>
+                  <option value="America/New_York">America/New_York (EST · UTC-5:00)</option>
+                  <option value="Europe/London">Europe/London (GMT · UTC+0:00)</option>
+                  <option value="Asia/Singapore">Asia/Singapore (SGT · UTC+8:00)</option>
+                </select>
+                <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+                  All booking slot selections are presented in your local timezone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end border-t border-[var(--color-shell-border)] pt-5">
+              <Button type="submit" size="md" className="gap-1.5 text-xs" disabled={isSaving} isLoading={isSaving} loadingText="Saving…">
+                {!isSaving && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+                <span>Save Settings</span>
+              </Button>
+            </div>
+          </SectionCard>
         </motion.form>
       )}
 
       {activeTab === 'security' && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5"
-        >
-          <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
-            Authentication &amp; Security
-          </h3>
-          <p className="text-xs text-[var(--color-shell-text-muted)]">
-            Your password is managed by Suggest Key and is never stored in plain text. Request a
-            reset link and we will email it to the address on your account.
-          </p>
-          <div className="space-y-3 max-w-sm">
-            <Input label="Email Address" value={userEmail} disabled />
-          </div>
-          <div className="pt-1 flex flex-wrap items-center gap-3">
-            <Badge variant="secondary" className="text-[10px]">
-              Secured authentication
-            </Badge>
-            <Button size="sm" className="text-xs gap-1.5" onClick={() => navigate('/auth/forgot-password')}>
-              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Change Password</span>
-            </Button>
-          </div>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <SectionCard title="Security" description="How your account is authenticated.">
+            <p className="text-xs leading-relaxed text-[var(--color-shell-text-muted)]">
+              Your password is managed by Suggest Key and is never stored in plain text. Request a
+              reset link and we will email it to the address on your account.
+            </p>
+            <div className="mt-5 max-w-sm space-y-3">
+              <Input label="Email Address" value={userEmail} disabled />
+            </div>
+            <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-[var(--color-shell-border)] pt-5">
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${TONE_SURFACE.success} ${TONE_TEXT.success}`}>
+                <Shield className="h-3 w-3" aria-hidden="true" />
+                Secured authentication
+              </span>
+              <Button size="sm" className="gap-1.5 text-xs" onClick={() => navigate('/auth/forgot-password')}>
+                <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Change Password</span>
+              </Button>
+            </div>
+          </SectionCard>
         </motion.div>
       )}
 
       {activeTab === 'notifications' && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4"
-        >
-          <h3 className="text-sm font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3">
-            In-App Notification Preferences
-          </h3>
-          <p className="text-xs text-[var(--color-shell-text-muted)]">
-            Suggest Key sends you these updates automatically. Review and dismiss them any time
-            from your notification centre.
-          </p>
-          <ul className="space-y-3 text-xs">
-            {[
-              { title: 'Payment Verification', desc: 'Sent when an admin approves or rejects your payment proof' },
-              { title: 'Meeting Link Unlock', desc: 'Sent at T-5 minutes when the video call room opens' },
-              { title: 'Workspace Published', desc: 'Sent when your mentor posts takeaways and notes' },
-            ].map((item) => (
-              <li
-                key={item.title}
-                className="flex items-start gap-3 p-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]"
-              >
-                <Bell className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-accent)]" aria-hidden="true" />
-                <div className="min-w-0">
-                  <span className="font-semibold text-[var(--color-shell-text)] block">{item.title}</span>
-                  <span className="text-[var(--color-shell-text-muted)]">{item.desc}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <SectionCard
+            title="Alerts"
+            description="The updates Suggest Key sends you, and where to read them."
+          >
+            <p className="flex items-start gap-2 text-xs leading-relaxed text-[var(--color-shell-text-muted)]">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                These alerts are sent automatically and cannot be switched off individually. Review
+                and dismiss them at any time from your notification centre.
+              </span>
+            </p>
+            <ul className="mt-5 space-y-3 text-xs">
+              {NOTIFICATION_KINDS.map((item) => (
+                <li
+                  key={item.title}
+                  className="flex items-start gap-3 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3"
+                >
+                  <Bell className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-shell-accent)]" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <span className="block font-semibold text-[var(--color-shell-text)]">{item.title}</span>
+                    <span className="text-[var(--color-shell-text-muted)]">{item.desc}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </SectionCard>
         </motion.div>
       )}
     </div>

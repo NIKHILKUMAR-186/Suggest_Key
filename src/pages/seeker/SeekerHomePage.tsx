@@ -23,6 +23,8 @@ import {
 } from '@/src/lib/discoveryService';
 import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
+import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
+import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
 
@@ -33,12 +35,22 @@ const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
   { value: '6+', label: '6+ years' },
 ];
 
-export const SeekerHomePage: React.FC = () => {
+export const SeekerHomePage: React.FC = () => (
+  <SegmentThemeProvider>
+    <SeekerHomePageInner />
+  </SegmentThemeProvider>
+);
+
+/**
+ * Everything that reads segment theme state lives below the provider, so the
+ * page never calls useSegmentTheme at a level where the provider is not yet
+ * mounted.
+ */
+const SeekerHomePageInner: React.FC = () => {
   const { navigate } = useNavigation();
   const { profile } = useAuth();
+  const { setActiveSegment } = useSegmentTheme();
 
-  // The seeker's own timezone drives "Today"/"Tomorrow". Falls back to UTC
-  // rather than the browser default so the value is reproducible.
   const userTimezone = profile?.timezone || 'UTC';
 
   const [today, setToday] = useState<string>(() =>
@@ -46,14 +58,13 @@ export const SeekerHomePage: React.FC = () => {
   );
 
   const [selectedDate, setSelectedDate] = useState<string>(today);
-
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [languageFilter, setLanguageFilter] = useState<string>('all');
   const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
   const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
 
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
+  const [selectedSegment, setSelectedSegmentState] = useState<Segment | null>(null);
   const [mentors, setMentors] = useState<DiscoverableMentor[]>([]);
   const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
@@ -62,8 +73,6 @@ export const SeekerHomePage: React.FC = () => {
   const [mentorError, setMentorError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
 
-  // Keep the calendar day in sync so the page is correct without a reload
-  // when it stays open past midnight.
   useEffect(() => {
     const timer = window.setInterval(() => {
       setToday(getDateStringInTimezone(new Date(), userTimezone));
@@ -71,7 +80,6 @@ export const SeekerHomePage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [userTimezone]);
 
-  // The language filter is populated from real mentor data, never a hardcoded list.
   useEffect(() => {
     let isMounted = true;
     async function loadLanguages() {
@@ -95,7 +103,8 @@ export const SeekerHomePage: React.FC = () => {
         if (isMounted) {
           setSegments(activeSegs);
           const topSegment = getHighestPriorityActiveSegment(activeSegs);
-          setSelectedSegment(topSegment);
+          setSelectedSegmentState(topSegment);
+          setActiveSegment(topSegment);
         }
       } catch (err: any) {
         if (isMounted) {
@@ -110,7 +119,12 @@ export const SeekerHomePage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [reloadToken]);
+  }, [reloadToken, setActiveSegment]);
+
+  const setSelectedSegment = useCallback((segment: Segment | null) => {
+    setSelectedSegmentState(segment);
+    setActiveSegment(segment);
+  }, [setActiveSegment]);
 
   useEffect(() => {
     let isMounted = true;
@@ -133,7 +147,6 @@ export const SeekerHomePage: React.FC = () => {
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading mentors:', err);
-          // A failed request must never be rendered as "0 mentors".
           setMentors([]);
           setMentorError('Unable to load mentors right now.');
         }
@@ -157,7 +170,6 @@ export const SeekerHomePage: React.FC = () => {
     const query = searchQuery.trim().toLowerCase();
     return mentors.filter((m) => {
       if (query) {
-        // Searches only columns that actually exist in the database.
         const searchable = [
           m.full_name,
           m.headline,
@@ -196,17 +208,13 @@ export const SeekerHomePage: React.FC = () => {
     setExperienceFilter('all');
   }, []);
 
-   // Derived from the live clock, never a hardcoded calendar date.
-   const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
-
-   const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
+  const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
+  const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
 
   const handleDateSelect = (dateValue: string) => {
     setSelectedDate(dateValue);
   };
 
-  // The new segment section lives on this page, so "View all mentors" scrolls
-  // to it instead of navigating away. No route or backend call is added.
   const scrollToSegmentMentors = () => {
     const target = document.getElementById('segment-mentors');
     if (!target) return;
@@ -222,8 +230,6 @@ export const SeekerHomePage: React.FC = () => {
 
   const retryLoad = () => setReloadToken((t) => t + 1);
 
-  // Section B data. Derived from the SAME selected segment, but fetched
-  // without any date so it never inherits the availability filter.
   const {
     mentors: segmentMentors,
     total: segmentMentorTotal,
@@ -232,7 +238,6 @@ export const SeekerHomePage: React.FC = () => {
     reload: reloadSegmentMentors,
   } = useSegmentMentors(selectedSegment?.id ?? null);
 
-  // Empty-state copy is derived from the real current context only.
   const emptyContextLabel = [selectedSegment?.name, selectedDate].filter(Boolean).join(' · ');
 
   const emptyTitle = hasActiveFilters
@@ -246,7 +251,6 @@ export const SeekerHomePage: React.FC = () => {
       } has a bookable slot on ${selectedDate}. Try another date, or browse all verified mentors.`;
 
   const emptyActions: EmptyMentorStateAction[] = useMemo(() => {
-    // "View all mentors" targets the on-page segment discovery section.
     if (hasActiveFilters) {
       return [
         { label: 'Clear filters', onClick: clearAllFilters, variant: 'primary' },
@@ -255,13 +259,11 @@ export const SeekerHomePage: React.FC = () => {
     }
     if (tomorrow && selectedDate !== tomorrow) {
       return [
-        // Reuses the existing date-selection logic — no new date logic.
         { label: 'Try tomorrow', onClick: () => handleDateSelect(tomorrow), variant: 'primary' },
         { label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'outline' },
       ];
     }
     return [{ label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'primary' }];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasActiveFilters, tomorrow, selectedDate, clearAllFilters]);
 
   return (
@@ -283,7 +285,7 @@ export const SeekerHomePage: React.FC = () => {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
-        className="mt-10 space-y-8 sm:mt-12"
+        className="section-container space-y-8 sm:mt-12"
       >
         {/* Filters sit directly above the results they control */}
         <FilterBar
@@ -300,7 +302,7 @@ export const SeekerHomePage: React.FC = () => {
           onClearFilters={clearAllFilters}
         />
 
-        <div className="h-px w-full bg-[var(--color-shell-border)]" aria-hidden="true" />
+        <div className="divider-gradient" aria-hidden="true" />
 
         <AvailableMentorsHeader
           segmentName={selectedSegment?.name || null}
@@ -312,26 +314,26 @@ export const SeekerHomePage: React.FC = () => {
 
         {/* Segment-level error */}
         {error && (
-          <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)]">
+          <div className="error-banner">
             <div className="flex items-center gap-2 font-semibold">
-              <ShieldCheck className="h-4 w-4" />
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
               <span>Something went wrong</span>
             </div>
-            <p className="mt-1">{error}</p>
-            <Button onClick={retryLoad} variant="outline" size="sm" className="mt-3">
+            <p className="text-sm">{error}</p>
+            <Button onClick={retryLoad} variant="outline" size="sm" className="mt-2 sm:mt-0">
               Try Again
             </Button>
           </div>
         )}
 
-        {/* Mentor-level error - must never render as "0 mentors" */}
+        {/* Mentor-level error */}
         {mentorError && !error && (
-          <div className="rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 text-sm text-[var(--color-shell-error)]">
+          <div className="error-banner">
             <div className="flex items-center gap-2 font-semibold">
-              <AlertCircle className="h-4 w-4" />
+              <AlertCircle className="h-4 w-4" aria-hidden="true" />
               <span>{mentorError}</span>
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button onClick={retryLoad} variant="outline" size="sm">
                 Try Again
               </Button>
@@ -365,28 +367,28 @@ export const SeekerHomePage: React.FC = () => {
         )}
       </motion.div>
 
-      {/* Visual divider — separates AVAILABILITY from DISCOVERY without
-          stacking another bordered surface. */}
-      <div className="mt-20 sm:mt-24 lg:mt-28" aria-hidden="true">
-        <div className="mx-auto h-px w-full max-w-2xl bg-gradient-to-r from-transparent via-[var(--color-shell-border)] to-transparent" />
+      {/* Visual divider — separates AVAILABILITY from DISCOVERY */}
+      <div className="section-container mt-16 sm:mt-20 lg:mt-24" aria-hidden="true">
+        <div className="divider-gradient" />
       </div>
 
       {/*
         SECTION B — all real mentors in the selected segment.
-        Answers "who are the mentors in this segment?", which is a different
-        question from the availability results above.
+        Answers "who are the mentors in this segment?"
       */}
-      <SegmentMentorsSection
-        segment={selectedSegment}
-        mentors={segmentMentors}
-        total={segmentMentorTotal}
-        isLoading={isLoadingSegmentMentors}
-        error={segmentMentorError}
-        onRetry={reloadSegmentMentors}
-        selectedDate={selectedDate}
-        today={today}
-        navigate={navigate}
-      />
+      <div className="section-container">
+        <SegmentMentorsSection
+          segment={selectedSegment}
+          mentors={segmentMentors}
+          total={segmentMentorTotal}
+          isLoading={isLoadingSegmentMentors}
+          error={segmentMentorError}
+          onRetry={reloadSegmentMentors}
+          selectedDate={selectedDate}
+          today={today}
+          navigate={navigate}
+        />
+      </div>
     </div>
   );
 };

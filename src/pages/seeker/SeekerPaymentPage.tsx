@@ -1,41 +1,38 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  ArrowLeft,
-  Clock,
-  QrCode,
-  Upload,
-  ShieldCheck,
-  CheckCircle2,
-  Copy,
-  Check,
   AlertCircle,
-  FileImage,
-  X,
-  RefreshCw,
-  Loader2,
-  CreditCard,
-  CheckSquare,
-  HelpCircle,
-  ChevronDown,
-  ChevronUp,
-  Zap,
-  Video,
   Calendar,
+  Check,
+  Clock,
+  Copy,
+  CreditCard,
+  FileImage,
+  HelpCircle,
+  Loader2,
+  Lock,
+  QrCode,
+  RefreshCw,
+  ShieldCheck,
+  Upload,
+  Video,
+  X,
+  Zap,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
-import { Badge } from '@/src/components/ui/Badge';
 import { Input } from '@/src/components/ui/Input';
-import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
+import { EmptyState } from '@/src/components/shared/EmptyState';
+import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
-import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { fetchPaymentState, submitPaymentProof } from '@/src/lib/paymentService';
 import { fetchPaymentConfiguration, type PublicPaymentConfiguration } from '@/src/lib/platformConfig';
+import { fetchRazorpayConfig, type RazorpayApiResult } from '@/src/lib/razorpayClient';
+import RazorpayCheckoutCard from '@/src/components/seeker/RazorpayCheckoutCard';
 import {
   PAYMENT_PROOF_MIME_TYPES,
   formatFileSize,
@@ -44,7 +41,29 @@ import {
 } from '@/src/lib/paymentProof';
 import type { Payment } from '@/src/types/database';
 import { APP_CONFIG, HOLDOUT_MINUTES } from '@/src/config/app';
-import { formatCountdown } from '@/src/lib/bookingService';
+import { PageHeading } from '@/src/components/booking/PageHeading';
+import { SegmentScope } from '@/src/components/booking/SegmentScope';
+import { StatusPill } from '@/src/components/booking/StatusPill';
+import { InlineNotice, SectionCard, StatePanel } from '@/src/components/booking/StatePanel';
+import { HoldCountdown } from '@/src/components/booking/HoldCountdown';
+import { BookingSummary } from '@/src/components/booking/BookingSummary';
+import { TONE_SURFACE, TONE_TEXT } from '@/src/components/booking/tokens';
+import { describeBookingStatus, describePaymentStatus } from '@/src/components/booking/statusTone';
+import { cn } from '@/src/lib/utils';
+
+// Type for the stored Razorpay config data (from the API response data field)
+type RazorpayConfigData = {
+  enabled: boolean;
+  currency: string | null;
+  razorpayKeyId: string | null;
+};
+
+/**
+ * Shown when the gateway itself is unreachable, as distinct from "the platform
+ * has not finished configuring Razorpay". The two read very differently to a
+ * seeker, so they are never given the same wording.
+ */
+const FALLBACK_RAZORPAY_ERROR = 'Online payment is temporarily unavailable.';
 
 export const SeekerPaymentPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
@@ -71,6 +90,11 @@ export const SeekerPaymentPage: React.FC = () => {
    */
   const [paymentDetails, setPaymentDetails] = useState<PublicPaymentConfiguration | null>(null);
   const [paymentDetailsError, setPaymentDetailsError] = useState<string | null>(null);
+
+  // Razorpay config and payment method selection
+  const [razorpayConfig, setRazorpayConfig] = useState<RazorpayConfigData | null>(null);
+  const [razorpayConfigError, setRazorpayConfigError] = useState<string | null>(null);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'manual' | 'razorpay'>('manual');
 
   const [transactionRef, setTransactionRef] = useState('');
   const [referenceError, setReferenceError] = useState<string | null>(null);
@@ -127,23 +151,61 @@ export const SeekerPaymentPage: React.FC = () => {
 
   // Loaded once per page, independently of the booking: these are the platform's
   // current payment instructions, not anything about this booking.
+  //
+  // The two probes are independent by design. A Razorpay outage must degrade to
+  // manual UPI, never to a dead payment page, so neither request is awaited by,
+  // or allowed to fail, the other.
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+
+    const loadPaymentDetails = async () => {
       try {
-        const config = await fetchPaymentConfiguration();
-        if (!cancelled) {
-          setPaymentDetails(config);
-          setPaymentDetailsError(null);
-        }
-      } catch (err: any) {
+        const paymentConfig = await fetchPaymentConfiguration();
+        if (cancelled) return;
+        setPaymentDetails(paymentConfig);
+        setPaymentDetailsError(null);
+      } catch (err) {
         if (cancelled) return;
         setPaymentDetails(null);
         setPaymentDetailsError(
-          toUserMessage(err, 'Payment details are temporarily unavailable. Please try again shortly.'),
+          toUserMessage(
+            err,
+            'Payment details are temporarily unavailable. Please try again shortly.'
+          )
         );
       }
-    })();
+    };
+
+    const loadRazorpay = async () => {
+      try {
+        const razorpayResult = await fetchRazorpayConfig();
+        if (cancelled) return;
+        if (razorpayResult.success) {
+          setRazorpayConfig(razorpayResult.data);
+          setRazorpayConfigError(null);
+          // Razorpay is preselected only when it is genuinely enabled AND keyed;
+          // anything less stays on the manual flow, silently.
+          setSelectedPaymentMethod(
+            razorpayResult.data.enabled && razorpayResult.data.razorpayKeyId
+              ? 'razorpay'
+              : 'manual'
+          );
+        } else {
+          setRazorpayConfig(null);
+          setRazorpayConfigError(toUserMessage(razorpayResult.message, FALLBACK_RAZORPAY_ERROR));
+          setSelectedPaymentMethod('manual');
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setRazorpayConfig(null);
+        setRazorpayConfigError(toUserMessage(err, FALLBACK_RAZORPAY_ERROR));
+        setSelectedPaymentMethod('manual');
+      }
+    };
+
+    void loadPaymentDetails();
+    void loadRazorpay();
+
     return () => {
       cancelled = true;
     };
@@ -260,22 +322,21 @@ export const SeekerPaymentPage: React.FC = () => {
     }
   };
 
+  const backToBookings = () => navigate('/seeker/bookings');
+
   if (!bookingId) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6">
-        <button
-          onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Bookings</span>
-        </button>
+      <div className="mx-auto w-full max-w-3xl space-y-6">
+        <PageHeading
+          title="Complete your booking"
+          back={{ label: 'Back to my bookings', onClick: backToBookings }}
+        />
         <EmptyState
           icon={QrCode}
-          title="No Booking Selected"
+          title="No booking selected"
           description="Select a booking to proceed to payment."
-          actionLabel="View My Bookings"
-          onAction={() => navigate('/seeker/bookings')}
+          actionLabel="View my bookings"
+          onAction={backToBookings}
         />
       </div>
     );
@@ -283,35 +344,43 @@ export const SeekerPaymentPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6">
-        <button
-          onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Bookings</span>
-        </button>
-        <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-12 text-center space-y-3">
-          <Clock className="h-8 w-8 text-[var(--color-shell-text-subtle)] mx-auto animate-spin" />
-          <h3 className="text-sm font-semibold text-[var(--color-shell-text)]">Loading Booking Details...</h3>
-          <p className="text-xs text-[var(--color-shell-text-muted)]">Retrieving booking and payment information.</p>
+      <div className="mx-auto w-full max-w-5xl space-y-6">
+        <PageHeading title="Complete your booking" back={{ label: 'Back to my bookings', onClick: backToBookings }} />
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <SectionCard aria-label="Booking summary">
+            <div className="flex items-center gap-3.5">
+              <Skeleton variant="circular" className="h-12 w-12 shrink-0" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-3 w-1/3" />
+              </div>
+            </div>
+            <Skeleton className="mt-5 h-16 w-full" />
+            <div className="mt-5 grid grid-cols-2 gap-4">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+            <Skeleton className="mt-5 h-6 w-1/3" />
+          </SectionCard>
+          <SectionCard aria-label="Payment">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="mt-4 h-12 w-full" />
+            <Skeleton className="mt-4 h-40 w-full" />
+          </SectionCard>
         </div>
+        <p className="sr-only" role="status" aria-live="polite">
+          Loading your booking and payment details.
+        </p>
       </div>
     );
   }
 
   if (error || !booking) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6">
-        <button
-          onClick={() => navigate('/seeker/bookings')}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>Back to Bookings</span>
-        </button>
+      <div className="mx-auto w-full max-w-3xl space-y-6">
+        <PageHeading title="Complete your booking" back={{ label: 'Back to my bookings', onClick: backToBookings }} />
         <ErrorState
-          title="Booking Not Found"
+          title="Booking not found"
           message={error || 'This booking could not be found. It may have been cancelled, or the link may be incorrect.'}
           onRetry={loadBooking}
         />
@@ -322,9 +391,6 @@ export const SeekerPaymentPage: React.FC = () => {
   const isPaymentPending = booking.status === 'PAYMENT_PENDING';
   const isPendingVerification = booking.status === 'PENDING_VERIFICATION';
   const isMentorPending = booking.status === 'MENTOR_PENDING';
-  const isConfirmed = booking.status === 'CONFIRMED';
-  const isCompleted = booking.status === 'COMPLETED';
-  const isCancelled = booking.status === 'CANCELLED' || booking.status === 'REJECTED';
   const canShowPaymentForm = (isPaymentPending || isPendingVerification) && !payment && !isExpired;
 
   // Payment is only offered once the platform has configured WHERE to pay. A
@@ -332,164 +398,178 @@ export const SeekerPaymentPage: React.FC = () => {
   // on its own. The QR is an additional convenience rendered only when one is
   // configured, so a UPI-only setup still works rather than being blocked.
   const hasPaymentDestination = Boolean(paymentDetails?.upiId);
+  const razorpayEnabled = Boolean(razorpayConfig?.enabled && razorpayConfig?.razorpayKeyId);
+  const amount = formatInr(booking.amount_inr ?? booking.gig?.price_inr) || '—';
+
+  const bookingDescriptor = describeBookingStatus(booking.status);
+  const statusTone = isPaymentPending
+    ? ('warning' as const)
+    : isPendingVerification
+      ? ('info' as const)
+      : isMentorPending
+        ? ('info' as const)
+        : ('success' as const);
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <button
-        onClick={() => navigate('/seeker/bookings')}
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] transition-colors p-1 -ml-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] cursor-pointer"
-      >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        <span>Back to My Bookings</span>
-      </button>
+    <SegmentScope slug={booking.segment?.slug} className="mx-auto w-full max-w-5xl">
+      <div className="space-y-6">
+        <PageHeading
+          eyebrow={`Booking ${booking.booking_code}`}
+          title="Complete your booking"
+          description="Pay to confirm your session. Your slot stays held until the timer below runs out."
+          back={{ label: 'Back to my bookings', onClick: backToBookings }}
+          aside={
+            <>
+              <StatusPill tone={statusTone} label={bookingDescriptor.label} size="md" />
+              {razorpayEnabled && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] px-3 py-1 text-[11px] font-semibold text-[var(--color-shell-text-muted)]">
+                  <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                  Secured payment
+                </span>
+              )}
+            </>
+          }
+        />
 
-      <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-sm space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
-          <div>
-            <h1 className="text-xl font-bold text-[var(--color-shell-text)] font-display">Complete Your Booking</h1>
-            <p className="text-xs text-[var(--color-shell-text-muted)] mt-1">Secure your session with payment</p>
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+          {/* ================= LEFT: what is being paid for ================= */}
+          <div className="min-w-0 space-y-4 lg:sticky lg:top-20">
+            <SectionCard
+              title="Booking summary"
+              description="Everything below comes from your confirmed booking record."
+              icon={Calendar}
+            >
+              <BookingSummary booking={booking} />
+            </SectionCard>
+
+            <InlineNotice tone="neutral" icon={ShieldCheck} title="How verification works">
+              <p>
+                Pay the exact amount shown above, then send us the transaction reference and a
+                screenshot. A member of the team verifies the payment manually — usually within a
+                few minutes — and the status on this page updates as soon as that happens.
+              </p>
+            </InlineNotice>
           </div>
-          <Badge variant={isPaymentPending ? 'warning' : isPendingVerification ? 'secondary' : 'success'} className="text-[10px] font-bold whitespace-nowrap shrink-0">
-            {isPaymentPending ? 'Payment Required' : isPendingVerification ? 'Verification Pending' : isMentorPending ? 'Awaiting Mentor' : 'Confirmed'}
-          </Badge>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <BookingSummaryCard booking={booking} />
-
-          {paymentDetailsError && canShowPaymentForm ? (
-            <ErrorState
-              title="Payment Details Unavailable"
-              message={paymentDetailsError}
-            />
-          ) : canShowPaymentForm && hasPaymentDestination ? (
-            <PaymentFormCard
-              booking={booking}
-              paymentDetails={paymentDetails!}
-              holdExpiresAt={holdExpiresAt}
-              countdownSeconds={countdownSeconds}
-              isExpired={isExpired}
-              transactionRef={transactionRef}
-              setTransactionRef={setTransactionRef}
-              referenceError={referenceError}
-              setReferenceError={setReferenceError}
-              proofFile={proofFile}
-              setProofFile={selectProofFile}
-              clearProofFile={clearProofFile}
-              proofError={proofError}
-              isDragging={isDragging}
-              setIsDragging={setIsDragging}
-              copiedUpi={copiedUpi}
-              setCopiedUpi={setCopiedUpi}
-              isSubmitting={isSubmitting}
-              isUploading={isUploading}
-              submitError={submitError}
-              fileInputRef={fileInputRef}
-              handleCopyUpi={handleCopyUpi}
-              handleSubmit={handleSubmit}
-            />
+          {/* ================= RIGHT: the payment surface ================= */}
+          <div className="min-w-0 space-y-4">
+            {paymentDetailsError && canShowPaymentForm ? (
+              <ErrorState title="Payment details unavailable" message={paymentDetailsError} />
+            ) : canShowPaymentForm && (hasPaymentDestination || razorpayEnabled) ? (
+              <>
+                <PaymentMethodSelector
+                  hasManualPayment={hasPaymentDestination}
+                  razorpayEnabled={razorpayEnabled}
+                  selectedMethod={selectedPaymentMethod}
+                  onSelectMethod={setSelectedPaymentMethod}
+                  amount={amount}
+                />
+                {selectedPaymentMethod === 'razorpay' && razorpayEnabled ? (
+                  <RazorpayCheckoutCard
+                    booking={booking}
+                    userName={booking.seeker?.full_name}
+                    userEmail={booking.seeker?.email}
+                    onPaymentVerified={loadBooking}
+                    onUnavailable={() => navigate('/seeker/bookings')}
+                  />
+                  ) : selectedPaymentMethod === 'manual' && hasPaymentDestination ? (
+                <PaymentFormCard
+                  booking={booking}
+                  paymentDetails={paymentDetails!}
+                  holdExpiresAt={holdExpiresAt}
+                  countdownSeconds={countdownSeconds}
+                  isExpired={isExpired}
+                  transactionRef={transactionRef}
+                  setTransactionRef={setTransactionRef}
+                  referenceError={referenceError}
+                  setReferenceError={setReferenceError}
+                  proofFile={proofFile}
+                  setProofFile={selectProofFile}
+                  clearProofFile={clearProofFile}
+                  proofError={proofError}
+                  isDragging={isDragging}
+                  setIsDragging={setIsDragging}
+                  copiedUpi={copiedUpi}
+                  setCopiedUpi={setCopiedUpi}
+                  isSubmitting={isSubmitting}
+                  isUploading={isUploading}
+                  submitError={submitError}
+                  fileInputRef={fileInputRef}
+                  handleCopyUpi={handleCopyUpi}
+                  handleSubmit={handleSubmit}
+                />
+              ) : razorpayEnabled ? (
+                <RazorpayCheckoutCard
+                  booking={booking}
+                  userName={booking.seeker?.full_name}
+                  userEmail={booking.seeker?.email}
+                  onPaymentVerified={loadBooking}
+                  onUnavailable={() => navigate('/seeker/bookings')}
+                />
+                ) : hasPaymentDestination ? (
+                <PaymentFormCard
+                  booking={booking}
+                  paymentDetails={paymentDetails!}
+                  holdExpiresAt={holdExpiresAt}
+                  countdownSeconds={countdownSeconds}
+                  isExpired={isExpired}
+                  transactionRef={transactionRef}
+                  setTransactionRef={setTransactionRef}
+                  referenceError={referenceError}
+                  setReferenceError={setReferenceError}
+                  proofFile={proofFile}
+                  setProofFile={selectProofFile}
+                  clearProofFile={clearProofFile}
+                  proofError={proofError}
+                  isDragging={isDragging}
+                  setIsDragging={setIsDragging}
+                  copiedUpi={copiedUpi}
+                  setCopiedUpi={setCopiedUpi}
+                  isSubmitting={isSubmitting}
+                  isUploading={isUploading}
+                  submitError={submitError}
+                  fileInputRef={fileInputRef}
+                  handleCopyUpi={handleCopyUpi}
+                  handleSubmit={handleSubmit}
+                />
+              ) : (
+                <PaymentUnavailableCard onBackToBookings={backToBookings} />
+              )}
+              {razorpayConfigError && (
+                <InlineNotice
+                  tone="warning"
+                  icon={AlertCircle}
+                  title="Online payment is currently unavailable"
+                >
+                  {razorpayConfigError} The manual UPI option is unaffected.
+                </InlineNotice>
+              )}
+            </>
           ) : canShowPaymentForm ? (
-            <PaymentUnavailableCard onBackToBookings={() => navigate('/seeker/bookings')} />
-          ) : isExpired && isPaymentPending && !payment ? (
-            <ExpiredStateCard onFindAnother={() => navigate('/seeker')} onBackToBookings={() => navigate('/seeker/bookings')} />
-          ) : payment ? (
-            <PaymentStatusPanel
-              payment={payment}
-              bookingCode={booking.booking_code}
-              onViewBookings={() => navigate('/seeker/bookings')}
-              onRefresh={loadBooking}
-            />
-          ) : (
-            <BookingConfirmedCard booking={booking} onViewSession={() => navigate(`/seeker/session?bookingId=${booking.id}`)} />
-          )}
+              <PaymentUnavailableCard onBackToBookings={backToBookings} />
+            ) : isExpired && isPaymentPending && !payment ? (
+              <ExpiredStateCard
+                onFindAnother={() => navigate('/seeker')}
+                onBackToBookings={backToBookings}
+              />
+            ) : payment ? (
+              <PaymentStatusPanel
+                payment={payment}
+                bookingCode={booking.booking_code}
+                onViewBookings={backToBookings}
+                onRefresh={loadBooking}
+              />
+            ) : (
+              <BookingConfirmedCard
+                booking={booking}
+                onViewSession={() => navigate(`/seeker/session?bookingId=${booking.id}`)}
+                onViewBookings={backToBookings}
+              />
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-interface BookingSummaryCardProps {
-  booking: EnrichedBookingRecord;
-}
-
-const BookingSummaryCard: React.FC<BookingSummaryCardProps> = ({ booking }) => {
-  const startDate = new Date(booking.start_time);
-  const endDate = new Date(booking.end_time);
-
-  return (
-    <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-sm space-y-5">
-      <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 font-display">
-        Booking Summary
-      </h2>
-
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-shell-accent-soft)] text-[var(--color-shell-accent)] shrink-0">
-            <CreditCard className="h-6 w-6" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-[var(--color-shell-text-muted)]">Booking Reference</p>
-            <p className="font-mono font-bold text-[var(--color-shell-text)] truncate">{booking.booking_code}</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 text-xs">
-          <div>
-            <p className="text-[var(--color-shell-text-muted)]">Mentor</p>
-            <p className="font-semibold text-[var(--color-shell-text)] truncate">{booking.mentor?.full_name || '—'}</p>
-          </div>
-          <div>
-            <p className="text-[var(--color-shell-text-muted)]">Segment</p>
-            <p className="font-semibold text-[var(--color-shell-text)] truncate">{booking.segment?.name || '—'}</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 text-xs">
-          <div>
-            <p className="text-[var(--color-shell-text-muted)]">Gig</p>
-            <p className="font-semibold text-[var(--color-shell-text)] truncate">{booking.gig?.title || '—'}</p>
-          </div>
-          <div>
-            <p className="text-[var(--color-shell-text-muted)]">Duration</p>
-            <p className="font-semibold text-[var(--color-shell-text)]">{booking.gig?.duration_minutes ? `${booking.gig.duration_minutes} min` : '—'}</p>
-          </div>
-        </div>
-
-        <div className="border-t border-[var(--color-shell-border)] pt-4 space-y-3 text-xs">
-          <div className="flex items-center gap-2 text-[var(--color-shell-text-muted)]">
-            <Calendar className="h-3.5 w-3.5 shrink-0" />
-            <span>{startDate.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>
-          </div>
-          <div className="flex items-center gap-2 text-[var(--color-shell-text-muted)]">
-            <Clock className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              {formatLocalTimeLabel(booking.start_time).replace(' ', ' – ')}
-              {' '}(IST)
-            </span>
-          </div>
-          <div className="flex items-center gap-2 text-[var(--color-shell-text-muted)]">
-            <HelpCircle className="h-3.5 w-3.5 shrink-0" />
-            <span>Timezone: {booking.mentor_timezone || 'Asia/Kolkata'}</span>
-          </div>
-        </div>
-
-        <div className="flex justify-between items-center border-t border-[var(--color-shell-border)] pt-4 text-lg font-bold text-[var(--color-shell-text)]">
-          <span>Amount Due</span>
-          <span className="text-xl">{formatInr(booking.amount_inr ?? booking.gig?.price_inr)}</span>
-        </div>
-
-        <div className="rounded-xl bg-[var(--color-shell-surface-elevated)] border border-[var(--color-shell-border)]/80 p-3.5 text-[11px] text-[var(--color-shell-text-muted)] space-y-1">
-          <span className="font-bold text-[var(--color-shell-text)] block flex items-center gap-1.5">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-            How verification works
-          </span>
-          <p className="leading-relaxed">
-            Pay the exact amount using the UPI QR code. Upload your payment screenshot with the transaction reference.
-            Our team verifies payments manually, typically within a few minutes. You will see the status update here.
-          </p>
-        </div>
-      </div>
-    </div>
+    </SegmentScope>
   );
 };
 
@@ -544,65 +624,90 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
   handleCopyUpi,
   handleSubmit,
 }) => {
-  const progress = holdExpiresAt ? Math.max(0, Math.min(1, 1 - countdownSeconds / (APP_CONFIG.HOLD_DURATION_MS / 1000))) : 0;
+  const amount = formatInr(booking.amount_inr ?? booking.gig?.price_inr) || '—';
 
   return (
-    <div className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-sm space-y-5">
-      <PaymentDeadlineCard
-        holdExpiresAt={holdExpiresAt}
-        countdownSeconds={countdownSeconds}
-        isExpired={isExpired}
-        progress={progress}
-      />
-
+    <SectionCard
+      title="Pay by UPI"
+      description="Transfer to the account below, then send us the reference and a screenshot."
+      icon={QrCode}
+      aside={<StatusPill tone="info" label="Manual verification" />}
+    >
       <div className="space-y-5">
-        <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 font-display">
-          Manual QR Payment
-        </h2>
+        <HoldCountdown
+          secondsRemaining={countdownSeconds}
+          totalSeconds={APP_CONFIG.HOLD_DURATION_MS / 1000}
+          expired={isExpired}
+          expiredBody={`Your ${HOLDOUT_MINUTES}-minute reservation window has ended. The slot has been released and may now be available to another seeker.`}
+        />
 
-        <div className="flex flex-col items-center justify-center p-4 border border-[var(--color-shell-border)] rounded-xl bg-[var(--color-shell-surface-elevated)] text-center space-y-3">
-          {/* The QR is the image an admin uploaded, served from Supabase Storage.
-              There is no decorative stand-in: this branch only renders when a
-              real QR is configured. */}
-          {paymentDetails.qrImageUrl && (
+        {/* The QR is the image an admin uploaded, served from Supabase Storage.
+            There is no decorative stand-in: this branch only renders when a
+            real QR is configured. */}
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-5 text-center">
+          {paymentDetails.qrImageUrl ? (
             <img
               src={paymentDetails.qrImageUrl}
               alt="Payment QR code — scan with any UPI app"
-              className="h-36 w-36 rounded-xl border border-[var(--color-shell-border)] bg-white object-contain p-1"
+              className="h-40 w-40 rounded-xl border border-[var(--color-shell-border)] bg-white object-contain p-1.5"
             />
+          ) : (
+            <div
+              aria-hidden="true"
+              className="flex h-40 w-40 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-[var(--color-shell-border-strong)] px-3 text-center"
+            >
+              <QrCode className="h-7 w-7 text-[var(--color-shell-text-subtle)]" />
+              <span className="text-[11px] leading-snug text-[var(--color-shell-text-subtle)]">
+                No QR configured — use the UPI ID below
+              </span>
+            </div>
           )}
-          <span className="text-xs font-bold text-[var(--color-shell-text)]">Scan via Any UPI App</span>
-          {paymentDetails.accountName && (
-            <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
-              Payee: {paymentDetails.accountName}
-            </span>
-          )}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-mono text-[var(--color-shell-text-muted)] bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] px-2.5 py-1 rounded-lg break-all">
+
+          <div className="space-y-0.5">
+            <p className="text-[13px] font-bold text-[var(--color-shell-text)]">
+              Scan with any UPI app
+            </p>
+            {paymentDetails.accountName && (
+              <p className="text-[11.5px] text-[var(--color-shell-text-subtle)]">
+                Payee: {paymentDetails.accountName}
+              </p>
+            )}
+          </div>
+
+          <div className="flex max-w-full items-center gap-1.5">
+            <span className="token-wrap rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-2.5 py-1.5 font-mono text-[12.5px] text-[var(--color-shell-text-muted)]">
               {paymentDetails.upiId}
             </span>
             <button
+              type="button"
               onClick={handleCopyUpi}
-              className="p-1.5 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"
+              className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)] transition-colors hover:bg-[var(--color-shell-surface-elevated)] hover:text-[var(--color-shell-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
               aria-label="Copy UPI ID"
               title="Copy UPI ID"
             >
-              {copiedUpi ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedUpi ? (
+                <Check className="h-3.5 w-3.5 text-[var(--color-shell-success)]" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
             </button>
           </div>
+          <p aria-live="polite" className="sr-only">
+            {copiedUpi ? 'UPI ID copied to clipboard' : ''}
+          </p>
         </div>
 
         {paymentDetails.instructions && (
           <div
             role="note"
-            className="flex items-start gap-2 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3 text-[11px] leading-relaxed text-[var(--color-shell-text-muted)]"
+            className="flex items-start gap-2 rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3.5 text-[12.5px] leading-relaxed text-[var(--color-shell-text-muted)]"
           >
-            <HelpCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+            <HelpCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span className="whitespace-pre-wrap">{paymentDetails.instructions}</span>
           </div>
         )}
 
-        <PaymentStepsCard />
+        <PaymentStepsCard amount={amount} />
 
         <Input
           label="Transaction Reference / UTR"
@@ -622,13 +727,14 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
         />
 
         <div className="space-y-1.5">
-          <label className="block text-xs font-bold text-[var(--color-shell-text)]">
-            Upload Payment Screenshot
-            <span className="text-[var(--color-shell-error)] ml-0.5">*</span>
+          <label htmlFor="payment-proof-file" className="block text-xs font-semibold text-[var(--color-shell-text)]">
+            Upload payment screenshot
+            <span className="ml-0.5 text-[var(--color-shell-error)]">*</span>
           </label>
 
           <input
             ref={fileInputRef}
+            id="payment-proof-file"
             type="file"
             accept={PAYMENT_PROOF_MIME_TYPES.join(',')}
             className="sr-only"
@@ -640,13 +746,16 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
           />
 
           {proofFile ? (
-            <div className="flex items-center gap-3 rounded-xl border border-emerald-500/60 bg-emerald-50/50 dark:bg-emerald-900/20 p-3">
-              <FileImage className="h-8 w-8 shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+            <div className={cn('flex items-center gap-3 rounded-xl border p-3', TONE_SURFACE.success)}>
+              <FileImage
+                className={cn('h-7 w-7 shrink-0', TONE_TEXT.success)}
+                aria-hidden="true"
+              />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-semibold text-[var(--color-shell-text)]" title={proofFile.name}>
+                <p className="truncate text-[13px] font-semibold text-[var(--color-shell-text)]" title={proofFile.name}>
                   {proofFile.name}
                 </p>
-                <p className="text-[11px] text-[var(--color-shell-text-muted)]">
+                <p className="text-[11.5px] text-[var(--color-shell-text-muted)]">
                   {isUploading ? (
                     <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--color-shell-text)]">
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -665,7 +774,7 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
                 disabled={isSubmitting}
                 onClick={() => fileInputRef.current?.click()}
               >
-                <RefreshCw className="h-3 w-3" />
+                <RefreshCw className="h-3 w-3" aria-hidden="true" />
                 <span>Change</span>
               </Button>
               <button
@@ -673,16 +782,19 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
                 onClick={clearProofFile}
                 disabled={isSubmitting}
                 aria-label="Remove selected screenshot"
-                className="shrink-0 rounded-md p-1.5 text-[var(--color-shell-text-muted)] hover:bg-emerald-100/70 dark:hover:bg-emerald-900/30 hover:text-[var(--color-shell-error)] disabled:opacity-50 transition-colors cursor-pointer"
+                className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-[var(--color-shell-text-muted)] transition-colors hover:bg-[var(--color-shell-error-soft)] hover:text-[var(--color-shell-error)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4" aria-hidden="true" />
               </button>
             </div>
           ) : (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={(e) => {
                 e.preventDefault();
@@ -691,24 +803,27 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
               }}
               disabled={isSubmitting}
               aria-describedby="payment-proof-hint"
-              className={`flex w-full flex-col items-center justify-center p-6 border-2 border-dashed rounded-xl transition-all cursor-pointer text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] disabled:cursor-not-allowed disabled:opacity-60 ${
+              className={cn(
+                'flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]',
+                'disabled:cursor-not-allowed disabled:opacity-60',
                 isDragging
-                  ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/20'
-                  : 'border-[var(--color-shell-border)] hover:border-zinc-400 dark:hover:border-zinc-500 bg-[var(--color-shell-surface-elevated)]/50'
-              }`}
+                  ? 'border-[var(--segment-accent)] bg-[var(--segment-accent-soft)]'
+                  : 'border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface-elevated)] hover:border-[var(--color-shell-text-subtle)]'
+              )}
             >
-              <Upload className="h-6 w-6 mb-2 text-[var(--color-shell-text-subtle)]" />
-              <span className="text-xs font-semibold text-[var(--color-shell-text)]">
-                Click or drag to select payment screenshot
+              <Upload className="mb-2 h-6 w-6 text-[var(--color-shell-text-subtle)]" aria-hidden="true" />
+              <span className="text-[13px] font-semibold text-[var(--color-shell-text)]">
+                Click or drag to select your screenshot
               </span>
-              <span id="payment-proof-hint" className="text-[10px] text-[var(--color-shell-text-subtle)] mt-1">
+              <span id="payment-proof-hint" className="mt-1 text-[11px] text-[var(--color-shell-text-subtle)]">
                 PNG, JPG, JPEG or WEBP · up to 5 MB · stored in a private bucket
               </span>
             </button>
           )}
 
           {proofError && (
-            <p className="text-xs font-medium text-[var(--color-shell-error)] flex items-center gap-1" role="alert">
+            <p className="flex items-center gap-1 text-xs font-medium text-[var(--color-shell-error)]" role="alert">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span>{proofError}</span>
             </p>
@@ -716,13 +831,9 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
         </div>
 
         {submitError && (
-          <div
-            role="alert"
-            className="flex items-start gap-2 rounded-xl border border-[var(--color-shell-error)]/40 bg-[var(--color-shell-error-soft)] p-3 text-xs font-medium text-[var(--color-shell-error)]"
-          >
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>{submitError}</span>
-          </div>
+          <InlineNotice tone="danger" role="alert" icon={AlertCircle} title="We could not submit your proof">
+            {submitError}
+          </InlineNotice>
         )}
 
         <Button
@@ -730,114 +841,58 @@ const PaymentFormCard: React.FC<PaymentFormCardProps> = ({
           isLoading={isSubmitting}
           loadingText={isUploading ? 'Uploading screenshot...' : 'Submitting proof...'}
           onClick={handleSubmit}
-          className="w-full text-xs font-semibold shadow-xs min-h-[44px]"
-          size="md"
+          className="w-full gap-2 font-semibold shadow-xs"
+          size="lg"
         >
-          Submit Payment Proof
+          {!isSubmitting && <Lock className="h-4 w-4" aria-hidden="true" />}
+          <span>Submit payment proof</span>
         </Button>
 
-        <div className="flex items-center justify-between text-xs text-[var(--color-shell-text-subtle)]">
-          <span>Session: {formatInr(booking.amount_inr ?? booking.gig?.price_inr)}</span>
-          <span>Total: {formatInr(booking.amount_inr ?? booking.gig?.price_inr)}</span>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[12px] text-[var(--color-shell-text-subtle)]">
+          <span>Session total</span>
+          <span className="font-semibold tabular-nums text-[var(--color-shell-text)]">{amount}</span>
         </div>
 
-        <p className="text-[11px] text-[var(--color-shell-text-subtle)] text-center">
-          Submitting a proof does not confirm your payment. An admin verifies it before the booking is confirmed.
+        <p className="text-center text-[11.5px] leading-relaxed text-[var(--color-shell-text-subtle)]">
+          Submitting a proof does not confirm your payment. A member of the team verifies it before
+          the booking is confirmed, and the status above updates when they do.
         </p>
       </div>
-    </div>
+    </SectionCard>
   );
 };
 
-interface PaymentDeadlineCardProps {
-  holdExpiresAt: string | null;
-  countdownSeconds: number;
-  isExpired: boolean;
-  progress: number;
-}
-
-const PaymentDeadlineCard: React.FC<PaymentDeadlineCardProps> = ({
-  holdExpiresAt,
-  countdownSeconds,
-  isExpired,
-  progress,
-}) => {
-  if (!holdExpiresAt) return null;
-
-  return (
-    <div className={`relative rounded-xl border p-4 ${
-      isExpired
-        ? 'border-[var(--color-shell-error)]/40 bg-[var(--color-shell-error-soft)]'
-        : 'border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/70'
-    }`}>
-      <div className="flex items-start gap-3">
-        <div className={`flex h-10 w-10 items-center justify-center rounded-xl shrink-0 ${
-          isExpired
-            ? 'bg-[var(--color-shell-error)]/10 text-[var(--color-shell-error)]'
-            : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
-        }`}>
-          {isExpired ? <AlertCircle className="h-5 w-5" /> : <Clock className="h-5 w-5 animate-pulse" />}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className={`text-sm font-bold ${isExpired ? 'text-[var(--color-shell-error)]' : 'text-[var(--color-shell-text)]'}`}>
-              {isExpired ? 'Payment Window Expired' : 'Payment Window'}
-            </h3>
-            {!isExpired && (
-              <Badge variant="warning" className="text-[10px] font-bold">{HOLDOUT_MINUTES}-Min Hold</Badge>
-            )}
-          </div>
-          <p className={`text-xs mt-0.5 leading-relaxed ${isExpired ? 'text-[var(--color-shell-error)]' : 'text-[var(--color-shell-text)]'}`}>
-            {isExpired
-              ? 'Your 15-minute reservation window has ended. The slot has been released and may now be available to another seeker.'
-              : 'Complete payment within the countdown below. After the timer expires, the slot will be released automatically.'}
-          </p>
-
-          {!isExpired && (
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[var(--color-shell-text-muted)]">Time Remaining</span>
-                <span className="font-mono font-bold text-base tabular-nums text-[var(--color-shell-text)]">
-                  {formatCountdown(countdownSeconds)}
-                </span>
-              </div>
-              <div className="h-1.5 bg-[var(--color-shell-border)] rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-amber-500 to-amber-600 transition-all duration-300 ease-out"
-                  style={{ width: `${progress * 100}%` }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const PaymentStepsCard: React.FC = () => {
+/**
+ * The three manual steps, with the exact amount attached.
+ *
+ * The amount is passed in rather than hard-coded so the instructions and the
+ * figure being verified can never disagree.
+ */
+const PaymentStepsCard: React.FC<{ amount: string }> = ({ amount }) => {
   const steps = [
-    { number: '01', label: 'Pay the exact amount', description: 'Use any UPI app to scan the QR code' },
+    { number: '01', label: 'Pay the exact amount', description: `Send ${amount} to the UPI ID above` },
     { number: '02', label: 'Keep your transaction reference', description: 'Copy the UTR from your payment receipt' },
-    { number: '03', label: 'Upload payment proof', description: 'Submit screenshot and reference for verification' },
+    { number: '03', label: 'Upload your payment proof', description: 'Submit the reference and screenshot for verification' },
   ];
 
   return (
-    <div className="flex flex-col gap-3 p-4 rounded-xl bg-[var(--color-shell-surface-elevated)] border border-[var(--color-shell-border)]/50">
-      <h4 className="text-xs font-bold text-[var(--color-shell-text-muted)] uppercase tracking-wider">Payment Steps</h4>
-      <div className="space-y-3">
-        {steps.map((step, idx) => (
-          <div key={idx} className="flex items-start gap-3">
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--color-shell-accent-soft)] text-[var(--color-shell-accent)] font-mono font-bold text-[11px] shrink-0 mt-0.5">
+    <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-4">
+      <h4 className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
+        Payment steps
+      </h4>
+      <ol className="mt-3 space-y-3">
+        {steps.map((step) => (
+          <li key={step.number} className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--segment-accent-soft)] font-mono text-[11px] font-bold text-[var(--segment-accent)]">
               {step.number}
             </span>
-            <div className="flex-1">
-              <p className="text-xs font-semibold text-[var(--color-shell-text)]">{step.label}</p>
-              <p className="text-[10px] text-[var(--color-shell-text-muted)]">{step.description}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-semibold text-[var(--color-shell-text)]">{step.label}</p>
+              <p className="text-[11.5px] text-[var(--color-shell-text-muted)]">{step.description}</p>
             </div>
-          </div>
+          </li>
         ))}
-      </div>
+      </ol>
     </div>
   );
 };
@@ -857,44 +912,39 @@ interface ExpiredStateCardProps {
  * temporary state the admin resolves in the console.
  */
 const PaymentUnavailableCard: React.FC<{ onBackToBookings: () => void }> = ({ onBackToBookings }) => (
-  <div className="flex flex-col items-center justify-center rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] p-10 text-center space-y-4">
-    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-shell-warning)]/10 text-[var(--color-shell-warning)]">
-      <AlertCircle className="h-8 w-8" />
-    </div>
-    <div>
-      <h3 className="text-lg font-bold text-[var(--color-shell-text)]">Payment Not Yet Available</h3>
-      <p className="text-sm text-[var(--color-shell-text-muted)] mt-1 max-w-sm mx-auto">
-        This booking is waiting for payment, but the platform has not finished setting up its payment details yet.
-        Your slot is still reserved. Please check back shortly or contact support.
-      </p>
-    </div>
-    <Button onClick={onBackToBookings} variant="outline" className="w-full sm:w-auto">
-      Back to My Bookings
-    </Button>
-  </div>
+  <StatePanel
+    tone="warning"
+    icon={AlertCircle}
+    title="Payment is not yet available"
+    description="This booking is waiting for payment, but the platform has not finished setting up its payment details. Your slot is still reserved — please check back shortly or contact support."
+    live="polite"
+    actions={
+      <Button onClick={onBackToBookings} variant="outline">
+        Back to my bookings
+      </Button>
+    }
+  />
 );
 
 const ExpiredStateCard: React.FC<ExpiredStateCardProps> = ({ onFindAnother, onBackToBookings }) => (
-  <div className="flex flex-col items-center justify-center rounded-2xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-10 text-center space-y-4">
-    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-shell-error)]/10 text-[var(--color-shell-error)]">
-      <AlertCircle className="h-8 w-8" />
-    </div>
-    <div>
-      <h3 className="text-lg font-bold text-[var(--color-shell-error)]">Payment Window Expired</h3>
-      <p className="text-sm text-[var(--color-shell-text-muted)] mt-1 max-w-sm mx-auto">
-        Your 15-minute reservation window has ended. The slot has been released and may now be available to another seeker.
-      </p>
-    </div>
-    <div className="flex flex-col sm:flex-row gap-3 pt-2">
-      <Button onClick={onFindAnother} className="w-full sm:w-auto gap-1.5">
-        <Zap className="h-3.5 w-3.5" />
-        <span>Find Another Session</span>
-      </Button>
-      <Button onClick={onBackToBookings} variant="outline" className="w-full sm:w-auto">
-        Back to My Bookings
-      </Button>
-    </div>
-  </div>
+  <StatePanel
+    tone="danger"
+    icon={Clock}
+    title="Payment window expired"
+    description={`Your ${HOLDOUT_MINUTES}-minute reservation window has ended. The slot has been released and may now be available to another seeker.`}
+    live="assertive"
+    actions={
+      <>
+        <Button onClick={onFindAnother} className="gap-2">
+          <Zap className="h-4 w-4" aria-hidden="true" />
+          <span>Find another session</span>
+        </Button>
+        <Button onClick={onBackToBookings} variant="outline">
+          Back to my bookings
+        </Button>
+      </>
+    }
+  />
 );
 
 interface PaymentStatusPanelProps {
@@ -904,40 +954,14 @@ interface PaymentStatusPanelProps {
   onRefresh: () => void;
 }
 
-const PaymentStatusPanel: React.FC<PaymentStatusPanelProps> = ({ payment, bookingCode, onViewBookings, onRefresh }) => {
-  const tone = (() => {
-    switch (payment.status) {
-      case 'VERIFIED':
-        return {
-          wrap: 'border-emerald-200/90 bg-emerald-50/40 dark:border-emerald-900/30 dark:bg-emerald-900/20',
-          icon: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200/80 dark:border-emerald-800/50',
-          title: 'text-emerald-950 dark:text-emerald-100',
-          body: 'text-emerald-800 dark:text-emerald-200',
-        };
-      case 'REJECTED':
-        return {
-          wrap: 'border-amber-200/90 bg-amber-50/40 dark:border-amber-900/30 dark:bg-amber-900/20',
-          icon: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border-amber-200/80 dark:border-amber-800/50',
-          title: 'text-amber-950 dark:text-amber-100',
-          body: 'text-amber-800 dark:text-amber-200',
-        };
-      default:
-        return {
-          wrap: 'border-sky-200/90 bg-sky-50/40 dark:border-sky-900/30 dark:bg-sky-900/20',
-          icon: 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400 border-sky-200/80 dark:border-sky-800/50',
-          title: 'text-sky-950 dark:text-sky-100',
-          body: 'text-sky-800 dark:text-sky-200',
-        };
-    }
-  })();
-
-  const heading = (() => {
-    switch (payment.status) {
-      case 'VERIFIED': return 'Payment Verified';
-      case 'REJECTED': return 'Payment Verification Requires Attention';
-      default: return 'Payment Proof Submitted';
-    }
-  })();
+const PaymentStatusPanel: React.FC<PaymentStatusPanelProps> = ({
+  payment,
+  bookingCode,
+  onViewBookings,
+  onRefresh,
+}) => {
+  const descriptor = describePaymentStatus(payment.status);
+  const tone = descriptor.tone;
 
   const description = (() => {
     switch (payment.status) {
@@ -952,99 +976,205 @@ const PaymentStatusPanel: React.FC<PaymentStatusPanelProps> = ({ payment, bookin
     }
   })();
 
+  const facts = [
+    { label: 'Booking', value: bookingCode },
+    { label: 'Status', value: <StatusPill tone={tone} label={descriptor.label} /> },
+    ...(payment.transaction_reference
+      ? [{ label: 'Reference', value: <span className="font-mono text-[12.5px]">{payment.transaction_reference}</span> }]
+      : []),
+    { label: 'Amount', value: formatInr(payment.amount_inr) || '—' },
+    ...(payment.verified_at
+      ? [
+          {
+            label: 'Verified',
+            value: new Date(payment.verified_at).toLocaleString('en-IN', {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            }),
+          },
+        ]
+      : []),
+  ];
+
   return (
-    <div className={`flex w-full flex-col items-center justify-center rounded-2xl border p-8 text-center space-y-4 sm:p-12 ${tone.wrap}`}>
-      <div className={`flex h-14 w-14 items-center justify-center rounded-2xl border shadow-xs ${tone.icon}`}>
-        {payment.status === 'VERIFIED' ? <CheckCircle2 className="h-7 w-7" /> : <ShieldCheck className="h-7 w-7" />}
-      </div>
-
-      <h3 className={`text-lg font-bold tracking-tight sm:text-xl ${tone.title}`}>{heading}</h3>
-      <p className={`max-w-md text-xs leading-relaxed sm:text-sm ${tone.body}`}>{description}</p>
-
-      <dl className="w-full max-w-sm space-y-2 rounded-xl border border-black/5 dark:border-white/10 bg-white/60 dark:bg-zinc-800/60 p-4 text-left text-xs">
-        <div className="flex items-center justify-between gap-4">
-          <dt className={tone.body}>Booking</dt>
-          <dd className="font-mono font-bold text-[var(--color-shell-text)]">{bookingCode}</dd>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <dt className={tone.body}>Status</dt>
-          <dd>
-            <Badge variant={payment.status === 'VERIFIED' ? 'success' : payment.status === 'REJECTED' ? 'destructive' : 'warning'} className="text-[10px] font-bold">
-              {payment.status === 'PENDING_VERIFICATION' ? 'PAYMENT VERIFICATION PENDING' : payment.status}
-            </Badge>
-          </dd>
-        </div>
-        {payment.transaction_reference && (
-          <div className="flex items-center justify-between gap-4">
-            <dt className={tone.body}>Reference</dt>
-            <dd className="font-mono font-semibold text-[var(--color-shell-text)]">{payment.transaction_reference}</dd>
-          </div>
-        )}
-        <div className="flex items-center justify-between gap-4">
-          <dt className={tone.body}>Amount</dt>
-          <dd className="font-bold text-[var(--color-shell-text)]">{formatInr(payment.amount_inr)}</dd>
-        </div>
-        {payment.verified_at && (
-          <div className="flex items-center justify-between gap-4">
-            <dt className={tone.body}>Verified</dt>
-            <dd className="font-semibold text-[var(--color-shell-text)]">
-              {new Date(payment.verified_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-            </dd>
-          </div>
-        )}
-      </dl>
-
-      <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-        <Button onClick={onViewBookings} size="sm" className="shadow-xs">
-          View My Booking
-        </Button>
-        <Button onClick={onRefresh} variant="outline" size="sm" className="gap-1.5">
-          <RefreshCw className="h-3.5 w-3.5" />
-          <span>Refresh Status</span>
-        </Button>
-      </div>
-    </div>
+    <StatePanel
+      tone={tone}
+      icon={payment.status === 'VERIFIED' ? Check : payment.status === 'REJECTED' ? AlertCircle : ShieldCheck}
+      title={
+        payment.status === 'VERIFIED'
+          ? 'Payment verified'
+          : payment.status === 'REJECTED'
+            ? 'This payment needs your attention'
+            : 'Payment proof submitted'
+      }
+      description={description}
+      facts={facts}
+      live="polite"
+      actions={
+        <>
+          <Button onClick={onViewBookings} className="gap-2">
+            <Calendar className="h-4 w-4" aria-hidden="true" />
+            <span>View my booking</span>
+          </Button>
+          <Button onClick={onRefresh} variant="outline" className="gap-2">
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            <span>Refresh status</span>
+          </Button>
+        </>
+      }
+    />
   );
 };
 
 interface BookingConfirmedCardProps {
   booking: EnrichedBookingRecord;
   onViewSession: () => void;
+  onViewBookings: () => void;
 }
 
-const BookingConfirmedCard: React.FC<BookingConfirmedCardProps> = ({ booking, onViewSession }) => (
-  <div className="rounded-2xl border border-emerald-200/90 bg-emerald-50/40 dark:border-emerald-900/30 dark:bg-emerald-900/20 p-8 text-center space-y-4">
-    <div className="flex h-14 w-14 items-center justify-center rounded-2xl border shadow-xs bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200/80 dark:border-emerald-800/50">
-      <CheckCircle2 className="h-7 w-7" />
-    </div>
-
-    <h3 className="text-lg font-bold tracking-tight sm:text-xl text-emerald-950 dark:text-emerald-100">Booking Confirmed</h3>
-    <p className="max-w-md text-xs leading-relaxed sm:text-sm text-emerald-800 dark:text-emerald-200">
-      Your session is confirmed. The meeting link will unlock 5 minutes before the scheduled start time.
-    </p>
-
-    <dl className="w-full max-w-sm space-y-2 rounded-xl border border-black/5 dark:border-white/10 bg-white/60 dark:bg-zinc-800/60 p-4 text-left text-xs">
-      <div className="flex items-center justify-between gap-4">
-        <dt className="text-emerald-800 dark:text-emerald-200">Booking</dt>
-        <dd className="font-mono font-bold text-[var(--color-shell-text)]">{booking.booking_code}</dd>
-      </div>
-      <div className="flex items-center justify-between gap-4">
-        <dt className="text-emerald-800 dark:text-emerald-200">Status</dt>
-        <dd>
-          <Badge variant="success" className="text-[10px] font-bold">CONFIRMED</Badge>
-        </dd>
-      </div>
-      <div className="flex items-center justify-between gap-4">
-        <dt className="text-emerald-800 dark:text-emerald-200">Amount</dt>
-        <dd className="font-bold text-[var(--color-shell-text)]">{formatInr(booking.amount_inr ?? booking.gig?.price_inr)}</dd>
-      </div>
-    </dl>
-
-    <Button onClick={onViewSession} size="sm" className="shadow-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700">
-      <Video className="h-3.5 w-3.5" />
-      <span>Join Session Room</span>
-    </Button>
-  </div>
+const BookingConfirmedCard: React.FC<BookingConfirmedCardProps> = ({
+  booking,
+  onViewSession,
+  onViewBookings,
+}) => (
+  <StatePanel
+    tone="success"
+    icon={Check}
+    title="Booking confirmed"
+    description="Your session is confirmed. The meeting link unlocks 5 minutes before the scheduled start time."
+    facts={[
+      { label: 'Booking', value: booking.booking_code },
+      { label: 'Status', value: <StatusPill tone="success" label="Confirmed" /> },
+      { label: 'Amount', value: formatInr(booking.amount_inr ?? booking.gig?.price_inr) || '—' },
+    ]}
+    live="polite"
+    actions={
+      <>
+        <Button onClick={onViewSession} className="gap-2">
+          <Video className="h-4 w-4" aria-hidden="true" />
+          <span>Open session room</span>
+        </Button>
+        <Button onClick={onViewBookings} variant="outline" className="gap-2">
+          <Calendar className="h-4 w-4" aria-hidden="true" />
+          <span>My bookings</span>
+        </Button>
+      </>
+    }
+  />
 );
+
+interface PaymentMethodSelectorProps {
+  hasManualPayment: boolean;
+  razorpayEnabled: boolean;
+  selectedMethod: 'manual' | 'razorpay';
+  onSelectMethod: (method: 'manual' | 'razorpay') => void;
+  amount: string;
+}
+
+const PAYMENT_METHODS = [
+  {
+    id: 'manual' as const,
+    label: 'Pay by UPI',
+    description: 'Scan the QR or use the UPI ID, then upload your proof',
+    icon: QrCode,
+  },
+  {
+    id: 'razorpay' as const,
+    label: 'Razorpay checkout',
+    description: 'UPI, cards, netbanking or wallets — verified instantly',
+    icon: CreditCard,
+  },
+];
+
+const PaymentMethodSelector: React.FC<PaymentMethodSelectorProps> = ({
+  hasManualPayment,
+  razorpayEnabled,
+  selectedMethod,
+  onSelectMethod,
+  amount,
+}) => {
+  // If only one method is available, auto-select it and show a compact indicator
+  if (hasManualPayment && !razorpayEnabled) {
+    return (
+      <div className={cn('flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-center', TONE_SURFACE.neutral)}>
+        <StatusPill tone="info" label="Pay by UPI" />
+        <span className="text-[12.5px] text-[var(--color-shell-text-muted)]">
+          Paying <span className="font-semibold tabular-nums text-[var(--color-shell-text)]">{amount}</span> via UPI
+        </span>
+      </div>
+    );
+  }
+
+  if (!hasManualPayment && razorpayEnabled) {
+    return (
+      <div className={cn('flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-center', TONE_SURFACE.neutral)}>
+        <StatusPill tone="info" label="Razorpay" />
+        <span className="text-[12.5px] text-[var(--color-shell-text-muted)]">
+          Paying <span className="font-semibold tabular-nums text-[var(--color-shell-text)]">{amount}</span> via Razorpay
+        </span>
+      </div>
+    );
+  }
+
+  // Both available - show selector as a real radiogroup
+  const options = PAYMENT_METHODS.filter((m) =>
+    m.id === 'manual' ? hasManualPayment : razorpayEnabled
+  );
+
+  return (
+    <fieldset className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-4 shadow-xs sm:p-5">
+      <legend className="px-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--color-shell-text-subtle)]">
+        Choose how to pay
+      </legend>
+      <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {options.map((option) => {
+          const Icon = option.icon;
+          const selected = selectedMethod === option.id;
+          return (
+            <label
+              key={option.id}
+              className={cn(
+                'group flex cursor-pointer items-start gap-3 rounded-xl border p-3.5 transition-colors',
+                'focus-within:ring-2 focus-within:ring-[var(--color-shell-focus)] focus-within:ring-offset-2 focus-within:ring-offset-[var(--color-shell-surface)]',
+                selected
+                  ? 'border-[var(--segment-border-accent)] bg-[var(--segment-accent-soft)]'
+                  : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] hover:border-[var(--color-shell-border-strong)]'
+              )}
+            >
+              <input
+                type="radio"
+                name="payment-method"
+                value={option.id}
+                checked={selected}
+                onChange={() => onSelectMethod(option.id)}
+                className="sr-only"
+              />
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border',
+                  selected
+                    ? 'border-[var(--segment-border-accent)] bg-[var(--color-shell-surface)] text-[var(--segment-accent)]'
+                    : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] text-[var(--color-shell-text-muted)]'
+                )}
+              >
+                <Icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--color-shell-text)]">
+                  {option.label}
+                  {selected && <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                </span>
+                <span className="mt-0.5 block text-[11.5px] leading-relaxed text-[var(--color-shell-text-muted)]">
+                  {option.description}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+};
 
 export default SeekerPaymentPage;
