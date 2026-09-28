@@ -10,7 +10,6 @@ import {
 import { MENTOR_GRID_CLASS } from '@/src/components/seeker/MentorGrid';
 import type { DirectoryMentor, Segment } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
-import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 export interface SegmentMentorsSectionProps {
   segment: Segment | null;
@@ -47,25 +46,12 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
   className,
 }) => {
   const prefersReducedMotion = useReducedMotion();
-  const { activeSegmentSlug } = useSegmentTheme();
 
   const title = segment?.name
     ? pluralizeSegmentName(segment.name)
     : 'Mentors';
   const hasMentors = mentors.length > 0;
   const hasDirectoryRoute = !!segment?.id;
-
-  const sectionStyle = activeSegmentSlug
-    ? {
-        '--seeker-section-glow': `var(--segment-section-glow)`,
-        '--segment-accent': `var(--segment-accent)`,
-        'segment-accent': `var(--segment-accent)`,
-        '--segment-accent-hover': `var(--segment-accent-hover)`,
-        '--segment-accent-soft': `var(--segment-accent-soft)`,
-        '--segment-gradient-primary': `var(--segment-gradient-primary)`,
-        '--segment-border-accent': `var(--segment-border-accent)`,
-      } as React.CSSProperties
-    : {};
 
   return (
     <motion.section
@@ -76,14 +62,13 @@ export const SegmentMentorsSection: React.FC<SegmentMentorsSectionProps> = ({
       viewport={{ once: true, margin: '-80px' }}
       transition={{ duration: 0.5, ease: [0.23, 1, 0.31, 1] }}
       className={cn('relative scroll-mt-24 section-gap', className)}
-      style={sectionStyle}
     >
       {/* Subtle radial atmosphere */}
       <div
-        className="pointer-events-none absolute -inset-x-8 -top-10 -z-10 h-72 rounded-[40px] opacity-70"
+        className="pointer-events-none absolute -inset-x-8 -top-10 -z-10 h-72 rounded-[40px]"
         style={{
           background:
-            'radial-gradient(ellipse 60% 100% at 50% 0%, var(--seeker-section-glow), transparent 72%)',
+            'radial-gradient(ellipse 60% 100% at 50% 0%, var(--segment-atmo-c), transparent 72%)',
         }}
         aria-hidden="true"
       />

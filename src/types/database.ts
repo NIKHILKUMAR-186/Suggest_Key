@@ -1,4 +1,5 @@
 import { Profile, UserRoleRecord } from './auth';
+import type { SegmentExperienceConfig } from '@/src/lib/segmentExperience';
 
 // ----------------------------------------------------------------------
 // 1. SEGMENTS
@@ -12,6 +13,7 @@ export interface Segment {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  experience_config?: SegmentExperienceConfig | null;
 }
 
 // ----------------------------------------------------------------------

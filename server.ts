@@ -5925,6 +5925,142 @@ async function startServer() {
     }
   });
 
+  // --------------------------------------------------------------------------
+  // Segment Experience Configuration
+  // --------------------------------------------------------------------------
+
+  // GET /api/admin/segments/:id/experience: Fetch segment experience config
+  app.get('/api/admin/segments/:id/experience', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SEGMENT_ID', message: 'Segment ID must be a valid UUID.' } });
+      }
+
+      const { data: segment, error } = await admin
+        .from('segments')
+        .select('id, name, experience_config')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      return res.json({
+        success: true,
+        segment: {
+          id: segment.id,
+          name: segment.name,
+          experience_config: segment.experience_config || {},
+        },
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch segment experience:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/segments/:id/experience' });
+    }
+  });
+
+  // PUT /api/admin/segments/:id/experience: Update segment experience config
+  app.put('/api/admin/segments/:id/experience', requireAuth, requireAdmin, validateBody(apiSchemas.segmentExperience), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SEGMENT_ID', message: 'Segment ID must be a valid UUID.' } });
+      }
+
+      const { data: existing, error: existingErr } = await admin
+        .from('segments')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (existingErr) throw existingErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const experienceConfig = req.body ?? {};
+
+      const { data, error } = await admin
+        .from('segments')
+        .update({ experience_config: experienceConfig, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select('id, name, experience_config')
+        .single();
+
+      if (error) throw error;
+
+      auditAction(req.auth, 'segment_experience_updated', {
+        entityType: 'segment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { hasConfig: !!experienceConfig && Object.keys(experienceConfig).length > 0 },
+      });
+
+      return res.json({
+        success: true,
+        segment: {
+          id: data.id,
+          name: data.name,
+          experience_config: data.experience_config || {},
+        },
+        message: 'Segment experience updated.',
+      });
+    } catch (err: any) {
+      console.error('Failed to update segment experience:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'PUT /api/admin/segments/:id/experience' });
+    }
+  });
+
+  // GET /api/seeker/segments/:slug/experience: Public segment experience for seekers
+  app.get('/api/seeker/segments/:slug/experience', async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Service unavailable.' } });
+      }
+
+      const { slug } = req.params;
+
+      const { data: segment, error } = await admin
+        .from('segments')
+        .select('id, name, slug, is_active, experience_config')
+        .eq('slug', slug)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      return res.json({
+        success: true,
+        segment: {
+          id: segment.id,
+          name: segment.name,
+          slug: segment.slug,
+          experience_config: segment.experience_config || {},
+        },
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch seeker segment experience:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/segments/:slug/experience' });
+    }
+  });
+
   // PATCH /api/admin/gigs/:id: Update gig
   app.patch('/api/admin/gigs/:id', requireAuth, requireAdmin, validateBody(apiSchemas.adminGigUpdate), async (req: AuthRequest, res) => {
     try {
@@ -5988,6 +6124,129 @@ async function startServer() {
     } catch (err: any) {
       console.error('Failed to update gig:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // Segment hero image endpoints (admin only)
+  app.post('/api/admin/segments/:id/hero-upload-url', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SEGMENT_ID', message: 'Segment ID must be a valid UUID.' } });
+      }
+
+      const { data: segment, error: segErr } = await admin
+        .from('segments')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+      if (segErr) throw segErr;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const type = String(req.body?.type || 'image/png').toLowerCase();
+      const size = Number(req.body?.size || 0);
+      const ALLOWED_HERO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+      const HERO_MAX_BYTES = 5 * 1024 * 1024;
+      if (!ALLOWED_HERO_MIME_TYPES.includes(type)) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Upload a PNG, JPEG, WebP or GIF image.' } });
+      }
+      if (!Number.isFinite(size) || size <= 0) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'That file is empty.' } });
+      }
+      if (size > HERO_MAX_BYTES) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'That image is larger than 5 MB.' } });
+      }
+
+      const extensionByMimeType: Record<string, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/webp': 'webp',
+        'image/gif': 'gif',
+      };
+      const storagePath = `segment-hero/${id}-${Date.now()}-${randomUUID().slice(0, 6)}.${extensionByMimeType[type]}`;
+      const { data, error } = await admin.storage.from('segment-hero').createSignedUploadUrl(storagePath);
+      if (error) throw error;
+
+      auditAction(req.auth, 'segment_hero_upload_url_requested', {
+        entityType: 'segment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { mimeType: type, sizeBytes: size },
+      });
+
+      return res.json({ success: true, uploadUrl: data.signedUrl, token: data.token, path: storagePath });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'POST /api/admin/segments/:id/hero-upload-url',
+        clientMessage: 'Unable to prepare the segment hero image upload.',
+      });
+    }
+  });
+
+  // DELETE /api/admin/segments/:id/hero-image: remove a segment hero image
+  app.delete('/api/admin/segments/:id/hero-image', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SEGMENT_ID', message: 'Segment ID must be a valid UUID.' } });
+      }
+
+      const { data: current, error: readErr } = await admin
+        .from('segments')
+        .select('experience_config')
+        .eq('id', id)
+        .maybeSingle();
+      if (readErr) throw readErr;
+      if (!current) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const cfg = (current.experience_config || {}) as Record<string, unknown>;
+      const branding = (cfg.branding || {}) as Record<string, unknown>;
+      const previousPath = typeof branding.heroImageUrl === 'string' ? branding.heroImageUrl : null;
+
+      const nextConfig = { ...cfg };
+      const nextBranding = { ...branding };
+      delete nextBranding.heroImageUrl;
+      nextConfig.branding = nextBranding;
+
+      const { error: writeErr } = await admin
+        .from('segments')
+        .update({ experience_config: nextConfig, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      if (writeErr) throw writeErr;
+
+      if (previousPath) {
+        try { await admin.storage.from('segment-hero').remove([previousPath]); } catch {}
+      }
+
+      auditAction(req.auth, 'segment_hero_image_removed', {
+        entityType: 'segment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { previousPath },
+      });
+
+      return res.json({ success: true, message: 'Segment hero image removed.' });
+    } catch (err: any) {
+      return respondWithServerError({
+        req, res, error: err,
+        context: 'DELETE /api/admin/segments/:id/hero-image',
+        clientMessage: 'Unable to remove the segment hero image.',
+      });
     }
   });
 

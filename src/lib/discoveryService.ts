@@ -11,6 +11,7 @@ import {
   GeneratedSlot,
 } from '@/src/types/database';
 import { deriveAccountState } from '@/src/lib/adminAccountControl';
+import { normalizeSegmentExperience, type SegmentExperienceConfig } from '@/src/lib/segmentExperience';
 
 /**
  * Shape returned by `GET /api/mentor-availability/slots` for one mentor.
@@ -151,6 +152,44 @@ export async function fetchSegmentBySlug(slug: string): Promise<Segment | null> 
   } catch (err: any) {
     console.error('Error fetching segment by slug from Supabase:', logSanitizer.safeMessage(err));
     return null;
+  }
+}
+
+export interface SegmentExperience {
+  id: string;
+  name: string;
+  slug: string;
+  experience_config: SegmentExperienceConfig;
+}
+
+export async function fetchSegmentExperience(slug: string): Promise<{ experience: SegmentExperience | null; error: Error | null }> {
+  if (!isSupabaseConfigured()) {
+    return { experience: null, error: null };
+  }
+
+  try {
+    const res = await apiFetch(`/api/seeker/segments/${encodeURIComponent(slug)}/experience`);
+    let payload: any = null;
+    try {
+      payload = await res.json();
+    } catch {
+      return { experience: null, error: new Error('Segment experience returned an unreadable response.') };
+    }
+    if (!res.ok || !payload?.success) {
+      return { experience: null, error: new Error(payload?.error?.message || 'Unable to load segment experience.') };
+    }
+    return {
+      experience: {
+        id: payload.segment.id,
+        name: payload.segment.name,
+        slug: payload.segment.slug,
+        experience_config: normalizeSegmentExperience(payload.segment.experience_config),
+      },
+      error: null,
+    };
+  } catch (err: any) {
+    console.error('Error fetching segment experience:', logSanitizer.safeMessage(err));
+    return { experience: null, error: err instanceof Error ? err : new Error('Unable to load segment experience.') };
   }
 }
 

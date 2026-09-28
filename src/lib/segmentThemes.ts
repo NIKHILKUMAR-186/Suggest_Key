@@ -1,13 +1,31 @@
 /**
  * Segment visual theme mapping (frontend presentation only).
  *
- * The database does not store theme metadata for segments. This file provides
- * a deterministic, slug-based fallback so every segment renders with a
- * distinct visual identity without duplicating business data.
+ * ------------------------------------------------------------------
+ * PREFERRED SOURCE: the active segment's `experience_config`
+ * ------------------------------------------------------------------
+ * `deriveSegmentTheme()` in `./segmentTheme` turns an admin-configured
+ * experience into CSS custom properties. That is config-driven: a brand-new
+ * segment such as "finance-mentor" gets its configured appearance with no
+ * frontend code change. It is the path the app should use.
  *
- * Add new entries here when new segments are created in the admin panel.
- * Unknown segments safely fall back to the default brand theme.
+ * ------------------------------------------------------------------
+ * LEGACY FALLBACK: this file's slug-keyed map
+ * ------------------------------------------------------------------
+ * The `SEGMENT_THEMES` map below is a hardcoded slug -> colour lookup. It
+ * predates the experience config and is retained ONLY as a backwards-compatible
+ * fallback for segments that have no configured branding yet, so existing pages
+ * keep rendering their established palettes during the transition.
+ *
+ * It is deliberately NOT the source of truth: requiring a code change per new
+ * segment is exactly the coupling this work removes. Do not add new entries
+ * here — configure the segment in the admin panel instead. This map is
+ * expected to be deleted once every segment carries a configured theme.
  */
+
+import type { SegmentCssVariables } from '@/src/lib/segmentTheme';
+
+export type { SegmentCssVariables };
 
 export interface SegmentThemeTokens {
   /** Primary accent for the segment (used for selections, CTAs, highlights) */

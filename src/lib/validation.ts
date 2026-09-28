@@ -615,6 +615,66 @@ export const apiSchemas = {
     direction: z.enum(['up', 'down'], { message: 'Direction must be "up" or "down".' }),
   }),
 
+  segmentExperience: z.strictObject({
+    branding: z.strictObject({
+      heroHeadline: text({ max: 120, label: 'Hero headline' }).optional(),
+      heroSubheadline: text({ max: 200, label: 'Hero subheadline', multiline: true }).optional(),
+      tintColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      accent: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      accentSoft: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      accentSecondary: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      heroTint: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      gradientStart: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      gradientEnd: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
+      textMode: z.enum(['auto', 'light', 'dark']).optional(),
+      heroImageUrl: httpUrlField.optional(),
+    }).optional(),
+    topics: z.array(z.strictObject({
+      title: text({ max: 80, label: 'Title' }),
+      description: text({ max: 200, label: 'Description', multiline: true }),
+      icon: z.string().trim().max(40).optional(),
+    })).max(8, 'Use at most 8 topics.').optional(),
+    quickHelp: z.array(z.strictObject({
+      title: text({ max: 80, label: 'Title' }),
+      description: text({ max: 200, label: 'Description', multiline: true }),
+      icon: z.string().trim().max(40).optional(),
+    })).max(6, 'Use at most 6 quick help items.').optional(),
+    journeySteps: z.array(z.strictObject({
+      title: text({ max: 80, label: 'Title' }),
+      description: text({ max: 200, label: 'Description', multiline: true }),
+      icon: z.string().trim().max(40).optional(),
+    })).max(6, 'Use at most 6 journey steps.').optional(),
+    benefits: z.array(z.strictObject({
+      title: text({ max: 80, label: 'Title' }),
+      description: text({ max: 200, label: 'Description', multiline: true }),
+      icon: z.string().trim().max(40).optional(),
+    })).max(6, 'Use at most 6 benefits.').optional(),
+    faq: z.array(z.strictObject({
+      question: text({ max: 200, label: 'Question' }),
+      answer: text({ max: 1000, label: 'Answer', multiline: true }),
+    })).max(8, 'Use at most 8 FAQ items.').optional(),
+    guides: z.array(z.strictObject({
+      topic: optionalText({ max: 80, label: 'Topic' }),
+      title: text({ max: 200, label: 'Title' }),
+      description: text({ max: 400, label: 'Description', multiline: true }),
+      readingTime: optionalText({ max: 40, label: 'Reading time' }),
+      cta: z.strictObject({
+        text: text({ max: 60, label: 'CTA text' }),
+        url: httpUrlField,
+      }).optional(),
+    })).max(6, 'Use at most 6 guides.').optional(),
+    stories: z.array(z.strictObject({
+      quote: text({ max: 600, label: 'Quote', multiline: true }),
+      name: text({ min: 1, max: 80, label: 'Name' }),
+      context: optionalText({ max: 120, label: 'Context' }),
+      avatar: httpUrlField.optional(),
+    })).max(6, 'Use at most 6 stories.').optional(),
+    cta: z.strictObject({
+      text: text({ max: 60, label: 'CTA text' }),
+      url: httpUrlField,
+    }).optional(),
+  }).optional(),
+
   segmentAddMentor: z.strictObject({
     mentorId: uuidField,
     isPrimary: z.boolean().optional().default(false),

@@ -5,7 +5,6 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { MentorCard } from '@/src/components/seeker/MentorCard';
 import { DiscoverableMentor, Segment } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
-import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 export interface MentorGridProps {
   featuredMentors: DiscoverableMentor[];
@@ -79,8 +78,6 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
   navigate,
   className,
 }) => {
-  const { activeSegmentSlug } = useSegmentTheme();
-
   if (featuredMentors.length === 0 && regularMentors.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-4 py-8 text-center">
@@ -104,14 +101,6 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
     />
   );
 
-  const sectionStyle = activeSegmentSlug
-    ? ({
-        '--segment-accent': `var(--segment-accent)`,
-        '--segment-accent-soft': `var(--segment-accent-soft)`,
-        '--segment-border-accent': `var(--segment-border-accent)`,
-      } as React.CSSProperties)
-    : {};
-
   return (
     <motion.div
       initial="hidden"
@@ -121,7 +110,6 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
         show: { opacity: 1, transition: { staggerChildren: 0.06 } },
       }}
       className={cn('space-y-10', className)}
-      style={sectionStyle}
     >
       {/* Featured mentors section */}
       {featuredMentors.length > 0 && (

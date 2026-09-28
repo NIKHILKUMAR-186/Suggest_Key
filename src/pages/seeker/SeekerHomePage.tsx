@@ -20,11 +20,14 @@ import {
   getHighestPriorityActiveSegment,
   fetchDiscoverableMentors,
   fetchEligibleLanguages,
+  fetchSegmentExperience,
 } from '@/src/lib/discoveryService';
 import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
 import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
+import { SegmentExperiencePage } from '@/src/components/seeker/SegmentExperiencePage';
+import { SegmentExperienceProvider, useSegmentExperience } from '@/src/context/SegmentExperienceContext';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
 
@@ -35,21 +38,62 @@ const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
   { value: '6+', label: '6+ years' },
 ];
 
-export const SeekerHomePage: React.FC = () => (
-  <SegmentThemeProvider>
-    <SeekerHomePageInner />
-  </SegmentThemeProvider>
-);
+export const SeekerHomePage: React.FC = () => {
+  // The active segment lives at the very top so that BOTH providers below can
+  // read it: the experience provider needs the slug to fetch/subscribe, and the
+  // theme provider needs the segment to apply the configured palette.
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
+
+  return (
+    <SegmentExperienceProvider slug={selectedSegment?.slug ?? null}>
+      {/*
+        The theme provider sits INSIDE the experience provider so it can receive
+        the live config. That is what makes a realtime accent change repaint the
+        page immediately, rather than only swapping the text content.
+      */}
+      <SegmentThemeBridge activeSegment={selectedSegment}>
+        <SeekerHomeContent
+          segments={segments}
+          setSegments={setSegments}
+          activeSegment={selectedSegment}
+          onSegmentSelected={setSelectedSegment}
+        />
+      </SegmentThemeBridge>
+    </SegmentExperienceProvider>
+  );
+};
+
+/** Feeds the live experience config into the theme provider. */
+const SegmentThemeBridge: React.FC<{
+  activeSegment: Segment | null;
+  children: React.ReactNode;
+}> = ({ activeSegment, children }) => {
+  const { config } = useSegmentExperience();
+  return (
+    <SegmentThemeProvider initialSegment={activeSegment} liveConfig={config}>
+      {children}
+    </SegmentThemeProvider>
+  );
+};
 
 /**
  * Everything that reads segment theme state lives below the provider, so the
  * page never calls useSegmentTheme at a level where the provider is not yet
  * mounted.
  */
-const SeekerHomePageInner: React.FC = () => {
+const SeekerHomeContent: React.FC<{
+  segments: Segment[];
+  setSegments: React.Dispatch<React.SetStateAction<Segment[]>>;
+  activeSegment: Segment | null;
+  /** Prop name avoids colliding with the local `setSelectedSegment` callback. */
+  onSegmentSelected: React.Dispatch<React.SetStateAction<Segment | null>>;
+}> = ({ segments, setSegments, activeSegment, onSegmentSelected: setSelectedSegmentState }) => {
   const { navigate } = useNavigation();
   const { profile } = useAuth();
   const { setActiveSegment } = useSegmentTheme();
+
+  const selectedSegment = activeSegment;
 
   const userTimezone = profile?.timezone || 'UTC';
 
@@ -63,8 +107,6 @@ const SeekerHomePageInner: React.FC = () => {
   const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
   const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
 
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [selectedSegment, setSelectedSegmentState] = useState<Segment | null>(null);
   const [mentors, setMentors] = useState<DiscoverableMentor[]>([]);
   const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
@@ -72,6 +114,7 @@ const SeekerHomePageInner: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [mentorError, setMentorError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
+  const [experienceError, setExperienceError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -287,108 +330,127 @@ const SeekerHomePageInner: React.FC = () => {
         transition={{ duration: 0.45, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
         className="section-container space-y-8 sm:mt-12"
       >
-        {/* Filters sit directly above the results they control */}
-        <FilterBar
-          availableLanguages={availableLanguages}
-          languageFilter={languageFilter}
-          onLanguageChange={setLanguageFilter}
-          languageMenuOpen={showLanguageDropdown}
-          onLanguageMenuToggle={() => setShowLanguageDropdown((v) => !v)}
-          onLanguageMenuClose={() => setShowLanguageDropdown(false)}
-          experienceOptions={EXPERIENCE_OPTIONS}
-          experienceFilter={experienceFilter}
-          onExperienceChange={(value) => setExperienceFilter(value as ExperienceFilter)}
-          hasActiveFilters={hasActiveFilters}
-          onClearFilters={clearAllFilters}
-        />
-
-        <div className="divider-gradient" aria-hidden="true" />
-
-        <AvailableMentorsHeader
-          segmentName={selectedSegment?.name || null}
-          selectedDate={selectedDate}
-          count={filteredMentors.length}
-          isCountLoading={isLoadingMentors || !!mentorError}
-          onViewAll={scrollToSegmentMentors}
-        />
-
-        {/* Segment-level error */}
-        {error && (
-          <div className="error-banner">
-            <div className="flex items-center gap-2 font-semibold">
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-              <span>Something went wrong</span>
-            </div>
-            <p className="text-sm">{error}</p>
-            <Button onClick={retryLoad} variant="outline" size="sm" className="mt-2 sm:mt-0">
-              Try Again
-            </Button>
-          </div>
-        )}
-
-        {/* Mentor-level error */}
-        {mentorError && !error && (
-          <div className="error-banner">
-            <div className="flex items-center gap-2 font-semibold">
-              <AlertCircle className="h-4 w-4" aria-hidden="true" />
-              <span>{mentorError}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={retryLoad} variant="outline" size="sm">
-                Try Again
-              </Button>
-              <Button onClick={goToAllMentors} variant="ghost" size="sm">
-                View All Mentors
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Content */}
-        {isLoadingMentors ? (
-          <MentorGridSkeleton count={3} />
-        ) : mentorError ? null : filteredMentors.length === 0 ? (
-          <EmptyMentorState
-            icon={hasActiveFilters ? SearchX : CalendarX}
-            title={emptyTitle}
-            description={emptyDescription}
-            contextLabel={emptyContextLabel}
-            actions={emptyActions}
-          />
-        ) : (
-          <MentorGrid
-            featuredMentors={featuredMentors}
-            regularMentors={regularMentors}
-            selectedSegment={selectedSegment}
+        {selectedSegment ? (
+          <SegmentExperiencePage
+            segment={selectedSegment}
+            mentors={mentors}
             selectedDate={selectedDate}
             today={today}
+            isLoadingMentors={isLoadingMentors}
+            mentorError={mentorError}
             navigate={navigate}
+            showHero={false}
           />
+        ) : (
+          <>
+            {/* Filters sit directly above the results they control */}
+            <FilterBar
+              availableLanguages={availableLanguages}
+              languageFilter={languageFilter}
+              onLanguageChange={setLanguageFilter}
+              languageMenuOpen={showLanguageDropdown}
+              onLanguageMenuToggle={() => setShowLanguageDropdown((v) => !v)}
+              onLanguageMenuClose={() => setShowLanguageDropdown(false)}
+              experienceOptions={EXPERIENCE_OPTIONS}
+              experienceFilter={experienceFilter}
+              onExperienceChange={(value) => setExperienceFilter(value as ExperienceFilter)}
+              hasActiveFilters={hasActiveFilters}
+              onClearFilters={clearAllFilters}
+            />
+
+            <div className="divider-gradient" aria-hidden="true" />
+
+            <AvailableMentorsHeader
+              segmentName={(selectedSegment as Segment | null)?.name || null}
+              selectedDate={selectedDate}
+              count={filteredMentors.length}
+              isCountLoading={isLoadingMentors || !!mentorError}
+              onViewAll={scrollToSegmentMentors}
+            />
+
+            {/* Segment-level error */}
+            {error && (
+              <div className="error-banner">
+                <div className="flex items-center gap-2 font-semibold">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  <span>Something went wrong</span>
+                </div>
+                <p className="text-sm">{error}</p>
+                <Button onClick={retryLoad} variant="outline" size="sm" className="mt-2 sm:mt-0">
+                  Try Again
+                </Button>
+              </div>
+            )}
+
+            {/* Mentor-level error */}
+            {mentorError && !error && (
+              <div className="error-banner">
+                <div className="flex items-center gap-2 font-semibold">
+                  <AlertCircle className="h-4 w-4" aria-hidden="true" />
+                  <span>{mentorError}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={retryLoad} variant="outline" size="sm">
+                    Try Again
+                  </Button>
+                  <Button onClick={goToAllMentors} variant="ghost" size="sm">
+                    View All Mentors
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Content */}
+            {isLoadingMentors ? (
+              <MentorGridSkeleton count={3} />
+            ) : mentorError ? null : filteredMentors.length === 0 ? (
+              <EmptyMentorState
+                icon={hasActiveFilters ? SearchX : CalendarX}
+                title={emptyTitle}
+                description={emptyDescription}
+                contextLabel={emptyContextLabel}
+                actions={emptyActions}
+              />
+            ) : (
+              <MentorGrid
+                featuredMentors={featuredMentors}
+                regularMentors={regularMentors}
+                selectedSegment={selectedSegment}
+                selectedDate={selectedDate}
+                today={today}
+                navigate={navigate}
+              />
+            )}
+          </>
         )}
       </motion.div>
 
-      {/* Visual divider — separates AVAILABILITY from DISCOVERY */}
-      <div className="section-container mt-16 sm:mt-20 lg:mt-24" aria-hidden="true">
-        <div className="divider-gradient" />
-      </div>
+      {!selectedSegment && (
+        <>
+          {/* Visual divider — separates AVAILABILITY from DISCOVERY */}
+          <div className="section-container mt-16 sm:mt-20 lg:mt-24" aria-hidden="true">
+            <div className="divider-gradient" />
+          </div>
 
-      {/*
-        SECTION B — all real mentors in the selected segment.
-        Answers "who are the mentors in this segment?"
-      */}
-      <div className="section-container">
-        <SegmentMentorsSection
-          segment={selectedSegment}
-          mentors={segmentMentors}
-          total={segmentMentorTotal}
-          isLoading={isLoadingSegmentMentors}
-          error={segmentMentorError}
-          onRetry={reloadSegmentMentors}
-          selectedDate={selectedDate}
-          today={today}
-          navigate={navigate}
-        />
-      </div>
+          {/*
+            SECTION B — all real mentors in the selected segment.
+            Answers "who are the mentors in this segment?"
+          */}
+          <div className="section-container">
+            <SegmentMentorsSection
+              segment={selectedSegment}
+              mentors={segmentMentors}
+              total={segmentMentorTotal}
+              isLoading={isLoadingSegmentMentors}
+              error={segmentMentorError}
+              onRetry={reloadSegmentMentors}
+              selectedDate={selectedDate}
+              today={today}
+              navigate={navigate}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 };

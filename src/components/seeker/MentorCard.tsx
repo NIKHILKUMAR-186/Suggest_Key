@@ -14,7 +14,6 @@ import { formatInr, formatNextAvailableLabel } from '@/src/lib/seekerFormat';
 import { getInitials } from '@/src/lib/avatar';
 import type { DiscoverableMentor, DirectoryMentor, GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
-import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
 
 const EASE = [0.23, 1, 0.31, 1] as const;
 
@@ -185,7 +184,6 @@ export const MentorCard: React.FC<MentorCardProps> = ({
         isFeatured && 'seeker-card-featured',
         className
       )}
-      style={cardStyle}
     >
       {/* Segment color indicator */}
       <div className="segment-indicator" aria-hidden="true" />
