@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -98,11 +98,21 @@ export const SeekerWorkspacePage: React.FC = () => {
     };
   }, [queryBookingId, seekerId]);
 
-  useEffect(() => {
-    if (!booking?.id) return;
+  /**
+   * The single state-setting entry point for the workspace.
+   *
+   * Hoisted out of the mount effect so the "Retry" and "Check for Updates"
+   * buttons run the exact same load. They used to call
+   * `fetchWorkspaceByBooking` directly and discard the result, which set no
+   * state at all and so made both buttons look completely inert.
+   *
+   * `isActive` lets the mount effect keep its unmount guard without the button
+   * handlers having to know about it.
+   */
+  const reloadWorkspace = useCallback(
+    async (isActive: () => boolean = () => true) => {
+      if (!booking?.id) return;
 
-    let mounted = true;
-    const loadWorkspace = async () => {
       setLoading(true);
       setError(null);
       setIsPending(false);
@@ -110,7 +120,7 @@ export const SeekerWorkspacePage: React.FC = () => {
       try {
         const res = await fetchWorkspaceByBooking(booking.id, seekerId, 'seeker');
 
-        if (!mounted) return;
+        if (!isActive()) return;
 
         if (res.error) {
           setError(res.error.message);
@@ -132,19 +142,25 @@ export const SeekerWorkspacePage: React.FC = () => {
           }
         }
       } catch (err: any) {
-        if (mounted) {
+        if (isActive()) {
           setError(err.message || 'We could not reach Suggest Key. Check your connection and try again.');
         }
       } finally {
-        if (mounted) setLoading(false);
+        if (isActive()) setLoading(false);
       }
-    };
+    },
+    [booking?.id, seekerId]
+  );
 
-    loadWorkspace();
+  useEffect(() => {
+    if (!booking?.id) return;
+
+    let mounted = true;
+    reloadWorkspace(() => mounted);
     return () => {
       mounted = false;
     };
-  }, [booking?.id, seekerId]);
+  }, [booking?.id, reloadWorkspace]);
 
   const toggleStepCompleted = (stepId: string) => {
     setCompletedSteps((prev) => ({
@@ -243,7 +259,7 @@ export const SeekerWorkspacePage: React.FC = () => {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => booking && fetchWorkspaceByBooking(booking.id, seekerId, 'seeker')}
+            onClick={() => reloadWorkspace()}
             className="text-xs"
           >
             Retry
@@ -331,7 +347,7 @@ export const SeekerWorkspacePage: React.FC = () => {
           </p>
           <div className="pt-2">
             <Button
-              onClick={() => booking && fetchWorkspaceByBooking(booking.id, seekerId, 'seeker')}
+              onClick={() => reloadWorkspace()}
               variant="outline"
               size="sm"
               className="gap-1.5 text-xs cursor-pointer"

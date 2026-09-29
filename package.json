@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --log-override:commonjs-variable-in-esm=silent --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "build": "npm run build:web && npm run build:server && npm run build:verify",
+    "build:web": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --log-override:commonjs-variable-in-esm=silent --outfile=.build/server.cjs",
+    "build:verify": "node scripts/verify-dist.mjs",
+    "start": "tsx server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist .build",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test --test-force-exit \"tests/**/*.test.ts\""
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

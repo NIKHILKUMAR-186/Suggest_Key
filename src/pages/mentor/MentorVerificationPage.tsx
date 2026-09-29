@@ -14,6 +14,7 @@ import {
   Save,
   Send,
   Trash2,
+  ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
@@ -22,6 +23,7 @@ import { toUserMessage } from '@/src/lib/errorMessages';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
+import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { supabase } from '@/src/lib/supabase';
 
@@ -97,7 +99,7 @@ const formatFileSize = (bytes: number): string => {
 };
 
 export const MentorVerificationPage: React.FC = () => {
-  const { user, profile } = useAuth();
+  const { user, profile, isLoading: authLoading, isAuthenticated } = useAuth();
   const toast = useToast();
   const { navigate } = useNavigation();
 
@@ -135,8 +137,13 @@ export const MentorVerificationPage: React.FC = () => {
   useEffect(() => {
     if (user?.id) {
       fetchOnboarding();
+    } else if (!authLoading) {
+      // Signed out. The fetch above is user-scoped, so it will never run and
+      // `loading` would otherwise stay true forever, stranding the visitor on
+      // the skeleton below. The signed-out state is rendered explicitly below.
+      setLoading(false);
     }
-  }, [user?.id, fetchOnboarding]);
+  }, [user?.id, authLoading, fetchOnboarding]);
 
   useEffect(() => {
     if (!onboarding) return;
@@ -384,6 +391,22 @@ export const MentorVerificationPage: React.FC = () => {
         <div className="h-8 bg-[var(--color-shell-surface-elevated)] rounded animate-pulse w-1/4" />
         <div className="h-64 bg-[var(--color-shell-surface-elevated)] rounded animate-pulse" />
         <div className="h-48 bg-[var(--color-shell-surface-elevated)] rounded animate-pulse" />
+      </div>
+    );
+  }
+
+  // Onboarding status is user-scoped, so a signed-out visitor has nothing to
+  // see here. Say so and offer the way in rather than rendering an empty shell.
+  if (!authLoading && !isAuthenticated) {
+    return (
+      <div className="mx-auto max-w-lg">
+        <EmptyState
+          icon={ShieldCheck}
+          title="Sign in to view your verification"
+          description="Your mentor application and uploaded documents belong to your account. Sign in to continue where you left off."
+          actionLabel="Sign in"
+          onAction={() => navigate('/auth/login')}
+        />
       </div>
     );
   }

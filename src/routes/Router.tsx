@@ -23,6 +23,7 @@ import { MentorDirectoryPage } from '@/src/pages/seeker/MentorDirectoryPage';
 import { SeekerMentorDetailPage } from '@/src/pages/seeker/SeekerMentorDetailPage';
 import { SeekerBookingsPage } from '@/src/pages/seeker/SeekerBookingsPage';
 import { SeekerBookingDetailPage } from '@/src/pages/seeker/SeekerBookingDetailPage';
+import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage';
 import { SeekerPaymentPage } from '@/src/pages/seeker/SeekerPaymentPage';
 import { SeekerNotificationsPage } from '@/src/pages/seeker/SeekerNotificationsPage';
 import { SeekerSettingsPage } from '@/src/pages/seeker/SeekerSettingsPage';
@@ -157,7 +158,15 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/mentor/segments') return <MentorSegmentsPage />;
           if (pathname === '/mentor/notifications') return <MentorNotificationsPage />;
           if (pathname === '/mentor/settings') return <MentorSettingsPage />;
-          return <MentorHomePage />;
+          if (pathname === '/mentor') return <MentorHomePage />;
+          // Any other /mentor/* path is not a route. Returning the home page
+          // here made a stale or mistyped link look like a successful
+          // navigation to a real, populated screen, which is how the dead
+          // `/seeker/reschedule` link survived. The 404 is rendered inside the
+          // guard on purpose: an unknown mentor path must not confirm itself to
+          // a signed-out or wrong-role visitor by behaving differently from a
+          // real one.
+          return <NotFoundPage />;
         })()}
       </ProtectedRoute>
     );
@@ -176,6 +185,7 @@ if (pathname.startsWith('/admin')) {
           }
           if (pathname === '/seeker/bookings') return <SeekerBookingsPage />;
           if (pathname === '/seeker/booking-detail') return <SeekerBookingDetailPage />;
+          if (pathname === '/seeker/reschedule') return <SeekerReschedulePage />;
           if (pathname === '/seeker/session') return <SeekerSessionPage />;
           if (pathname === '/seeker/workspace') return <SeekerWorkspacePage />;
           if (pathname === '/seeker/notifications') return <SeekerNotificationsPage />;

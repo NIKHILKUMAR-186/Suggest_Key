@@ -10,25 +10,14 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
+import {
+  isRefundOwed,
+  type AdminPaymentRow,
+} from '@/src/lib/adminPaymentView';
 
-interface PaymentItem {
-  id: string;
-  bookingId: string;
-  bookingCode: string | null;
-  bookingStatus: string | null;
-  seekerName: string | null;
-  mentorName: string | null;
-  gigTitle: string | null;
-  amount: number;
-  /** Raw ISO timestamp straight from the payments table. */
-  submittedAt: string | null;
-  status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
-  transactionReference: string | null;
-  /** Short-lived server-signed URL for the private proof. Null when unavailable. */
-  proofUrl: string | null;
-  rejectionReason: string | null;
-  verifiedAt: string | null;
-}
+/** The read model and its rules live in one place so the API projection and
+ *  this page can never drift apart. */
+type PaymentItem = AdminPaymentRow;
 
 /** Renders a stored timestamp, or an explicit "—" when the column is null. */
 const formatSubmittedAt = (value: string | null): string => {
@@ -47,6 +36,8 @@ export const AdminPaymentsPage: React.FC = () => {
   const [payments, setPayments] = useState<PaymentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 'all' | 'refunds_owed' — a refund the platform owes but has not issued.
+  const [filter, setFilter] = useState<'all' | 'refunds_owed'>('all');
   const toast = useToast();
 
   /**
@@ -136,6 +127,10 @@ export const AdminPaymentsPage: React.FC = () => {
   };
 
   const pendingCount = payments.filter((p) => p.status === 'PENDING_VERIFICATION').length;
+  // ponytail: a refund is OWED, not paid. This view only surfaces the list; no
+  // refund is ever issued from here.
+  const refundsOwedCount = payments.filter(isRefundOwed).length;
+  const visiblePayments = filter === 'refunds_owed' ? payments.filter(isRefundOwed) : payments;
 
   return (
     <div className="space-y-6">
@@ -149,9 +144,20 @@ export const AdminPaymentsPage: React.FC = () => {
           </p>
         </div>
 
-        <Badge variant="warning" className="self-start text-xs font-semibold">
-          {pendingCount} Awaiting Verification
-        </Badge>
+        <div className="flex items-center gap-2 self-start">
+          {refundsOwedCount > 0 && (
+            <Button
+              size="sm"
+              variant={filter === 'refunds_owed' ? 'default' : 'outline'}
+              onClick={() => setFilter(filter === 'refunds_owed' ? 'all' : 'refunds_owed')}
+            >
+              {filter === 'refunds_owed' ? 'Showing Refunds Owed' : `Refunds Owed (${refundsOwedCount})`}
+            </Button>
+          )}
+          <Badge variant="warning" className="text-xs font-semibold">
+            {pendingCount} Awaiting Verification
+          </Badge>
+        </div>
       </div>
 
       <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600 flex items-start gap-2">
@@ -176,11 +182,15 @@ export const AdminPaymentsPage: React.FC = () => {
               Retry
             </Button>
           </div>
-        ) : payments.length === 0 ? (
+        ) : visiblePayments.length === 0 ? (
           <EmptyState
             icon={CreditCard}
-            title="No Payments Found"
-            description="No payment records found in the system."
+            title={filter === 'refunds_owed' ? 'No Refunds Owed' : 'No Payments Found'}
+            description={
+              filter === 'refunds_owed'
+                ? 'No payment is currently marked as awaiting a refund.'
+                : 'No payment records found in the system.'
+            }
           />
         ) : (
           <div className="table-scroll">
@@ -190,15 +200,17 @@ export const AdminPaymentsPage: React.FC = () => {
                 <th className="py-3 px-4">Booking / Gig</th>
                 <th className="py-3 px-4">Seeker</th>
                 <th className="py-3 px-4">Mentor</th>
+                <th className="py-3 px-4">Method</th>
                 <th className="py-3 px-4">Reference</th>
                 <th className="py-3 px-4">Amount</th>
                 <th className="py-3 px-4">Submitted</th>
                 <th className="py-3 px-4">Status</th>
+                <th className="py-3 px-4">Refund</th>
                 <th className="py-3 px-4 text-right">Inspect Proof</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
-              {payments.map((p) => (
+              {visiblePayments.map((p) => (
                 <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
                   <td className="py-3 px-4 font-mono">
                     {p.bookingCode ? (
@@ -210,6 +222,11 @@ export const AdminPaymentsPage: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-semibold text-zinc-900 break-words">{p.seekerName || '—'}</td>
                   <td className="py-3 px-4 break-words">{p.mentorName || '—'}</td>
+                  <td className="py-3 px-4 whitespace-nowrap">
+                    <Badge variant={p.gateway === 'razorpay' ? 'default' : 'secondary'} className="text-[10px]">
+                      {p.gateway === 'razorpay' ? 'Razorpay' : 'UPI / QR'}
+                    </Badge>
+                  </td>
                   <td className="py-3 px-4 font-mono text-zinc-700 break-all">
                     {p.transactionReference || '—'}
                   </td>
@@ -224,12 +241,26 @@ export const AdminPaymentsPage: React.FC = () => {
                           ? 'success'
                           : p.status === 'PENDING_VERIFICATION'
                           ? 'warning'
-                          : 'destructive'
+                          : p.status === 'REJECTED' || p.status === 'FAILED' || p.status === 'REFUND_FAILED'
+                          ? 'destructive'
+                          : 'secondary'
                       }
                       className="text-[10px]"
                     >
                       {p.status}
                     </Badge>
+                  </td>
+                  <td className="py-3 px-4 whitespace-nowrap">
+                    {p.refundStatus ? (
+                      <Badge
+                        variant={p.refundStatus === 'REFUNDED' ? 'success' : p.refundStatus === 'PENDING' ? 'warning' : 'destructive'}
+                        className="text-[10px]"
+                      >
+                        {p.refundStatus}
+                      </Badge>
+                    ) : (
+                      <span className="text-zinc-400">—</span>
+                    )}
                   </td>
                   <td className="py-3 px-4 text-right">
                     <Button
@@ -279,9 +310,72 @@ export const AdminPaymentsPage: React.FC = () => {
                 </span>
               </div>
               <div className="col-span-2">
-                <span className="text-zinc-400 block text-[11px]">Gig</span>
+                <span className="text-zinc-400 block text-[11px">Gig</span>
                 <span className="text-xs font-medium text-zinc-900">{selectedPayment.gigTitle || '—'}</span>
               </div>
+            </div>
+
+            {/* Gateway / refund state. For a manual UPI/QR payment there is no
+                gateway, so these are stated as not applicable instead of being
+                rendered as empty rows an admin has to interpret. */}
+            <div className="rounded-lg border border-zinc-200 p-3 space-y-2">
+              <span className="font-semibold text-zinc-700 block">
+                {selectedPayment.gateway === 'razorpay' ? 'Gateway (Razorpay)' : 'Payment Method'}
+              </span>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-zinc-400 block text-[11px">Method</span>
+                  <Badge variant="secondary">
+                    {selectedPayment.gateway === 'razorpay' ? 'Razorpay' : 'Manual UPI / QR'}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-zinc-400 block text-[11px">Refund Status</span>
+                  {selectedPayment.refundStatus ? (
+                    <Badge
+                      variant={
+                        selectedPayment.refundStatus === 'REFUNDED'
+                          ? 'success'
+                          : selectedPayment.refundStatus === 'PENDING'
+                          ? 'warning'
+                          : 'destructive'
+                      }
+                    >
+                      {selectedPayment.refundStatus}
+                    </Badge>
+                  ) : (
+                    <span className="text-zinc-500">—</span>
+                  )}
+                </div>
+                {selectedPayment.gateway === 'razorpay' && (
+                  <>
+                    <div className="col-span-2">
+                      <span className="text-zinc-400 block text-[11px]">Razorpay Order ID</span>
+                      <span className="font-mono break-all">
+                        {selectedPayment.razorpayOrderId || 'Not recorded'}
+                      </span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-zinc-400 block text-[11px]">Razorpay Payment ID</span>
+                      <span className="font-mono break-all">
+                        {selectedPayment.razorpayPaymentId || 'Not recorded'}
+                      </span>
+                    </div>
+                  </>
+                )}
+                {selectedPayment.refundId && (
+                  <div className="col-span-2">
+                    <span className="text-zinc-400 block text-[11px]">Refund ID</span>
+                    <span className="font-mono break-all">{selectedPayment.refundId}</span>
+                  </div>
+                )}
+              </div>
+              {selectedPayment.failureReason && (
+                <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-rose-800">
+                  <span className="font-semibold block">Failure reason</span>
+                  <span>{selectedPayment.failureReason}</span>
+                </div>
+              )}
             </div>
 
             {/* Proof Screenshot Inspection Box */}

@@ -6,20 +6,22 @@ export type ResolvedTheme = 'light' | 'dark';
 export const THEME_STORAGE_KEY = 'sk-theme-mode';
 export const THEME_TRANSITION_CLASS = 'theme-transition';
 export const THEME_TRANSITION_MS = 220;
+/** Used when the user has no stored preference. */
+export const DEFAULT_THEME_MODE: ThemeMode = 'light';
 
 function getStoredMode(): ThemeMode {
-  if (typeof window === 'undefined') return 'system';
+  if (typeof window === 'undefined') return DEFAULT_THEME_MODE;
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
   } catch {
     /* localStorage unavailable */
   }
-  return 'system';
+  return DEFAULT_THEME_MODE;
 }
 
 function getSystemTheme(): ResolvedTheme {
-  if (typeof window === 'undefined' || !window.matchMedia) return 'dark';
+  if (typeof window === 'undefined' || !window.matchMedia) return 'light';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
@@ -57,7 +59,8 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
  * Global theme provider.
  *
  * Initial state is read from localStorage ('sk-theme-mode'). When no explicit
- * preference is stored, the OS/browser preference is used ('system').
+ * preference is stored, the app falls back to light (DEFAULT_THEME_MODE).
+ * Opting into 'system' still follows the OS/browser preference.
  *
  * A pre-paint script (public/theme-early.js) has already applied the correct
  * theme class to <html> BEFORE first render — this provider simply syncs

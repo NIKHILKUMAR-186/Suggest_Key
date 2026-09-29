@@ -9,14 +9,14 @@
         return stored;
       }
     } catch {}
-    return 'system';
+    return 'light';
   }
 
   function getSystemTheme() {
     try {
       return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     } catch {
-      return 'dark';
+      return 'light';
     }
   }
 

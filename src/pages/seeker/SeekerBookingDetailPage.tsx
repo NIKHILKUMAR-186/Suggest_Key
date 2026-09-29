@@ -20,6 +20,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useToast } from '@/src/context/ToastContext';
+import { apiFetch } from '@/src/lib/apiClient';
 import {
   fetchBookingDetail,
   fetchSessionAccess,
@@ -207,7 +208,7 @@ export const SeekerBookingDetailPage: React.FC = () => {
     if (!booking || cancelling) return;
     setCancelling(true);
     try {
-      const res = await fetch(`/api/seeker/bookings/${encodeURIComponent(booking.id)}/cancel`, {
+      const res = await apiFetch(`/api/seeker/bookings/${encodeURIComponent(booking.id)}/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: cancellationReason || 'Cancelled by seeker' }),

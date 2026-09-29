@@ -1,5 +1,9 @@
 import 'dotenv/config';
-import express, { type Response } from 'express';
+import express, {
+  type Response,
+  type Request as ExpressRequest,
+  type NextFunction as ExpressNextFunction,
+} from 'express';
 import path from 'path';
 import { timingSafeEqual, randomUUID } from 'crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
@@ -80,6 +84,7 @@ import {
   type HealthRow,
 } from './src/lib/systemHealth';
 import { getAdminDashboardData } from './src/lib/adminDashboardData';
+import { projectAdminPayment } from './src/lib/adminPaymentView';
 import { slugifyTopicName } from './src/lib/topicSlug';
 import { GENERIC_ERROR_MESSAGE, describeSupabaseError, getErrorMessage, respondWithInternalError, respondWithServerError, resolveHttpStatusForSupabaseError, terminalErrorHandler } from './src/lib/supabaseErrors';
 import {
@@ -1240,14 +1245,32 @@ export function extractSegmentHeroStoragePath(heroImageUrl: unknown): string | n
   return null;
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+// ---------------------------------------------------------------------------
+// Serverless entrypoint
+// ---------------------------------------------------------------------------
+// The Express app is created at MODULE scope, not inside startServer(), so that
+// `module.exports` can be assigned synchronously on first import.
+//
+// Vercel reads `module.exports` as soon as it requires this file. startServer()
+// is async and suspends on its first await, so an export assigned at the end of
+// that function is not yet visible when the runtime looks for the handler and
+// the invocation silently receives an empty object.
+//
+// Routes are registered on this same instance by startServer() below, so moving
+// creation here does not change any route, middleware, or ordering.
+const app = express();
 
-  // Behind exactly one reverse proxy (the Vercel edge in production), so
-  // `req.ip` is the real client instead of the proxy's own address. Without
-  // this every visitor would share one rate-limit bucket.
-  app.set('trust proxy', 1);
+// Behind exactly one reverse proxy (the Vercel edge in production), so
+// `req.ip` is the real client instead of the proxy's own address. Without
+// this every visitor would share one rate-limit bucket.
+app.set('trust proxy', 1);
+
+if (process.env.VERCEL === '1') {
+  (module as any).exports = app;
+}
+
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
 
   type DemoRole = 'seeker' | 'mentor' | 'admin';
 
@@ -1452,6 +1475,39 @@ async function startServer() {
   // Mounted after the request-id and logging middleware so a rejected request
   // still gets an X-Request-ID and shows up in the admin system logs.
   app.use('/api', apiRateLimiter);
+
+  // --------------------------------------------------------------------------
+  // Production fail-closed guard
+  // --------------------------------------------------------------------------
+  // Several routes fall back to the in-memory BookingEngine fixture when
+  // getSupabaseAdmin() returns null, which happens whenever
+  // SUPABASE_SERVICE_ROLE_KEY / VITE_SUPABASE_URL are missing from the deployed
+  // environment. That fallback is a development convenience, but in production
+  // it would answer real admin, booking, notification and session requests with
+  // fabricated mentors, bookings and Google Meet URLs instead of failing.
+  //
+  // The switch was previously "are the credentials present", which nothing
+  // asserted at boot, so a misconfigured deploy failed silently and served
+  // fake data with a 200. This gate makes the failure explicit and loud, and it
+  // sits in front of every /api route so the individual fallback branches
+  // become unreachable in production without each one needing its own guard.
+  //
+  // /api/health is exempt so that operators can still diagnose the deployment.
+  app.use('/api', (req: ExpressRequest, res: Response, next: ExpressNextFunction) => {
+    if (process.env.NODE_ENV !== 'production') return next();
+    if (req.path === '/health' || req.path === '/api/health') return next();
+
+    if (!process.env.VITE_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'The service is temporarily unavailable. Please try again shortly.',
+        },
+      });
+    }
+    return next();
+  });
 
   // --------------------------------------------------------------------------
   // API Routes
@@ -3268,16 +3324,61 @@ async function startServer() {
   });
 
   // GET /api/admin/bookings/overdue-links: Admin inspection of overdue meeting links
-  app.get('/api/admin/bookings/overdue-links', requireAuth, requireAdmin, (req: AuthRequest, res) => {
+  app.get('/api/admin/bookings/overdue-links', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
-      const db = getLocalBookingEngineContext();
-      const overdue = getOverdueBookings(db);
-      const enriched = overdue.map((b) => enrichBooking(b, db));
+      // Reads real rows. This route previously served getLocalBookingEngineContext()
+      // unconditionally, so it answered an admin request with fabricated mentors,
+      // bookings and meet.google.com links regardless of database state.
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: 'SERVICE_UNAVAILABLE',
+            message: 'The service is temporarily unavailable. Please try again shortly.',
+          },
+        });
+      }
+
+      // A booking is overdue when it is still awaiting a meeting link, has none,
+      // and has already passed the point where one was required.
+      const { data, error } = await admin
+        .from('bookings')
+        .select(
+          'id, booking_code, mentor_id, seeker_id, start_time, end_time, status, meeting_url, amount_inr'
+        )
+        .eq('status', 'MENTOR_PENDING')
+        .is('meeting_url', null)
+        .order('start_time', { ascending: true })
+        .limit(200);
+
+      if (error) {
+        return respondWithInternalError({ req, res, error });
+      }
+
+      const now = Date.now();
+      const bookings = (data ?? []).map((b: any) => {
+        const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
+        const minutesUntilStart =
+          startMs === null ? null : Math.round((startMs - now) / 60000);
+        const meetingLinkDeadlineMs =
+          startMs === null ? null : startMs - 2 * 60 * 60 * 1000;
+        return {
+          ...b,
+          minutes_until_start: minutesUntilStart,
+          meeting_link_deadline:
+            meetingLinkDeadlineMs === null
+              ? null
+              : new Date(meetingLinkDeadlineMs).toISOString(),
+          is_overdue:
+            meetingLinkDeadlineMs !== null && meetingLinkDeadlineMs <= now,
+        };
+      });
 
       return res.json({
         success: true,
-        count: overdue.length,
-        bookings: enriched,
+        count: bookings.length,
+        bookings,
       });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err });
@@ -8517,22 +8618,12 @@ async function startServer() {
             }
           }
 
-          return {
-            id: p.id,
-            bookingId: p.booking_id,
-            bookingCode: p.booking?.booking_code ?? null,
-            bookingStatus: p.booking?.status ?? null,
-            seekerName: p.booking?.seeker_id ? seekerMap.get(p.booking.seeker_id) ?? null : null,
-            mentorName: p.booking?.mentor_id ? mentorMap.get(p.booking.mentor_id) ?? null : null,
-            gigTitle: p.booking?.gig_id ? gigMap.get(p.booking.gig_id) ?? null : null,
-            amount: p.amount_inr,
-            transactionReference: p.transaction_reference ?? null,
-            submittedAt: p.created_at,
-            status: p.status,
+          return projectAdminPayment(p, {
+            seekerName: p.booking?.seeker_id ? seekerMap.get(p.booking.seeker_id) : null,
+            mentorName: p.booking?.mentor_id ? mentorMap.get(p.booking.mentor_id) : null,
+            gigTitle: p.booking?.gig_id ? gigMap.get(p.booking.gig_id) : null,
             proofUrl,
-            rejectionReason: p.rejection_reason,
-            verifiedAt: p.verified_at,
-          };
+          });
         }),
       );
 
@@ -12154,21 +12245,21 @@ async function startServer() {
   // --------------------------------------------------------------------------
   app.use(terminalErrorHandler);
 
-  // When deployed on Vercel, the Express app is exported as the serverless
-  // function handler so Vercel can route /api/* requests to it. The rewrites
-  // in vercel.json send /api/(.*) to this function, and /(.*) to index.html.
-  // app.listen() is only used for local/standalone development.
-  if (process.env.VERCEL === '1') {
-    (module as any).exports = app;
-  } else if (httpServer) {
-    httpServer.listen(PORT, '0.0.0.0', () => {
-      console.log('This website is buid by Nikhil Kumar ')
-      console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
-    });
-  } else {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
-    });
+  // app.listen() is only used for local/standalone development. On Vercel the
+  // handler was already exported synchronously at module scope (see the
+  // "Serverless entrypoint" block above), because the runtime reads
+  // module.exports before startServer() finishes awaiting.
+  if (process.env.VERCEL !== '1') {
+    if (httpServer) {
+      httpServer.listen(PORT, '0.0.0.0', () => {
+        console.log('This website is buid by Nikhil Kumar ')
+        console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
+      });
+    } else {
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`[Suggest Key] Server running on http://0.0.0.0:${PORT}`);
+      });
+    }
   }
 }
 

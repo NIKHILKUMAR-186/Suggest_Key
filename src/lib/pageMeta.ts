@@ -67,6 +67,7 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/seeker/mentor-detail', meta: privatePage('Mentor Profile') },
   { path: '/seeker/mentors', meta: privatePage('Find a Mentor') },
   { path: '/seeker/booking-detail', meta: privatePage('Booking Details') },
+  { path: '/seeker/reschedule', meta: privatePage('Reschedule Session') },
   { path: '/seeker/payment', meta: privatePage('Payment') },
   { path: '/seeker/checkout', meta: privatePage('Payment') },
   { path: '/seeker/bookings', meta: privatePage('My Bookings') },
@@ -89,7 +90,10 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/mentor/gigs', meta: privatePage('My Gigs') },
   { path: '/mentor/segments', meta: privatePage('My Segments') },
   { path: '/mentor/workspace', meta: privatePage('Workspace') },
-  { prefix: '/mentor', meta: privatePage('Mentor Home') },
+  // Exact paths, not a `/mentor` prefix: an unknown mentor path must NOT be
+  // treated as a known route, or AppShell wraps the 404 in the role shell and
+  // it renders with duplicate chrome instead of as the self-contained 404.
+  { path: '/mentor', meta: privatePage('Mentor Home') },
 
   // ---- Admin --------------------------------------------------------------
   { path: '/admin/users/create', meta: privatePage('Create User') },

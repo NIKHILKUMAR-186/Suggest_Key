@@ -26,6 +26,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 import { fetchActiveSegments } from '@/src/lib/discoveryService';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useAuth } from '@/src/context/AuthContext';
 import type { Segment } from '@/src/types/database';
 
 const NAV_ITEMS = [
@@ -56,12 +57,22 @@ const PRINCIPLES = [
 
 export const LandingPage: React.FC = () => {
   const { navigate } = useNavigation();
+  const { isAuthenticated } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [segments, setSegments] = useState<Segment[] | null>(null);
   const [isLoadingSegments, setIsLoadingSegments] = useState(true);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
 
   const closeMobileMenu = () => setMobileMenuOpen(false);
+
+  /**
+   * Mentor discovery is documented as a seeker-only route
+   * (`/seeker/mentors`, allowedRoles `['seeker','admin']` — docs/architecture.md),
+   * so it is deliberately gated. A signed-out visitor is therefore sent to sign
+   * up — the step that actually unlocks discovery — instead of into a
+   * "Authentication Required" screen for a page they never had access to.
+   */
+  const findMentorPath = isAuthenticated ? '/seeker/mentors' : '/auth/signup';
 
   const handleNavClick = (href: string) => {
     closeMobileMenu();
@@ -70,7 +81,7 @@ export const LandingPage: React.FC = () => {
     } else if (href.startsWith('#')) {
       document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' });
     } else {
-      navigate(href);
+      navigate(href === '/seeker/mentors' ? findMentorPath : href);
     }
   };
 
@@ -259,7 +270,7 @@ export const LandingPage: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             <Button
               size="lg"
-              onClick={() => navigate('/seeker/mentors')}
+              onClick={() => navigate(findMentorPath)}
               className="gap-2 text-sm bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-[var(--color-shell-text-contrast)] shadow-xs min-h-[48px] px-6"
             >
               Find a Mentor
@@ -555,8 +566,8 @@ export const LandingPage: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             <Button
               size="lg"
-              onClick={() => navigate('/seeker/mentors')}
-              className="gap-2 text-sm bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-[var(--color-shell-text-contrast)] shadow-xs min-h-[48px] px-6"
+               onClick={() => navigate(findMentorPath)}
+               className="gap-2 text-sm bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-[var(--color-shell-text-contrast)] shadow-xs min-h-[48px] px-6"
              >
                Find a Mentor
                <ArrowRight className="h-4 w-4" />

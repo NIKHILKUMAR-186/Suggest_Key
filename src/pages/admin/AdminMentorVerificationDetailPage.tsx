@@ -399,13 +399,17 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => window.open(doc.storage_path, '_blank')}
-                      className="text-xs text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] flex items-center gap-1 cursor-pointer"
-                    >
-                      <Download className="h-3 w-3" />
-                      View
-                    </button>
+                    {doc.download_url && (
+                      <a
+                        href={doc.download_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-1 cursor-pointer text-xs text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)]"
+                      >
+                        <Download className="h-3 w-3" />
+                        View
+                      </a>
+                    )}
 
                     {isReviewable && (
                       <>
