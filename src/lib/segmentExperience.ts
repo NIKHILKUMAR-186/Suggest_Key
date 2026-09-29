@@ -15,6 +15,46 @@
 export type SegmentColor = string;
 
 /**
+ * SUGGEST KEY BRAND PALETTE.
+ *
+ * These values are read from the shipped logo asset (`public/logo.png`), not
+ * from whatever accent a screen happened to be using: a deep plum field
+ * (#1f1037) with a gold mark (#f7d243).
+ *
+ * The distinction matters and is enforced by usage:
+ *
+ *   GLOBAL BRAND  -> BRAND_TOKENS. The header, the wordmark, the footer. It is
+ *                    the same on every segment and on every page.
+ *   SEGMENT ACCENT-> `branding.accent` in the config below. It tints ONE
+ *                    segment's experience and never replaces the brand.
+ *
+ * A segment accent must therefore never be promoted into the header: the
+ * header is the one surface that must not change when the seeker switches
+ * segments.
+ */
+export const BRAND_TOKENS = {
+  /** The logo's background field. Header background, dark surfaces. */
+  plum: '#1f1037',
+  /** A lifted plum for gradient depth and hover states. */
+  plumDeep: '#150a28',
+  /** The logo's mark. Primary brand accent on dark, focus ring, highlights. */
+  gold: '#f7d243',
+  /** A slightly deeper gold for pressed/hover states. */
+  goldDeep: '#e0b72c',
+  /** Text on gold fills. */
+  onGold: '#1f1037',
+  /** Text on plum fills. */
+  onPlum: '#ffffff',
+  /** Warm marketplace canvas for light mode. */
+  warmCanvas: '#fbf8f3',
+  /** Slightly deeper warm surface for cards and panels in light mode. */
+  warmSurface: '#ffffff',
+  /** Warm hairline in light mode. */
+  warmBorder: 'rgba(31, 16, 55, 0.10)',
+} as const;
+
+
+/**
  * Branding controls the segment's visual identity.
  *
  * `heroImageUrl` is the optional admin-configured hero visual. When absent the
@@ -47,6 +87,11 @@ export interface SegmentExperienceBranding {
   textMode?: 'auto' | 'light' | 'dark';
   /** Optional admin-configured hero image URL or storage path. */
   heroImageUrl?: string;
+  /**
+   * Alt text for the hero image. Optional, but required for a meaningful
+   * image; when absent the renderer treats a real image as decorative.
+   */
+  heroImageAlt?: string;
 }
 
 export interface SegmentExperienceItem {
@@ -157,6 +202,15 @@ export interface SegmentGuide {
 
 export interface SegmentExperienceConfig {
   branding?: SegmentExperienceBranding;
+  /**
+   * Per-section enable/disable. A section that is explicitly disabled is never
+   * rendered, even when it still holds content — that is how an admin turns a
+   * section off without deleting the copy it holds.
+   *
+   * An ABSENT entry means enabled: a config written before this field existed
+   * must keep rendering everything it configured.
+   */
+  sections?: SegmentExperienceSections;
   topics?: SegmentExperienceItem[];
   quickHelp?: SegmentExperienceItem[];
   journeySteps?: SegmentExperienceItem[];
@@ -165,6 +219,74 @@ export interface SegmentExperienceConfig {
   cta?: SegmentExperienceCTA;
   guides?: SegmentGuide[];
   stories?: SegmentStory[];
+}
+
+/**
+ * The closed set of sections the renderer knows how to lay out.
+ *
+ * The values are DATA identifiers used for lookup, never component names — the
+ * same safety rule as the icon registry applies here.
+ */
+export const SEGMENT_SECTION_KEYS = [
+  'hero',
+  'topics',
+  'quickHelp',
+  'mentors',
+  'journey',
+  'benefits',
+  'guides',
+  'stories',
+  'faq',
+  'cta',
+] as const;
+
+export type SegmentSectionKey = (typeof SEGMENT_SECTION_KEYS)[number];
+
+/** A section's on/off state. `enabled` defaults to true when absent. */
+export interface SegmentSectionToggle {
+  enabled?: boolean;
+}
+
+export type SegmentExperienceSections = Partial<Record<SegmentSectionKey, SegmentSectionToggle>>;
+
+/** Every section, in the order the renderer lays them out. */
+export const SEGMENT_SECTION_ORDER: readonly SegmentSectionKey[] = SEGMENT_SECTION_KEYS;
+
+const SEGMENT_SECTION_KEY_SET: ReadonlySet<string> = new Set(SEGMENT_SECTION_KEYS);
+
+/**
+ * Whether a section should render.
+ *
+ * A section with no entry is ENABLED: an unconfigured section simply has no
+ * content and the renderer omits it anyway, so the default can only ever hide
+ * something an admin meant to show, never the reverse.
+ */
+export function isSegmentSectionEnabled(
+  sections: SegmentExperienceSections | undefined,
+  key: SegmentSectionKey,
+): boolean {
+  if (!sections) return true;
+  const entry = (sections as Record<string, unknown>)[key];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return true;
+  const enabled = (entry as SegmentSectionToggle).enabled;
+  return enabled !== false;
+}
+
+/** Read the `sections` block, dropping any key outside the closed registry. */
+export function normalizeSegmentSections(raw: unknown): SegmentExperienceSections | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const out: Record<string, SegmentSectionToggle> = {};
+
+  for (const key of SEGMENT_SECTION_KEYS) {
+    if (!SEGMENT_SECTION_KEY_SET.has(key)) continue;
+    const entry = source[key];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const enabled = (entry as Record<string, unknown>).enabled;
+    if (typeof enabled === 'boolean') out[key] = { enabled };
+  }
+
+  return Object.keys(out).length > 0 ? (out as SegmentExperienceSections) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +343,30 @@ export function sanitizeSegmentUrl(value: unknown): string | undefined {
   return isSafeSegmentUrl(value) ? value.trim() : undefined;
 }
 
+/**
+ * True when `value` is safe to put in an `href` the seeker can click.
+ *
+ * A configured CTA points at the app far more often than at the outside world
+ * ("See career mentors" -> `/mentors`), so the segment-URL rule above is too
+ * strict here: it rejects every internal destination and silently hides the
+ * button. Internal destinations are therefore allowed, but only as a single
+ * leading slash path. `//evil.example` is protocol-relative and is refused
+ * along with `javascript:` and `data:`, so an admin-typed value still cannot
+ * escape the application.
+ */
+export function isSafeSegmentLink(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith('/')) return !trimmed.startsWith('//');
+  return isSafeSegmentUrl(trimmed);
+}
+
+/** Normalise a configured link, or undefined when it is not safe to use. */
+export function sanitizeSegmentLink(value: unknown): string | undefined {
+  return isSafeSegmentLink(value) ? value.trim() : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Write contract
 // ---------------------------------------------------------------------------
@@ -258,6 +404,7 @@ export interface SegmentExperienceDraftCta {
 
 export interface SegmentExperienceDraft {
   branding?: Record<string, string | undefined>;
+  sections?: Record<string, { enabled?: boolean }>;
   topics?: SegmentExperienceDraftItem[];
   quickHelp?: SegmentExperienceDraftItem[];
   journeySteps?: SegmentExperienceDraftItem[];
@@ -345,8 +492,16 @@ export function normalizeSegmentExperience(raw: unknown): SegmentExperienceConfi
     const heroImageUrl = sanitizeSegmentUrl(b.heroImageUrl);
     if (heroImageUrl) branding.heroImageUrl = heroImageUrl;
 
+    const heroImageAlt = str(b.heroImageAlt);
+    if (heroImageAlt) branding.heroImageAlt = heroImageAlt;
+
     if (Object.keys(branding).length > 0) out.branding = branding;
   }
+
+  // -- section visibility ----------------------------------------------------
+
+  const sections = normalizeSegmentSections(r.sections);
+  if (sections) out.sections = sections;
 
   const readItemArray = (key: string): SegmentExperienceItem[] | undefined => {
     const value = r[key];
@@ -476,7 +631,7 @@ function readCta(value: unknown): SegmentExperienceCTA | undefined {
   const description = pickString(c.description);
   // Legacy `text` is the button label.
   const buttonText = pickString(c.buttonText, c.text);
-  const buttonUrl = sanitizeSegmentUrl(pickString(c.buttonUrl, c.url));
+  const buttonUrl = sanitizeSegmentLink(pickString(c.buttonUrl, c.url));
 
   if (!title && !description && !buttonText && !buttonUrl) return undefined;
 

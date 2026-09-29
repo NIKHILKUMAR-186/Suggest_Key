@@ -5,6 +5,7 @@ import { Input } from '@/src/components/ui/Input';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { EmptyState } from '@/src/components/shared/EmptyState';
+import { AdminSegmentExperienceEditor } from '@/src/pages/admin/AdminSegmentExperienceEditor';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
@@ -119,21 +120,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
   const [editingGigState, setEditingGigState] = useState(false);
   const [savingSegment, setSavingSegment] = useState(false);
 
-  const [experience, setExperience] = useState<SegmentExperienceConfig>({});
-  const [savingExperience, setSavingExperience] = useState(false);
-  const [experienceError, setExperienceError] = useState<string | null>(null);
-  const [experienceSaved, setExperienceSaved] = useState(false);
 
-  const [expBrandingHeadline, setExpBrandingHeadline] = useState('');
-  const [expBrandingSubheadline, setExpBrandingSubheadline] = useState('');
-  const [expBrandingTint, setExpBrandingTint] = useState('#0d9488');
-  const [expTopics, setExpTopics] = useState<SegmentExperienceDraftItem[]>([]);
-  const [expQuickHelp, setExpQuickHelp] = useState<SegmentExperienceDraftItem[]>([]);
-  const [expJourney, setExpJourney] = useState<SegmentExperienceDraftItem[]>([]);
-  const [expBenefits, setExpBenefits] = useState<SegmentExperienceDraftItem[]>([]);
-  const [expFaq, setExpFaq] = useState<Array<{ question: string; answer: string }>>([]);
-  const [expCtaText, setExpCtaText] = useState('');
-  const [expCtaUrl, setExpCtaUrl] = useState('');
 
   /**
    * One request loads the segment, its mentors and its gigs. The server resolves
@@ -181,37 +168,6 @@ export const AdminSegmentDetailPage: React.FC = () => {
     }
   }, [segmentSlug]);
 
-  const loadExperience = useCallback(async () => {
-    if (!segment) return;
-    setExperienceError(null);
-    setExperienceSaved(false);
-    try {
-      const res = await apiFetch(`/api/admin/segments/${segment.id}/experience`);
-      if (!res.ok) throw new Error(await readApiError(res, 'Failed to fetch experience config'));
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch experience config');
-      const cfg = data.segment?.experience_config || {};
-      setExperience(cfg);
-      setExpBrandingHeadline(cfg.branding?.heroHeadline || '');
-      setExpBrandingSubheadline(cfg.branding?.heroSubheadline || '');
-      setExpBrandingTint(cfg.branding?.tintColor || '#0d9488');
-      setExpTopics(cfg.topics || []);
-      setExpQuickHelp(cfg.quickHelp || []);
-      setExpJourney(cfg.journeySteps || []);
-      setExpBenefits(cfg.benefits || []);
-      setExpFaq(cfg.faq || []);
-      setExpCtaText(cfg.cta?.text || '');
-      setExpCtaUrl(cfg.cta?.url || '');
-    } catch (err: any) {
-      setExperienceError(toUserMessage(err, 'Failed to load experience config'));
-    }
-  }, [segment]);
-
-  useEffect(() => {
-    if (segment) {
-      loadExperience();
-    }
-  }, [segment, loadExperience]);
 
   useEffect(() => {
     loadSegment();
@@ -453,61 +409,6 @@ export const AdminSegmentDetailPage: React.FC = () => {
     }
   };
 
-  const buildExperiencePayload = (): SegmentExperienceDraft => {
-    const payload: SegmentExperienceDraft = {};
-    if (expBrandingHeadline.trim() || expBrandingSubheadline.trim() || expBrandingTint) {
-      payload.branding = {
-        heroHeadline: expBrandingHeadline.trim() || undefined,
-        heroSubheadline: expBrandingSubheadline.trim() || undefined,
-        tintColor: sanitizeSegmentColor(expBrandingTint),
-      };
-    }
-    const topics = expTopics.filter((t) => t.title.trim());
-    if (topics.length > 0) payload.topics = topics;
-    const quickHelp = expQuickHelp.filter((t) => t.title.trim());
-    if (quickHelp.length > 0) payload.quickHelp = quickHelp;
-    const journeySteps = expJourney.filter((t) => t.title.trim());
-    if (journeySteps.length > 0) payload.journeySteps = journeySteps;
-    const benefits = expBenefits.filter((t) => t.title.trim());
-    if (benefits.length > 0) payload.benefits = benefits;
-    const faq = expFaq.filter((f) => f.question.trim());
-    if (faq.length > 0) payload.faq = faq;
-    // The CTA is still sent on the legacy `{ text, url }` wire shape because
-    // that is what the server's Zod schema validates today. `normalizeSegmentExperience`
-    // maps it back to `buttonText` / `buttonUrl` on read, so the read model
-    // already uses the intended naming.
-    if (expCtaText.trim() && /^https?:\/\//i.test(expCtaUrl.trim())) {
-      payload.cta = { text: expCtaText.trim(), url: expCtaUrl.trim() };
-    }
-    return payload;
-  };
-
-  const handleSaveExperience = async () => {
-    if (!segment) return;
-    setSavingExperience(true);
-    setExperienceError(null);
-    setExperienceSaved(false);
-    try {
-      const payload = buildExperiencePayload();
-      const res = await apiFetch(`/api/admin/segments/${segment.id}/experience`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(await readApiError(res, 'Failed to save experience config'));
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to save experience config');
-      // Normalise the echoed config so admin state uses the same safe read model
-      // as the seeker, rather than trusting the raw response body.
-      setExperience(normalizeSegmentExperience(data.segment?.experience_config));
-      setExperienceSaved(true);
-      toast.success('Segment experience saved.');
-    } catch (err: any) {
-      setExperienceError(toUserMessage(err, 'Failed to save experience config'));
-    } finally {
-      setSavingExperience(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -617,7 +518,7 @@ export const AdminSegmentDetailPage: React.FC = () => {
               <span>Gigs ({gigs.length})</span>
             </button>
             <button
-              onClick={() => { setActiveTab('experience'); setExperienceError(null); setExperienceSaved(false); }}
+              onClick={() => setActiveTab('experience')}
               className={`flex items-center gap-1.5 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
                 activeTab === 'experience'
                   ? 'border-emerald-600 text-emerald-600'
@@ -630,290 +531,14 @@ export const AdminSegmentDetailPage: React.FC = () => {
           </nav>
         </div>
 
-        {/* Experience Tab */}
-        {activeTab === 'experience' && (
-          <div className="p-4 space-y-6">
-            {experienceError && (
-              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{experienceError}</span>
-              </div>
-            )}
-            {experienceSaved && (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
-                Experience configuration saved.
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Branding */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Branding</h4>
-                <Input
-                  label="Hero headline"
-                  placeholder="e.g. Guidance that fits your life"
-                  value={expBrandingHeadline}
-                  onChange={(e) => setExpBrandingHeadline(e.target.value)}
-                />
-                <Input
-                  label="Hero subheadline"
-                  placeholder="Short supporting line"
-                  value={expBrandingSubheadline}
-                  onChange={(e) => setExpBrandingSubheadline(e.target.value)}
-                />
-                <div className="flex items-center gap-3">
-                  <Input
-                    label="Tint color"
-                    value={expBrandingTint}
-                    onChange={(e) => setExpBrandingTint(e.target.value)}
-                    className="w-40"
-                  />
-                  <span
-                    className="h-10 w-10 rounded-lg border border-zinc-200 shrink-0"
-                    style={{ backgroundColor: /^#[0-9a-fA-F]{6}$/.test(expBrandingTint) ? expBrandingTint : undefined }}
-                  />
-                </div>
-              </div>
-
-              {/* CTA */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Call to action</h4>
-                <Input
-                  label="CTA text"
-                  placeholder="e.g. Book a free discovery call"
-                  value={expCtaText}
-                  onChange={(e) => setExpCtaText(e.target.value)}
-                />
-                <Input
-                  label="CTA URL"
-                  placeholder="https://..."
-                  value={expCtaUrl}
-                  onChange={(e) => setExpCtaUrl(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {/* Topics */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Topics</h4>
-                <Button size="sm" variant="outline" onClick={() => setExpTopics([...expTopics, { title: '', description: '', icon: '' }])} className="text-xs">
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add topic</span>
-                </Button>
-              </div>
-              {expTopics.length === 0 && <p className="text-xs text-zinc-500">No topics yet.</p>}
-              <div className="space-y-3">
-                {expTopics.map((topic, idx) => (
-                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-3 rounded-lg border border-zinc-200 p-3">
-                    <Input
-                      label="Title"
-                      value={topic.title}
-                      onChange={(e) => {
-                        const next = [...expTopics];
-                        next[idx] = { ...next[idx], title: e.target.value };
-                        setExpTopics(next);
-                      }}
-                      className="sm:col-span-4"
-                    />
-                    <Input
-                      label="Description"
-                      value={topic.description}
-                      onChange={(e) => {
-                        const next = [...expTopics];
-                        next[idx] = { ...next[idx], description: e.target.value };
-                        setExpTopics(next);
-                      }}
-                      className="sm:col-span-6"
-                    />
-                    <div className="sm:col-span-1 flex items-end">
-                      <Button variant="ghost" size="sm" onClick={() => setExpTopics(expTopics.filter((_, i) => i !== idx))} className="text-rose-600 hover:text-rose-700 text-xs">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Quick Help */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Quick help</h4>
-                <Button size="sm" variant="outline" onClick={() => setExpQuickHelp([...expQuickHelp, { title: '', description: '', icon: '' }])} className="text-xs">
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add item</span>
-                </Button>
-              </div>
-              {expQuickHelp.length === 0 && <p className="text-xs text-zinc-500">No quick help items yet.</p>}
-              <div className="space-y-3">
-                {expQuickHelp.map((item, idx) => (
-                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-3 rounded-lg border border-zinc-200 p-3">
-                    <Input
-                      label="Label"
-                      value={item.title}
-                      onChange={(e) => {
-                        const next = [...expQuickHelp];
-                        next[idx] = { ...next[idx], title: e.target.value };
-                        setExpQuickHelp(next);
-                      }}
-                      className="sm:col-span-3"
-                    />
-                    <Input
-                      label="Description"
-                      value={item.description}
-                      onChange={(e) => {
-                        const next = [...expQuickHelp];
-                        next[idx] = { ...next[idx], description: e.target.value };
-                        setExpQuickHelp(next);
-                      }}
-                      className="sm:col-span-7"
-                    />
-                    <div className="sm:col-span-1 flex items-end">
-                      <Button variant="ghost" size="sm" onClick={() => setExpQuickHelp(expQuickHelp.filter((_, i) => i !== idx))} className="text-rose-600 hover:text-rose-700 text-xs">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Journey Steps */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Journey steps</h4>
-                <Button size="sm" variant="outline" onClick={() => setExpJourney([...expJourney, { title: '', description: '', icon: '' }])} className="text-xs">
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add step</span>
-                </Button>
-              </div>
-              {expJourney.length === 0 && <p className="text-xs text-zinc-500">No journey steps yet.</p>}
-              <div className="space-y-3">
-                {expJourney.map((step, idx) => (
-                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-3 rounded-lg border border-zinc-200 p-3">
-                    <Input
-                      label="Title"
-                      value={step.title}
-                      onChange={(e) => {
-                        const next = [...expJourney];
-                        next[idx] = { ...next[idx], title: e.target.value };
-                        setExpJourney(next);
-                      }}
-                      className="sm:col-span-4"
-                    />
-                    <Input
-                      label="Description"
-                      value={step.description}
-                      onChange={(e) => {
-                        const next = [...expJourney];
-                        next[idx] = { ...next[idx], description: e.target.value };
-                        setExpJourney(next);
-                      }}
-                      className="sm:col-span-6"
-                    />
-                    <div className="sm:col-span-1 flex items-end">
-                      <Button variant="ghost" size="sm" onClick={() => setExpJourney(expJourney.filter((_, i) => i !== idx))} className="text-rose-600 hover:text-rose-700 text-xs">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Benefits */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">Benefits</h4>
-                <Button size="sm" variant="outline" onClick={() => setExpBenefits([...expBenefits, { title: '', description: '', icon: '' }])} className="text-xs">
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add benefit</span>
-                </Button>
-              </div>
-              {expBenefits.length === 0 && <p className="text-xs text-zinc-500">No benefits yet.</p>}
-              <div className="space-y-3">
-                {expBenefits.map((benefit, idx) => (
-                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-3 rounded-lg border border-zinc-200 p-3">
-                    <Input
-                      label="Title"
-                      value={benefit.title}
-                      onChange={(e) => {
-                        const next = [...expBenefits];
-                        next[idx] = { ...next[idx], title: e.target.value };
-                        setExpBenefits(next);
-                      }}
-                      className="sm:col-span-4"
-                    />
-                    <Input
-                      label="Description"
-                      value={benefit.description}
-                      onChange={(e) => {
-                        const next = [...expBenefits];
-                        next[idx] = { ...next[idx], description: e.target.value };
-                        setExpBenefits(next);
-                      }}
-                      className="sm:col-span-6"
-                    />
-                    <div className="sm:col-span-1 flex items-end">
-                      <Button variant="ghost" size="sm" onClick={() => setExpBenefits(expBenefits.filter((_, i) => i !== idx))} className="text-rose-600 hover:text-rose-700 text-xs">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* FAQ */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-semibold text-zinc-900 uppercase tracking-wider">FAQ</h4>
-                <Button size="sm" variant="outline" onClick={() => setExpFaq([...expFaq, { question: '', answer: '' }])} className="text-xs">
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add question</span>
-                </Button>
-              </div>
-              {expFaq.length === 0 && <p className="text-xs text-zinc-500">No FAQ items yet.</p>}
-              <div className="space-y-3">
-                {expFaq.map((item, idx) => (
-                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-3 rounded-lg border border-zinc-200 p-3">
-                    <Input
-                      label="Question"
-                      value={item.question}
-                      onChange={(e) => {
-                        const next = [...expFaq];
-                        next[idx] = { ...next[idx], question: e.target.value };
-                        setExpFaq(next);
-                      }}
-                      className="sm:col-span-5"
-                    />
-                    <Input
-                      label="Answer"
-                      value={item.answer}
-                      onChange={(e) => {
-                        const next = [...expFaq];
-                        next[idx] = { ...next[idx], answer: e.target.value };
-                        setExpFaq(next);
-                      }}
-                      className="sm:col-span-6"
-                    />
-                    <div className="sm:col-span-1 flex items-end">
-                      <Button variant="ghost" size="sm" onClick={() => setExpFaq(expFaq.filter((_, i) => i !== idx))} className="text-rose-600 hover:text-rose-700 text-xs">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <Button size="sm" onClick={handleSaveExperience} disabled={savingExperience}>
-                {savingExperience ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                <span>{savingExperience ? 'Saving...' : 'Save Experience'}</span>
-              </Button>
-            </div>
+        {/* Experience Tab - the segment CMS */}
+        {activeTab === 'experience' && segment && (
+          <div className="p-4">
+            <AdminSegmentExperienceEditor
+              segmentId={segment.id}
+              segmentName={segment.name}
+              segmentSlug={segment.slug}
+            />
           </div>
         )}
 

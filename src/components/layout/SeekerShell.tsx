@@ -1,23 +1,40 @@
 import React from 'react';
-import { TopNavigation } from '@/src/components/navigation/TopNavigation';
+import { SeekerHeader } from '@/src/components/navigation/SeekerHeader';
 
 export interface SeekerShellProps {
   children: React.ReactNode;
 }
 
+/**
+ * The seeker shell: the seeker header plus the page body.
+ *
+ * The header is the `SeekerHeader` — the Suggest Key plum bar carrying the
+ * database-driven segment switcher, Home, and the account menu — rather than
+ * the legacy role nav. The other seeker routes (bookings, payments, sessions,
+ * settings) keep their existing page content and layout; only the chrome
+ * changes.
+ *
+ * The seeker home renders its own warm marketplace canvas and footer inside
+ * this shell, so the bar sits above it without any page needing to know about
+ * the other.
+ */
 export const SeekerShell: React.FC<SeekerShellProps> = ({ children }) => {
   return (
-    <div className="min-h-screen flex flex-col bg-[var(--color-shell-bg)] text-[var(--color-shell-text)] antialiased selection:bg-[var(--color-shell-primary)] selection:text-white">
+    <div className="flex min-h-screen flex-col bg-[var(--sk-brand-canvas)] text-[var(--sk-brand-text)] antialiased">
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[var(--color-shell-text)] focus:text-[var(--color-shell-bg)] focus:rounded-lg focus:shadow-xl focus:outline-none focus:ring-2 focus:ring-[var(--color-shell-accent)] font-semibold text-xs"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-[var(--sk-brand-plum)] focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white focus:shadow-xl"
       >
         Skip to main content
       </a>
-      <TopNavigation />
-      <main id="main-content" tabIndex={-1} className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 focus:outline-none">
+
+      <SeekerHeader />
+
+      <main id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">
         {children}
       </main>
     </div>
   );
 };
+
+export default SeekerShell;

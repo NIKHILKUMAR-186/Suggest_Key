@@ -150,6 +150,35 @@
     --brand-primary-strong: #7c3aed;
     --brand-accent-strong: #2563eb;
 
+    /* ============================================================
+       SUGGEST KEY BRAND TOKENS (light) — from the shipped logo
+       Deep plum field + gold mark. These are the GLOBAL identity and
+       are deliberately independent of any --segment-* token: the
+       header must not change colour when the seeker switches segment.
+       ============================================================ */
+    --sk-brand-plum: #1f1037;
+    --sk-brand-plum-deep: #150a28;
+    --sk-brand-gold: #f7d243;
+    --sk-brand-gold-deep: #e0b72c;
+    --sk-brand-on-gold: #1f1037;
+    --sk-brand-on-plum: #ffffff;
+    --sk-brand-canvas: #fbf8f3;
+    --sk-brand-surface: #ffffff;
+    --sk-brand-border: rgba(31, 16, 55, 0.10);
+    --sk-brand-border-strong: rgba(31, 16, 55, 0.18);
+    --sk-brand-text: #1f1037;
+    --sk-brand-text-muted: #55496b;
+    --sk-brand-header-bg: #1f1037;
+    --sk-brand-header-text: #ffffff;
+    --sk-brand-header-muted: rgba(255, 255, 255, 0.66);
+    --sk-brand-header-border: rgba(247, 210, 67, 0.18);
+    --sk-brand-header-hover: rgba(255, 255, 255, 0.08);
+    --sk-brand-focus: #f7d243;
+    /* Soft warm shadow used by marketplace cards in light mode. */
+    --sk-shadow-card: 0 1px 2px rgba(31, 16, 55, 0.04), 0 12px 32px -16px rgba(31, 16, 55, 0.18);
+    --sk-shadow-card-hover: 0 2px 4px rgba(31, 16, 55, 0.05), 0 24px 48px -20px rgba(31, 16, 55, 0.26);
+    --sk-shadow-hero: 0 2px 6px rgba(31, 16, 55, 0.05), 0 36px 72px -32px rgba(31, 16, 55, 0.32);
+
     /* Status: success */
     --status-success-strong: #166534;
     --status-success-soft: #dcfce7;
@@ -267,6 +296,22 @@
        ============================================================ */
     --brand-primary-strong: #8b5cf6;
     --brand-accent-strong: #b6d9fc;
+
+    /* ============================================================
+       SUGGEST KEY BRAND TOKENS (dark) — same identity, re-tuned for a
+       deep branded canvas. The header keeps the plum field in BOTH
+       modes; only the page canvas behind it deepens.
+       ============================================================ */
+    --sk-brand-canvas: #0d0718;
+    --sk-brand-surface: #170d2b;
+    --sk-brand-border: rgba(247, 210, 67, 0.14);
+    --sk-brand-border-strong: rgba(247, 210, 67, 0.28);
+    --sk-brand-text: #f5f1fb;
+    --sk-brand-text-muted: #b3a8c6;
+    --sk-brand-focus: #f7d243;
+    --sk-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 16px 40px -20px rgba(0, 0, 0, 0.9);
+    --sk-shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.55), 0 28px 56px -24px rgba(0, 0, 0, 0.95);
+    --sk-shadow-hero: 0 2px 6px rgba(0, 0, 0, 0.5), 0 44px 88px -40px rgba(0, 0, 0, 0.95);
 
     /* ============================================================
        SEGMENT THEME TOKENS (dark) — default brand theme fallback
@@ -1906,10 +1951,12 @@ body {
      SEEKER MARKETPLACE — ENHANCED PREMIUM UTILITIES
      ============================================================ */
 
-  /* Section container with consistent breathing room */
+  /* Section container with consistent breathing room. Matches `.sk-section`
+     and the header so the seeker home and the mentor directory share one
+     left/right edge instead of two slightly different measures. */
   .section-container {
     width: 100%;
-    max-width: 1200px;
+    max-width: 1280px;
     margin-left: auto;
     margin-right: auto;
     padding-left: clamp(16px, 4vw, 32px);
@@ -2141,18 +2188,465 @@ body {
     }
   }
 
-  /* Card with improved inner spacing for detail pages */
-  .detail-card {
-    background: var(--color-shell-surface);
-    border: 1px solid var(--color-shell-border);
+  /* ============================================================
+     SEEKER EXPERIENCE REBUILD
+     Premium marketplace primitives shared by the live seeker page and
+     the admin "Preview as seeker" surface. Both render through the same
+     component, so these classes cannot drift between them.
+
+     Every colour resolves from a token: the brand tokens for chrome,
+     the --segment-* tokens (config-driven) for segment identity. No
+     literal colours live here, so a new segment's configured palette
+     reaches these surfaces with no CSS edit.
+     ============================================================ */
+
+  /* The warm marketplace canvas. A hair of segment colour is mixed in so
+     switching segments feels like arriving somewhere, not like the brand
+     having been repainted. */
+  .sk-experience {
+    position: relative;
+    isolation: isolate;
+    background-color: var(--sk-brand-canvas);
+  }
+  .sk-experience::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 520px;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 70% 60% at 12% 0%, var(--segment-accent-soft), transparent 70%),
+      radial-gradient(ellipse 60% 55% at 92% 4%, var(--segment-section-glow), transparent 72%);
+  }
+
+  /* Editorial rhythm: generous but never dead space. The 1280px measure is
+     the same one the header and the segment switcher use, so every band on
+     the page shares one left and right edge. */
+  .sk-section {
+    width: 100%;
+    max-width: 1280px;
+    margin-inline: auto;
+    padding-inline: clamp(16px, 4vw, 32px);
+    margin-top: clamp(48px, 7vw, 96px);
+  }
+  .sk-section:first-child {
+    margin-top: 0;
+  }
+
+  .sk-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--segment-accent);
+  }
+
+  /* Hero ------------------------------------------------------------------
+     The one large surface that is ALWAYS the Suggest Key deep plum, in both
+     colour modes: the reference direction is a dark, premium editorial panel
+     floating on the warm canvas. The segment accent does not replace the
+     brand - it glows INTO the plum, which is why a teal Autism hero and a
+     pink Relationship hero are recognisably the same product. */
+  .sk-hero {
+    position: relative;
+    overflow: hidden;
+    border-radius: clamp(24px, 3.2vw, 40px);
+    border: 1px solid color-mix(in srgb, var(--segment-accent) 32%, transparent);
+    color: #ffffff;
+    background:
+      radial-gradient(
+        115% 105% at 8% -10%,
+        color-mix(in srgb, var(--segment-accent) 55%, transparent) 0%,
+        transparent 58%
+      ),
+      radial-gradient(
+        95% 90% at 102% 108%,
+        color-mix(in srgb, var(--segment-accent-secondary) 48%, transparent) 0%,
+        transparent 60%
+      ),
+      linear-gradient(148deg, #2b1552 0%, var(--sk-brand-plum) 46%, var(--sk-brand-plum-deep) 100%);
+    box-shadow: var(--sk-shadow-hero);
+  }
+  /* Text tokens local to the hero, so a dark panel never borrows the page's
+     dark-on-cream text colours. */
+  .sk-hero {
+    --sk-hero-text: #ffffff;
+    --sk-hero-text-muted: rgba(255, 255, 255, 0.76);
+    /* The eyebrow sits on plum, so the accent is lightened toward white for
+       contrast instead of being used raw. */
+    --sk-hero-accent: color-mix(in srgb, var(--segment-accent) 45%, #ffffff);
+    --sk-hero-border: color-mix(in srgb, var(--segment-accent) 30%, rgba(255, 255, 255, 0.16));
+  }
+  .sk-hero-media {
+    position: relative;
+    overflow: hidden;
+    border-radius: clamp(16px, 2vw, 24px);
+    min-height: 220px;
+    border: 1px solid var(--sk-hero-border);
+    box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.8);
+    background:
+      radial-gradient(120% 120% at 18% 0%, var(--segment-gradient-start) 0%, transparent 62%),
+      radial-gradient(120% 120% at 82% 100%, var(--segment-gradient-end) 0%, transparent 62%),
+      var(--sk-brand-plum-deep);
+  }
+  .sk-hero-media img {
+    height: 100%;
+    width: 100%;
+    object-fit: cover;
+  }
+  /* The no-image fallback: a deliberate concentric composition on the segment
+     gradient, not an empty grey box. Purely decorative - it makes no claim to
+     depict anything - so it stays hidden from assistive technology. */
+  .sk-hero-media::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 50% 52%, transparent 0 22%, rgba(255, 255, 255, 0.1) 22% 22.6%, transparent 23%),
+      radial-gradient(circle at 50% 52%, transparent 0 36%, rgba(255, 255, 255, 0.09) 36% 36.6%, transparent 37%),
+      radial-gradient(circle at 50% 52%, transparent 0 49%, rgba(255, 255, 255, 0.08) 49% 49.6%, transparent 50%),
+      radial-gradient(60% 60% at 50% 20%, rgba(247, 210, 67, 0.22) 0%, transparent 70%);
+  }
+  .sk-hero-media img + * {
+    position: relative;
+  }
+
+  /* Buttons ---------------------------------------------------------------- */
+  .sk-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 0 22px;
+    border-radius: 14px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition:
+      transform 180ms cubic-bezier(0.23, 1, 0.31, 1),
+      background-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+  .sk-btn:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-btn-primary {
+    background: var(--segment-accent);
+    color: var(--segment-on-accent);
+    box-shadow: 0 10px 24px -14px var(--segment-accent);
+  }
+  .sk-btn-primary:hover {
+    background: var(--segment-accent-hover);
+    transform: translateY(-1px);
+  }
+  .sk-btn-secondary {
+    background: var(--sk-brand-surface);
+    color: var(--sk-brand-text);
+    border-color: var(--sk-brand-border-strong);
+  }
+  .sk-btn-secondary:hover {
+    background: color-mix(in srgb, var(--segment-accent) 8%, var(--sk-brand-surface));
+  }
+  /* On the dark hero/CTA panel: a translucent white outline rather than a solid
+     surface, so it stays readable against plum in both colour modes. */
+  .sk-btn-ghost {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.28);
+  }
+  .sk-btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.45);
+  }
+  /* A bare text link, for the hero's secondary action. */
+  .sk-link-light {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    padding-bottom: 2px;
+    transition:
+      color 160ms ease,
+      border-color 160ms ease;
+  }
+  .sk-link-light:hover {
+    color: #ffffff;
+    border-color: var(--sk-brand-gold);
+  }
+  .sk-link-light:focus-visible {
+    outline: 2px solid var(--sk-brand-gold);
+    outline-offset: 3px;
+  }
+
+  /* Topic bar --------------------------------------------------------------
+     Horizontally scrollable on small screens with a hidden scrollbar gutter,
+     so a nine-topic career bar never causes page-level horizontal overflow. */
+  .sk-topic-rail {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding-block: 2px;
+    scroll-snap-type: x proximity;
+  }
+  .sk-topic-rail::-webkit-scrollbar {
+    display: none;
+  }
+  .sk-topic-chip {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 18px;
+    border-radius: 9999px;
+    border: 1px solid var(--sk-brand-border);
+    background: var(--sk-brand-surface);
+    color: var(--sk-brand-text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease;
+  }
+  .sk-topic-chip:hover {
+    border-color: var(--segment-border-accent);
+    color: var(--sk-brand-text);
+  }
+  .sk-topic-chip:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-topic-chip[aria-pressed='true'] {
+    background: var(--segment-accent);
+    border-color: var(--segment-accent);
+    color: var(--segment-on-accent);
+  }
+
+  /* Cards ------------------------------------------------------------------ */
+  .sk-card {
     border-radius: var(--radius-2xl);
-    padding: clamp(20px, 3vw, 28px);
-    box-shadow: var(--shadow-xs);
-    transition: box-shadow 200ms ease;
+    border: 1px solid var(--sk-brand-border);
+    background: var(--sk-brand-surface);
+    box-shadow: var(--sk-shadow-card);
+    transition:
+      transform 240ms cubic-bezier(0.23, 1, 0.31, 1),
+      box-shadow 240ms ease;
   }
-  .detail-card:hover {
-    box-shadow: var(--shadow-sm);
+  .sk-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--sk-shadow-card-hover);
   }
+  .sk-card-accent {
+    background: var(--segment-accent-soft);
+    border-color: var(--segment-border-accent);
+  }
+
+  /* Header -----------------------------------------------------------------
+     The one surface that must NOT take a segment accent. It is always the
+     Suggest Key plum field with the gold mark, on every segment and in both
+     colour modes. */
+  .sk-header {
+    background: var(--sk-brand-header-bg);
+    color: var(--sk-brand-header-text);
+    border-bottom: 1px solid var(--sk-brand-header-border);
+  }
+  .sk-header-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--sk-brand-header-muted);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    transition:
+      color 160ms ease,
+      background-color 160ms ease;
+  }
+  .sk-header-link:hover {
+    color: var(--sk-brand-header-text);
+    background: var(--sk-brand-header-hover);
+  }
+  .sk-header-link:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-header-link[aria-current='page'] {
+    color: var(--sk-brand-gold);
+  }
+  .sk-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 12px;
+    border: 0;
+    background: transparent;
+    color: var(--sk-brand-header-muted);
+    cursor: pointer;
+    transition:
+      color 160ms ease,
+      background-color 160ms ease;
+  }
+  .sk-icon-btn:hover {
+    color: var(--sk-brand-header-text);
+    background: var(--sk-brand-header-hover);
+  }
+  .sk-icon-btn:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-header-panel {
+    background: var(--sk-brand-surface);
+    border: 1px solid var(--sk-brand-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--sk-shadow-card-hover);
+  }
+  .sk-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    border: 0;
+    background: transparent;
+    color: var(--sk-brand-text);
+    transition: background-color 140ms ease;
+  }
+  .sk-menu-item:hover,
+  .sk-menu-item:focus-visible {
+    background: color-mix(in srgb, var(--sk-brand-gold) 16%, transparent);
+  }
+  .sk-menu-item:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: -2px;
+  }
+  .sk-menu-item[data-danger='true'] {
+    color: var(--color-shell-error);
+  }
+
+  /* Segment switcher (header navigation) -----------------------------------
+     The BAR is always the Suggest Key plum field. Only the ACTIVE control takes
+     the active segment's configured accent, and it reads it from the token the
+     theme provider already publishes on the document root - so the accent is
+     never hardcoded here, and a segment created tomorrow is on-brand in the
+     header with no change to this stylesheet or to the component. */
+  .sk-segment-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 4px;
+    border-radius: 999px;
+    border: 1px solid var(--sk-brand-header-border);
+    background: var(--sk-brand-header-hover);
+  }
+  .sk-segment-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 13rem;
+    min-height: 36px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--sk-brand-header-muted);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 180ms ease,
+      color 180ms ease,
+      box-shadow 180ms ease;
+  }
+  .sk-segment-pill:hover {
+    color: var(--sk-brand-header-text);
+    background: var(--sk-brand-header-hover);
+  }
+  .sk-segment-pill:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-segment-pill[data-active='true'] {
+    background: var(--segment-accent);
+    color: var(--segment-on-accent, #ffffff);
+    font-weight: 600;
+    box-shadow: 0 2px 12px -2px color-mix(in srgb, var(--segment-accent) 60%, transparent);
+  }
+  /* Placeholder shown while the catalogue loads: an empty pill, never a label. */
+  .sk-segment-pill:empty {
+    min-width: 84px;
+    background: var(--sk-brand-header-hover);
+  }
+  .sk-segment-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--sk-brand-header-border);
+    border-radius: 12px;
+    background: var(--sk-brand-header-hover);
+    color: var(--sk-brand-header-text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 160ms ease;
+  }
+  .sk-segment-trigger:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .sk-segment-trigger:focus-visible {
+    outline: 2px solid var(--sk-brand-focus);
+    outline-offset: 2px;
+  }
+  .sk-menu-label {
+    margin: 0;
+    padding: 8px 12px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--sk-brand-text-muted);
+  }
+  /* The chosen segment in the mobile picker, marked with the active accent. */
+  .sk-menu-item[data-active='true'] {
+    color: var(--sk-brand-text);
+    font-weight: 600;
+  }
+  .sk-menu-item[data-active='true'] svg {
+    color: var(--segment-accent);
+  }
+
 
   /* Sticky booking panel */
   .booking-panel {

@@ -105,7 +105,19 @@ export const SegmentThemeProvider: React.FC<SegmentThemeProviderProps> = ({
 
     applySegmentCssVariables(root, theme.variables);
 
+    // The palette differs between modes, so it has to be RE-DERIVED when the
+    // user toggles the theme. Without this observer the inline custom
+    // properties - which win over the stylesheet's `.dark[data-segment="…"]`
+    // rules - would keep the light-mode accent after a toggle to dark.
+    const observer = new MutationObserver(() => {
+      const next = deriveSegmentTheme(config, root.classList.contains('dark') ? 'dark' : 'light');
+      applySegmentCssVariables(root, next.variables);
+      theme.variables = next.variables;
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+
     return () => {
+      observer.disconnect();
       // Remove only the properties this effect set, so a segment switch cannot
       // leave a stale accent behind on the root element.
       for (const name of Object.keys(theme.variables)) {

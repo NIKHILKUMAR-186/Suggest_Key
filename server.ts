@@ -78,6 +78,7 @@ import {
   type HealthRow,
 } from './src/lib/systemHealth';
 import { getAdminDashboardData } from './src/lib/adminDashboardData';
+import { slugifyTopicName } from './src/lib/topicSlug';
 import { GENERIC_ERROR_MESSAGE, describeSupabaseError, getErrorMessage, respondWithInternalError, respondWithServerError, resolveHttpStatusForSupabaseError, terminalErrorHandler } from './src/lib/supabaseErrors';
 import {
   MENTOR_APPLICATION_STATUSES,
@@ -1179,6 +1180,62 @@ function annotateSessionState<T extends Record<string, any>>(row: T, nowMs: numb
   }
 
   return { ...row, sessionState, isUpcoming };
+}
+
+const ALLOWED_HERO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const HERO_MAX_BYTES = 5 * 1024 * 1024;
+
+function readHeroUploadBody(body: unknown): { contentType: string; fileSize: number } {
+  const obj = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+  const contentType = typeof obj.contentType === 'string' ? obj.contentType : '';
+  const fileSize = typeof obj.fileSize === 'number' ? obj.fileSize : Number(obj.fileSize || 0);
+  return { contentType, fileSize };
+}
+
+export function validateHeroUploadPayload(body: unknown) {
+  const { contentType, fileSize } = readHeroUploadBody(body);
+  const type = contentType.toLowerCase();
+  if (!ALLOWED_HERO_MIME_TYPES.includes(type)) {
+    return { valid: false as const, error: { code: 'VALIDATION_ERROR' as const, message: 'Upload a PNG, JPEG, WebP or GIF image.' } };
+  }
+  if (!Number.isFinite(fileSize) || fileSize <= 0) {
+    return { valid: false as const, error: { code: 'VALIDATION_ERROR' as const, message: 'That file is empty.' } };
+  }
+  if (fileSize > HERO_MAX_BYTES) {
+    return { valid: false as const, error: { code: 'VALIDATION_ERROR' as const, message: 'That image is larger than 5 MB.' } };
+  }
+  return { valid: true as const, type, size: fileSize };
+}
+
+export function extractSegmentHeroStoragePath(heroImageUrl: unknown): string | null {
+  if (typeof heroImageUrl !== 'string') return null;
+  const trimmed = heroImageUrl.trim();
+  if (!trimmed) return null;
+
+  const supabaseBaseUrl = (process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+
+  if (supabaseBaseUrl) {
+    const publicPrefix = `${supabaseBaseUrl}/storage/v1/object/public/segment-hero/`;
+    if (trimmed.startsWith(publicPrefix)) {
+      const relativePath = trimmed.slice(publicPrefix.length);
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(relativePath);
+      } catch {
+        return null;
+      }
+      if (decoded.includes('..') || decoded.startsWith('/')) return null;
+      return decoded;
+    }
+  }
+
+  if (trimmed.startsWith('segment-hero/')) {
+    const path = trimmed.slice('segment-hero/'.length);
+    if (path.includes('..') || path.startsWith('/')) return null;
+    return trimmed;
+  }
+
+  return null;
 }
 
 async function startServer() {
@@ -3256,6 +3313,9 @@ async function startServer() {
       const formattedGigs = (gigs || []).map((g: any) => ({
         id: g.id,
         title: g.title,
+        // The segment id is what the topic editor filters on, so the client
+        // never has to guess which segment a gig belongs to from its name.
+        segmentId: g.segment_id,
         segmentName: g.segment?.name || 'Unknown',
         segmentSlug: g.segment?.slug || 'unknown',
         durationMinutes: g.duration_minutes,
@@ -3329,6 +3389,213 @@ async function startServer() {
     }
   });
 
+  // ------------------------------------------------------------------------
+  // Mentor topic selection
+  //
+  // A mentor picks which of their own segment topics a gig covers. Two rules
+  // hold here and are not negotiable:
+  //
+  //  * Only ACTIVE topics of segments the mentor belongs to are offered, so a
+  //    Career topic can never appear on a Relationship gig in the first place.
+  //  * Ownership is re-verified against the database on every write. The UI
+  //    filter is presentation; this check, plus the
+  //    trg_gig_topics_segment_ownership trigger, is the guarantee.
+  // ------------------------------------------------------------------------
+
+  /** All active topics across every segment the caller is a member of. */
+  app.get('/api/mentor/topics', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const mentorId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: memberships, error: msErr } = await admin
+        .from('mentor_segments')
+        .select('segment_id, segment:segments(id, name, slug)')
+        .eq('mentor_id', mentorId);
+      if (msErr) throw msErr;
+
+      const segmentIds = Array.from(
+        new Set((memberships || []).map((m: any) => m.segment_id as string).filter(Boolean)),
+      );
+
+      if (segmentIds.length === 0) {
+        return res.json({ success: true, topics: [] });
+      }
+
+      const { data: topics, error } = await admin
+        .from('segment_topics')
+        .select('id, segment_id, name, slug, description, priority')
+        .in('segment_id', segmentIds)
+        .eq('is_active', true)
+        .order('priority', { ascending: true })
+        .order('name', { ascending: true });
+      if (error) throw error;
+
+      const nameById = new Map(
+        (memberships || []).map((m: any) => [m.segment_id, m.segment?.name ?? '']),
+      );
+
+      return res.json({
+        success: true,
+        topics: (topics || []).map((t: any) => ({
+          ...t,
+          segmentName: nameById.get(t.segment_id) || '',
+        })),
+      });
+    } catch (err: any) {
+      console.error('Failed to list mentor topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/topics' });
+    }
+  });
+
+  /** The topics currently attached to one of the caller's own gigs. */
+  app.get('/api/mentor/gigs/:id/topics', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const mentorId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_GIG_ID', message: 'Gig ID must be a valid UUID.' } });
+      }
+
+      // Gig ownership is checked before anything is read, so a mentor can
+      // never probe another mentor's gig topics.
+      const { data: gig, error: gigErr } = await admin
+        .from('gigs')
+        .select('id')
+        .eq('id', id)
+        .eq('mentor_id', mentorId)
+        .maybeSingle();
+      if (gigErr) throw gigErr;
+      if (!gig) {
+        return res.status(404).json({ success: false, error: { code: 'GIG_NOT_FOUND', message: 'Gig not found.' } });
+      }
+
+      const { data, error } = await admin
+        .from('gig_topics')
+        .select('topic_id')
+        .eq('gig_id', id);
+      if (error) throw error;
+
+      return res.json({ success: true, topicIds: (data || []).map((r: any) => r.topic_id as string) });
+    } catch (err: any) {
+      console.error('Failed to read gig topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/gigs/:id/topics' });
+    }
+  });
+  /**
+   * PUT /api/mentor/gigs/:id/topics - replace the topics on a mentor's own gig.
+   *
+   * Ownership is verified TWICE here:
+   *   1. the gig must belong to the caller, and
+   *   2. every topic must belong to the gig's own segment.
+   *
+   * A violation is a 400 with no partial write, and the database trigger
+   * rejects it independently. There is no request a mentor can craft that
+   * attaches a Career topic to a Relationship gig.
+   */
+  app.put('/api/mentor/gigs/:id/topics', requireAuth, requireRole('mentor'), validateBody(apiSchemas.gigTopicsUpdate), async (req: AuthRequest, res) => {
+    try {
+      const mentorId = req.auth!.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_GIG_ID', message: 'Gig ID must be a valid UUID.' } });
+      }
+
+      const { data: gig, error: gigErr } = await admin
+        .from('gigs')
+        .select('id, segment_id')
+        .eq('id', id)
+        .eq('mentor_id', mentorId)
+        .maybeSingle();
+      if (gigErr) throw gigErr;
+      if (!gig) {
+        return res.status(404).json({ success: false, error: { code: 'GIG_NOT_FOUND', message: 'Gig not found.' } });
+      }
+
+      const requested = Array.from(new Set((req.body.topicIds || []) as string[]));
+
+      if (requested.length > 0) {
+        const { data: topics, error: topicErr } = await admin
+          .from('segment_topics')
+          .select('id, segment_id')
+          .in('id', requested);
+        if (topicErr) throw topicErr;
+
+        const found = (topics || []) as any[];
+        const foundIds = new Set(found.map((t) => t.id as string));
+
+        const missing = requested.filter((topicId) => !foundIds.has(topicId));
+        if (missing.length > 0) {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'UNKNOWN_TOPIC', message: 'One or more selected topics no longer exist. Reload and try again.' },
+          });
+        }
+
+        const foreign = found.filter((t) => t.segment_id !== gig.segment_id);
+        if (foreign.length > 0) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'TOPIC_SEGMENT_MISMATCH',
+              message: 'A topic can only be attached to a gig in the same segment.',
+            },
+          });
+        }
+      }
+
+      const { data: before, error: beforeErr } = await admin
+        .from('gig_topics')
+        .select('topic_id')
+        .eq('gig_id', id);
+      if (beforeErr) throw beforeErr;
+
+      const beforeIds = new Set(((before || []) as any[]).map((r) => r.topic_id as string));
+      const toInsert = requested.filter((topicId) => !beforeIds.has(topicId));
+      const toRemove = Array.from(beforeIds).filter((topicId) => !requested.includes(topicId));
+
+      if (toRemove.length > 0) {
+        const { error: removeErr } = await admin
+          .from('gig_topics')
+          .delete()
+          .eq('gig_id', id)
+          .in('topic_id', toRemove);
+        if (removeErr) throw removeErr;
+      }
+
+      if (toInsert.length > 0) {
+        const { error: insertErr } = await admin
+          .from('gig_topics')
+          .insert(toInsert.map((topic_id) => ({ gig_id: id, topic_id })));
+        if (insertErr) throw insertErr;
+      }
+
+      auditAction(req.auth, 'mentor_gig_topics_updated', {
+        entityType: 'gig',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { added: toInsert.length, removed: toRemove.length, total: requested.length },
+      });
+
+      return res.json({ success: true, topicIds: requested });
+    } catch (err: any) {
+      console.error('Failed to update gig topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'PUT /api/mentor/gigs/:id/topics' });
+    }
+  });
   // PATCH /api/mentor/gigs/:id: Update gig
   app.patch('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.gigUpdate), async (req: AuthRequest, res) => {
     try {
@@ -5982,7 +6249,7 @@ async function startServer() {
 
       const { data: existing, error: existingErr } = await admin
         .from('segments')
-        .select('id')
+        .select('id, experience_config')
         .eq('id', id)
         .maybeSingle();
 
@@ -5990,6 +6257,8 @@ async function startServer() {
       if (!existing) {
         return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
+
+      const oldHeroImageUrl = (existing.experience_config as Record<string, unknown> | null)?.branding?.heroImageUrl;
 
       const experienceConfig = req.body ?? {};
 
@@ -6008,6 +6277,20 @@ async function startServer() {
         requestId: req.requestId,
         metadata: { hasConfig: !!experienceConfig && Object.keys(experienceConfig).length > 0 },
       });
+
+      const newHeroImageUrl = (data.experience_config as Record<string, unknown> | null)?.branding?.heroImageUrl;
+      if (oldHeroImageUrl && newHeroImageUrl && oldHeroImageUrl !== newHeroImageUrl) {
+        const oldPath = extractSegmentHeroStoragePath(oldHeroImageUrl);
+        const newPath = extractSegmentHeroStoragePath(newHeroImageUrl);
+        if (oldPath && newPath && oldPath !== newPath) {
+          try {
+            await admin.storage.from('segment-hero').remove([oldPath]);
+            console.log('[segment-hero] Removed previous hero image:', oldPath);
+          } catch (err: any) {
+            console.error('[segment-hero] Failed to remove previous hero image:', oldPath, logSanitizer.safeMessage(err));
+          }
+        }
+      }
 
       return res.json({
         success: true,
@@ -6058,6 +6341,719 @@ async function startServer() {
     } catch (err: any) {
       console.error('Failed to fetch seeker segment experience:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/segments/:slug/experience' });
+    }
+  });
+
+  // ------------------------------------------------------------------------
+  // Segment topics
+  //
+  // Topics are rows in `public.segment_topics`, scoped to exactly one
+  // segment. The seeker topic bar reads this endpoint, so a topic an admin
+  // adds in the CMS reaches the page with no frontend change.
+  //
+  // Only ACTIVE topics of an ACTIVE segment are returned, matching the RLS
+  // SELECT policy on the table. An unknown slug is 404 JSON, never HTML.
+  // ------------------------------------------------------------------------
+  app.get('/api/seeker/segments/:slug/topics', async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Service unavailable.' } });
+      }
+
+      const { slug } = req.params;
+      if (typeof slug !== 'string' || !/^[a-z0-9-]{2,60}$/.test(slug)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SLUG', message: 'Segment slug is invalid.' } });
+      }
+
+      const { data: segment, error: segErr } = await admin
+        .from('segments')
+        .select('id')
+        .eq('slug', slug)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (segErr) throw segErr;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const { data: topics, error } = await admin
+        .from('segment_topics')
+        .select('id, segment_id, name, slug, description, priority, is_active, created_at, updated_at')
+        .eq('segment_id', segment.id)
+        .eq('is_active', true)
+        .order('priority', { ascending: true })
+        .order('name', { ascending: true });
+
+      if (error) throw error;
+
+      // An empty list is a normal state — the topic bar then shows "All"
+      // alone rather than inventing chips.
+      return res.json({ success: true, topics: topics || [] });
+    } catch (err: any) {
+      console.error('Failed to fetch segment topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/segments/:slug/topics' });
+    }
+  });
+
+  /**
+   * The gig ids that cover a topic.
+   *
+   * Shared by the topic-filtered discovery queries. The join is performed here,
+   * against the database, rather than by filtering an already-fetched mentor
+   * list in the browser — the seeker's topic chips therefore reflect real
+   * marketplace coverage rather than a client-side guess.
+   */
+  async function findGigIdsForTopic(admin: SupabaseClient, topicId: string): Promise<string[]> {
+    const { data, error } = await admin
+      .from('gig_topics')
+      .select('gig_id')
+      .eq('topic_id', topicId);
+    if (error) throw error;
+    return Array.from(new Set((data || []).map((row: { gig_id: string }) => row.gig_id)));
+  }
+
+  /**
+   * GET /api/seeker/segments/:slug/mentors?topic=<slug>&date=<YYYY-MM-DD>
+   *
+   * The topic-filtered marketplace list backing the seeker's topic chips.
+   * Two modes, matching the two things a seeker is looking for:
+   *
+   *   no `date`   -> every eligible mentor in the segment whose gig covers the
+   *                  topic. Bookability is deliberately NOT required, so a
+   *                  mentor with no free slot today is still discoverable.
+   *   with `date` -> the same list, further restricted to mentors with a real,
+   *                  server-generated free slot on that date.
+   *
+   * Availability is never recomputed here: the date mode delegates to the
+   * existing `computeMentorSlotsForDate` engine, so selecting a topic cannot
+   * change what counts as bookable, and no fallback slot list is ever
+   * produced.
+   */
+  app.get('/api/seeker/segments/:slug/mentors', async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Service unavailable.' } });
+      }
+
+      const { slug } = req.params;
+      if (typeof slug !== 'string' || !/^[a-z0-9-]{2,60}$/.test(slug)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_SLUG', message: 'Segment slug is invalid.' } });
+      }
+
+      const topicSlug = typeof req.query.topic === 'string' ? req.query.topic : null;
+      const dateStr = typeof req.query.date === 'string' ? req.query.date : null;
+
+      if (topicSlug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(topicSlug)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC', message: 'Topic slug is invalid.' } });
+      }
+      if (dateStr && !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_DATE', message: 'Date must be YYYY-MM-DD.' } });
+      }
+
+      const { data: segment, error: segErr } = await admin
+        .from('segments')
+        .select('id, name, slug')
+        .eq('slug', slug)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (segErr) throw segErr;
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      // The topic is resolved WITHIN this segment. A topic owned by another
+      // segment is simply unknown here, so a Career slug requested on the
+      // Relationship page returns zero results instead of leaking across.
+      let topicId: string | null = null;
+      if (topicSlug) {
+        const { data: topic, error: topicErr } = await admin
+          .from('segment_topics')
+          .select('id')
+          .eq('segment_id', segment.id)
+          .eq('slug', topicSlug)
+          .eq('is_active', true)
+          .maybeSingle();
+        if (topicErr) throw topicErr;
+        if (!topic) {
+          return res.json({ success: true, mentors: [], total: 0, topic: null, segment });
+        }
+        topicId = topic.id;
+      }
+
+      // Purchasable gigs in this segment, narrowed to the topic's coverage.
+      // An existing topic with no gigs is "no results", never "no filter".
+      let gigQuery = admin
+        .from('gigs')
+        .select('id, mentor_id, title, description, duration_minutes, price_inr, segment_id')
+        .eq('segment_id', segment.id)
+        .eq('is_active', true);
+
+      if (topicId) {
+        const gigIds = await findGigIdsForTopic(admin, topicId);
+        if (gigIds.length === 0) {
+          return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+        }
+        gigQuery = gigQuery.in('id', gigIds);
+      }
+
+      const { data: gigs, error: gigErr } = await gigQuery;
+      if (gigErr) throw gigErr;
+
+      const gigList = (gigs || []) as any[];
+      if (gigList.length === 0) {
+        return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+      }
+
+      const mentorIds = Array.from(new Set(gigList.map((g: any) => g.mentor_id as string)));
+
+      const [profilesRes, visibilityRes, segmentsRes] = await Promise.all([
+        admin
+          .from('mentor_profiles')
+          .select('id, headline, about, experience_years, languages, expertise, rating, review_count, session_count, is_approved, is_featured, is_active, approval_status')
+          .in('id', mentorIds),
+        admin
+          .from('profiles')
+          .select('id, full_name, avatar_url, timezone, account_status, suspended_until')
+          .in('id', mentorIds),
+        admin
+          .from('mentor_segments')
+          .select('mentor_id, is_primary, segment_id')
+          .in('mentor_id', mentorIds),
+      ]);
+
+      for (const r of [profilesRes, visibilityRes, segmentsRes]) {
+        if (r.error) throw r.error;
+      }
+
+      const now = new Date();
+      const profileById = new Map((visibilityRes.data || []).map((p: any) => [p.id, p]));
+
+      // The SAME eligibility rule the rest of discovery uses: approved, active,
+      // not suspended, and a real member of THIS segment. RLS already hides
+      // most of these, but repeating the predicate keeps the result correct
+      // under the service-role client this handler uses.
+      const eligible = ((profilesRes.data || []) as any[]).filter((mp: any) => {
+        const profile = profileById.get(mp.id);
+        if (!profile || !profile.full_name) return false;
+        if (!mp.is_approved || !mp.is_active || mp.approval_status !== 'approved') return false;
+        const state = deriveAccountState(
+          { account_status: profile.account_status ?? null, suspended_until: profile.suspended_until ?? null },
+          now,
+        );
+        if (!state.canPerformOperationalActions) return false;
+        return ((segmentsRes.data || []) as any[]).some(
+          (ms: any) => ms.mentor_id === mp.id && ms.segment_id === segment.id,
+        );
+      });
+
+      if (eligible.length === 0) {
+        return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+      }
+
+      // Date mode reuses the existing availability engine unchanged, so a
+      // topic filter can never widen or narrow what is genuinely bookable.
+      let slotResults: Map<string, MentorSlotResult> | null = null;
+      if (dateStr) {
+        const computed = await computeMentorSlotsForDate(admin, {
+          mentorIds: eligible.map((mp: any) => mp.id as string),
+          dateStr,
+          segmentId: segment.id,
+          now,
+        });
+        if (computed.error) throw computed.error;
+        slotResults = computed.results;
+      }
+
+      const mentors: any[] = [];
+      for (const mp of eligible) {
+        const mentorGigs = gigList.filter((g: any) => g.mentor_id === mp.id);
+        if (mentorGigs.length === 0) continue;
+
+        const profile = profileById.get(mp.id);
+        const membership = ((segmentsRes.data || []) as any[]).find(
+          (ms: any) => ms.mentor_id === mp.id && ms.segment_id === segment.id,
+        );
+
+        const row: any = {
+          id: mp.id,
+          full_name: profile.full_name,
+          avatar_url: profile.avatar_url ?? null,
+          timezone: profile.timezone || 'Asia/Kolkata',
+          headline: mp.headline,
+          about: mp.about ?? null,
+          experience_years: mp.experience_years ?? 0,
+          languages: mp.languages || [],
+          expertise: mp.expertise ?? null,
+          rating: Number(mp.rating) || 0,
+          review_count: mp.review_count || 0,
+          session_count: mp.session_count || 0,
+          is_featured: !!mp.is_featured,
+          is_primary_segment: !!membership?.is_primary,
+          segment,
+          gigs: mentorGigs,
+          // The one gig that represents this mentor inside this segment.
+          gig: mentorGigs[0],
+        };
+
+        if (slotResults) {
+          const slot = slotResults.get(mp.id);
+          if (!slot) continue;
+          const available = (slot.slots || []).filter((s: GeneratedSlot) => s.is_available);
+          if (available.length === 0) continue;
+          row.available_slots = available;
+          row.all_slots = slot.slots;
+          row.next_available_slot = available[0];
+          row.next_hold_expires_at = slot.next_hold_expires_at;
+          row.next_slot_start_at = slot.next_slot_start_at;
+          // The slot engine resolves the purchasable gig from availability;
+          // prefer it so the card always prices the gig the slot belongs to.
+          if (slot.gig) row.gig = slot.gig;
+        }
+
+        mentors.push(row);
+      }
+
+      mentors.sort(
+        (a, b) => Number(b.is_featured) - Number(a.is_featured) || b.rating - a.rating,
+      );
+
+      return res.json({
+        success: true,
+        mentors,
+        total: mentors.length,
+        topic: topicSlug,
+        segment,
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch topic-filtered mentors:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/segments/:slug/mentors' });
+    }
+  });
+
+  // ------------------------------------------------------------------------
+  // Admin topic management
+  //
+  // Adds, edits, reorders and safely deletes the topics behind the seeker
+  // topic bar. Usage is reported so an admin can see what a delete would
+  // affect, and a delete is refused with 409 while a gig still references
+  // the topic — the operation can never silently orphan marketplace data.
+  // ------------------------------------------------------------------------
+
+  /** Resolve a segment by public slug or internal UUID. */
+  async function resolveAdminSegment(
+    admin: SupabaseClient,
+    key: string
+  ): Promise<{ id: string; name: string; slug: string } | null> {
+    if (!key) return null;
+    const byId = UUID_SHAPE_PATTERN.test(key);
+    const query = admin
+      .from('segments')
+      .select('id, name, slug')
+      .eq(byId ? 'id' : 'slug', key)
+      .limit(1);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data && data[0]) || null;
+  }
+
+  /** Attach the usage count that lets an admin judge a delete. */
+  async function withTopicUsage(
+    admin: SupabaseClient,
+    topics: any[]
+  ): Promise<Array<any & { gig_count: number }>> {
+    if (topics.length === 0) return [];
+    const { data, error } = await admin
+      .from('gig_topics')
+      .select('topic_id')
+      .in('topic_id', topics.map((t: any) => t.id));
+    if (error) throw error;
+    const counts = new Map<string, number>();
+    for (const row of (data || []) as any[]) {
+      counts.set(row.topic_id, (counts.get(row.topic_id) || 0) + 1);
+    }
+    return topics.map((t: any) => ({ ...t, gig_count: counts.get(t.id) || 0 }));
+  }
+
+  app.get('/api/admin/segments/:segment/topics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const segment = await resolveAdminSegment(admin, req.params.segment);
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const { data, error } = await admin
+        .from('segment_topics')
+        .select('id, segment_id, name, slug, description, priority, is_active, created_at, updated_at')
+        .eq('segment_id', segment.id)
+        .order('priority', { ascending: true })
+        .order('name', { ascending: true });
+      if (error) throw error;
+
+      return res.json({ success: true, topics: await withTopicUsage(admin, (data || []) as any[]) });
+    } catch (err: any) {
+      console.error('Failed to list segment topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/segments/:segment/topics' });
+    }
+  });
+
+  app.post('/api/admin/segments/:segment/topics', requireAuth, requireAdmin, validateBody(apiSchemas.segmentTopicCreate), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const segment = await resolveAdminSegment(admin, req.params.segment);
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const name = String(req.body.name).trim();
+      const slug = slugifyTopicName(name);
+      if (!slug) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC_NAME', message: 'That name does not produce a usable topic link.' } });
+      }
+
+      // The next slot after the highest existing priority keeps a newly added
+      // topic at the end of the bar without the admin having to renumber.
+      const { data: last, error: lastErr } = await admin
+        .from('segment_topics')
+        .select('priority')
+        .eq('segment_id', segment.id)
+        .order('priority', { ascending: false })
+        .limit(1);
+      if (lastErr) throw lastErr;
+
+      const nextPriority = ((last && last[0] && last[0].priority) ?? 0) + 10;
+
+      const { data, error } = await admin
+        .from('segment_topics')
+        .insert({
+          segment_id: segment.id,
+          name,
+          slug,
+          description: req.body.description ?? null,
+          priority: nextPriority,
+          is_active: req.body.isActive !== false,
+          updated_at: new Date().toISOString(),
+        })
+        .select('id, segment_id, name, slug, description, priority, is_active, created_at, updated_at')
+        .single();
+
+      if (error) {
+        // 23505 = unique violation: the slug already exists in this segment.
+        if ((error as any).code === '23505') {
+          return res.status(409).json({ success: false, error: { code: 'DUPLICATE_TOPIC', message: 'This segment already has a topic with that name.' } });
+        }
+        throw error;
+      }
+
+      auditAction(req.auth, 'segment_topic_created', {
+        entityType: 'segment_topic',
+        entityId: data.id,
+        requestId: req.requestId,
+        metadata: { segmentId: segment.id, slug },
+      });
+
+      const [topic] = await withTopicUsage(admin, [data as any]);
+      return res.status(201).json({ success: true, topic });
+    } catch (err: any) {
+      console.error('Failed to create segment topic:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/admin/segments/:segment/topics' });
+    }
+  });
+
+  app.patch('/api/admin/segments/:segment/topics/:topicId', requireAuth, requireAdmin, validateBody(apiSchemas.segmentTopicUpdate), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const segment = await resolveAdminSegment(admin, req.params.segment);
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const { topicId } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(topicId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC_ID', message: 'Topic ID must be a valid UUID.' } });
+      }
+
+      // Scoped by segment_id so a topic of another segment can never be
+      // edited through this segment's endpoint.
+      const { data: existing, error: existingErr } = await admin
+        .from('segment_topics')
+        .select('id, name, slug, segment_id')
+        .eq('id', topicId)
+        .eq('segment_id', segment.id)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'TOPIC_NOT_FOUND', message: 'Topic not found in this segment.' } });
+      }
+
+      const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (req.body.name !== undefined) {
+        const name = String(req.body.name).trim();
+        const slug = slugifyTopicName(name);
+        if (!slug) {
+          return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC_NAME', message: 'That name does not produce a usable topic link.' } });
+        }
+        update.name = name;
+        // The slug tracks the label, so a rename keeps the topic bar and the
+        // shareable URL in agreement.
+        update.slug = slug;
+      }
+      if (req.body.description !== undefined) update.description = req.body.description || null;
+      if (req.body.isActive !== undefined) update.is_active = req.body.isActive;
+      if (req.body.priority !== undefined) update.priority = req.body.priority;
+
+      const { data, error } = await admin
+        .from('segment_topics')
+        .update(update)
+        .eq('id', topicId)
+        .eq('segment_id', segment.id)
+        .select('id, segment_id, name, slug, description, priority, is_active, created_at, updated_at')
+        .single();
+
+      if (error) {
+        if ((error as any).code === '23505') {
+          return res.status(409).json({ success: false, error: { code: 'DUPLICATE_TOPIC', message: 'This segment already has a topic with that name.' } });
+        }
+        throw error;
+      }
+
+      auditAction(req.auth, 'segment_topic_updated', {
+        entityType: 'segment_topic',
+        entityId: topicId,
+        requestId: req.requestId,
+        metadata: { segmentId: segment.id },
+      });
+
+      const [topic] = await withTopicUsage(admin, [data as any]);
+      return res.json({ success: true, topic });
+    } catch (err: any) {
+      console.error('Failed to update segment topic:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'PATCH /api/admin/segments/:segment/topics/:topicId' });
+    }
+  });
+
+  app.delete('/api/admin/segments/:segment/topics/:topicId', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const segment = await resolveAdminSegment(admin, req.params.segment);
+      if (!segment) {
+        return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
+      }
+
+      const { topicId } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(topicId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC_ID', message: 'Topic ID must be a valid UUID.' } });
+      }
+
+      const { data: existing, error: existingErr } = await admin
+        .from('segment_topics')
+        .select('id')
+        .eq('id', topicId)
+        .eq('segment_id', segment.id)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { code: 'TOPIC_NOT_FOUND', message: 'Topic not found in this segment.' } });
+      }
+
+      // A topic a gig still covers is IN USE. Deleting it would silently drop
+      // that gig out of the seeker's results for a topic it advertises, so the
+      // operation is refused and the admin is told to deactivate instead —
+      // which retires the chip while preserving the marketplace links.
+      const { data: links, error: linkErr } = await admin
+        .from('gig_topics')
+        .select('gig_id')
+        .eq('topic_id', topicId);
+      if (linkErr) throw linkErr;
+
+      const usedBy = Array.from(new Set((links || []).map((r: { gig_id: string }) => r.gig_id)));
+      if (usedBy.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'TOPIC_IN_USE',
+            message: `This topic is still used by ${usedBy.length} gig${usedBy.length === 1 ? '' : 's'}. Deactivate it instead to retire it without changing those gigs.`,
+          },
+          gigCount: usedBy.length,
+        });
+      }
+
+      const { error } = await admin.from('segment_topics').delete().eq('id', topicId);
+      if (error) throw error;
+
+      auditAction(req.auth, 'segment_topic_deleted', {
+        entityType: 'segment_topic',
+        entityId: topicId,
+        requestId: req.requestId,
+        metadata: { segmentId: segment.id },
+      });
+
+      return res.json({ success: true, message: 'Topic deleted.' });
+    } catch (err: any) {
+      console.error('Failed to delete segment topic:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'DELETE /api/admin/segments/:segment/topics/:topicId' });
+    }
+  });
+
+  /**
+   * GET /api/admin/gigs/:id/topics — the current selection, for the gig editor.
+   */
+  app.get('/api/admin/gigs/:id/topics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_GIG_ID', message: 'Gig ID must be a valid UUID.' } });
+      }
+
+      const { data, error } = await admin
+        .from('gig_topics')
+        .select('topic_id')
+        .eq('gig_id', id);
+      if (error) throw error;
+
+      return res.json({ success: true, topicIds: (data || []).map((r: any) => r.topic_id as string) });
+    } catch (err: any) {
+      console.error('Failed to read gig topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/gigs/:id/topics' });
+    }
+  });
+
+  /**
+   * PUT /api/admin/gigs/:id/topics — replace a gig's topic selection.
+   *
+   * The body is the COMPLETE desired set, so a save can never leave a stale
+   * link behind, and a duplicate is impossible (ids are de-duplicated here and
+   * the table enforces UNIQUE (gig_id, topic_id) regardless).
+   *
+   * OWNERSHIP IS CHECKED HERE, against the database, before anything is
+   * written. The mentor UI only offers topics of the gig's own segment, but
+   * that is presentation: a hand-crafted request carrying a topic from
+   * another segment is rejected with 400 and NO partial write occurs. The
+   * `trg_gig_topics_segment_ownership` trigger enforces the same rule
+   * independently, so there is no path that can attach a Career topic to a
+   * Relationship gig.
+   */
+  app.put('/api/admin/gigs/:id/topics', requireAuth, requireAdmin, validateBody(apiSchemas.gigTopicsUpdate), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { id } = req.params;
+      if (!UUID_SHAPE_PATTERN.test(id)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_GIG_ID', message: 'Gig ID must be a valid UUID.' } });
+      }
+
+      const { data: gig, error: gigErr } = await admin
+        .from('gigs')
+        .select('id, segment_id')
+        .eq('id', id)
+        .maybeSingle();
+      if (gigErr) throw gigErr;
+      if (!gig) {
+        return res.status(404).json({ success: false, error: { code: 'GIG_NOT_FOUND', message: 'Gig not found' } });
+      }
+
+      // De-duplicate so a repeated id is a no-op rather than a unique
+      // constraint failure the admin cannot act on.
+      const requested = Array.from(new Set((req.body.topicIds || []) as string[]));
+
+      if (requested.length > 0) {
+        const { data: topics, error: topicErr } = await admin
+          .from('segment_topics')
+          .select('id, segment_id')
+          .in('id', requested);
+        if (topicErr) throw topicErr;
+
+        const found = (topics || []) as any[];
+        const foundIds = new Set(found.map((t) => t.id as string));
+
+        // An unknown id means a stale tab or a client bug: refuse the write
+        // rather than silently saving a partial selection.
+        const missing = requested.filter((topicId) => !foundIds.has(topicId));
+        if (missing.length > 0) {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'UNKNOWN_TOPIC', message: 'One or more selected topics no longer exist. Reload and try again.' },
+          });
+        }
+
+        // The ownership rule, enforced server-side.
+        const foreign = found.filter((t) => t.segment_id !== gig.segment_id);
+        if (foreign.length > 0) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'TOPIC_SEGMENT_MISMATCH',
+              message: 'A topic can only be attached to a gig in the same segment.',
+            },
+          });
+        }
+      }
+
+      const { data: before, error: beforeErr } = await admin
+        .from('gig_topics')
+        .select('topic_id')
+        .eq('gig_id', id);
+      if (beforeErr) throw beforeErr;
+
+      const beforeIds = new Set(((before || []) as any[]).map((r) => r.topic_id as string));
+      const toInsert = requested.filter((topicId) => !beforeIds.has(topicId));
+      const toRemove = Array.from(beforeIds).filter((topicId) => !requested.includes(topicId));
+
+      if (toRemove.length > 0) {
+        const { error: removeErr } = await admin
+          .from('gig_topics')
+          .delete()
+          .eq('gig_id', id)
+          .in('topic_id', toRemove);
+        if (removeErr) throw removeErr;
+      }
+
+      if (toInsert.length > 0) {
+        const { error: insertErr } = await admin
+          .from('gig_topics')
+          .insert(toInsert.map((topic_id) => ({ gig_id: id, topic_id })));
+        if (insertErr) throw insertErr;
+      }
+
+      auditAction(req.auth, 'gig_topics_updated', {
+        entityType: 'gig',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: { added: toInsert.length, removed: toRemove.length, total: requested.length },
+      });
+
+      return res.json({ success: true, topicIds: requested });
+    } catch (err: any) {
+      console.error('Failed to update gig topics:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'PUT /api/admin/gigs/:id/topics' });
     }
   });
 
@@ -6150,19 +7146,11 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const type = String(req.body?.type || 'image/png').toLowerCase();
-      const size = Number(req.body?.size || 0);
-      const ALLOWED_HERO_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-      const HERO_MAX_BYTES = 5 * 1024 * 1024;
-      if (!ALLOWED_HERO_MIME_TYPES.includes(type)) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Upload a PNG, JPEG, WebP or GIF image.' } });
+      const validation = validateHeroUploadPayload(req.body);
+      if (!validation.valid) {
+        return res.status(400).json({ success: false, error: validation.error });
       }
-      if (!Number.isFinite(size) || size <= 0) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'That file is empty.' } });
-      }
-      if (size > HERO_MAX_BYTES) {
-        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'That image is larger than 5 MB.' } });
-      }
+      const { type, size } = validation;
 
       const extensionByMimeType: Record<string, string> = {
         'image/png': 'png',
@@ -6174,6 +7162,9 @@ async function startServer() {
       const { data, error } = await admin.storage.from('segment-hero').createSignedUploadUrl(storagePath);
       if (error) throw error;
 
+      const supabaseUrl = (process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+      const publicUrl = `${supabaseUrl}/storage/v1/object/public/segment-hero/${storagePath}`;
+
       auditAction(req.auth, 'segment_hero_upload_url_requested', {
         entityType: 'segment',
         entityId: id,
@@ -6181,7 +7172,7 @@ async function startServer() {
         metadata: { mimeType: type, sizeBytes: size },
       });
 
-      return res.json({ success: true, uploadUrl: data.signedUrl, token: data.token, path: storagePath });
+      return res.json({ success: true, uploadUrl: data.signedUrl, token: data.token, path: storagePath, publicUrl });
     } catch (err: any) {
       return respondWithServerError({
         req, res, error: err,
@@ -6216,7 +7207,7 @@ async function startServer() {
 
       const cfg = (current.experience_config || {}) as Record<string, unknown>;
       const branding = (cfg.branding || {}) as Record<string, unknown>;
-      const previousPath = typeof branding.heroImageUrl === 'string' ? branding.heroImageUrl : null;
+      const previousPath = extractSegmentHeroStoragePath(branding.heroImageUrl);
 
       const nextConfig = { ...cfg };
       const nextBranding = { ...branding };
@@ -6230,7 +7221,12 @@ async function startServer() {
       if (writeErr) throw writeErr;
 
       if (previousPath) {
-        try { await admin.storage.from('segment-hero').remove([previousPath]); } catch {}
+        try {
+          await admin.storage.from('segment-hero').remove([previousPath]);
+          console.log('[segment-hero] Removed previous hero image:', previousPath);
+        } catch (err: any) {
+          console.error('[segment-hero] Failed to remove previous hero image:', previousPath, logSanitizer.safeMessage(err));
+        }
       }
 
       auditAction(req.auth, 'segment_hero_image_removed', {

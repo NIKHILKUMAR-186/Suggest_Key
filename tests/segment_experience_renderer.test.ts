@@ -83,13 +83,22 @@ describe('CTA contract', () => {
   });
 
   it('13. an unsafe CTA URL is rejected and cannot become a destination', () => {
-    for (const url of ['javascript:alert(1)', 'data:text/html,<script>', '//evil.com', '/relative']) {
+    for (const url of ['javascript:alert(1)', 'data:text/html,<script>', '//evil.com']) {
       const config = normalizeSegmentExperience({
         cta: { title: 'T', buttonText: 'B', buttonUrl: url },
       });
-      // Even the relative path is rejected: only absolute http(s) is trusted.
       assert.equal(config.cta?.buttonUrl, undefined, `${url} must be rejected`);
     }
+  });
+
+  it('13b. an internal CTA path is kept, so the button is not silently dropped', () => {
+    // A CTA almost always points back into the app ("See career mentors" ->
+    // /mentors). Rejecting every relative path removed every one of those
+    // buttons, which is worse than useless.
+    const config = normalizeSegmentExperience({
+      cta: { title: 'T', buttonText: 'B', buttonUrl: '/mentors' },
+    });
+    assert.equal(config.cta?.buttonUrl, '/mentors');
   });
 
   it('the renderer never renders a hardcoded "Get started"', () => {

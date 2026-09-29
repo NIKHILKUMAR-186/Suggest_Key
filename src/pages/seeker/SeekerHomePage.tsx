@@ -1,57 +1,60 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { ShieldCheck, AlertCircle, SearchX, CalendarX } from 'lucide-react';
-import { motion } from 'motion/react';
+/**
+ * THE SEEKER HOME — segment-driven marketplace experience.
+ *
+ * Rebuilt rather than patched. The flow it implements is the whole product:
+ *
+ *   Suggest Key -> Segment -> that segment's experience -> its topics
+ *                -> topic-filtered mentors -> existing booking flow
+ *
+ * Three architectural points:
+ *
+ *  1. PROVIDER ORDER. The experience provider sits ABOVE the theme provider so
+ *     the theme can consume the live config. That is what makes a realtime
+ *     accent change repaint the page, not just swap its text.
+ *
+ *  2. URL STATE. The selected segment and topic live in the query string, so a
+ *     selection survives a refresh, is shareable, and Back/Forward works.
+ *     `NavigationContext.navigate` is a history pushState, so switching topic
+ *     is a client-side transition and never a full page load.
+ *
+ *  3. NO SLUG BRANCHES. There is no `if (slug === 'career')` anywhere on this
+ *     page. Segment behaviour comes entirely from configuration, so a segment
+ *     created tomorrow works today.
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
-import { SeekerHero } from '@/src/components/seeker/SeekerHero';
-import { FilterBar } from '@/src/components/seeker/FilterBar';
-import { AvailableMentorsHeader } from '@/src/components/seeker/AvailableMentorsHeader';
-import { MentorGrid, MentorGridSkeleton } from '@/src/components/seeker/MentorGrid';
+import { SegmentExperiencePage } from '@/src/components/seeker/SegmentExperiencePage';
+import { SegmentSelector } from '@/src/components/seeker/SegmentSelector';
+import { EmptyState } from '@/src/components/shared/EmptyState';
 import {
-  EmptyMentorState,
-  EmptyMentorStateAction,
-} from '@/src/components/seeker/EmptyMentorState';
-import { SegmentMentorsSection } from '@/src/components/seeker/SegmentMentorsSection';
-import { useSegmentMentors } from '@/src/hooks/seeker/useSegmentMentors';
+  SegmentExperienceProvider,
+  useSegmentExperience,
+} from '@/src/context/SegmentExperienceContext';
+import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
+import { fetchActiveSegments, getHighestPriorityActiveSegment } from '@/src/lib/discoveryService';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import {
-  fetchActiveSegments,
-  getHighestPriorityActiveSegment,
-  fetchDiscoverableMentors,
-  fetchEligibleLanguages,
-  fetchSegmentExperience,
-} from '@/src/lib/discoveryService';
-import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
-import { Segment, DiscoverableMentor } from '@/src/types/database';
-import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
-import { useSegmentTheme } from '@/src/context/SegmentThemeContext';
-import { SegmentExperiencePage } from '@/src/components/seeker/SegmentExperiencePage';
-import { SegmentExperienceProvider, useSegmentExperience } from '@/src/context/SegmentExperienceContext';
-
-type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
-
-const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
-  { value: 'all', label: 'All experience' },
-  { value: '0-2', label: '0–2 years' },
-  { value: '3-5', label: '3–5 years' },
-  { value: '6+', label: '6+ years' },
-];
+  ALL_TOPICS,
+  buildExperienceQuery,
+  parseExperienceQuery,
+} from '@/src/lib/segmentTopics';
+import type { Segment } from '@/src/types/database';
 
 export const SeekerHomePage: React.FC = () => {
-  // The active segment lives at the very top so that BOTH providers below can
-  // read it: the experience provider needs the slug to fetch/subscribe, and the
+  // The active segment lives at the very top so BOTH providers below can read
+  // it: the experience provider needs the slug to fetch and subscribe, and the
   // theme provider needs the segment to apply the configured palette.
   const [segments, setSegments] = useState<Segment[]>([]);
   const [selectedSegment, setSelectedSegment] = useState<Segment | null>(null);
 
   return (
     <SegmentExperienceProvider slug={selectedSegment?.slug ?? null}>
-      {/*
-        The theme provider sits INSIDE the experience provider so it can receive
-        the live config. That is what makes a realtime accent change repaint the
-        page immediately, rather than only swapping the text content.
-      */}
+      {/* The theme provider sits INSIDE the experience provider so it can
+          receive the live config. */}
       <SegmentThemeBridge activeSegment={selectedSegment}>
         <SeekerHomeContent
           segments={segments}
@@ -77,381 +80,207 @@ const SegmentThemeBridge: React.FC<{
   );
 };
 
-/**
- * Everything that reads segment theme state lives below the provider, so the
- * page never calls useSegmentTheme at a level where the provider is not yet
- * mounted.
- */
+/** Real in-app routes. No invented contact details, no external placeholders. */
+const FOOTER_LINKS = [
+  { label: 'Home', href: '/seeker' },
+  { label: 'Mentors', href: '/mentors' },
+  { label: 'My Bookings', href: '/seeker/bookings' },
+  { label: 'Settings', href: '/seeker/settings' },
+] as const;
+
 const SeekerHomeContent: React.FC<{
   segments: Segment[];
   setSegments: React.Dispatch<React.SetStateAction<Segment[]>>;
   activeSegment: Segment | null;
-  /** Prop name avoids colliding with the local `setSelectedSegment` callback. */
   onSegmentSelected: React.Dispatch<React.SetStateAction<Segment | null>>;
-}> = ({ segments, setSegments, activeSegment, onSegmentSelected: setSelectedSegmentState }) => {
-  const { navigate } = useNavigation();
+}> = ({ segments, setSegments, activeSegment, onSegmentSelected }) => {
+  const { currentPath, navigate } = useNavigation();
   const { profile } = useAuth();
-  const { setActiveSegment } = useSegmentTheme();
 
-  const selectedSegment = activeSegment;
-
-  const userTimezone = profile?.timezone || 'UTC';
-
-  const [today, setToday] = useState<string>(() =>
-    getDateStringInTimezone(new Date(), userTimezone)
-  );
-
-  const [selectedDate, setSelectedDate] = useState<string>(today);
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [languageFilter, setLanguageFilter] = useState<string>('all');
-  const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
-  const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
-
-  const [mentors, setMentors] = useState<DiscoverableMentor[]>([]);
-  const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
-  const [isLoadingMentors, setIsLoadingMentors] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [mentorError, setMentorError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
-  const [experienceError, setExperienceError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setToday(getDateStringInTimezone(new Date(), userTimezone));
-    }, 60 * 1000);
-    return () => window.clearInterval(timer);
-  }, [userTimezone]);
+  // The URL is the source of truth for BOTH selections.
+  const query = useMemo(() => parseExperienceQuery(currentPath), [currentPath]);
+  const urlSegmentSlug = query.segment;
+  const urlTopic = query.topic;
 
+  // Load the real segment catalogue once.
   useEffect(() => {
     let isMounted = true;
-    async function loadLanguages() {
-      const { languages } = await fetchEligibleLanguages();
-      if (isMounted) setEligibleLanguages(languages);
-    }
-    loadLanguages();
-    return () => {
-      isMounted = false;
-    };
-  }, [reloadToken]);
+    setIsLoadingSegments(true);
+    setError(null);
 
-  useEffect(() => {
-    let isMounted = true;
-    async function loadSegments() {
-      setIsLoadingSegments(true);
-      setError(null);
+    (async () => {
       try {
         const { segments: activeSegs, error: segErr } = await fetchActiveSegments();
         if (segErr) throw segErr;
-        if (isMounted) {
-          setSegments(activeSegs);
-          const topSegment = getHighestPriorityActiveSegment(activeSegs);
-          setSelectedSegmentState(topSegment);
-          setActiveSegment(topSegment);
-        }
+        if (!isMounted) return;
+        setSegments(activeSegs);
       } catch (err: any) {
-        if (isMounted) {
-          console.error('Error loading segments:', err);
-          setError(toUserMessage(err, 'Failed to load mentorship segments'));
-        }
+        if (!isMounted) return;
+        console.error('Error loading segments:', err);
+        setError(toUserMessage(err, 'Failed to load mentorship segments'));
       } finally {
         if (isMounted) setIsLoadingSegments(false);
       }
-    }
-    loadSegments();
+    })();
+
     return () => {
       isMounted = false;
     };
-  }, [reloadToken, setActiveSegment]);
+  }, [reloadToken, setSegments]);
 
-  const setSelectedSegment = useCallback((segment: Segment | null) => {
-    setSelectedSegmentState(segment);
-    setActiveSegment(segment);
-  }, [setActiveSegment]);
-
+  // Resolve the URL's segment against the loaded catalogue.
+  //
+  // An unknown or absent slug falls back to the highest-priority active
+  // segment, so the page is never empty. Crucially this is a lookup by
+  // VALUE, not a branch by name: it works identically for a segment created
+  // tomorrow.
   useEffect(() => {
-    let isMounted = true;
-    if (!selectedSegment) {
-      setMentors([]);
-      return;
-    }
-    async function loadMentors() {
-      setIsLoadingMentors(true);
-      setMentorError(null);
-      try {
-        const { mentors: discMentors, error: mentorErr } = await fetchDiscoverableMentors(
-          selectedSegment!.id,
-          selectedDate
-        );
-        if (mentorErr) throw mentorErr;
-        if (isMounted) {
-          setMentors(discMentors);
-        }
-      } catch (err: any) {
-        if (isMounted) {
-          console.error('Error loading mentors:', err);
-          setMentors([]);
-          setMentorError('Unable to load mentors right now.');
-        }
-      } finally {
-        if (isMounted) setIsLoadingMentors(false);
+    if (segments.length === 0) return;
+
+    if (urlSegmentSlug) {
+      const match = segments.find((s) => s.slug === urlSegmentSlug);
+      if (match) {
+        if (activeSegment?.id !== match.id) onSegmentSelected(match);
+        return;
       }
     }
-    loadMentors();
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedSegment, selectedDate, reloadToken]);
 
-  const availableLanguages = useMemo(() => {
-    const langs = new Set<string>(eligibleLanguages);
-    mentors.forEach((m) => (m.languages || []).forEach((l) => langs.add(l)));
-    return Array.from(langs).sort();
-  }, [mentors, eligibleLanguages]);
+    const fallback = getHighestPriorityActiveSegment(segments);
+    if (fallback && activeSegment?.id !== fallback.id) onSegmentSelected(fallback);
+  }, [segments, urlSegmentSlug, activeSegment?.id, onSegmentSelected]);
 
-  const filteredMentors = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    return mentors.filter((m) => {
-      if (query) {
-        const searchable = [
-          m.full_name,
-          m.headline,
-          m.about || '',
-          m.segment?.name || '',
-          m.gig.title,
-          m.gig.description,
-          ...(m.languages || []),
-          ...(m.expertise || []),
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!searchable.includes(query)) return false;
-      }
-      if (languageFilter !== 'all' && !(m.languages || []).includes(languageFilter)) {
-        return false;
-      }
-      if (experienceFilter !== 'all') {
-        const exp = m.experience_years || 0;
-        if (experienceFilter === '0-2' && (exp < 0 || exp > 2)) return false;
-        if (experienceFilter === '3-5' && (exp < 3 || exp > 5)) return false;
-        if (experienceFilter === '6+' && exp < 6) return false;
-      }
-      return true;
-    });
-  }, [mentors, searchQuery, languageFilter, experienceFilter]);
+  // Canonicalise the URL once the default segment is known, so the address bar
+  // always reflects what is on screen.
+  const hasCanonicalised = useRef(false);
+  useEffect(() => {
+    if (hasCanonicalised.current) return;
+    if (!activeSegment || urlSegmentSlug) return;
+    hasCanonicalised.current = true;
+    navigate(`/seeker${buildExperienceQuery(activeSegment.slug, urlTopic)}`);
+  }, [activeSegment, urlSegmentSlug, urlTopic, navigate]);
 
-  const featuredMentors = filteredMentors.filter((m) => m.is_featured);
-  const regularMentors = filteredMentors.filter((m) => !m.is_featured);
+  // A topic that no longer exists in this segment must not leave the page in a
+  // state that renders nothing. Resetting to "all" is the honest outcome: the
+  // topic was retired or belonged to a different segment.
+  const handleSelectTopic = useCallback(
+    (topicSlug: string) => {
+      if (!activeSegment) return;
+      navigate(`/seeker${buildExperienceQuery(activeSegment.slug, topicSlug)}`);
+    },
+    [activeSegment, navigate],
+  );
 
-  const hasActiveFilters = languageFilter !== 'all' || experienceFilter !== 'all' || searchQuery.trim() !== '';
+  const handleSelectSegment = useCallback(
+    (segment: Segment) => {
+      onSegmentSelected(segment);
+      // Switching segment always resets the topic: a topic belongs to exactly
+      // one segment, so carrying it across would be meaningless.
+      navigate(`/seeker${buildExperienceQuery(segment.slug, ALL_TOPICS)}`);
+    },
+    [navigate, onSegmentSelected],
+  );
 
-  const clearAllFilters = useCallback(() => {
-    setSearchQuery('');
-    setLanguageFilter('all');
-    setExperienceFilter('all');
-  }, []);
-
-  const tomorrow = useMemo(() => addDaysToDateString(today, 1), [today]);
-  const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
-
-  const handleDateSelect = (dateValue: string) => {
-    setSelectedDate(dateValue);
-  };
-
-  const scrollToSegmentMentors = () => {
-    const target = document.getElementById('segment-mentors');
-    if (!target) return;
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
-  };
-
-  const goToAllMentors = () => {
-    const params = new URLSearchParams();
-    if (selectedSegment) params.set('segmentSlug', selectedSegment.slug);
-    navigate(`/mentors?${params.toString()}`);
-  };
-
-  const retryLoad = () => setReloadToken((t) => t + 1);
-
-  const {
-    mentors: segmentMentors,
-    total: segmentMentorTotal,
-    isLoading: isLoadingSegmentMentors,
-    error: segmentMentorError,
-    reload: reloadSegmentMentors,
-  } = useSegmentMentors(selectedSegment?.id ?? null);
-
-  const emptyContextLabel = [selectedSegment?.name, selectedDate].filter(Boolean).join(' · ');
-
-  const emptyTitle = hasActiveFilters
-    ? 'No mentors match these filters'
-    : 'No mentors available for this date';
-
-  const emptyDescription = hasActiveFilters
-    ? 'Nothing here fits your current search, language or experience selection. Clear the filters to see everyone available.'
-    : `No mentor in ${
-        selectedSegment?.name || 'this segment'
-      } has a bookable slot on ${selectedDate}. Try another date, or browse all verified mentors.`;
-
-  const emptyActions: EmptyMentorStateAction[] = useMemo(() => {
-    if (hasActiveFilters) {
-      return [
-        { label: 'Clear filters', onClick: clearAllFilters, variant: 'primary' },
-        { label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'outline' },
-      ];
-    }
-    if (tomorrow && selectedDate !== tomorrow) {
-      return [
-        { label: 'Try tomorrow', onClick: () => handleDateSelect(tomorrow), variant: 'primary' },
-        { label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'outline' },
-      ];
-    }
-    return [{ label: 'View all mentors', onClick: scrollToSegmentMentors, variant: 'primary' }];
-  }, [hasActiveFilters, tomorrow, selectedDate, clearAllFilters]);
+  const retry = () => setReloadToken((t) => t + 1);
 
   return (
-    <div className="seeker-page">
-      <SeekerHero
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        segments={segments}
-        selectedSegment={selectedSegment}
-        onSelectSegment={setSelectedSegment}
-        isLoadingSegments={isLoadingSegments}
-        selectedDate={selectedDate}
-        minDate={today}
-        quickDates={quickDates}
-        onSelectDate={handleDateSelect}
-      />
-
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
-        className="section-container space-y-8 sm:mt-12"
-      >
-        {selectedSegment ? (
-          <SegmentExperiencePage
-            segment={selectedSegment}
-            mentors={mentors}
-            selectedDate={selectedDate}
-            today={today}
-            isLoadingMentors={isLoadingMentors}
-            mentorError={mentorError}
-            navigate={navigate}
-            showHero={false}
-          />
-        ) : (
-          <>
-            {/* Filters sit directly above the results they control */}
-            <FilterBar
-              availableLanguages={availableLanguages}
-              languageFilter={languageFilter}
-              onLanguageChange={setLanguageFilter}
-              languageMenuOpen={showLanguageDropdown}
-              onLanguageMenuToggle={() => setShowLanguageDropdown((v) => !v)}
-              onLanguageMenuClose={() => setShowLanguageDropdown(false)}
-              experienceOptions={EXPERIENCE_OPTIONS}
-              experienceFilter={experienceFilter}
-              onExperienceChange={(value) => setExperienceFilter(value as ExperienceFilter)}
-              hasActiveFilters={hasActiveFilters}
-              onClearFilters={clearAllFilters}
-            />
-
-            <div className="divider-gradient" aria-hidden="true" />
-
-            <AvailableMentorsHeader
-              segmentName={(selectedSegment as Segment | null)?.name || null}
-              selectedDate={selectedDate}
-              count={filteredMentors.length}
-              isCountLoading={isLoadingMentors || !!mentorError}
-              onViewAll={scrollToSegmentMentors}
-            />
-
-            {/* Segment-level error */}
-            {error && (
-              <div className="error-banner">
-                <div className="flex items-center gap-2 font-semibold">
-                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                  <span>Something went wrong</span>
-                </div>
-                <p className="text-sm">{error}</p>
-                <Button onClick={retryLoad} variant="outline" size="sm" className="mt-2 sm:mt-0">
-                  Try Again
-                </Button>
-              </div>
-            )}
-
-            {/* Mentor-level error */}
-            {mentorError && !error && (
-              <div className="error-banner">
-                <div className="flex items-center gap-2 font-semibold">
-                  <AlertCircle className="h-4 w-4" aria-hidden="true" />
-                  <span>{mentorError}</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button onClick={retryLoad} variant="outline" size="sm">
-                    Try Again
-                  </Button>
-                  <Button onClick={goToAllMentors} variant="ghost" size="sm">
-                    View All Mentors
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Content */}
-            {isLoadingMentors ? (
-              <MentorGridSkeleton count={3} />
-            ) : mentorError ? null : filteredMentors.length === 0 ? (
-              <EmptyMentorState
-                icon={hasActiveFilters ? SearchX : CalendarX}
-                title={emptyTitle}
-                description={emptyDescription}
-                contextLabel={emptyContextLabel}
-                actions={emptyActions}
-              />
-            ) : (
-              <MentorGrid
-                featuredMentors={featuredMentors}
-                regularMentors={regularMentors}
-                selectedSegment={selectedSegment}
-                selectedDate={selectedDate}
-                today={today}
-                navigate={navigate}
-              />
-            )}
-          </>
-        )}
-      </motion.div>
-
-      {!selectedSegment && (
-        <>
-          {/* Visual divider — separates AVAILABILITY from DISCOVERY */}
-          <div className="section-container mt-16 sm:mt-20 lg:mt-24" aria-hidden="true">
-            <div className="divider-gradient" />
+    <>
+        {error && (
+          <div className="mx-auto max-w-3xl px-4 pt-8 sm:px-6">
+            <div className="error-banner" role="alert">
+              <span className="flex items-center gap-2 font-semibold">
+                <AlertCircle className="h-4 w-4" aria-hidden="true" />
+                {error}
+              </span>
+              <Button variant="outline" size="sm" onClick={retry} className="mt-2 sm:mt-0">
+                Try again
+              </Button>
+            </div>
           </div>
+        )}
 
-          {/*
-            SECTION B — all real mentors in the selected segment.
-            Answers "who are the mentors in this segment?"
-          */}
-          <div className="section-container">
-            <SegmentMentorsSection
-              segment={selectedSegment}
-              mentors={segmentMentors}
-              total={segmentMentorTotal}
-              isLoading={isLoadingSegmentMentors}
-              error={segmentMentorError}
-              onRetry={reloadSegmentMentors}
-              selectedDate={selectedDate}
-              today={today}
+        {/* Segment navigation: the marketplace's own top-level axis. */}
+        {/* <div className="mx-auto max-w-7xl px-4 pt-6 sm:px-6 sm:pt-8 lg:px-8">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
+            <span className="shrink-0 text-[11px] font-bold uppercase tracking-[0.18em] text-[var(--sk-brand-text-muted)]">
+              Explore by segment
+            </span>
+            <div className="min-w-0 flex-1">
+              <SegmentSelector
+                segments={segments}
+                selected={activeSegment}
+                onSelect={handleSelectSegment}
+                isLoading={isLoadingSegments}
+                align="start"
+              />
+            </div>
+          </div>
+        </div> */}
+
+        <div id="segment-experience" className="mt-6 scroll-mt-24 sm:mt-8">
+          {isLoadingSegments && segments.length === 0 ? (
+            <div className="sk-experience flex min-h-[60vh] items-center justify-center">
+              <p className="flex items-center gap-2 text-sm text-[var(--sk-brand-text-muted)]">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Loading your marketplace...
+              </p>
+            </div>
+          ) : activeSegment ? (
+            <SegmentExperiencePage
+              segment={activeSegment}
+              selectedTopic={urlTopic}
+              onSelectTopic={handleSelectTopic}
               navigate={navigate}
             />
+          ) : (
+            <EmptyState
+              title="No mentorship segments are available"
+              description="Suggest Key has not published any segments yet. Please check back shortly."
+            />
+          )}
+        </div>
+
+      <footer className="mt-20 border-t border-white/10 bg-[var(--sk-brand-plum)] text-white">
+        <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-8 sm:flex-row sm:items-start sm:justify-between">
+            <div className="max-w-sm">
+              <div className="flex items-center gap-2.5">
+                <img src="/logo.png" alt="" className="h-9 w-9 rounded-[10px] object-cover" />
+                <span className="font-display text-base font-bold">Suggest Key</span>
+              </div>
+              <p className="mt-4 text-sm leading-relaxed text-white/70">
+                Book a focused one-to-one session with a verified mentor, in your own timezone.
+              </p>
+            </div>
+
+            <nav aria-label="Footer" className="grid grid-cols-2 gap-x-12 gap-y-3 sm:gap-x-16">
+              {FOOTER_LINKS.map((link) => (
+                <button
+                  key={link.href}
+                  type="button"
+                  onClick={() => navigate(link.href)}
+                  className="text-left text-sm font-medium text-white/70 transition-colors hover:text-[var(--sk-brand-gold)] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--sk-brand-gold)] focus-visible:outline-offset-2"
+                >
+                  {link.label}
+                </button>
+              ))}
+            </nav>
           </div>
-        </>
-      )}
-    </div>
+
+          <p className="mt-10 border-t border-white/10 pt-6 text-xs text-white/50">
+            © {new Date().getFullYear()} Suggest Key
+          </p>
+        </div>
+      </footer>
+
+      {/* Announced so assistive tech knows the profile's timezone is in play. */}
+      <span className="sr-only" aria-live="polite">
+        {profile?.timezone ? `Times shown in ${profile.timezone}.` : ''}
+      </span>
+    </>
   );
 };
 

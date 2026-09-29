@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Fragment, useState, useEffect, useCallback } from 'react';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { Briefcase, Plus, Clock, Check, AlertCircle, Trash2, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
@@ -12,10 +12,18 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
+import {
+  fetchMentorGigTopics,
+  fetchMentorTopics,
+  saveMentorGigTopics,
+  topicsForSegment,
+  type MentorTopic,
+} from '@/src/lib/mentorTopics';
 
 interface Gig {
   id: string;
   title: string;
+  segmentId: string;
   segmentName: string;
   segmentSlug: string;
   durationMinutes: number;
@@ -49,6 +57,57 @@ export const MentorGigsPage: React.FC = () => {
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // --- Gig topics -----------------------------------------------------------
+  // Topics are real `segment_topics` rows belonging to the segments this
+  // mentor is a member of. The editor for a gig only ever offers the topics of
+  // THAT gig's segment, so a cross-segment topic cannot be selected here; the
+  // server re-checks on save and the database trigger enforces it too.
+  const [allTopics, setAllTopics] = useState<MentorTopic[]>([]);
+  const [topicSelection, setTopicSelection] = useState<Record<string, string[]>>({});
+  const [openTopicEditorFor, setOpenTopicEditorFor] = useState<string | null>(null);
+  const [newGigTopicIds, setNewGigTopicIds] = useState<string[]>([]);
+  const [savingTopicsFor, setSavingTopicsFor] = useState<string | null>(null);
+
+  const fetchAllTopics = useCallback(async () => {
+    const { topics } = await fetchMentorTopics();
+    setAllTopics(topics);
+  }, []);
+
+  useEffect(() => {
+    void fetchAllTopics();
+  }, [fetchAllTopics]);
+
+  /** Open a gig's topic editor, loading its current selection first. */
+  const openTopicEditor = useCallback(async (gig: Gig) => {
+    setOpenTopicEditorFor(gig.id);
+    const ids = await fetchMentorGigTopics(gig.id);
+    setTopicSelection((current) => ({ ...current, [gig.id]: ids }));
+  }, []);
+
+  const toggleTopic = useCallback((gigId: string, topicId: string) => {
+    setTopicSelection((current) => {
+      const existing = current[gigId] ?? [];
+      const next = existing.includes(topicId)
+        ? existing.filter((id) => id !== topicId)
+        : [...existing, topicId];
+      return { ...current, [gigId]: next };
+    });
+  }, []);
+
+  const saveTopics = useCallback(
+    async (gigId: string) => {
+      setSavingTopicsFor(gigId);
+      const { saved, error } = await saveMentorGigTopics(gigId, topicSelection[gigId] ?? []);
+      setSavingTopicsFor(null);
+      if (!saved) {
+        toast.error(error?.message || 'Unable to save topics.');
+        return;
+      }
+      toast.success('Topics updated.');
+      setOpenTopicEditorFor(null);
+    },
+    [topicSelection, toast],
+  );
   const fetchGigs = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
@@ -140,6 +199,18 @@ export const MentorGigsPage: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.error?.message || 'Failed to create gig');
 
+      // Attach the topics the mentor selected. This is a separate call because
+      // the gig id only exists once the gig is created; a failure here leaves
+      // the gig published but untagged, which the mentor can fix and retry.
+      if (data.gig?.id && newGigTopicIds.length > 0) {
+        const { saved: topicsSaved } = await saveMentorGigTopics(data.gig.id, newGigTopicIds);
+        if (!topicsSaved) {
+          toast.error(
+            'The gig was created, but its topics could not be saved. Edit the gig to try again.'
+          );
+        }
+      }
+
       // Refresh gigs
       await fetchGigs();
 
@@ -149,6 +220,7 @@ export const MentorGigsPage: React.FC = () => {
       setDuration('60');
       setPrice('999');
       setDescription('');
+      setNewGigTopicIds([]);
       setIsCreateOpen(false);
       toast.success('Gig published successfully.');
     } catch (err: any) {
@@ -259,7 +331,8 @@ export const MentorGigsPage: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-zinc-100">
               {gigs.map((gig) => (
-                <tr key={gig.id} className="hover:bg-zinc-50/50 transition-colors">
+                <Fragment key={gig.id}>
+                <tr className="hover:bg-zinc-50/50 transition-colors">
                   <td className="py-3 px-4 font-medium text-zinc-900">{gig.title}</td>
                   <td className="py-3 px-4">
                     <Badge variant="secondary" className="text-[10px]">{gig.segmentName}</Badge>
@@ -276,6 +349,16 @@ export const MentorGigsPage: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 text-right">
                     <div className="flex items-center justify-end gap-1.5">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs h-7 py-1 gap-1"
+                        onClick={() => (openTopicEditorFor === gig.id ? setOpenTopicEditorFor(null) : openTopicEditor(gig))}
+                        aria-expanded={openTopicEditorFor === gig.id}
+                      >
+                        <Briefcase className="h-3.5 w-3.5" />
+                        <span>Topics</span>
+                      </Button>
                       <Button
                         variant="outline"
                         size="sm"
@@ -297,6 +380,69 @@ export const MentorGigsPage: React.FC = () => {
                     </div>
                   </td>
                 </tr>
+                {openTopicEditorFor === gig.id && (
+                  <tr>
+                    <td colSpan={6} className="border-t border-zinc-100 bg-zinc-50/60 px-4 py-4">
+                      {(() => {
+                        const options = topicsForSegment(allTopics, gig.segmentId);
+                        const selected = topicSelection[gig.id] ?? [];
+                        return (
+                          <div className="space-y-3">
+                            <p className="text-[11px] font-semibold text-zinc-700">
+                              Which {gig.segmentName} topics does this gig cover?
+                            </p>
+                            {options.length === 0 ? (
+                              <p className="text-[11px] text-zinc-500">
+                                This segment has no active topics yet, so there is nothing to
+                                select. A Suggest Key admin adds them from the segment CMS.
+                              </p>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {options.map((topic) => {
+                                  const isSelected = selected.includes(topic.id);
+                                  return (
+                                    <button
+                                      key={topic.id}
+                                      type="button"
+                                      aria-pressed={isSelected}
+                                      onClick={() => toggleTopic(gig.id, topic.id)}
+                                      className={isSelected
+                                        ? "min-h-[36px] rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1.5 text-[11px] font-semibold text-white"
+                                        : "min-h-[36px] rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-700 hover:border-zinc-400"
+                                      }
+                                    >
+                                      {topic.name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => saveTopics(gig.id)}
+                                disabled={savingTopicsFor === gig.id}
+                              >
+                                {savingTopicsFor === gig.id && (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                )}
+                                <span>Save topics</span>
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setOpenTopicEditorFor(null)}
+                              >
+                                <span>Cancel</span>
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -352,6 +498,53 @@ export const MentorGigsPage: React.FC = () => {
             )}
           </div>
 
+          {/* Topics for the new gig. Only the topics of the selected segment are
+              offered, so a cross-segment topic cannot be chosen here at all. The
+              server checks ownership again when the selection is saved. */}
+          {segmentId && (
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-zinc-700">
+                Topics this gig covers
+              </label>
+              {(() => {
+                const options = topicsForSegment(allTopics, segmentId);
+                if (options.length === 0) {
+                  return (
+                    <p className="text-[11px] text-zinc-500">
+                      This segment has no active topics yet. You can still publish the gig and
+                      add topics once an admin creates them.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="flex flex-wrap gap-2">
+                    {options.map((topic) => {
+                      const isSelected = newGigTopicIds.includes(topic.id);
+                      return (
+                        <button
+                          key={topic.id}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() =>
+                            setNewGigTopicIds((current) =>
+                              current.includes(topic.id)
+                                ? current.filter((id) => id !== topic.id)
+                                : [...current, topic.id],
+                            )
+                          }
+                          className={isSelected
+                            ? 'min-h-[36px] rounded-full border border-zinc-900 bg-zinc-900 px-3 py-1.5 text-[11px] font-semibold text-white'
+                            : 'min-h-[36px] rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-zinc-700 hover:border-zinc-400'}
+                        >
+                          {topic.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <Input
               label="Duration (minutes)"

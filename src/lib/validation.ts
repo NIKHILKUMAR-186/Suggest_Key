@@ -617,6 +617,8 @@ export const apiSchemas = {
 
   segmentExperience: z.strictObject({
     branding: z.strictObject({
+      eyebrow: optionalText({ max: 60, label: 'Eyebrow' }),
+      heroImageAlt: optionalText({ max: 160, label: 'Hero image alt text' }),
       heroHeadline: text({ max: 120, label: 'Hero headline' }).optional(),
       heroSubheadline: text({ max: 200, label: 'Hero subheadline', multiline: true }).optional(),
       tintColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex color like #0d9488.').optional(),
@@ -669,15 +671,87 @@ export const apiSchemas = {
       context: optionalText({ max: 120, label: 'Context' }),
       avatar: httpUrlField.optional(),
     })).max(6, 'Use at most 6 stories.').optional(),
+    // The CTA carries a heading, supporting copy and a button. The legacy
+    // `{ text, url }` pair is still accepted so an older admin client keeps
+    // working, and `text` is always the BUTTON label — never the heading.
     cta: z.strictObject({
-      text: text({ max: 60, label: 'CTA text' }),
-      url: httpUrlField,
-    }).optional(),
+      title: optionalText({ max: 120, label: 'CTA title' }),
+      description: optionalText({ max: 300, label: 'CTA description', multiline: true }),
+      buttonText: text({ max: 60, label: 'CTA button text' }).optional(),
+      buttonUrl: httpUrlField.optional(),
+      text: text({ max: 60, label: 'CTA text' }).optional(),
+      url: httpUrlField.optional(),
+    })
+      .refine(
+        (c) => Boolean(c.title || c.description || c.buttonText || c.text || c.url || c.buttonUrl),
+        { message: 'Add a title, description or button to the CTA.' },
+      )
+      .optional(),
   }).optional(),
+
+  /**
+   * Per-section on/off. A section that is explicitly disabled is never
+   * rendered, so an admin can hide a section without deleting its content.
+   * Unknown keys are refused rather than stored, which keeps the payload
+   * inside the closed registry the renderer knows.
+   */
+  sections: z
+    .record(
+      z.enum([
+        'hero',
+        'topics',
+        'quickHelp',
+        'mentors',
+        'journey',
+        'benefits',
+        'guides',
+        'stories',
+        'faq',
+        'cta',
+      ]),
+      z.strictObject({ enabled: z.boolean() }),
+    )
+    .optional(),
 
   segmentAddMentor: z.strictObject({
     mentorId: uuidField,
     isPrimary: z.boolean().optional().default(false),
+  }),
+
+  /**
+   * Admin topic management.
+   *
+   * The slug is NEVER accepted from the client: it is derived server-side from
+   * the name, so a topic's URL always matches its label and a rename updates
+   * the link consistently. `priority` drives the order of the seeker topic bar.
+   */
+  segmentTopicCreate: z.strictObject({
+    name: text({ min: 1, max: 80, label: 'Topic name' }),
+    description: optionalText({ max: 200, label: 'Description', multiline: true }),
+    isActive: z.boolean().optional(),
+  }),
+
+  segmentTopicUpdate: z
+    .strictObject({
+      name: text({ min: 1, max: 80, label: 'Topic name' }).optional(),
+      description: optionalText({ max: 200, label: 'Description', multiline: true }),
+      isActive: z.boolean().optional(),
+      priority: z.int('Priority must be a whole number.').min(0).max(9999).optional(),
+    })
+    .refine(hasAtLeastOneField, {
+      message: 'No editable fields were provided.',
+    }),
+
+  /**
+   * Replace the topic set of a gig.
+   *
+   * The body is the COMPLETE desired selection, not a delta, so a save can
+   * never leave a stale link behind. Ownership (topic.segment_id ===
+   * gig.segment_id) is verified against the database before anything is
+   * written — the UI filter is a convenience, this is the guarantee.
+   */
+  gigTopicsUpdate: z.strictObject({
+    topicIds: z.array(uuidField).max(24, 'A gig can cover at most 24 topics.'),
   }),
 
   segmentGigCreate: z.strictObject({

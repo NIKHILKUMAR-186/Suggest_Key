@@ -42,6 +42,18 @@ BEGIN
 END
 $$;
 
+-- Ensure UPDATE events include the full new row (including experience_config)
+-- so realtime subscribers receive the updated config without needing a refetch.
+DO $$
+BEGIN
+  -- REPLICA IDENTITY FULL ensures the full new row is sent on UPDATE
+  ALTER TABLE public.segments REPLICA IDENTITY FULL;
+EXCEPTION WHEN OTHERS THEN
+  -- Ignore if already set or table doesn't exist
+  NULL;
+END
+$$;
+
 DO $$
 DECLARE
   t text := 'public.segments';

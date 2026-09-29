@@ -1,116 +1,138 @@
+/**
+ * The live seeker experience for one segment.
+ *
+ * A THIN composition wrapper, deliberately not a second renderer:
+ *
+ *   SegmentExperiencePage
+ *     -> SegmentExperienceRenderer   (content, from the admin config)
+ *     -> SegmentTopicBar             (chips, from segment_topics)
+ *     -> SegmentMentorGrid           (real mentors, from the topic API)
+ *
+ * All three are driven by real data. Nothing here invents a mentor, a topic, a
+ * guide, a story or a statistic, and nothing here filters a mentor list in
+ * the browser: the topic filter is a database join, so a chip labelled
+ * "Interviews" shows exactly the mentors whose ACTIVE gig covers Interviews.
+ *
+ * The SAME `SegmentExperienceRenderer` powers the admin "Preview as seeker"
+ * surface. That is the guarantee that a preview cannot drift from reality.
+ */
+
 import React from 'react';
-import { AlertCircle, Users } from 'lucide-react';
-import { SegmentExperienceRenderer } from '@/src/components/seeker/SegmentExperienceRenderer';
-import { MENTOR_GRID_CLASS, MentorCardSkeleton } from '@/src/components/seeker/MentorGrid';
-import { MentorCard } from '@/src/components/seeker/MentorCard';
+import { useCallback } from 'react';
+import { AlertCircle } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
+import { SegmentExperienceRenderer } from '@/src/components/seeker/SegmentExperienceRenderer';
+import { SegmentTopicBar } from '@/src/components/seeker/SegmentTopicBar';
+import { SegmentMentorGrid } from '@/src/components/seeker/SegmentMentorGrid';
 import { useSegmentExperience } from '@/src/context/SegmentExperienceContext';
-import { SectionHeader } from '@/src/components/seeker/SectionHeader';
-import { cn } from '@/src/lib/utils';
-import type { Segment, DiscoverableMentor } from '@/src/types/database';
+import { useSegmentTopics } from '@/src/hooks/useSegmentTopics';
+import { useSegmentMentorsByTopic } from '@/src/hooks/useSegmentMentorsByTopic';
+import { ALL_TOPICS } from '@/src/lib/segmentTopics';
+import type { Segment } from '@/src/types/database';
 
 export interface SegmentExperiencePageProps {
   segment: Segment | null;
-  mentors: DiscoverableMentor[];
-  selectedDate: string;
-  today: string;
-  isLoadingMentors: boolean;
-  mentorError: string | null;
+  /** The selected topic slug, or ALL_TOPICS. Owned by the host (URL state). */
+  selectedTopic: string;
+  onSelectTopic: (slug: string) => void;
+  /** Restricts results to mentors with a free slot on this date. */
+  selectedDate?: string | null;
   navigate: (path: string) => void;
   className?: string;
-  showHero?: boolean;
+  /** Hides the topic bar (used by a context where topics are already shown). */
+  hideTopicBar?: boolean;
 }
 
-/**
- * Segment landing section for the seeker home page.
- *
- * This is a THIN composition wrapper, not a second renderer: the experience
- * content itself is produced by the shared `SegmentExperienceRenderer` from the
- * config owned by `SegmentExperienceProvider`. That is what guarantees a future
- * admin preview shows byte-identical output to the seeker.
- *
- * Its only additional job is to render the REAL mentor data for the selected
- * segment, plus loading / error / empty states. It never invents content:
- * guides come from `config.guides`, stories from `config.stories`, and mentors
- * from the discovery API.
- */
 export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
   segment,
-  mentors,
-  selectedDate,
-  today,
-  isLoadingMentors,
-  mentorError,
+  selectedTopic,
+  onSelectTopic,
+  selectedDate = null,
   navigate,
   className,
-  showHero = true,
+  hideTopicBar = false,
 }) => {
   const { config, isLoading, error, isFallback, reload } = useSegmentExperience();
 
-  // Real mentors for this segment. No fallback list, no placeholder people.
-  const mentorSection = (
-    <section className="section-container">
-      <div id="segment-mentors" className="scroll-mt-24">
-        <SectionHeader
-          eyebrow="Mentors"
-          title={segment?.name ? `${segment.name} mentors` : 'Mentors'}
-          description="Real, verified mentors available for this area."
-          badge={
-            <span className="badge badge-neutral" aria-live="polite">
-              <Users className="h-3.5 w-3.5" aria-hidden="true" />
-              {mentors.length}
-            </span>
-          }
-        />
+  const segmentId = segment?.id ?? null;
+  const segmentSlug = segment?.slug ?? null;
 
-        {isLoadingMentors ? (
-          <div className={cn(MENTOR_GRID_CLASS, 'mt-8')}>
-            {Array.from({ length: 3 }).map((_, i) => (
-              <MentorCardSkeleton key={i} />
-            ))}
-          </div>
-        ) : mentorError ? (
-          <div className="error-banner mt-8" role="alert">
+  const {
+    topics,
+    isLoading: isLoadingTopics,
+    error: topicsError,
+    reload: reloadTopics,
+  } = useSegmentTopics(segmentId, segmentSlug);
+
+  const {
+    mentors,
+    isLoading: isLoadingMentors,
+    error: mentorsError,
+    reload: reloadMentors,
+  } = useSegmentMentorsByTopic(segmentSlug, selectedTopic, selectedDate);
+
+  const activeTopic = topics.find((t) => t.slug === selectedTopic) ?? null;
+
+  const handleRetry = useCallback(() => {
+    reload();
+    reloadTopics();
+    reloadMentors();
+  }, [reload, reloadTopics, reloadMentors]);
+
+  // The marketplace block, assembled as a node and handed to the renderer so
+  // the renderer stays pure and can position it identically in the preview.
+  const marketplace = (
+    <>
+      {error && (
+        <div className="sk-section">
+          <div className="error-banner" role="alert">
             <span className="flex items-center gap-2 font-semibold">
-              <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {mentorError}
+              <AlertCircle className="h-4 w-4" aria-hidden="true" />
+              {error}
             </span>
-            <Button variant="outline" size="sm" onClick={reload} className="mt-2 sm:mt-0">
+            <Button variant="outline" size="sm" onClick={handleRetry} className="mt-2 sm:mt-0">
               Try again
             </Button>
           </div>
-        ) : mentors.length === 0 ? (
-          <div className="mt-8 flex flex-col items-center rounded-3xl border border-dashed border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-6 py-12 text-center">
-            <div
-              className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-subtle)]"
-              aria-hidden="true"
-            >
-              <Users className="h-6 w-6" />
-            </div>
-            <h3 className="mt-4 font-display text-lg font-bold tracking-tight text-[var(--color-shell-text)]">
-              No mentors available yet
-            </h3>
-            <p className="mt-2 max-w-sm text-sm leading-relaxed text-[var(--color-shell-text-muted)]">
-              There are no mentors available for {segment?.name || 'this area'} on {selectedDate}.
-            </p>
-          </div>
-        ) : (
-          <div className={cn(MENTOR_GRID_CLASS, 'mt-8')}>
-            {mentors.map((mentor) => (
-              <MentorCard
-                key={mentor.id}
-                variant="availability"
-                availableMentor={mentor}
-                segmentSlug={segment?.slug ?? mentor.segment.slug}
-                selectedDate={selectedDate}
-                today={today}
-                navigate={navigate}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
+        </div>
+      )}
+
+      {hideTopicBar ? (
+        <SegmentMentorGrid
+          className="sk-section"
+          mentors={mentors}
+          isLoading={isLoadingMentors}
+          error={mentorsError}
+          onRetry={reloadMentors}
+          selectedTopicSlug={selectedTopic}
+          segmentName={segment?.name ?? null}
+          segmentSlug={segmentSlug}
+          navigate={navigate}
+        />
+      ) : (
+        <>
+          <SegmentTopicBar
+            topics={topics}
+            selectedSlug={selectedTopic}
+            onSelect={onSelectTopic}
+            isLoading={isLoadingTopics}
+            error={topicsError}
+            resultCount={mentorsError ? undefined : mentors.length}
+          />
+          <SegmentMentorGrid
+            className="sk-section"
+            mentors={mentors}
+            isLoading={isLoadingMentors}
+            error={mentorsError}
+            onRetry={reloadMentors}
+            selectedTopicSlug={selectedTopic}
+            segmentName={segment?.name ?? null}
+            segmentSlug={segmentSlug}
+            navigate={navigate}
+          />
+        </>
+      )}
+    </>
   );
 
   return (
@@ -119,27 +141,12 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
       config={config}
       isLoading={isLoading}
       isFallback={isFallback}
+      onNavigate={navigate}
       className={className}
-      mentors={
-        <>
-          {error && (
-            <div className="section-container">
-              <div className="error-banner" role="alert">
-                <span className="flex items-center gap-2 font-semibold">
-                  <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  {error}
-                </span>
-                <Button variant="outline" size="sm" onClick={reload} className="mt-2 sm:mt-0">
-                  Try again
-                </Button>
-              </div>
-            </div>
-          )}
-          {showHero && mentors}
-        </>
-      }
+      mentors={marketplace}
     />
   );
 };
 
+export { ALL_TOPICS };
 export default SegmentExperiencePage;
