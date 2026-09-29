@@ -1,10 +1,9 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
   "installCommand": "npm install",
-
-  "//rewrites": "All /api/* traffic is handled by the Express app exported from api/index.cjs (see api/index.cjs). It must NOT be rewritten to a file inside dist/: a rewrite to a static file is served as a download, never executed, which is what previously made /api/health return the server bundle as application/node instead of JSON. The SPA fallback below only serves non-API paths.",
   "rewrites": [
     {
       "source": "/api/:path*",
@@ -15,8 +14,6 @@
       "destination": "/index.html"
     }
   ],
-
-  "//headers": "dist is the only published directory. The server bundle and its source map are built to .build/ and are never served.",
   "headers": [
     {
       "source": "/assets/(.*)",
