@@ -207,15 +207,24 @@ describe('razorpay webhook: a failed attempt is retried, not dropped', () => {
 // ---------------------------------------------------------------------------
 
 describe('razorpay webhook: acknowledged deliveries', () => {
-  it('marks an unmatched capture processed, so Razorpay stops retrying it', async () => {
+  // P0-1 (phase B): this is the money-loss path. The capture is now recorded as
+  // an exception, left UNPROCESSED so a redelivery is re-evaluated, and answered
+  // with a retryable status instead of being acknowledged.
+  it('records an unmatched capture, leaves it resumable, and does not acknowledge it', async () => {
     const store = createFakeStore();
     const body = webhookBody({ orderId: 'order_NOT_OURS', paymentId: 'pay_NOT_OURS' });
 
     const result = await deliver(store, body, createFakeGateway({ orderId: 'order_NOT_OURS' }));
 
-    assert.ok(result.ok && result.handled === 'unmatched');
-    assert.equal(store.webhookClaims.get(`razorpay:${eventIdOf(body)}`), true);
-    assert.equal(store.payments.size, 0, 'nothing is written for a payment we do not own');
+    assert.ok(!result.ok, 'the delivery must not be reported as processed');
+    assert.equal(result.error.code, 'RAZORPAY_CAPTURE_UNMATCHED');
+    assert.equal(
+      store.webhookClaims.get(`razorpay:${eventIdOf(body)}`),
+      false,
+      'an unresolved capture must stay resumable so a redelivery is re-evaluated',
+    );
+    assert.equal(store.unmatched.size, 1, 'the capture is durably recorded');
+    assert.equal(store.payments.size, 0, 'no payment row is fabricated for a capture we do not own');
   });
 
   it('marks an unrecognised event type processed and applies nothing', async () => {

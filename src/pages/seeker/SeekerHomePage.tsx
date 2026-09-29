@@ -249,7 +249,8 @@ const SeekerHomeContent: React.FC<{
             <div className="max-w-sm">
               <div className="flex items-center gap-2.5">
                 <img src="/logo.png" alt="" className="h-9 w-9 rounded-[10px] object-cover" />
-                <span className="font-display text-base font-bold">Suggest Key</span>
+                
+                <span className="font-display text-base font-bold"><img src="/name.png" alt="" className="h-9  rounded-[10px] object-cover" /></span>
               </div>
               <p className="mt-4 text-sm leading-relaxed text-white/70">
                 Book a focused one-to-one session with a verified mentor, in your own timezone.

@@ -1,9 +1,17 @@
 # SUGGEST KEY — MVP PRODUCT & TECHNICAL SPECIFICATION
 
-Version: 1.0
-Status: MVP
+Version: 3.1
+Status: As-built / Current
+Last verified: 2026-09-29
 Product: Suggest Key
 Document Type: Product + Technical Specification
+
+> This document describes the MVP **as it is implemented today**. Where a value
+> changed, the previous value is marked *historical* and cross-referenced to the
+> migration that replaced it. Where something is not built, it says so.
+> Companions: `docs/architecture.md` (technical as-built), `docs/rules.md`
+> (enforced rules), `docs/prd.md` (current vs planned), `docs/technical-audit.md`
+> (open defects).
 
 ---
 
@@ -21,16 +29,21 @@ The core product loop is:
 
 Seeker discovers a mentor
 → selects a valid time slot
-→ temporarily holds the slot
-→ pays through manual QR payment
-→ uploads payment proof
-→ admin verifies payment
+→ temporarily holds the slot for **5 minutes**
+→ pays
 → booking moves to mentor
 → mentor adds meeting link and confirms
 → seeker joins at the allowed time
 → session completes
 → session moves to history
 → mentor creates a session workspace with notes and suggestions
+
+**Payment is a fork, not a single step.** The default path is manual UPI/QR:
+pay externally, upload a screenshot, an admin verifies, the booking moves to
+`MENTOR_PENDING`. When `RAZORPAY_ENABLED` is exactly `"true"`, the seeker can
+instead pay through Razorpay Checkout, where the server verifies the capture
+signature and advances the booking with **no human step**. Both paths are
+implemented; the manual path is the live default. See §23–§27.
 
 ---
 
@@ -762,54 +775,60 @@ Do NOT hardcode slots.
 
 ---
 
-# 18. TODAY'S SLOT RULE
+# 18. BOOKING CUTOFF
 
-If selected date is today:
+A slot is bookable only while:
 
-Past slots must not appear.
+```text
+slotStart − serverNow >= 5 minutes
+```
 
-Example:
+> **Historical:** 2 hours. The old 2-hour minimum advance-booking rule **no
+> longer exists**. It was replaced by a 5-minute cutoff in
+> `20260926030000_phase18_booking_cutoff_5min.sql`, which enforces
+> `slot_start - clock_timestamp() >= 5 min` inside `create_booking_with_hold()`.
+> `APP_CONFIG.BOOKING_CUTOFF_MS` mirrors it at 5 minutes.
 
-Current time:
+The cutoff is measured on **absolute instants**, so it is independent of any
+display timezone.
 
-3:30 PM
+The cutoff is **not** the same rule as the mentor meeting-link deadline (2 h,
+§32) and **not** the T−5 access window (§33). Three different clocks:
 
-Slot:
-
-2:00 PM
-
-must not be bookable.
-
-A slot must also account for timezone conversion.
+| Rule | Value | Blocks what |
+|---|---|---|
+| Booking cutoff | 5 min before start | creating a booking |
+| Meeting-link deadline | 2 h before start | nothing — mentor guidance only |
+| Session access window (T−5) | 5 min before start | reading the link / joining |
 
 ---
 
 # 19. GLOBAL SLOT CONFLICT
 
-A mentor's timeline is globally shared.
+A mentor's timeline is globally shared. A booking or a hold on one gig blocks
+that mentor's time for **all** gigs, because `mentor_availability` has no
+`gig_id` and the overlap constraints key on `mentor_id` alone.
+
+Enforced by two database constraints:
+
+```sql
+EXCLUDE USING gist (mentor_id WITH =, tstzrange(start_time, end_time, '[)') WITH &&)
+  WHERE (status NOT IN ('CANCELLED','REJECTED'));    -- bookings
+
+EXCLUDE USING gist (mentor_id WITH =, tstzrange(start_time, end_time, '[)') WITH &&)
+  WHERE (status = 'ACTIVE');                        -- slot_holds
+```
+
+This is why slot generation subtracts both bookings and active holds from a
+mentor's availability.
+
+Conflict checking keys on `mentor_id` + the actual time interval — **not**
+`mentor_id` + `gig_id`.
 
 Example:
 
-Rahul has:
-
-6:00 PM slot
-
-Relationship Advisor booking:
-
-6:00 PM
-
-Then:
-
-Autism Mentor
-6:00 PM
-
-must also be unavailable.
-
-Conflict checking must use mentor_id + actual time interval.
-
-Not:
-
-mentor_id + gig_id
+A booking on the Relationship Advisor gig at 6:00 PM also makes 6:00 PM
+unavailable on that mentor's Autism Mentor gig.
 
 ---
 
@@ -817,11 +836,11 @@ mentor_id + gig_id
 
 Booking is a stateful process.
 
-Core flow:
+Core flow (manual payment path):
 
 Seeker selects slot
-→ Hold
-→ Payment
+→ Hold (5 min)
+→ Uploads payment proof
 → Admin verification
 → Mentor pending
 → Mentor confirmation
@@ -829,6 +848,22 @@ Seeker selects slot
 → Session
 → Completed
 → History
+
+Core flow (Razorpay path, when enabled):
+
+Seeker selects slot
+→ Hold (5 min)
+→ Pays via Razorpay Checkout
+→ Server verifies the capture signature
+→ Mentor pending
+→ Mentor confirmation
+→ Confirmed
+→ Session
+→ Completed
+→ History
+
+The only difference is the payment step. Everything after `MENTOR_PENDING` is
+identical and gateway-agnostic.
 
 ---
 
@@ -840,7 +875,7 @@ A temporary hold is created.
 
 Hold duration:
 
-15 minutes.
+**5 minutes.**
 
 Example:
 
@@ -850,11 +885,23 @@ hold created
 
 expires:
 
-10:15 PM
+10:05 PM
 
 During active hold:
 
 The slot is unavailable to every other seeker.
+
+> **Historical:** 15 minutes. Replaced by
+> `20260928000000_phase26_hold_duration_5min.sql`, which introduced
+> `platform_config.hold_duration_minutes` (default 5) and the
+> `hold_duration_interval()` function so the database is authoritative.
+> `APP_CONFIG.HOLD_DURATION_MS` in `src/config/app.ts` mirrors it at 5 minutes
+> for display and for the server's own copy of the timeline.
+
+Booking creation and hold creation are **one transaction**. A single RPC,
+`create_booking_with_hold()`, inserts the hold, creates the booking, converts
+the hold and writes the payment row together. There is no window in which a
+hold exists without a booking.
 
 ---
 
@@ -862,96 +909,175 @@ The slot is unavailable to every other seeker.
 
 When hold expires:
 
-- hold becomes expired
+- hold status becomes `EXPIRED`
 - slot becomes available
-- payment-pending booking is invalidated/released if applicable
+- the linked `PAYMENT_PENDING` booking is cancelled
 - another seeker can book the slot
 
-Expiration must be enforced server-side.
-
-Frontend timers alone are insufficient.
+Expiration is enforced by the database, not by application code and not by a
+frontend timer. `pg_cron` runs `expire_stale_holds()` every minute
+(`* * * * *`); the function is `service_role`-only.
 
 ---
 
 # 23. PAYMENT
 
-MVP payment method:
+**Current state: hybrid. Both paths are implemented. The manual path is the
+default.**
 
-Manual QR payment.
+| Path | Status | Gate |
+|---|---|---|
+| Manual UPI/QR proof | **Implemented, live default** | none — always available |
+| Razorpay | **Implemented, opt-in, off by default** | `RAZORPAY_ENABLED === "true"` |
 
-Future payment provider:
+`APP_CONFIG.MVP_PAYMENT_METHOD` is `'manual_qr'`.
 
-Razorpay.
+The payment architecture **is** provider-abstracted, and the abstraction is real
+rather than aspirational:
 
-Payment architecture must be provider-abstracted.
+- `src/lib/razorpayService.ts` is written against two ports —
+  `RazorpayGatewayClient` (HTTP) and `RazorpayStore` (persistence).
+- The implementations are `createRazorpayGatewayClient()` and
+  `createSupabaseRazorpayStore(admin)`, supplied at the route boundary.
+- Adding a second gateway means writing an adapter, not editing the
+  orchestration. Razorpay is called over plain `fetch`; there is deliberately
+  no vendor SDK.
 
-The booking engine should NOT be tightly coupled to QR payment.
+The booking engine is **not** coupled to either gateway. Availability, slot
+locking, booking, session and mentor confirmation are all gateway-agnostic.
+`payments.gateway` records which path a row came from
+(`CHECK (gateway IN ('manual','razorpay'))`).
 
-Future migration should look conceptually like:
+### 23.1 Environment configuration
 
-Manual QR Provider
-→ Razorpay Provider
+| Variable | Purpose |
+|---|---|
+| `RAZORPAY_ENABLED` | Exactly `"true"` enables. Anything else → every Razorpay route returns `503` and the manual flow is untouched. |
+| `RAZORPAY_KEY_ID` | Public. The only Razorpay value ever sent to a browser. |
+| `RAZORPAY_KEY_SECRET` | Server-only. Order authentication and signature verification. |
+| `RAZORPAY_WEBHOOK_SECRET` | Server-only. Webhook HMAC. |
+| `RAZORPAY_API_BASE` | Optional override; default `https://api.razorpay.com/v1`. |
 
-without rewriting:
+None are `VITE_`-prefixed, so none can be bundled into the client.
 
-- availability
-- slot locking
-- booking
-- session
-- mentor confirmation
+### 23.2 Known gap
+
+The `payment-qr` storage bucket is referenced by the admin QR upload
+(`PAYMENT_QR_BUCKET` in `src/lib/paymentProof.ts`, used at `server.ts:205`,
+`:8786`, `:8845`) but is **not created by any migration**. Against a database
+built purely from `supabase/migrations/`, the admin cannot upload a payment QR.
+Because the manual UPI/QR path is the default payment route, this blocks the
+primary revenue path. See `docs/technical-audit.md` P1.
 
 ---
 
 # 24. PAYMENT FLOW
 
-After slot hold:
+### 24.1 Manual UPI/QR (default)
 
-Show payment screen.
-
-Payment screen contains:
+After slot hold, the payment screen shows:
 
 - booking summary
-- mentor
-- segment
-- date
-- time
-- duration
-- amount
-- QR code
-- payment instructions
-- payment deadline
+- mentor, segment, date, time, duration, amount
+- UPI id, QR code, payment instructions, account name, currency — all read from
+  `platform_config` via `GET /api/platform-config`, all admin-managed, none
+  hardcoded
+- payment deadline (the hold countdown)
 - payment proof upload
 
-Seeker submits:
+The seeker pays externally, then submits:
 
-- payment proof/screenshot
-- confirmation that payment has been made
+- a payment proof screenshot (≤ 5 MB, `image/jpeg` / `image/png` /
+  `image/webp` only — `application/pdf` is allowed by the bucket but rejected by
+  `validateProofFile`)
+- a transaction reference matching `^[A-Za-z0-9_-]+$`, 4–64 characters
+
+`POST /api/seeker/bookings/:id/payment-proof` moves the booking to
+`PENDING_VERIFICATION` and the payment to `PENDING_VERIFICATION`.
+
+### 24.2 Razorpay (when enabled)
+
+1. `POST /api/seeker/bookings/:id/razorpay/order` — the server verifies
+   ownership, payability, slot validity and hold validity, derives the amount
+   from stored data, and creates or reuses a Razorpay order. The **payment** row
+   moves to `PAYMENT_PROCESSING`; the **booking stays `PAYMENT_PENDING`**.
+   Returns the order id, the key id, the amount, the currency and the payment
+   id. `201` on create, `200` on reuse.
+2. The browser opens Razorpay Checkout.
+3. `POST /api/seeker/bookings/:id/razorpay/verify` — the server verifies the
+   Razorpay signature against the key secret, then advances the payment to
+   `VERIFIED` and the booking to `MENTOR_PENDING`, and notifies the mentor
+   **once**.
+4. `POST /api/webhooks/razorpay` handles `payment.captured`, `payment.failed`,
+   `payment.authorized`, `order.paid`, `refund.created`, `refund.processed`
+   and `refund.failed`.
+
+Properties of the implemented Razorpay path:
+
+- The amount is **server-derived**. A browser-supplied amount is never used to
+  create an order or accept a capture; a mismatch is refused and audited.
+- Signature verification is **server-side**. A failure is audited with the
+  error *code* only — signatures are proof material and are never logged.
+- The webhook verifies over the **raw body** captured by a JSON `verify` hook.
+  Using `req.body` would fail the HMAC.
+- Idempotent at all three entry points: an existing open order is reused, a
+  repeated verify succeeds with `duplicate: true` and does not re-notify the
+  mentor, and an already-seen webhook event is acknowledged with `200` without
+  reprocessing (unique on `(gateway, event_id)`).
+- A capture arriving after the booking was cancelled or rejected does **not**
+  revive it. The payment is marked `FAILED` with a reason and a
+  `payment_events` row is written.
+- Order expiry is **derived** from the hold window
+  (`RAZORPAY_ORDER_EXPIRY_SECONDS = HOLD_DURATION_MS / 1000` = 300), so an
+  order can never outlive the hold it pays for.
+- There is **no human approval step** on this path. It goes straight to
+  `MENTOR_PENDING`.
 
 ---
 
 # 25. PAYMENT STATUS
 
-Recommended statuses:
+**Actual values, enforced by `payments_status_check`:**
 
-- pending
-- approved
-- rejected
+| Status | Meaning |
+|---|---|
+| `PENDING_VERIFICATION` | Manual proof submitted, awaiting an admin |
+| `VERIFIED` | Payment confirmed |
+| `REJECTED` | Admin rejected the manual payment |
+| `PAYMENT_PENDING` | Nothing paid yet |
+| `PAYMENT_PROCESSING` | A Razorpay order exists; capture not yet verified. **Payment only** — the booking does not enter this state. |
+| `FAILED` | Capture failed, or the booking reached a dead end |
+| `REFUNDED` | A refund completed |
+| `REFUND_FAILED` | A refund failed |
+
+> **Historical:** `pending` / `approved` / `rejected`. Replaced by
+> `20260927110000_phase25_payment_foundation.sql`, which dropped and re-added
+> the CHECK with 8 values. `approved` became `VERIFIED`.
+
+`payments.proof_storage_path` is **nullable**, since a gateway payment has no
+uploaded proof. `payments` is `UNIQUE (booking_id)` — one payment row per
+booking. The browser can never write `payments`; RLS makes UPDATE/DELETE
+admin-only.
+
+`payments.status` is a **separate vocabulary** from `bookings.status`. See §46.
 
 ---
 
 # 26. PAYMENT APPROVAL
 
-Admin reviews payment proof.
+**Manual path only.** An admin reviews the payment proof in the Payments queue.
 
 If approved:
 
-Payment:
+Payment: `VERIFIED`
 
-approved
+Booking: `MENTOR_PENDING`
 
-Booking:
+The mentor is notified with a link to the real payment row.
 
-mentor_pending
+**Razorpay path:** no admin approval. The server-verified capture advances the
+booking directly. The admin approve/reject routes only act on
+`gateway = 'manual'` rows, which is the only path that needs a human.
 
 Hold:
 
@@ -965,70 +1091,71 @@ The slot does NOT become available just because the temporary hold ended.
 
 # 27. PAYMENT REJECTION
 
-If Admin rejects payment:
+**Manual path only.** An admin rejects with a required reason.
 
-Booking:
+Payment: `REJECTED`
 
-rejected
+Booking: `CANCELLED` *(not `REJECTED` — see §46)*
 
-Hold:
+Hold: released
 
-released
-
-Slot:
-
-available again
+Slot: available again
 
 Seeker receives an in-app notification.
+
+The proof file is **retained** on the record; the seeker may submit a new one
+from a booking that is still payable.
+
+> **Correction to v1 of this document:** the booking does not become
+> `REJECTED` on a payment rejection. `review_payment(p_approve := false)` sets
+> `payments.status = 'REJECTED'` and `bookings.status = 'CANCELLED'`, and the
+> notification is typed as a rejection so the seeker sees the reason.
 
 ---
 
 # 28. MENTOR PENDING STATE
 
-After Admin approves payment:
+After payment is verified — by admin approval (manual) or by a server-verified
+capture (Razorpay):
 
 Mentor receives the booking.
 
 Booking status:
 
-MENTOR_PENDING
+`MENTOR_PENDING`
 
 Meaning:
 
-Payment is verified, but mentor has not yet added the meeting link and confirmed the session.
+Payment is verified, but the mentor has not yet added the meeting link and confirmed the session.
+
+There is no timer on this state. Nothing moves it automatically.
 
 ---
 
 # 29. MENTOR BOOKING VIEW
 
-Mentor must see full booking context.
+The mentor must see full booking context: seeker, segment, gig, date, time,
+duration, payment status, booking status, and the meeting-link action.
 
-Example:
+Illustrative layout (values below are placeholders, not seeded data):
 
+```text
 NEW SESSION
 
-Seeker:
-Aman Kumar
+Seeker:     <name from profiles.full_name>
+Segment:    <segment from segments.name>
+Gig:        <gig from gigs.title>
+Date:       <start_time>
+Time:       <start_time – end_time>
+Duration:   <gigs.duration_minutes>
+Payment:    <payments.status>
+Status:     <bookings.status>  →  "Pending Confirmation"
+Meeting Link:  [ Add meeting link ]
+               [ Confirm Session ]
+```
 
-Segment:
-Relationship Advisor
-
-Gig:
-Relationship Guidance Session
-
-Date:
-18 March 2026
-
-Time:
-4:00 PM – 5:00 PM
-
-Duration:
-60 minutes
-
-Payment:
-Verified
-
-Status:
+Every field is read from the database via `GET /api/mentor/bookings` and
+`GET /api/mentor/bookings/:id`. No value on this screen is hardcoded.
 Pending Confirmation
 
 Meeting Link:
@@ -1040,44 +1167,51 @@ Meeting Link:
 
 # 30. MEETING LINK
 
-Mentor can add any valid meeting URL.
+The mentor supplies the meeting URL. There is **no video-provider integration**:
+no Daily.co, no Whereby, no Jitsi, no auto-generated room. The mentor pastes a
+link.
 
-Examples may include:
+Any valid HTTPS meeting platform may be used (Google Meet, Zoom, Microsoft
+Teams, or anything else).
 
-- Google Meet
-- Zoom
-- Microsoft Teams
-- other valid HTTPS meeting platforms
+Validation is doubled:
 
-The application should validate that the URL is a valid HTTPS URL.
+- zod (`apiSchemas.mentorBookingConfirm`) requires a real `http(s)` URL, so
+  `javascript:` and other script-bearing schemes can never be stored
+- `CHECK (meeting_url IS NULL OR meeting_url ~* '^https://')` in the database
 
 ---
 
 # 31. MENTOR CONFIRMATION
 
-Mentor must add a meeting link before confirming.
+The mentor must add a meeting link before confirming.
 
 Confirmation action:
 
 [ Confirm Session ]
 
+Ownership is re-checked server-side: `confirm_booking(p_booking_id, p_meeting_url, p_mentor_id)`
+refuses with `FORBIDDEN_NOT_BOOKING_OWNER` if the mentor does not own the
+booking. A booking the mentor does not own returns `403`.
+
 After successful confirmation:
 
 Booking:
 
-CONFIRMED
+`CONFIRMED`
 
-Seeker receives notification.
+Seeker receives a notification.
 
-Mentor receives confirmation state.
+The booking is now live in the seeker's upcoming list and appears in the
+mentor's confirmed list.
 
 ---
 
 # 32. MEETING LINK DEADLINE
 
-Mentor should add the meeting link at least:
+The mentor should add the meeting link at least:
 
-2 hours before session start.
+**2 hours** before session start.
 
 Example:
 
@@ -1089,24 +1223,34 @@ Recommended deadline:
 
 2:00 PM
 
+`MEETING_LINK_DEADLINE_MS = 2 * 60 * 60 * 1000`.
+
 If the deadline passes:
 
-- booking remains active
-- admin is notified/flagged
-- mentor can still add the link
-- system records the missed deadline
+- the booking remains active
+- the link can still be added
+- the missed deadline is surfaced operationally
+  (`GET /api/admin/bookings/overdue-links`)
 
-Do not automatically cancel solely because the mentor missed this deadline.
+The deadline **never blocks booking**. It is mentor guidance, distinct from the
+booking cutoff (§18) and from the T−5 access window (§33). Do not automatically
+cancel a booking because the mentor missed it.
+
+> **Known defect:** `GET /api/admin/bookings/overdue-links` currently serves
+> hardcoded in-memory fixtures and never queries the database
+> (`server.ts:3138-3152`). An admin using it during an incident sees fabricated
+> mentors and times. See `docs/technical-audit.md` D1.
 
 ---
 
 # 33. MEETING LINK VISIBILITY
 
-Meeting link must NOT be visible to seeker immediately after confirmation.
+The meeting link is **not** visible to the seeker immediately after
+confirmation.
 
 The link becomes available:
 
-5 minutes before session start.
+**5 minutes** before session start (T−5).
 
 Example:
 
@@ -1117,6 +1261,23 @@ Session:
 Meeting link becomes visible:
 
 3:55 PM
+
+The link is revoked at `end_time`.
+
+**Redaction has exactly one door.** `redactMeetingUrlForParticipant()`
+(`src/lib/sessionAccess.ts:84`) is applied to **every** participant-facing
+booking projection — the seeker's booking list and booking detail, not only the
+join endpoint. An earlier implementation returned `meeting_url` verbatim from
+the list, which made the T−5 gate on the join endpoint decorative.
+
+| Viewer | Link returned when |
+|---|---|
+| Admin | always |
+| Mentor | always (the mentor supplied it) |
+| Seeker | `start − 5 min ≤ now < end`, **and** `actual_ended_at IS NULL` |
+
+Once a session is manually ended, the link is revoked for the seeker
+**irrevocably**, regardless of the T−5 window.
 
 ---
 
@@ -1148,7 +1309,13 @@ At 0:
 
 [ Join Session ]
 
-This should update dynamically.
+This updates dynamically.
+
+**The countdown runs on the server clock.** `useSessionSync` revalidates every
+`REVALIDATE_MS = 20_000` and samples `offsetMs = serverNow − clientNow` on every
+revalidation; all countdowns derive from `serverNowFromOffset(offsetMs)`. A
+local 1-second tick advances the render, never the decision. Manipulating the
+device clock therefore does not open the join gate.
 
 ---
 
@@ -1198,41 +1365,53 @@ join disabled
 
 # 36. SERVER-SIDE SESSION ACCESS
 
-Session access must be validated server-side.
+Session access is validated server-side, on the **server clock**.
 
-Pseudo-rule:
+Pseudo-rule (`isInsideSessionAccessWindow` + `can_join_session`):
 
-if now < start_time - 5 minutes:
+```text
+if now < start_time - 5 minutes:            DENY
+if start_time - 5 min <= now < end_time:    ALLOW
+if now >= end_time:                         DENY
+if actual_ended_at is set:                  DENY   (link revoked, revocable)
+```
 
-DENY
+The frontend countdown is UX only. It is not a security mechanism, and the
+client is structurally unable to change the answer: `useSessionSync` renders
+from a server-sampled clock offset, and the authoritative decision is made by
+the `can_join_session(p_booking_id, p_user_id)` RPC.
 
-if start_time - 5 minutes <= now < end_time:
-
-ALLOW
-
-if now >= end_time:
-
-DENY
-
-Frontend countdown is only UX.
-
-It is not a security mechanism.
+The same rule is applied to the **projection**, not just the action:
+`redactMeetingUrlForParticipant()` removes `meeting_url` from every
+participant-facing booking response outside the window. Gating only the join
+endpoint would leave the link readable from the bookings list.
 
 ---
 
 # 37. SESSION COMPLETION
 
-After end_time:
+After `end_time`:
 
-Session becomes:
+Session state (computed) becomes:
 
-COMPLETED
+`COMPLETED`
 
-The booking moves out of active/upcoming sessions.
+Three layers perform the actual write, in priority order:
 
-It appears in:
+1. **Reactive** — any of mentor, seeker or admin ends the live session via
+   `POST /api/sessions/:bookingId/complete`. Writes `actual_ended_at`,
+   `ended_by_role` (`CHECK IN ('mentor','seeker','admin')`) and `end_reason`.
+2. **Cron** — `complete_expired_sessions()` every minute (`* * * * *`,
+   `service_role`-only) completes `CONFIRMED` bookings past `end_time` and
+   emits the once-only `SESSION_COMPLETED` notification.
+3. **Read-reconcile** — `reconcile_expired_sessions(p_booking_id)` on read, and
+   `reconcile_expired_bookings(uuid[])` for a service-role bulk sweep.
+   Reconciliation returns `NULL` when there is nothing to do; it must never
+   set `CANCELLED`.
 
-History.
+The booking moves out of the active/upcoming list and appears in:
+
+History
 
 ---
 
@@ -1367,32 +1546,42 @@ Seeker cancellation:
 
 Allowed only when:
 
-session_start >= 24 hours from now
+session_start − now >= **10 minutes**
 
-If within 24 hours:
+> **Historical:** 24 hours. The current value is
+> `NORMAL_CANCELLATION_WINDOW_MINUTES = 10` in `src/config/app.ts`. Any document
+> saying 24 hours for cancellation is wrong. The window is evaluated on the
+> server clock, not the browser's.
 
-cancellation is not allowed through normal seeker UI.
+If within 10 minutes:
+
+cancellation is not allowed through the normal seeker flow.
 
 Admin can intervene.
+
+Cancellation records a reason (`bookings.cancellation_reason`, the only column
+an `authenticated` client may update) and releases the slot, because the booking
+overlap exclusion constraint excludes `CANCELLED`.
+
+**No refund is issued by cancellation.** The booking is cancelled; money
+movement is a manual operational step.
 
 ---
 
 # 43. MENTOR CANCELLATION
 
-If mentor cancels:
+If the mentor cancels:
 
-Booking becomes cancelled.
+Booking becomes `CANCELLED`.
 
-Seeker receives notification.
+Seeker receives a notification.
 
 Admin is notified.
 
-The system should support:
-
-- rescheduling
-- refund/payment resolution
-
-Because payment is manually verified in MVP, refund handling can remain an Admin-controlled operational workflow.
+Because payment may be manually verified in the MVP, refund handling is an
+admin-controlled operational workflow. **No refund initiation endpoint exists**
+on either path — the Razorpay webhook only *consumes* refund events that
+originate in the Razorpay dashboard.
 
 ---
 
@@ -1400,13 +1589,20 @@ Because payment is manually verified in MVP, refund handling can remain an Admin
 
 Reschedule is allowed at least:
 
-24 hours before session start.
+**10 minutes** before session start (`NORMAL_CANCELLATION_WINDOW_MINUTES`).
 
-New slot must be genuinely available.
+The new slot must be genuinely available and must pass the same global mentor
+conflict checks — the same EXCLUDE constraints that guard ordinary booking.
 
-The new slot must pass the same global mentor conflict checks.
+Past slots are never allowed, and neither is a slot inside the 5-minute booking
+cutoff.
 
-Past slots are never allowed.
+Implementation note: reschedule acquires a hold on the new slot **before**
+touching the original booking (`acquire_slot_hold` is called once, at
+`server.ts:2995`). A failed hold therefore leaves the original booking exactly
+as it was. The hold and the booking update are still two operations rather than
+one transaction, so a crash between them can strand a hold; the hold expires
+on its own after 5 minutes.
 
 ---
 
@@ -1427,128 +1623,309 @@ This must be enforced server-side.
 
 # 46. BOOKING STATES
 
-Recommended booking state machine:
+**Actual values, permitted by `bookings_status_check` (8 values; 7 reachable):**
 
-PAYMENT_PENDING
-        |
-        +---- REJECTED
-        |
-        v
-MENTOR_PENDING
-        |
-        +---- CANCELLED
-        |
-        v
-CONFIRMED
-        |
-        +---- CANCELLED
-        |
-        v
-IN_PROGRESS
-        |
-        v
-COMPLETED
+```text
+                     ┌─────────────────────┐
+                     │   PAYMENT_PENDING   │◄── Razorpay capture holds the
+                     └──────────┬──────────┘    booking HERE until money is
+        manual proof submitted │                actually captured
+                               ▼                (the booking is never moved
+                     ┌─────────────────────┐    to PAYMENT_PROCESSING)
+                     │ PENDING_VERIFICATION│                │
+                     └──────┬───────┬──────┘                │
+           admin approves   │       │  admin rejects        │ verified capture
+                            │       │                       │
+                            ▼       ▼                       │
+                   ┌──────────┐ ┌──────────┐                │
+                   │MENTOR_   │ │CANCELLED │                │
+                   │ PENDING  │ └──────────┘                │
+                   └────┬─────┘                             │
+        mentor confirms (HTTPS link required)               │
+                        │                                   │
+                        ▼                                   ▼
+                 ┌───────────┐   cron / read-reconcile  MENTOR_PENDING
+                 │ CONFIRMED │──────────────────────────┐   (from PAYMENT_PENDING)
+                 └─────┬─────┘                          │
+                       │                                ▼
+                       │ any participant or       ┌─────────────┐
+                       │ admin ends the session   │  COMPLETED  │
+                       │ → actual_ended_at,       └─────────────┘
+                       │   ended_by_role, end_reason
+                       ▼
+                   COMPLETED
+```
+
+`PENDING_VERIFICATION` is **not** in the overlap exclusion's excluded set, so
+those bookings still block the mentor's slot — correctly, because the
+commitment is live.
+
+> **Corrections vs v1 of this document:**
+> - `IN_PROGRESS` is **not** a `bookings.status` value. It is a computed session
+>   projection. Confusing the two is the single most common error in this area
+>   of the system.
+> - `REJECTED` is **not** reached from `PAYMENT_PENDING` in the current code. The
+>   payment path to a terminal state is `payments.status = REJECTED` **and**
+>   `bookings.status = CANCELLED`.
+> - `PAYMENT_PROCESSING` was added to `bookings_status_check` by
+>   `20260927110000_phase25_payment_foundation.sql`, but **no current code path
+>   writes it to a booking.** It is a `payments.status` value. The Razorpay flow
+>   deliberately leaves the booking at `PAYMENT_PENDING` until capture, because
+>   `expire_stale_holds()` only cancels `PAYMENT_PENDING` bookings.
+
+### 46.1 Three separate vocabularies
+
+| Concept | Where | Values |
+|---|---|---|
+| **Booking status** | `bookings.status` (column) | the 7 reachable values above |
+| **Payment status** | `payments.status` (column) | 8 values, see §25 |
+| **Session state** | computed by `resolve_session_state()` / `resolveSessionLifecycle()` — **not a column** | `SCHEDULED`, `ACCESS_OPEN`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED` |
+
+The session projection:
+
+```text
+CANCELLED / REJECTED booking                  → CANCELLED
+non-finite or missing start/end               → COMPLETED
+actual_ended_at set                           → COMPLETED
+bookings.status = COMPLETED                   → COMPLETED
+serverNow >= end_time                         → COMPLETED
+serverNow >= start_time − 5 min               → IN_PROGRESS if serverNow >= start,
+                                                else ACCESS_OPEN
+otherwise                                     → SCHEDULED
+```
+
+Only `COMPLETED` and `CANCELLED` are simultaneously a projection value and a
+real booking status. `SCHEDULED`, `ACCESS_OPEN` and `IN_PROGRESS` exist only as
+projections. The name is **`SCHEDULED`**, not `UPCOMING` — `UPCOMING` is only a
+list-tab label in the UI.
+
+### 46.2 Who writes which transition
+
+| Transition | Writer |
+|---|---|
+| → `PAYMENT_PENDING` | `create_booking_with_hold()` RPC |
+| `PAYMENT_PENDING` → `PENDING_VERIFICATION` | `POST /api/seeker/bookings/:id/payment-proof` |
+| `PENDING_VERIFICATION` → `MENTOR_PENDING` | `review_payment()` RPC via `PATCH /api/admin/payments/:id/approve` |
+| `PENDING_VERIFICATION` → `CANCELLED` | `review_payment(p_approve := false)` via `PATCH /api/admin/payments/:id/reject` |
+| `PAYMENT_PENDING` → `MENTOR_PENDING` | `markBookingMentorPending()` on a server-verified capture — from `POST .../razorpay/verify` or the `payment.captured` webhook |
+| `MENTOR_PENDING` → `CONFIRMED` | `POST /api/mentor/bookings/:id/confirm` |
+| `PAYMENT_PENDING` → `CANCELLED` | hold-expiry cron, or seeker cancel |
+| `CONFIRMED` → `COMPLETED` | completion cron, `POST /api/sessions/:bookingId/complete`, or read-reconcile |
+| → `PAYMENT_PROCESSING` | **Nobody.** Permitted by the CHECK, written by no current code path. |
+
+A browser cannot perform any of these. `authenticated` holds `UPDATE` on
+`bookings` restricted to `(cancellation_reason, updated_at)`; every state change
+requires a `SECURITY DEFINER` RPC or the service-role client.
 
 ---
 
 # 47. PAYMENT STATES
 
-PENDING
-   |
-   +---- REJECTED
-   |
-   v
-APPROVED
+**Actual values, enforced by `payments_status_check` (8 values):**
+
+```text
+MANUAL
+PAYMENT_PENDING ──submit proof──► PENDING_VERIFICATION
+                                        │
+                            ┌───────────┴───────────┐
+                       approve                  reject
+                            │                       │
+                            ▼                       ▼
+                        VERIFIED               REJECTED
+                    (booking → MENTOR_PENDING) (booking → CANCELLED)
+
+RAZORPAY (payment row only; the booking row is untouched until capture)
+  (no payment row) ──create order──► PAYMENT_PROCESSING
+                                       │
+                    ┌──────────────────┼──────────────────┐
+            verified capture      capture failed   booking already dead
+                    │                 │                 │
+                    ▼                 ▼                 ▼
+                VERIFIED           FAILED             FAILED
+            (booking →        (payment_events     (payment_events
+             MENTOR_PENDING)     row written)       row written,
+                                (booking unchanged)  refund_status PENDING)
+
+REFUND (event-driven only; nothing initiates a refund)
+VERIFIED ──refund event──► REFUNDED | REFUND_FAILED
+                        (a PENDING refund records bookkeeping columns only;
+                         it never advances the payment's own status)
+```
+
+> **Historical:** `PENDING` / `APPROVED` / `REJECTED`. `APPROVED` became
+> `VERIFIED`; the gateway path added `PAYMENT_PROCESSING`, `FAILED`, `REFUNDED`
+> and `REFUND_FAILED`.
 
 ---
 
 # 48. HOLD STATES
 
-ACTIVE
-  |
-  +---- EXPIRED
-  |
-  +---- RELEASED
+`slot_holds.status`, enforced by `CHECK (status IN ('ACTIVE','CONVERTED','EXPIRED','RELEASED'))`:
+
+```text
+ACTIVE ──booking created──► CONVERTED
+   │
+   ├──expires_at reached──► EXPIRED
+   │
+   └──booking left PAYMENT_PENDING──► RELEASED
+```
+
+> **Correction to v1 of this document:** `CONVERTED` was missing. A hold that
+> becomes a booking is `CONVERTED`, not `RELEASED`. `RELEASED` is for a hold
+> whose booking moved past `PAYMENT_PENDING` before the hold expired.
+
+The only `ACTIVE` holds participate in the overlap exclusion constraint, so a
+`CONVERTED`, `EXPIRED` or `RELEASED` hold no longer blocks the slot.
 
 ---
 
 # 49. IMPORTANT BOOKING INVARIANTS
 
-These must always hold.
+These must always hold. Each names the layer that enforces it.
 
 ## Invariant 1
 
-One mentor cannot have overlapping active bookings.
+One mentor cannot have overlapping live bookings.
+*Database: `EXCLUDE USING gist (mentor_id WITH =, tstzrange(start,end,'[)') WITH &&) WHERE status NOT IN ('CANCELLED','REJECTED')`.*
 
 ## Invariant 2
 
-One mentor cannot have overlapping active hold + booking conflicts.
+One mentor cannot have overlapping active holds.
+*Database: `EXCLUDE … WHERE status = 'ACTIVE'`.*
 
 ## Invariant 3
 
 A mentor's availability is shared across all gigs.
+*Database: `mentor_availability` has no `gig_id`.*
 
 ## Invariant 4
 
-One mentor can have only one gig per segment.
+One mentor can have only one **active** gig per segment.
+*Database: partial unique index on `(mentor_id, segment_id) WHERE is_active`.
+Retired gigs are kept, so this is not a hard unique.*
 
 ## Invariant 5
 
 A mentor without an active gig for a selected segment cannot be discovered for that segment.
+*Database: `mentor_is_publicly_visible()` inside the RLS SELECT policies.*
 
 ## Invariant 6
 
-A mentor with no valid slot on the selected date must not appear in available mentor results.
+A mentor with no valid slot on the selected date **is still listed** in the
+directory. Bookability is a detail-page concern, not a listing filter.
+*Frontend: `discoveryService` deliberately does not require bookability.*
 
 ## Invariant 7
 
 Past slots cannot be booked.
+*Server + database: `create_booking_with_hold()` against `clock_timestamp()`.*
 
 ## Invariant 8
 
-Expired holds release the slot.
+Slots starting in under **5 minutes** cannot be booked.
+*Server + database: `BOOKING_CUTOFF_MS`, enforced in the RPC.*
 
 ## Invariant 9
 
-Payment rejection releases the slot.
+Expired holds release the slot and cancel the unpaid booking.
+*Database: `pg_cron` → `expire_stale_holds()`, every minute.*
 
 ## Invariant 10
 
-Payment approval transfers responsibility to mentor without releasing the time slot.
+Payment rejection releases the slot; payment approval does not.
+*Database: rejection sets `bookings.status = 'CANCELLED'`, which the overlap
+exclusion excludes. Approval sets `MENTOR_PENDING`, which it does not.*
 
 ## Invariant 11
 
-Meeting link is hidden until T−5 minutes.
+Meeting link is hidden from the seeker until T−5 minutes, on every projection.
+*Server: `redactMeetingUrlForParticipant()`.*
 
 ## Invariant 12
 
-Session cannot be joined before T−5 minutes.
+Session cannot be joined before T−5 minutes, evaluated on the server clock.
+*Server + database: `can_join_session()` RPC.*
 
 ## Invariant 13
 
-Session cannot be joined after end time.
+Session cannot be joined after `end_time`.
+*Server: `isInsideSessionAccessWindow()`.*
 
 ## Invariant 14
 
-Mentor confirmation requires a meeting link.
+Mentor confirmation requires a valid HTTPS meeting link.
+*Server + database: zod schema plus `chk_meeting_url_https`.*
+
+## Invariant 15
+
+Once `actual_ended_at` is set, the meeting link is revoked for the seeker
+irrevocably, regardless of the T−5 window.
+*Server: `redactMeetingUrlForParticipant()`.*
+
+## Invariant 16
+
+Booking creation is a single transaction, not a hold followed by an insert.
+*Database: `create_booking_with_hold()`.*
+
+## Invariant 17
+
+A browser cannot change booking state.
+*Database: `GRANT UPDATE(cancellation_reason, updated_at)` only.*
+
+## Invariant 18
+
+The booking amount is the amount charged. It is snapshotted at creation.
+*Database: `bookings.amount_inr` with `CHECK (amount_inr >= 0)`.*
+
+## Invariant 19
+
+The payment amount is never taken from the browser.
+*Server: Razorpay order and capture amounts are derived from stored data; a
+mismatch is refused and audited.*
+
+## Invariant 20
+
+The session-completion notification is emitted at most once per user per
+session.
+*Database: partial unique index `uniq_notifications_session_completed`.*
+
+## Invariant 21
+
+Reconciliation never sets a booking to `CANCELLED`.
+*Database: `reconcile_expired_sessions()` returns `NULL` when there is nothing
+to do (fixed in `20260927060000_phase24b`).*
 
 ---
 
 # 50. NOTIFICATIONS
 
-MVP uses in-app notifications only.
+MVP uses **in-app notifications only**. There is no email, SMS or push
+integration.
 
-Recommended notification fields:
+**Actual fields** on `public.notifications`:
 
-- id
-- user_id
-- type
-- title
-- message
-- related_entity_type
-- related_entity_id
-- is_read
-- created_at
+| Column | Notes |
+|---|---|
+| `id` | UUID PK |
+| `user_id` | NOT NULL, FK → `profiles` CASCADE |
+| `title`, `message` | NOT NULL |
+| `type` | **Unconstrained `TEXT`.** The phase4 CHECK was dropped in `20260921000002_phase11_notifications.sql` and never re-added. `src/types/database.ts` `NotificationType` enumerates 7 values, which is stricter than the database. |
+| `link` | in-app target path |
+| `event_type`, `entity_type`, `entity_id` | added in phase11; make the notification link to the right row for each role |
+| `is_read`, `read_at` | `is_read` NOT NULL default `false` |
+| `metadata` | JSONB default `'{}'` |
+| `created_at` | NOT NULL default `now()` |
+
+API: `GET /api/notifications`, `GET /api/notifications/unread-count`,
+`PATCH /api/notifications/:id/read`, `POST /api/notifications/mark-all-read`,
+`POST /api/notifications/dispatch` (admin). All are scoped to the caller's own
+rows in the database via `mark_notification_as_read(p_id, p_user_id)` and
+`mark_all_notifications_as_read(p_user_id)`.
+
+**Freshness is polling-only.** `notifications` is **not** in the
+`supabase_realtime` publication, so updates arrive within up to ~30 s
+(`NotificationContext` polls every 30 s; `useNotificationSync` uses a
+visibility-gated 60 s interval, floor 30 s). See `docs/technical-audit.md` R1.
 
 ---
 
@@ -1571,7 +1948,7 @@ Recommended notification fields:
 
 ## Mentor
 
-- payment approved
+- payment captured / approved
 - new booking pending confirmation
 - meeting link deadline approaching
 - meeting link overdue
@@ -1586,6 +1963,11 @@ Recommended notification fields:
 - mentor link overdue
 - mentor cancellation
 - booking requiring intervention
+- mentor application submitted / approved / rejected
+- login-failure threat alert
+
+`SESSION_COMPLETED` is emitted **at most once per user per session**, enforced
+by a partial unique index on `(user_id, event_type, entity_id)`.
 
 ---
 
@@ -1607,32 +1989,47 @@ Never perform business logic using browser-local time alone.
 
 # 53. DATABASE ARCHITECTURE
 
-Recommended core entities:
+`supabase/migrations/` is the schema of record: **38 files**, applied in
+timestamp order. `supabase/schema.sql` is a 968-byte stub and must not be used.
 
-users
-profiles
-user_roles
+**28 tables exist in `public`:**
 
-segments
-mentor_segments
+```text
+identity      profiles, user_roles
+catalog       segments, segment_topics, gig_topics
+profiles      mentor_profiles, mentor_segments, seeker_profiles, gigs
+availability  mentor_availability, mentor_availability_exceptions
+booking       slot_holds, bookings, payments, payment_events, webhook_events
+content       session_workspaces
+onboarding    mentor_applications, mentor_verification_documents,
+              mentor_document_types, mentor_application_audit
+operations    platform_config, audit_logs, system_logs, system_log_retention,
+              login_failure_config, login_failure_trackers
+```
 
-mentor_profiles
-seeker_profiles
+> **Correction to v1 of this document:** the list above is missing
+> `segment_topics`, `gig_topics`, `payment_events`, `webhook_events`,
+> `mentor_document_types`, `mentor_application_audit`, `platform_config`,
+> `audit_logs`, `system_logs`, `system_log_retention`, `login_failure_config`
+> and `login_failure_trackers`. All of them exist.
 
-gigs
+**No slot table and no `generate_slots` RPC exist.** Slots are computed at read
+time by `src/lib/slotEngine.ts` from recurring availability minus exceptions
+minus bookings minus active holds minus the past minus the 5-minute cutoff.
 
-mentor_availability
-mentor_availability_exceptions
+**Three storage buckets are created by migrations:** `payment-proofs` (private),
+`mentor-verification-documents` (private), `segment-hero` (public read, admin
+write).
 
-slot_holds
+**A fourth bucket, `payment-qr`, is referenced by application code but is never
+created by any migration.** It is used by the admin UPI QR upload
+(`PAYMENT_QR_BUCKET` in `src/lib/paymentProof.ts`; `server.ts:205`, `:8786`,
+`:8845`). Against a database built purely from `supabase/migrations/`, that
+upload fails. See `docs/technical-audit.md` P1.
 
-bookings
-
-payments
-
-notifications
-
-session_workspaces
+RLS is enabled on **27 of the 28** tables; `platform_config` is the exception
+(protected by grant scoping and the service-role client). `pg_cron` runs
+`expire_stale_holds()` and `complete_expired_sessions()` every minute.
 
 ---
 
@@ -1804,101 +2201,112 @@ Everything above plus:
 
 # 60. AUTHENTICATION
 
-Authentication should use the existing Supabase Auth architecture.
+Authentication uses **Supabase Auth**, email + password, with email-OTP
+verification (`/auth/verify`, `/auth/callback`) and password reset by email.
 
-Do not build custom password storage.
+No custom password storage. No OAuth provider is wired.
 
-Application authorization must be role-based.
+Authorization is role-based. Roles live in `user_roles`
+(`CHECK (role IN ('seeker','mentor','admin'))`) and are re-read from the
+database on every request — never trusted from client state.
 
 After login:
 
-Seeker
-→ Home
+```text
+seeker → /seeker        mentor → /mentor        admin → /admin
+```
 
-Mentor
-→ Mentor Home
+A user may hold more than one role; `UNIQUE (user_id, role)` permits that.
 
-Admin
-→ Admin Dashboard
+Users must not reach another role's protected routes by manipulating the URL.
+`ProtectedRoute` handles the UX, and every route is **independently authorized
+server-side** — the client guard is not the control.
 
-Users must not be able to access another role's protected application routes merely by manipulating URLs.
+### 60.1 Demo personas
+
+`POST /api/auth/demo-login` exists for local development and is fail-closed. It
+requires all of:
+
+- `ENABLE_DEMO_PERSONAS` exactly `"true"`
+- `DEMO_TOKEN_SECRET` set, ≥ 32 characters, and not a known default
+- `NODE_ENV !== 'production'`
+
+The admin persona additionally requires `ADMIN_PASSWORD` ≥ 12 characters. The
+client refuses demo login outright under `import.meta.env.PROD`.
 
 ---
 
 # 61. ERROR HANDLING
 
-Every important operation must have:
+Every important operation has a loading, empty, error and success state. Shared
+components exist: `LoadingState`, `EmptyState`, `ErrorState`, `SuccessState`.
 
-- loading state
-- empty state
-- error state
-- success state
+Server errors are structured:
 
-Examples:
+```json
+{ "success": false, "error": { "code": "...", "message": "...", "details": {} } }
+```
 
-No mentors available:
+Error responses never leak raw SQL, driver messages or internal paths — every
+message passes through `logSanitizer` / `supabaseErrors` /
+`respondWithInternalError`. Payloads and signatures are never logged; a failed
+payment signature audit records the error **code** only.
 
-"No mentors are available for this segment and date."
-
-No slots:
-
-"No bookable slots available."
-
-Payment rejected:
-
-"Payment could not be verified. Please review the payment details and try again."
-
-Hold expired:
-
-"Your slot hold expired. Please select another available slot."
+A missing Supabase admin client returns `503`, never a silent downgrade to a
+weaker client. Razorpay disabled returns `503` with the manual flow untouched.
 
 ---
 
 # 62. CONCURRENCY / DOUBLE BOOKING
 
-This is a high-priority engineering requirement.
+This is a high-priority engineering requirement and it is met.
 
-Two seekers may attempt to book:
+Two seekers may attempt to book the same mentor and slot simultaneously. The
+database guarantees only one succeeds. This does **not** depend on frontend
+disabled buttons, React state, localStorage or client-side checks.
 
-same mentor
-same slot
-at almost the same time.
+The guarantee is structural, at three levels:
 
-The database/backend must guarantee that only one succeeds.
+1. **`EXCLUDE USING gist`** — no two `ACTIVE` holds overlap for a mentor, and
+   no two live bookings overlap for a mentor.
+2. **A partial unique index** on `(mentor_id, segment_id) WHERE is_active` for
+   gigs.
+3. **One atomic RPC** — `create_booking_with_hold()` performs hold creation,
+   booking creation, hold conversion and payment-row creation inside a single
+   transaction, and re-validates live availability at that moment rather than
+   trusting the earlier read.
 
-Do NOT depend on:
-
-- frontend disabled buttons
-- React state
-- localStorage
-- client-side availability checks
-
-Use database constraints/transactions/locking or an equivalent atomic server-side booking mechanism.
+When the RPC refuses, it returns a `code: <REASON>, <text>` error string that
+`server.ts` parses into a stable client-facing code.
 
 ---
 
 # 63. BOOKING TRANSACTION
 
-Conceptually:
+The transaction below is what `create_booking_with_hold()` actually performs.
+Steps 1–11 are validation inside the function; steps 12–14 are the writes.
 
-1. validate user
-2. validate mentor
-3. validate gig
-4. validate segment
-5. validate selected time
-6. validate timezone conversion
-7. validate future time
-8. validate mentor availability
-9. validate exceptions
-10. check conflicting booking
-11. check active hold
-12. create hold
-13. create payment-pending booking
-14. commit atomically
+```text
+ 1. validate the seeker exists and is authenticated
+ 2. validate the mentor exists
+ 3. validate the gig exists, is active, and belongs to that mentor
+ 4. validate the segment and the mentor's membership of it
+ 5. validate the requested interval is well-formed (start < end)
+ 6. convert the requested time to an absolute instant
+ 7. reject past times
+ 8. reject times inside the 5-minute booking cutoff
+ 9. re-check live recurring availability for the mentor
+10. re-check date exceptions
+11. re-check conflicting bookings and ACTIVE holds
+12. insert the slot_hold row (5-minute expiry, from platform_config)
+13. insert the booking row (status = PAYMENT_PENDING)
+14. insert the payments row and commit atomically
+```
 
-If any critical step fails:
-
-Do not create a partial booking.
+If any step fails, **no partial booking is created** — the whole transaction
+rolls back. The Razorpay path additionally re-validates the hold
+(`assertHoldStillValid`) immediately before creating an order, because the hold
+may have expired since selection.
 
 ---
 
@@ -2024,18 +2432,21 @@ Prioritize:
 - useful session history
 - polished empty/loading/error states
 
-The existing design system/reference files may be used for visual direction, but product logic and the role-specific navigation architecture must come from this document.
+The live design system is `docs/SUGGEST-KEY-UI-DESIGN-SYSTEM.md`. Product logic
+and the role-specific navigation architecture come from this document.
 
 ---
 
-# 100. PRIMARY SEEKER FLOW
+# 101. PRIMARY SEEKER FLOW
+
+## Manual payment path (the default)
 
 ```text
 Login
  ↓
 Home
  ↓
-Auto-selected Segment
+Segment (auto-selected, or chosen)
  ↓
 Select Date
  ↓
@@ -2047,30 +2458,73 @@ Mentor Detail
  ↓
 Select Slot
  ↓
-15-minute Hold
+5-minute Hold
  ↓
-Payment QR
+Payment screen (UPI id, QR, instructions from platform_config)
  ↓
-Upload Payment Proof
- ↓
-Payment Pending
+Upload Payment Proof  →  PENDING_VERIFICATION
  ↓
 Admin Approves
  ↓
-Mentor Pending
+MENTOR_PENDING
  ↓
 Mentor Adds Meeting Link
  ↓
 Mentor Confirms
  ↓
-Confirmed
+CONFIRMED
  ↓
 T−5 Countdown
  ↓
 Join Session
  ↓
-Session Ends
+Session Ends  →  COMPLETED
  ↓
 History
  ↓
-Session Workspace
+Session Workspace (once the mentor publishes it)
+```
+
+## Razorpay path (when `RAZORPAY_ENABLED === "true"`)
+
+```text
+…
+Select Slot
+ ↓
+5-minute Hold
+ ↓
+Razorpay Checkout
+ ↓
+Server verifies the capture signature  →  MENTOR_PENDING
+ ↓
+Mentor Adds Meeting Link
+ ↓
+…identical from here
+```
+
+> **Correction to v1 of this document:** the hold is **5 minutes**, not 15.
+> The flow is also no longer strictly linear — the Razorpay path skips the
+> proof upload and the admin approval, so "Upload Payment Proof → Admin
+> Approves" is a branch, not a mandatory stage.
+
+## Primary mentor flow
+
+```text
+Signup / application
+ ↓
+Submit application + documents
+ ↓
+Admin verification
+ ↓
+Approved
+ ↓
+Gigs, segments, availability
+ ↓
+MENTOR_PENDING booking
+ ↓
+Add meeting link → Confirm
+ ↓
+Run session → End session
+ ↓
+Write and publish the workspace
+```

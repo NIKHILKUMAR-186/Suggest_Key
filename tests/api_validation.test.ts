@@ -327,6 +327,171 @@ describe('bounds and formats', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Segment experience: the write schema must agree with the read model
+// ---------------------------------------------------------------------------
+
+describe('segment experience write contract', () => {
+  it('accepts an internal relative CTA, the value the product actually uses', () => {
+    // Regression: the write schema demanded an absolute http(s) URL while the
+    // renderer's `isSafeSegmentLink` accepted `/mentors`, so "See autism
+    // mentors" could never be saved back.
+    const result = runValidation(apiSchemas.segmentExperience, {
+      cta: { title: 'Talk to an autism mentor', buttonText: 'See autism mentors', buttonUrl: '/mentors' },
+    });
+    assert.equal(result.statusCode, null);
+    assert.equal(result.nexted, true);
+    assert.equal((result.req.body as { cta: { buttonUrl: string } }).cta.buttonUrl, '/mentors');
+  });
+
+  it('accepts every internal path shape the app routes on', () => {
+    for (const url of ['/', '/seeker', '/mentors', '/mentor/123', '/seeker?segment=career-mentor']) {
+      const result = runValidation(apiSchemas.segmentExperience, { cta: { buttonUrl: url } });
+      assert.equal(result.nexted, true, `${url} must be accepted`);
+    }
+  });
+
+  it('accepts an absolute https CTA, so external links still work', () => {
+    const result = runValidation(apiSchemas.segmentExperience, {
+      cta: { buttonUrl: 'https://example.com/careers' },
+    });
+    assert.equal(result.nexted, true);
+  });
+
+  it('still refuses every URL that could escape the application', () => {
+    for (const url of [
+      'javascript:alert(1)',
+      'javascript://comment%0Aalert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      '//evil.example',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd',
+      'ht!tp://nope',
+    ]) {
+      const result = runValidation(apiSchemas.segmentExperience, { cta: { buttonUrl: url } });
+      assert.equal(result.statusCode, 400, `${url} must be rejected`);
+    }
+  });
+
+  it('refuses an unsafe guide CTA the same way as a main CTA', () => {
+    const bad = runValidation(apiSchemas.segmentExperience, {
+      guides: [{ title: 'Guide', description: 'd', cta: { text: 'Read', url: 'javascript:alert(1)' } }],
+    });
+    assert.equal(bad.statusCode, 400);
+
+    const good = runValidation(apiSchemas.segmentExperience, {
+      guides: [{ title: 'Guide', description: 'd', cta: { text: 'Read', url: '/guides/one' } }],
+    });
+    assert.equal(good.nexted, true);
+  });
+
+  it('keeps the image rule strict: a hero image must be an absolute http(s) URL', () => {
+    // A hero image is NOT a navigation link, so it must not inherit the
+    // relative-path allowance. The renderer uses `isSafeSegmentUrl` for it.
+    for (const url of ['/hero.png', 'javascript:alert(1)', 'data:image/png;base64,x', '//evil.example/x.png']) {
+      const result = runValidation(apiSchemas.segmentExperience, { branding: { heroImageUrl: url } });
+      assert.equal(result.statusCode, 400, `${url} must be rejected as an image URL`);
+    }
+
+    const good = runValidation(apiSchemas.segmentExperience, {
+      branding: {
+        heroImageUrl: 'https://abc.supabase.co/storage/v1/object/public/segment-hero/segment-hero/a-1-b.png',
+        heroImageAlt: 'A mentor session',
+      },
+    });
+    assert.equal(good.nexted, true);
+  });
+
+  it('saves a config carrying a hero image alongside a relative CTA', () => {
+    const result = runValidation(apiSchemas.segmentExperience, {
+      branding: {
+        heroImageUrl: 'https://abc.supabase.co/storage/v1/object/public/segment-hero/segment-hero/a-1-b.png',
+        heroImageAlt: 'A mentor session',
+        accent: '#0d9488',
+      },
+      cta: { title: 'Talk to an autism mentor', buttonText: 'See autism mentors', buttonUrl: '/mentors' },
+      sections: { hero: { enabled: true } },
+    });
+    assert.equal(result.nexted, true);
+    const body = result.req.body as { branding: { heroImageUrl: string; heroImageAlt: string } };
+    assert.match(body.branding.heroImageUrl, /^https:\/\//);
+    assert.equal(body.branding.heroImageAlt, 'A mentor session');
+  });
+
+  it('accepts the section toggles the admin UI writes', () => {
+    // Regression: `sections` was a separate top-level schema, so a config
+    // containing it was refused as an unrecognised key and no save succeeded.
+    const result = runValidation(apiSchemas.segmentExperience, {
+      sections: {
+        hero: { enabled: true },
+        guides: { enabled: false },
+        stories: { enabled: false },
+        cta: { enabled: true },
+      },
+    });
+    assert.equal(result.nexted, true);
+  });
+
+  it('refuses a section key outside the closed registry', () => {
+    const result = runValidation(apiSchemas.segmentExperience, { sections: { sneaky: { enabled: true } } });
+    assert.equal(result.statusCode, 400);
+  });
+
+  it('accepts a per-item enabled flag the read model already honours', () => {
+    const result = runValidation(apiSchemas.segmentExperience, {
+      quickHelp: [{ title: 'Choosing a therapist', description: 'd', enabled: false }],
+      faq: [{ question: 'q', answer: 'a', enabled: false }],
+    });
+    assert.equal(result.nexted, true);
+  });
+
+  it('saves the stored config of all three shipped segments', () => {
+    // The exact shape stored in the database, reduced to the fields the schema
+    // governs. Before the fix every one of these returned 400.
+    const stored: Array<Record<string, unknown>> = [
+      {
+        cta: {
+          title: 'Talk to an autism mentor',
+          buttonUrl: '/mentors',
+          buttonText: 'See autism mentors',
+          description: 'One focused session can turn a decade of guessing into a plan you can act on this month.',
+        },
+        sections: { hero: { enabled: true }, guides: { enabled: false }, stories: { enabled: false } },
+        branding: { accent: '#0d9488', eyebrow: 'Autism mentoring', heroTint: '#ccfbf1', textMode: 'auto' },
+        topics: [{ icon: 'compass', title: 'Diagnosis', description: 'd' }],
+        quickHelp: [{ icon: 'compass', title: 'Not sure it is autism?', description: 'd' }],
+        journeySteps: [{ icon: 'calendar', title: 'Book a session', description: 'd' }],
+        benefits: [{ icon: 'heart-handshake', title: 'Lived experience', description: 'd' }],
+        faq: [{ question: 'Do I need a diagnosis first?', answer: 'No.' }],
+      },
+      {
+        cta: {
+          title: 'One session before your next move',
+          buttonUrl: '/mentors',
+          buttonText: 'See career mentors',
+          description: 'Find the mentor whose topic matches the decision in front of you.',
+        },
+        sections: { hero: { enabled: true }, guides: { enabled: false } },
+        branding: { accent: '#4338ca', eyebrow: 'Career mentoring', heroTint: '#dfe4fb', textMode: 'auto' },
+        topics: [{ icon: 'briefcase', title: 'Current, not textbook', description: 'd' }],
+        faq: [{ question: 'How do I know which mentor is right for me?', answer: 'Filter by topic.' }],
+      },
+      {
+        // relationship-advisor: empty descriptions and empty icons, as stored.
+        topics: [{ icon: '', title: 'Couples', description: '' }],
+        quickHelp: [{ icon: '', title: 'Couples session', description: '' }],
+        journeySteps: [{ icon: '', title: 'Figuring it out', description: '' }],
+        branding: { accent: '#db2777', eyebrow: 'Relationship mentoring', tintColor: '#f60195' },
+      },
+    ];
+
+    for (const config of stored) {
+      const result = runValidation(apiSchemas.segmentExperience, config);
+      assert.equal(result.nexted, true, JSON.stringify((result.payload as { error?: unknown } | null)?.error ?? {}));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Sanitisation reaching the stored value
 // ---------------------------------------------------------------------------
 

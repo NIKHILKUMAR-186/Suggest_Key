@@ -84,11 +84,21 @@ export interface AdminSegmentExperienceEditorProps {
   segmentSlug: string;
 }
 
-/** Read a JSON error body without handing an HTML page to a JSON caller. */
+/**
+ * Read a JSON error body without handing an HTML page to a JSON caller.
+ *
+ * A validation failure carries `fields`, a map of failing path to message. The
+ * flat `message` alone ("Enter a valid URL.") leaves an admin with a config of
+ * a dozen fields and no idea which one to fix, so the first failing path is
+ * prefixed onto the message: "cta.buttonUrl: Enter a valid URL: ...".
+ */
 async function readApiError(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json();
-    return body?.error?.message || fallback;
+    const message = body?.error?.message;
+    if (!message) return fallback;
+    const field = Object.keys(body?.error?.fields || {})[0];
+    return field ? `${field}: ${message}` : message;
   } catch {
     return fallback;
   }
@@ -164,7 +174,7 @@ export const AdminSegmentExperienceEditor: React.FC<AdminSegmentExperienceEditor
       });
       if (!res.ok) throw new Error(await readApiError(res, 'Failed to save experience config'));
       const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to save experience config');
+      if (!data.success) throw new Error(await readApiError(res, 'Failed to save experience config'));
 
       // "Saved" is only ever set from a confirmed server response.
       const confirmed = data.segment?.experience_config ?? draft;

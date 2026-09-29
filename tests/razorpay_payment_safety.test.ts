@@ -192,18 +192,21 @@ describe('razorpay safety: retrying a failed payment', () => {
     assert.equal(store.bookings.get(BOOKING_ID)!.status, 'PAYMENT_PENDING');
   });
 
-  it('acknowledges a late webhook for the superseded order without touching the retry', async () => {
+  it('records a late webhook for the superseded order without touching the retry', async () => {
     const { store, gateway } = await afterFailedAttempt();
     await retryOrder(store, gateway);
 
     const late = await webhook(store, gateway, webhookBody({ orderId: ORDER_ID, paymentId: DECLINED_PAYMENT_ID }));
 
     // The re-armed row matches neither the old order id nor the old payment id,
-    // so the delivery is acknowledged and nothing is written.
-    assert.ok(late.ok && late.handled === 'unmatched');
+    // so no capture is applied. Since the money may still have moved, the
+    // delivery is now RECORDED for reconciliation and left retryable rather
+    // than being silently acknowledged (P0-1).
+    assert.ok(!late.ok && late.error.code === 'RAZORPAY_CAPTURE_UNMATCHED');
     assert.equal(store.payments.get(PAYMENT_ID)!.status, 'PAYMENT_PROCESSING');
     assert.equal(store.payments.get(PAYMENT_ID)!.razorpay_order_id, RETRY_ORDER_ID);
     assert.equal(store.events.filter((e) => e.eventType === 'PAYMENT_CAPTURED').length, 0);
+    assert.equal(store.unmatched.size, 1, 'the superseded capture is recorded, not dropped');
   });
 
   it('returns the same retried order when the seeker double-taps', async () => {

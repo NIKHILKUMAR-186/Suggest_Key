@@ -1,25 +1,28 @@
 # Suggest Key — UI Design System & Frontend Design Bible
 
-**Version:** 1.0  
-**Status:** Draft for frontend implementation  
+**Version:** 3.1
+**Status:** As-built / Current
+**Last verified:** 2026-09-29
 **Scope:** Frontend UI/UX only
+
+> Version 1.0 of this document was a pre-implementation proposal. It listed
+> components and utilities that were never built. Version 3.0 re-verifies the
+> inventory against the current tree and adds the Razorpay checkout surface and
+> the segment-experience theme layer, both of which were built after version 2.
+> Anything not present in the repository is marked
+> **Not currently implemented.**
 
 ---
 
 ## 1. Purpose
 
-This document defines the visual language, interaction patterns, reusable components, responsive behavior, theme architecture, and frontend quality standards for Suggest Key.
+This document defines the visual language, component inventory, theme
+architecture, and frontend quality standards for Suggest Key.
 
-Suggest Key should feel:
+Suggest Key should feel: premium, calm, human, trustworthy, modern, focused.
 
-- Premium
-- Calm
-- Human
-- Trustworthy
-- Modern
-- Focused
-
-The UI must feel like a premium mentorship platform, not a generic SaaS dashboard.
+The UI must feel like a premium mentorship platform, not a generic SaaS
+dashboard.
 
 ---
 
@@ -27,1149 +30,578 @@ The UI must feel like a premium mentorship platform, not a generic SaaS dashboar
 
 ### 2.1 Clarity First
 
-Every page should make the user's current task obvious.
-
-The user should quickly understand:
-
-- Where they are
-- What information matters
-- What action is primary
-- What state the system is currently in
-- What happens next
+Every page should make the user's current task obvious: where they are, what
+matters, what the primary action is, what state the system is in, and what
+happens next.
 
 ### 2.2 Visual Hierarchy
 
-Use visual hierarchy rather than excessive decoration.
-
-Priority order should generally be:
-
-1. Primary task/action
-2. Important contextual information
-3. Supporting information
-4. Metadata
+Priority order: primary task/action → important context → supporting information
+→ metadata. Use hierarchy rather than decoration.
 
 ### 2.3 Minimal Visual Noise
 
-Avoid:
-
-- Excessive cards
-- Excessive borders
-- Excessive shadows
-- Unnecessary gradients
-- Excessive glassmorphism
-- Decorative animations with no UX purpose
-- Repeated UI containers
-- Generic dashboard styling
+Avoid excessive cards, borders, shadows, gradients, glassmorphism, decorative
+animation, repeated containers, and generic dashboard styling.
 
 ### 2.4 Consistency
 
-Equivalent UI concepts must look and behave consistently throughout the application.
-
-The same:
-
-- Button type
-- Input
-- Status
-- Toast
-- Card
-- Modal
-- Navigation item
-- Loading state
-
-must use the same design language everywhere.
+Equivalent concepts look and behave identically everywhere. The same button
+type, input, status, card, modal, navigation item and loading state must use the
+same design language.
 
 ---
 
-# 3. Role-Specific UX Direction
+## 3. Role-Specific UX Direction
 
-Suggest Key has three roles.
-
-## Seeker
-
-Primary job:
+### Seeker
 
 ```text
 Discover → Book → Attend → Review outcome
 ```
 
-UX direction:
+Clean, focused, discovery-oriented, low cognitive load, strong booking CTA.
+Top navigation shell: Home, My Bookings, Notifications, Settings.
 
-- Clean
-- Focused
-- Discovery-oriented
-- Low cognitive load
-- Strong booking CTA
-
-Navigation:
-
-```text
-Home
-My Bookings
-Notifications
-Settings
-```
-
-Use a top navigation shell.
-
----
-
-## Mentor
-
-Primary job:
+### Mentor
 
 ```text
 Manage availability → Manage bookings → Conduct session → Document outcome
 ```
 
-UX direction:
+Clean, operational, action-oriented, clear session states.
+Top navigation shell: Home, My Bookings, Availability, Notifications, Settings.
 
-- Clean
-- Operational
-- Action-oriented
-- Clear session states
-
-Navigation:
-
-```text
-Home
-My Bookings
-Availability
-Notifications
-Settings
-```
-
-Use a top navigation shell.
-
----
-
-## Admin
-
-Primary job:
+### Admin
 
 ```text
 Monitor → Verify → Control → Resolve
 ```
 
-UX direction:
-
-- Operational
-- Information-dense
-- Efficient
-- Clear queues and actions
-
-Navigation:
-
-```text
-Dashboard
-Users
-Mentors
-Segments
-Bookings
-Payments
-Notifications
-Settings
-```
-
-Use a sidebar shell on desktop and a collapsible/drawer navigation on smaller screens.
+Operational, information-dense, efficient, clear queues and actions.
+Sidebar shell: Dashboard, Users, Mentors, Mentor Verification, Segments,
+Bookings, Workspaces, Payments, Notifications, System Health, Settings.
 
 ---
 
-# 4. Frontend-Only Constraint
+## 4. Frontend-Only Constraint
 
-This document defines the frontend visual system.
+Frontend work must not change backend architecture or business rules.
 
-Frontend redesign work must NOT change unrelated backend architecture or business rules.
+Do not modify:
 
-Do NOT:
+- database schema
+- Supabase RLS
+- authentication architecture
+- booking, payment or availability business logic
+- server-side authorization
+- API contracts
+- real data flows
 
-- Modify database schema
-- Modify Supabase RLS
-- Modify authentication architecture
-- Modify booking business logic
-- Modify payment business logic
-- Modify availability logic
-- Modify server-side authorization
-- Replace backend APIs
-- Introduce fake production business data
-- Bypass existing state rules
-- Replace real data with mock data
-- Rewrite unrelated backend modules
-
-The UI must represent the real backend state.
-
-Backend/database remains the source of truth.
+Do not introduce fake production business data or bypass existing state rules.
+The UI must represent real backend state; the backend remains the source of truth.
 
 ---
 
-# 5. Theme Architecture
+## 5. Technology
 
-Suggest Key must support:
+| Concern | Implementation |
+|---|---|
+| Framework | React 19 |
+| Build | Vite 8.3.0 |
+| Language | TypeScript 7 |
+| Styling | Tailwind CSS v4 via `@tailwindcss/vite` |
+| Animation | `motion` |
+| Icons | `lucide-react` |
+| Theming | CSS custom properties in `src/index.css`, light + `.dark` |
+| Routing | Hand-written matcher, `src/routes/Router.tsx` |
+| Component library | None. The primitives below are first-party. |
 
-- Light mode
-- Dark mode
+**Not used:** Next.js, shadcn/ui, Framer Motion, styled-components, any
+third-party component kit.
 
-The two themes must be intentionally designed, not created by simply inverting colors.
-
-## 5.1 Semantic Tokens
-
-Components should consume semantic tokens rather than hardcoded colors.
-
-Conceptual token groups:
-
-```text
-Background
-Surface
-Surface Muted
-Surface Elevated
-
-Foreground
-Foreground Muted
-Foreground Subtle
-
-Border
-Border Strong
-
-Primary
-Primary Hover
-Primary Foreground
-
-Success
-Warning
-Destructive
-Info
-```
-
-Prefer semantic classes/tokens such as:
-
-```text
-bg-background
-bg-card
-bg-muted
-text-foreground
-text-muted-foreground
-border-border
-bg-primary
-text-primary-foreground
-```
-
-Avoid scattering hardcoded values such as:
-
-```text
-bg-white
-text-black
-bg-gray-900
-border-gray-200
-```
-
-through individual components when a semantic token can represent the same concept.
+> shadcn-style semantic aliases (`bg-background`, `text-foreground`,
+> `bg-card`, `border-border`, …) **are** declared in `index.css` and map onto the
+> shell tokens, so they work. In practice components reference the tokens
+> directly, e.g. `bg-[var(--color-shell-bg)]`. Both forms are valid; be
+> consistent within a file.
 
 ---
 
-# 6. Light Mode
+## 6. Theme Architecture
 
-Light mode should feel:
+Light and dark are both intentionally designed, not inversions. The `.dark`
+class on a root ancestor switches the token block.
 
-- Clean
-- Bright
-- Calm
-- Spacious
-- Premium
+`src/index.css` is **2,844 lines** (97,738 bytes) and defines the tokens in
+`@layer base`. It is the **single live source of visual truth**.
 
-Use a hierarchy such as:
+### 6.1 Semantic token groups (live)
 
+**Shell (core)**
 ```text
-Page Background
-    ↓
-Normal Surface
-    ↓
-Elevated Surface
+--color-shell-bg            --color-shell-bg-hover
+--color-shell-surface       --color-shell-surface-hover
+--color-shell-surface-elevated      --color-shell-surface-elevated-hover
+--color-shell-text          --color-shell-text-muted
+--color-shell-text-subtle  --color-shell-text-contrast
+--color-shell-border        --color-shell-border-strong
+--color-shell-focus
 ```
 
-Avoid making every area pure white.
+**Shell (brand + status)**
+```text
+--color-shell-primary       --color-shell-primary-hover
+--color-shell-primary-soft
+--color-shell-accent        --color-shell-accent-hover
+--color-shell-accent-soft
+--color-shell-success       --color-shell-success-soft
+--color-shell-warning       --color-shell-warning-soft
+--color-shell-error         --color-shell-error-soft
+--color-shell-info          --color-shell-info-soft
+```
 
-Use subtle surface differences to create hierarchy.
+**Role-scoped**: `--mentor-*` (mentor surface), `--seeker-*` (seeker hero,
+panels, cards, selection states), `--brand-*`, `--status-*`.
+
+**Compositional**: `--overlay-backdrop`, `--gradient-hero-text`,
+`--landing-*`, `--glass-card-*`, `--hero-card-*`, `--seeker-hero-*`.
+
+**Non-color**: `--radius-sm|md|lg|xl|2xl|full`, `--shadow-xs|sm|md|lg|xl`.
+
+### 6.2 Live color values
+
+| Role | Light | Dark |
+|---|---|---|
+| Background | `#f4f7fc` | `#05060f` |
+| Surface | `#ffffff` | `#0b0d1a` |
+| Surface elevated | `#ffffff` | `#111424` |
+| Text | `#0b1220` | `#e8edf7` |
+| Text muted | `#47566e` | `#9da7ba` |
+| Primary | `#663af3` | `#663af3` |
+| Accent | `#2563eb` | `#60a5fa` |
+| Success | `#15803d` | `#34d399` |
+| Warning | `#b45309` | `#fbbf24` |
+| Error | `#dc2626` | `#f87171` |
+| Focus ring | `#2563eb` | `#60a5fa` |
+
+Both themes avoid pure white everywhere and pure black everywhere: hierarchy comes
+from subtle surface steps plus borders.
+
+### 6.3 Known token divergence — do not treat `design-tokens.ts` as live
+
+`src/config/design-tokens.ts` still describes the earlier **"frosted glass
+cathedral at midnight"** theme (`midnightCanvas: '#05060f'`,
+`voidViolet: '#663af3'`, `emberGlow: '#e46d4c'`, `signalBlue: '#027dea'`,
+`gridlineBlue: '#3f4959'`, plus `Untitled Sans` / `aeonikPro` / `dotDigital`
+font names) and a separate **warm-amber mentor theme** (`accent: '#b8860b'`).
+
+It contradicts `index.css` — most visibly the mentor accent, `#b8860b` in the
+TypeScript file versus `#663af3` in the stylesheet. It is **not** what the app
+renders. When changing visual values, change `index.css`. Retire or reconcile
+`design-tokens.ts` rather than adding values there.
 
 ---
 
-# 7. Dark Mode
+## 7. Typography
 
-Dark mode should feel:
+Fonts are declared as stacks with no bundled font files, so they resolve to the
+platform UI font when the named face is absent.
 
-- Deep
-- Calm
-- Comfortable
-- Premium
-- High contrast without being harsh
-
-Do not treat dark mode as:
-
-```text
-white → black
-```
-
-Instead use:
-
-```text
-Deep Background
-    ↓
-Dark Surface
-    ↓
-Elevated Dark Surface
-```
-
-Use subtle surface contrast and borders where useful.
-
-Do not make every surface pure black.
-
----
-
-# 8. Theme Component Requirement
-
-Every reusable component must be validated in both themes.
-
-At minimum:
-
-- Background
-- Text
-- Border
-- Icon
-- Hover
-- Active
-- Focus
-- Disabled
-- Selected
-- Error
-- Success
-- Warning
-
-must remain visually correct in both Light and Dark modes.
-
----
-
-# 9. Typography System
-
-Typography must be centralized.
-
-Recommended hierarchy:
-
-```text
-Display XL
-Display L
-Display M
-
-H1
-H2
-H3
-H4
-
-Body Large
-Body
-Body Small
-
-Label
-Caption
-Metadata
-```
+| Token | Stack |
+|---|---|
+| `--font-sans` | Inter → system-ui → … |
+| `--font-heading` | Space Grotesk → system-ui → … |
+| `--font-mono` | JetBrains Mono → monospace stack |
 
 Rules:
 
-- Same semantic level uses the same typography treatment.
-- Page titles must be visually distinct from section titles.
-- Section titles must be visually distinct from card titles.
-- Supporting text must be visibly subordinate.
-- Avoid arbitrary one-off font sizes.
+- The same semantic level gets the same treatment everywhere.
+- Page titles, section titles and card titles must be visually distinct.
+- Supporting text is visibly subordinate.
+- No arbitrary one-off font sizes.
 
-Typography should communicate hierarchy before decoration is added.
-
----
-
-# 10. Spacing System
-
-Use a consistent spacing rhythm.
-
-Base values:
-
-```text
-4
-8
-12
-16
-24
-32
-40
-48
-64
-80
-96
-```
-
-Most UI should be composed using these values or the framework's equivalent spacing scale.
-
-Avoid arbitrary spacing such as:
-
-```text
-17px
-23px
-29px
-37px
-```
-
-unless there is a specific design reason.
+`design-tokens.ts` also carries an unused px scale (`caption` 12px … `display`
+48px) and a Tailwind-class mentor scale. Neither is what the stylesheet applies.
 
 ---
 
-# 11. Border Radius
+## 8. Spacing, Radius, Elevation
 
-Use a consistent radius hierarchy.
+**Spacing** follows the Tailwind scale. Avoid arbitrary values such as 17px,
+23px, 37px unless there is a design reason.
 
-Conceptual levels:
+**Radius** (`--radius-*`):
 
 ```text
-Small
-→ badges, compact controls
-
-Medium
-→ buttons, inputs, small surfaces
-
-Large
-→ cards, panels
-
-XL
-→ major surfaces, dialogs where appropriate
+sm  0.375rem   badges, compact controls
+md  0.5rem     inputs, buttons
+lg  0.75rem    cards
+xl  1rem       panels
+2xl 1.5rem     major surfaces
+full           pills
 ```
 
-Do not make every element pill-shaped.
+Do not make every element pill-shaped. Reserve pills for tags, compact status
+indicators, and explicit pill controls.
 
-Use pill shapes primarily for:
+**Elevation** is a small system:
 
-- Tags
-- Compact status indicators
-- Explicit pill controls
+```text
+Level 0  page background
+Level 1  normal surface
+Level 2  elevated card, dropdown
+Level 3  dialog, modal, overlay
+```
+
+Light mode uses subtle shadows (`--shadow-xs` … `--shadow-xl`). Dark mode leans on
+surface contrast and borders. Avoid large dramatic shadows.
 
 ---
 
-# 12. Elevation & Shadows
+## 9. Iconography
 
-Use a small elevation system.
-
-```text
-Level 0
-→ Page background
-
-Level 1
-→ Normal surface
-
-Level 2
-→ Elevated card, dropdown
-
-Level 3
-→ Dialog, modal, important overlay
-```
-
-Light mode may use subtle shadows.
-
-Dark mode should often use:
-
-- Surface contrast
-- Subtle borders
-- Controlled shadows
-
-Avoid large dramatic shadows.
+One icon family: `lucide-react`. Keep stroke style, weight, size, alignment and
+color consistent. Do not mix unrelated icon styles, random inline SVGs, Unicode
+symbols, and emoji into one system. Icons support comprehension; they are not
+decoration.
 
 ---
 
-# 13. Iconography
+## 10. Component Inventory (as-built)
 
-Use one primary icon system consistently.
+### 10.1 Primitives — `src/components/ui/` (10 files)
 
-Maintain consistency in:
+| Component | Verified API |
+|---|---|
+| `Button` | `variant: 'default' \| 'outline' \| 'secondary' \| 'ghost' \| 'destructive' \| 'accent'`, `size: 'sm' \| 'md' \| 'lg'`, `isLoading` (renders a spinning `Loader2`), accepts `className` |
+| `Badge` | `variant: 'default' \| 'secondary' \| 'outline' \| 'success' \| 'warning' \| 'destructive'` |
+| `Card` | styled `div` wrapper extending `HTMLAttributes<HTMLDivElement>` |
+| `Input` | extends `InputHTMLAttributes`; adds `error?: boolean` and `success?: boolean`, which drive border, focus ring and trailing-space treatment |
+| `Textarea` | extends `TextareaHTMLAttributes`; resizable, themed border and background |
+| `PasswordInput` | extends `InputHTMLAttributes`; adds show/hide affordance |
+| `Skeleton` | `variant: 'rectangular' \| 'circular' \| 'rounded'` |
+| `Modal` | `isOpen`, `onClose` |
+| `Dialog` | same surface as `Modal` minus `isOpen`/`onClose` (self-managed) |
+| `ThemeToggle` | `variant: 'icon' \| 'labeled'`; switches light/dark |
 
-- Icon family
-- Stroke style
-- Stroke weight
-- Size
-- Alignment
-- Color
+### 10.2 Shared states — `src/components/shared/`
 
-Do not mix unrelated icon styles, random SVGs, Unicode symbols, and emoji as if they are one icon system.
+`EmptyState`, `ErrorState`, `LoadingState`, `SuccessState`, `ShortId`.
 
-Icons should support comprehension rather than create decoration.
+### 10.3 Shells — `src/components/layout/`
 
----
+`AppShell` (role dispatch) → `SeekerShell`, `MentorShell`, `AdminShell`.
 
-# 14. Button System
+### 10.4 Not currently implemented
 
-Standard button variants:
+There is **no** `Select`, `Checkbox`, `Switch`, `Tabs`, `Table` or `Dropdown`
+primitive in `src/components/ui/`. Version 1.0 of this document listed all of
+these as planned Phase 2/3 primitives; they do not exist. Pages that need those
+affordances build them locally. Introducing a shared primitive for one is a
+reasonable refactor, but do not document one as existing.
 
-### Primary
-
-For the main action.
-
-Examples:
-
-```text
-Book Session
-Confirm Session
-Save Changes
-Join Session
-```
-
-### Secondary
-
-For supporting actions.
-
-Examples:
-
-```text
-View Details
-Edit
-Back
-```
-
-### Outline
-
-For visible but lower-emphasis actions.
-
-### Ghost
-
-For low-emphasis contextual actions.
-
-### Destructive
-
-For dangerous actions.
-
-Examples:
-
-```text
-Reject
-Delete
-Deactivate
-```
-
-Each button must define:
-
-```text
-Default
-Hover
-Pressed
-Focus
-Disabled
-Loading
-```
-
-states.
-
-Buttons must remain readable and distinguishable in both themes.
+A **toast system does exist** — `src/context/ToastContext.tsx` provides
+`ToastProvider` with `success` / `error` / `info` variants, an auto-dismiss
+timer, a max-visible cap, and a `useToast` hook. It is a context + host, not a
+`ui/` primitive, which is why it is not in the table above. It has only two
+consumers, so most of the app still uses inline or status-transition feedback.
 
 ---
 
-# 15. Form & Input System
+## 10.5 Payment surfaces (added in v3.0)
 
-Standard form structure:
+| Component | Role |
+|---|---|
+| `src/pages/seeker/SeekerPaymentPage.tsx` | The checkout screen. Serves **both** gateways from one route: `/seeker/payment` and `/seeker/checkout` |
+| `src/components/seeker/RazorpayCheckoutCard.tsx` | Razorpay Checkout launcher. Rendered only when `GET /api/payments/razorpay/config` reports `enabled: true` |
+| `src/components/booking/HoldCountdown.tsx` | The live 5-minute hold countdown shown during checkout |
+| `src/components/booking/BookingSummary.tsx` | Booking summary on the payment screen |
+| `src/components/booking/StatePanel.tsx` | Status panel on booking detail |
+| `src/components/booking/StatusPill.tsx` | Status pill, tones from `statusTone.ts` |
+| `src/components/booking/SegmentScope.tsx` | Segment context strip |
+
+**The manual and Razorpay paths are one screen with two branches**, not two
+pages. The UPI id, QR image, payment instructions, account name and currency all
+come from `GET /api/platform-config` and are **never hardcoded**. When Razorpay
+is disabled (the default) the Razorpay card is not rendered at all and the
+screen is manual-only.
+
+UX requirements for payment states:
+
+- The hold countdown must be visible on the payment screen; a payment started
+  after the hold expires must be refused by the server, not merely warned
+  about in the UI.
+- `FAILED` and `REFUNDED` need explicit, non-colour-only presentation.
+- A `PAYMENT_PROCESSING` booking has no tone today — see §15. Latent: the
+  booking never enters that state, so the gap is in the type/tone tables, not in
+  anything a user can currently see.
+
+---
+
+## 10.6 Segment experience theme layer (added in v3.0)
+
+Seeker-facing segment pages are themed at **runtime**, per segment, by
+`SegmentThemeContext` (`src/context/SegmentThemeContext.tsx`) reading
+`src/lib/segmentThemes.ts` and `src/lib/segmentTheme.ts`. The CMS payload itself
+comes from `segments.experience_config` via `SegmentExperienceRenderer.tsx`.
+
+```text
+segments.experience_config (JSONB, admin-authored)
+        ↓
+SegmentExperienceContext  →  SegmentExperienceRenderer
+        ↓
+SegmentThemeContext       →  per-segment colour/icon overrides
+        ↓
+SegmentMentorCard / SegmentMentorGrid / SegmentTopicBar / SegmentSelector
+```
+
+This layer is **not** covered by `src/index.css` tokens. An admin editing a
+segment's experience config in `AdminSegmentExperienceEditor.tsx` can therefore
+produce values that do not follow the shell palette. That is intentional — it is
+a per-brand surface — but it means segment themes must be validated in the
+admin editor with a live preview (`AdminExperiencePreview.tsx`), because there
+is no shell-level QA matrix for them.
+
+---
+
+## 11. Button System
+
+`default` is the primary action (Book Session, Confirm Session, Join Session,
+Save Changes). `outline` and `secondary` are supporting actions (View Details,
+Edit, Back). `ghost` is low-emphasis contextual. `destructive` covers Reject,
+Delete, Deactivate. `accent` is a secondary brand emphasis.
+
+Every interactive state must be defined and readable in both themes: default,
+hover, pressed (`active:scale-[0.98]` is used), focus, disabled, loading.
+`isLoading` shows an inline spinner and is the correct pattern for a submitting
+action.
+
+---
+
+## 12. Forms and Inputs
 
 ```text
 Label
-↓
+  ↓
 Input
-↓
+  ↓
 Helper text / validation
 ```
 
-Every important input should support:
+Every meaningful input supports default, hover, focus, filled, disabled, error,
+and success where appropriate. Error and success are first-class `Input` props.
 
-- Default
-- Hover
-- Focus
-- Filled
-- Disabled
-- Error
-- Success where appropriate
+**Error communication must not rely on colour alone** — pair it with clear text,
+an icon where useful, correct field association, and `aria` wiring.
 
-Error communication must not rely only on color.
-
-Use:
-
-- Clear error text
-- Appropriate icon where useful
-- Visual state
-- Correct field association
+All input text is HTML-stripped server-side before length validation
+(`stripHtmlTags`). Client validation mirrors the server schemas in
+`src/lib/validation.ts`; the server remains authoritative.
 
 ---
 
-# 16. Cards & Surfaces
+## 13. Cards and Surfaces
 
-Do not place every piece of content inside a card.
+Do not put every piece of content in a card. Cards earn their place when they
+group something interactive or meaningful: mentor profile, mentor offering,
+booking summary, payment summary, operational queue item, workspace section.
 
-Use cards when they provide meaningful grouping or interaction.
-
-Good card use cases:
-
-- Mentor profile
-- Mentor offering
-- Booking summary
-- Payment summary
-- Operational queue item
-- Session workspace section
-
-Avoid cards for:
-
-- Every paragraph
-- Every heading
-- Every small piece of metadata
-- Simple page sections that can be grouped by spacing alone
-
-The goal is to reduce visual noise.
+Avoid cards for paragraphs, headings, small metadata, or sections that spacing
+alone can group.
 
 ---
 
-# 17. Mentor Card
+## 14. Mentor Card
 
-Mentor discovery is a core Suggest Key experience.
-
-A mentor card should prioritize:
-
-1. Mentor identity
-2. Relevant segment/gig
-3. Short description
-4. Availability
-5. Price/duration
-6. Primary action
-
-Conceptual structure:
-
-```text
-Mentor Avatar
-
-Mentor Name
-Segment / Gig
-
-Short bio
-
-Duration        Price
-
-Next available slot
-
-[ View Mentor ]
-```
-
-Do not overload the card with unnecessary information.
-
----
-
-# 18. Status System
-
-Status visuals must be centralized.
-
-Booking states:
-
-```text
-PAYMENT_PENDING
-MENTOR_PENDING
-CONFIRMED
-IN_PROGRESS
-COMPLETED
-CANCELLED
-REJECTED
-```
-
-Payment states:
-
-```text
-PENDING
-APPROVED
-REJECTED
-```
-
-Hold states:
-
-```text
-ACTIVE
-EXPIRED
-RELEASED
-```
-
-Every status should have:
-
-- Text label
-- Semantic visual treatment
-- Optional supporting icon
-
-Do not communicate status through color alone.
-
-The same status must look the same throughout the product.
-
----
-
-# 19. Booking Progress
-
-The booking experience should make state progression visible.
-
-Conceptual pattern:
-
-```text
-✓ Slot selected
-
-✓ Payment submitted
-
-● Awaiting verification
-
-○ Mentor confirmation
-
-○ Session
-```
-
-The user should understand:
-
-- What has happened
-- What is happening now
-- What happens next
-
-Do not expose unnecessary internal technical state.
-
----
-
-# 20. Loading States
-
-Every important asynchronous area needs a deliberate loading state.
-
-Prefer skeletons when the content shape is known.
-
-Example:
-
-```text
-┌─────────────────────┐
-│ ░░░░░░░░░░░░        │
-│ ░░░░░░░░            │
-│ ░░░░░░░░░░░░░       │
-│ ░░░░░░              │
-└─────────────────────┘
-```
-
-Avoid using a full-page spinner for every operation.
-
-Buttons should use inline loading states when an action is being submitted.
-
----
-
-# 21. Empty States
-
-Empty states must explain:
-
-1. What is empty
-2. Why it may be empty when useful
-3. What the user can do next
-
-Example:
-
-```text
-No mentors available
-
-We couldn't find a bookable mentor
-for this segment and date.
-
-[ Choose another date ]
-```
-
-Another example:
-
-```text
-No upcoming sessions
-
-Your upcoming mentorship sessions
-will appear here.
-
-[ Explore Mentors ]
-```
-
-Do not leave large blank spaces with no explanation.
-
----
-
-# 22. Error States
-
-Errors should be human-readable and actionable.
-
-Prefer:
-
-```text
-Something went wrong
-
-We couldn't load your bookings.
-Please try again.
-
-[ Try Again ]
-```
-
-Avoid exposing raw technical errors as primary UI.
-
-The UI should preserve enough detail for users to understand the issue without exposing implementation details unnecessarily.
-
----
-
-# 23. Success States
-
-Important successful operations should provide clear confirmation.
-
-Examples:
-
-```text
-Profile updated successfully
-```
-
-```text
-Payment proof submitted
-```
-
-```text
-Session confirmed
-```
-
-Success feedback can use:
-
-- Toast
-- Inline confirmation
-- Status transition
-- Contextual success message
-
-Use the least disruptive feedback appropriate to the action.
-
----
-
-# 24. Toast System
-
-Standard categories:
-
-```text
-Success
-Warning
-Error
-Info
-```
-
-Toasts must use the same:
-
-- Position
-- Radius
-- Typography
-- Icon treatment
-- Spacing
-- Theme behavior
-
-throughout the application.
-
----
-
-# 25. Modal / Dialog System
-
-Use dialogs for focused decisions or contained workflows.
-
-Conceptual sizes:
-
-```text
-Small
-→ Confirmation
-
-Medium
-→ Standard form
-
-Large
-→ Complex workflow
-```
-
-Actions should be predictable:
-
-```text
-Cancel
-Confirm
-```
-
-Dangerous actions should clearly communicate their consequence.
-
----
-
-# 26. Navigation System
-
-Navigation must be centralized and role-aware.
-
-## Seeker
-
-```text
-Home
-My Bookings
-Notifications
-Settings
-```
-
-Top navigation.
-
-## Mentor
-
-```text
-Home
-My Bookings
-Availability
-Notifications
-Settings
-```
-
-Top navigation.
-
-## Admin
-
-```text
-Dashboard
-Users
-Mentors
-Segments
-Bookings
-Payments
-Notifications
-Settings
-```
-
-Sidebar.
-
-Do not implement independent ad-hoc navigation systems inside individual pages.
-
----
-
-# 27. Responsive Navigation
-
-### Seeker / Mentor
-
-Desktop:
-
-```text
-Horizontal top navigation
-```
-
-Mobile:
-
-```text
-Compact header
-+
-Collapsible menu/sheet
-```
-
-### Admin
-
-Desktop:
-
-```text
-Persistent sidebar
-```
-
-Mobile:
-
-```text
-Collapsible sidebar / drawer
-```
-
----
-
-# 28. Settings UX
-
-## Seeker
-
-```text
-Settings
-├── Profile
-├── Personal Information
-├── Appearance
-├── Notifications
-├── Security
-└── Account
-```
-
-## Mentor
-
-```text
-Settings
-├── Profile
-├── Personal Information
-├── Appearance
-├── Notifications
-├── Security
-├── Segments
-├── Gigs
-└── Account
-```
-
-Availability remains a dedicated primary navigation item for mentors.
-
----
-
-# 29. Admin UI Direction
-
-Admin UI can be denser than seeker/mentor UI.
-
-Prioritize:
-
-- Operational metrics
-- Queues
-- Filters
-- Tables
-- Status
-- Quick actions
-- Search
-- Clear information hierarchy
-
-Avoid turning admin into an unreadable enterprise dashboard.
-
-All metrics and business data must come from real data.
-
-Never fabricate:
-
-- KPIs
-- Charts
-- Notification counts
-- Payment counts
-- Booking counts
-- Availability
-- User counts
-
----
-
-# 30. Domain Components
-
-Reusable domain components should include, where appropriate:
-
-```text
-MentorCard
-SlotPicker
-BookingStatus
-PaymentStatus
-BookingProgress
-SessionCountdown
-NotificationItem
-BookingSummary
-PaymentSummary
-WorkspaceSection
-AvailabilityCalendar
-```
-
-Domain components should represent backend state consistently.
-
-Do not duplicate status logic and visual logic across pages.
-
----
-
-# 31. Session Experience
-
-The session experience is time-sensitive.
-
-The UI should clearly communicate:
-
-```text
-Before T-5
-→ Session starts in X minutes
-
-At T-5
-→ Join becomes available
-
-During session
-→ Join available
-
-After end time
-→ Session ended
-```
-
-The frontend countdown is UX only.
-
-Server-side authorization remains authoritative.
-
----
-
-# 32. Animation
-
-Animation should be purposeful.
-
-Good uses:
-
-- Page transitions
-- Modal entrance
-- Dropdown opening
-- Button feedback
-- Skeleton loading
-- Slot selection
-- Status transitions
-
-Avoid:
-
-- Excessive scroll animations
-- Constant floating elements
-- Heavy parallax
-- Animation on every component
-- Long transitions that slow down workflows
-
-Goal:
-
-```text
-The interface should feel alive,
-not animated.
-```
-
-Respect reduced-motion preferences where applicable.
-
----
-
-# 33. Responsive Design
-
-Every important page must be designed for:
-
-```text
-Mobile
-Tablet
-Desktop
-Large Desktop
-```
-
-Do not simply shrink desktop layouts.
-
-Information hierarchy may need to change.
-
-Example:
-
-Desktop mentor card:
-
-```text
-Avatar | Info | Price | Availability | CTA
-```
-
-Mobile:
+Discovery is a core experience. Prioritise:
 
 ```text
 Avatar
 Name
-Segment
-Price
-Availability
-CTA
+Segment / Gig
+Short bio
+Duration        Price
+Next available slot
+[ View Mentor ]
+```
+
+Do not overload the card. A mentor with no bookable slot is **still listed** in
+the directory — the listing deliberately does not require bookability — and the
+card or detail page explains the availability situation and offers a
+"choose another date" affordance. Do not hide a mentor because today is full.
+
+---
+
+## 15. Status System
+
+Status visuals are centralized and never conveyed by colour alone — every status
+has a text label, a semantic treatment, and optionally a supporting icon.
+
+**Booking** (`bookings.status`, 8 values permitted by `bookings_status_check`; 7
+reachable): `PAYMENT_PENDING`, `PENDING_VERIFICATION`, `MENTOR_PENDING`,
+`CONFIRMED`, `COMPLETED`, `CANCELLED`, `REJECTED`, plus `PAYMENT_PROCESSING`
+(permitted, **never written** by current code)
+
+**Payment** (`payments.status`, 8 values — `payments_status_check`):
+`PENDING_VERIFICATION`, `VERIFIED`, `REJECTED`, `PAYMENT_PENDING`,
+`PAYMENT_PROCESSING`, `FAILED`, `REFUNDED`, `REFUND_FAILED`
+
+**Hold** (`slot_holds.status`): `ACTIVE`, `CONVERTED`, `EXPIRED`, `RELEASED`
+
+**Session projection** (computed, not a column): `SCHEDULED`, `ACCESS_OPEN`,
+`IN_PROGRESS`, `COMPLETED`, `CANCELLED`
+
+Three rules that must not be broken:
+
+1. `IN_PROGRESS` is a computed session state, **not** a `bookings.status` value.
+   Do not style it as though it were a database status.
+2. `FAILED`, `REFUNDED` and `REFUND_FAILED` are **payment** statuses. They
+   never appear as a booking status.
+3. `PENDING_VERIFICATION` bookings **still block the mentor's slot** (they are
+   outside the overlap exclusion's excluded set). Do not present them as free
+   time.
+
+Tone mapping lives in `src/components/booking/statusTone.ts` and is rendered by
+`StatusPill`. Map statuses onto `Badge` variants (`success`, `warning`,
+`destructive`, `secondary`, `outline`) consistently across every page.
+
+> **Known gap:** `PAYMENT_PROCESSING` is permitted by `bookings_status_check`
+> but is **not** in the `BookingStatus` union in `src/types/database.ts`, so
+> `statusTone.ts` `BOOKING_LIFECYCLE` (5 entries) has no entry for it and would
+> render it with no stepper position. Impact is currently low: no code path
+> writes that value to a booking, so it cannot be observed today. It becomes
+> live if a future change starts using it. See `docs/technical-audit.md` T1.
+
+---
+
+## 16. Booking Progress
+
+Make state progression visible without exposing internal plumbing:
+
+```text
+✓ Slot selected
+✓ Payment submitted
+● Awaiting verification
+○ Mentor confirmation
+○ Session
 ```
 
 ---
 
-# 34. Accessibility Baseline
+## 17. Loading, Empty, Error, Success States
 
-The UI should provide:
+Every meaningful asynchronous area needs a deliberate state.
 
-- Sufficient contrast
-- Visible keyboard focus
-- Proper labels
-- Clear navigation
-- Responsive layouts
-- Non-color-only status communication
-- Usable touch targets
-- Logical reading/order structure
-- Reduced-motion consideration
+- **Loading**: prefer `Skeleton` when content shape is known; reserve full-page
+  spinners for whole-route transitions; use `Button isLoading` for submits.
+- **Empty**: say what is empty, why, and what to do next. No unexplained blank
+  space. `EmptyState` exists for this.
+- **Error**: human-readable and actionable, with a retry. Do not surface raw
+  technical errors as primary UI. `ErrorState` exists for this.
+- **Success**: least disruptive appropriate feedback — toast, inline
+  confirmation, or a status transition. `SuccessState` exists for this.
 
-Accessibility is part of the design system, not a final patch.
+`ShortId` renders a truncated identifier with the full value available, so
+booking codes and payment ids stay readable in dense tables.
 
 ---
 
-# 35. Theme QA Matrix
+## 18. Dialogs and Modals
 
-Every reusable component should be checked against:
+Use `Modal` / `Dialog` for focused decisions and contained workflows. Actions
+are predictable (Cancel / Confirm). Destructive actions must state their
+consequence. Style sizes consistently; the components do not expose a size prop
+today — apply consistent classes at the call site.
+
+**Success feedback is usually inline or a status transition.** A toast host
+does exist (`ToastContext.tsx` → `ToastProvider`, `useToast`, variants
+`success` / `error` / `info`, auto-dismiss, max-visible cap), but it has only
+two consumers. Do not reach for a toast where a status transition or an
+`ErrorState` is the honest representation of what happened — a toast that
+reports a success the server did not confirm is a bug, and the toast host is
+explicitly documented as a message bus rather than a source of truth.
+
+---
+
+## 19. Navigation
+
+Centralized and role-aware in `src/config/navigation.ts`
+(`ROLE_NAVIGATION`), consumed by `TopNavigation.tsx` (seeker, mentor) and
+`AdminSidebar.tsx` (admin). Do not build ad-hoc navigation inside pages.
+
+| Role | Shell | Items |
+|---|---|---|
+| Seeker | top nav | Home, My Bookings, Notifications, Settings (4) |
+| Mentor | top nav | Home, My Bookings, Availability, Notifications, Settings (5) |
+| Admin | sidebar | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Notifications, System Health, Settings (11) |
+
+Routable but deliberately **not** in the nav config, reached in-page instead:
+`/mentor/gigs`, `/mentor/segments` (mentor); `/admin/users/create`,
+`/admin/system-health/logs` (admin).
+
+Desktop: horizontal top nav for seeker/mentor; persistent sidebar for admin.
+Mobile: compact header with a collapsible menu for seeker/mentor; collapsible
+drawer for admin.
+
+Changing the navigation UI is not authorization. Role access is enforced by
+`ProtectedRoute` in the client and by `requireAuth` / `requireRole` /
+`requireAdmin` / `requireActiveMentor` on the server, with RLS underneath.
+
+---
+
+## 20. Session Experience
+
+The session UI is time-sensitive and should communicate:
+
+```text
+Before T−5  → "Session starts in X minutes"
+At T−5     → Join becomes available
+During     → Join available
+After end  → Session ended
+```
+
+Countdown ticks run locally at 1 s for display. Authoritative revalidation
+happens every 20 s and on realtime booking events, always against the server.
+**The countdown is UX only and is never a security control** — the server
+evaluates the T−5 gate on its own clock and ignores any client-supplied time.
+
+---
+
+## 21. Animation
+
+Animation is purposeful: page transitions, modal entrance, dropdown opening,
+button feedback, skeletons, slot selection, status transitions.
+
+Avoid scroll hijacking, constant floating elements, heavy parallax, animation on
+every component, and long transitions that slow a workflow.
+
+> The interface should feel alive, not animated.
+
+---
+
+## 22. Responsive Design
+
+Design for mobile, tablet, desktop and large desktop. Do not simply shrink
+desktop layouts; information hierarchy may need to change. The mentor card
+stacks from a horizontal row to a vertical stack. Tailwind breakpoints handle
+most of this.
+
+---
+
+## 23. Accessibility Baseline
+
+Sufficient contrast in both themes, visible keyboard focus, proper labels, clear
+navigation, responsive layouts, non-colour-only status communication, usable
+touch targets, logical reading order, and reduced-motion consideration.
+
+Accessibility is part of the system, not a final patch.
+
+---
+
+## 24. Theme QA Matrix
+
+Every reusable component should be checked in both themes.
 
 | Component | Light | Dark | Hover | Focus | Disabled | Mobile |
 |---|---|---|---|---|---|---|
@@ -1178,355 +610,109 @@ Every reusable component should be checked against:
 | Card | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | Modal | ✓ | ✓ | — | ✓ | — | ✓ |
 | Badge | ✓ | ✓ | — | — | — | ✓ |
-| Table | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| Dropdown | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| Tabs | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| Toast | ✓ | ✓ | — | — | — | ✓ |
 | Skeleton | ✓ | ✓ | — | — | — | ✓ |
+| ThemeToggle | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 
 A component is not finished until both themes are intentionally validated.
 
 ---
 
-# 36. Page Redesign Order
+## 25. Frontend QA Checklist
 
-Do not redesign every page independently.
-
-Use this order:
-
-## Phase 1 — Foundation
-
-```text
-Design tokens
-Colors
-Typography
-Spacing
-Radius
-Elevation
-Icons
-```
-
-## Phase 2 — Primitives
-
-```text
-Buttons
-Inputs
-Selects
-Checkboxes
-Switches
-Badges
-```
-
-## Phase 3 — Shared Components
-
-```text
-Cards
-Dialogs
-Dropdowns
-Tabs
-Toasts
-Tables
-Skeletons
-Empty states
-Error states
-```
-
-## Phase 4 — Shells
-
-```text
-SeekerShell
-MentorShell
-AdminShell
-```
-
-## Phase 5 — Domain Components
-
-```text
-MentorCard
-SlotPicker
-BookingStatus
-PaymentStatus
-SessionCountdown
-NotificationItem
-```
-
-## Phase 6 — Pages
-
-### Seeker
-
-```text
-Home
-Mentor Discovery
-Mentor Detail
-Slot Selection
-Payment
-My Bookings
-Booking Detail
-Session
-History
-Workspace
-Notifications
-Settings
-```
-
-### Mentor
-
-```text
-Home
-Bookings
-Booking Detail
-Availability
-Segments / Gigs
-Session
-Workspace
-Notifications
-Settings
-```
-
-### Admin
-
-```text
-Dashboard
-Users
-Mentors
-Segments
-Bookings
-Payments
-Notifications
-Settings
-```
-
----
-
-# 37. UI Audit Process
-
-Each existing page should be reviewed in three passes.
-
-## Pass 1 — Foundation
-
-Check:
-
-- Colors
-- Fonts
-- Spacing
-- Radius
-- Shadows
-- Icons
-- Buttons
-- Inputs
-
-## Pass 2 — Components
-
-Check:
-
-- Cards
-- Tables
-- Dialogs
-- Dropdowns
-- Tabs
-- Badges
-- Toasts
-- Skeletons
-- Empty states
-- Error states
-
-## Pass 3 — Page
-
-Check:
-
-- Information hierarchy
-- Primary CTA
-- Navigation
-- Responsive behavior
-- Light mode
-- Dark mode
-- Loading
-- Empty
-- Error
-- Success
-- Accessibility
-
----
-
-# 38. Frontend QA Checklist
-
-A redesigned page is complete only when:
+A page is complete only when:
 
 ```text
 ✓ Light mode works
 ✓ Dark mode works
-✓ Mobile works
-✓ Tablet works
-✓ Desktop works
-✓ Typography is consistent
-✓ Spacing is consistent
-✓ Components are reusable
-✓ Loading state exists
-✓ Empty state exists
-✓ Error state exists
-✓ Success state exists
+✓ Mobile / tablet / desktop work
+✓ Typography and spacing are consistent
+✓ Components are reused, not re-implemented
+✓ Loading, empty, error and success states all exist
 ✓ Focus states work
-✓ Status is understandable
+✓ Status is understandable without colour
 ✓ Primary action is obvious
-✓ No fake business data
-✓ No hardcoded availability
-✓ No hardcoded notifications
-✓ No fake metrics
-✓ Backend behavior is preserved
+✓ No fake business data, metrics, availability or notifications
+✓ No hardcoded slot times
+✓ Backend behaviour is preserved
 ```
 
 ---
 
-# 39. AI Coding Agent Rules
+## 26. AI Coding Agent Rules
 
-When an AI coding agent implements this design system:
+When implementing UI in this repository:
 
 1. Inspect the existing frontend before modifying it.
-2. Reuse existing working functionality.
-3. Prefer shared components over duplicated page-specific components.
-4. Create/update design tokens centrally.
-5. Do not solve theme problems with isolated page overrides.
-6. Do not hardcode business data.
-7. Do not change backend logic for a frontend-only redesign.
-8. Do not modify authentication unless explicitly requested.
-9. Do not modify booking/payment/availability business rules unless explicitly requested.
-10. Preserve real Supabase data flow.
-11. Validate both Light and Dark themes.
-12. Validate responsive layouts.
-13. Preserve role-based navigation.
-14. Remove visual duplication where practical.
-15. Avoid unnecessary dependencies.
-16. Avoid rewriting unrelated modules.
-17. Test critical UI states after changes.
-18. Keep business logic outside presentational components where practical.
+2. Reuse existing working functionality and shared components.
+3. Put design values in `src/index.css`, not in `src/config/design-tokens.ts`
+   and not inline in components.
+4. Do not solve theme problems with per-page overrides.
+5. Do not hardcode business data.
+6. Do not change backend logic for a frontend-only change.
+7. Do not modify authentication, booking, payment or availability rules unless
+   explicitly asked.
+8. Preserve the real Supabase data flow.
+9. Validate both themes and responsive layouts.
+10. Preserve role-based navigation.
+11. Avoid unnecessary dependencies and avoid rewriting unrelated modules.
+12. Test critical UI states after changes.
+13. Keep business logic out of presentational components where practical.
+14. Run `npm run lint` (`tsc --noEmit`) and `npm test` before declaring done.
 
 ---
 
-# 40. Anti-Patterns
+## 27. Anti-Patterns
 
-Do NOT introduce:
+Do not introduce:
 
 ```text
-❌ Random colors per page
-❌ Random typography per page
-❌ Random card styles
-❌ Random button styles
+❌ Random colors, typography, card styles or button styles per page
 ❌ Pure black everywhere in dark mode
 ❌ Pure white everywhere in light mode
-❌ Excessive borders
-❌ Excessive shadows
-❌ Excessive gradients
-❌ Excessive glassmorphism
+❌ Excessive borders, shadows, gradients or glassmorphism
 ❌ Every section inside a card
-❌ Fake charts
-❌ Fake notifications
-❌ Fake availability
+❌ Fake charts, metrics, notifications or availability
 ❌ Hardcoded production data
 ❌ Page-specific theme hacks
 ❌ Duplicate navigation implementations
 ❌ Emoji as a substitute for a proper icon system
+❌ Client-side timestamps treated as authoritative
+❌ Documenting components that do not exist
 ```
 
 ---
 
-# 41. Core Design Principle
+## 28. Core Design Principle
 
-The most important rule:
-
-> **Do not make individual pages beautiful at the expense of making the product inconsistent.**
-
-The design system is the source of visual truth.
-
-The implementation flow should be:
+> Do not make individual pages beautiful at the expense of making the product
+> inconsistent.
 
 ```text
-Design Tokens
+Design tokens (src/index.css)
       ↓
-Reusable Primitives
+Primitives (src/components/ui)
       ↓
-Shared Components
+Shared states (src/components/shared)
       ↓
-Role Shells
+Shells (src/components/layout)
       ↓
-Domain Components
+Domain components
       ↓
-Pages
+Pages (src/pages)
       ↓
-Light/Dark QA
-      ↓
-Responsive QA
-      ↓
-Accessibility QA
+Light/Dark QA → Responsive QA → Accessibility QA
 ```
 
 ---
 
-# 42. Final Design Goal
+## 29. Final Design Goal
 
-Suggest Key should feel like one coherent product.
+A user should be able to move from Home → Discovery → Mentor Detail → Slot
+Selection → Payment → Booking → Session → Workspace without feeling each page
+was designed by a different person. The same coherence should hold for the
+mentor flow and the admin console, while preserving the three roles' different
+jobs.
 
-A user should be able to move from:
-
-```text
-Home
-→ Mentor Discovery
-→ Mentor Detail
-→ Slot Selection
-→ Payment
-→ Booking
-→ Session
-→ Workspace
-```
-
-without feeling that each page was designed by a different person.
-
-The same should be true for:
-
-```text
-Mentor
-→ Availability
-→ Bookings
-→ Session
-→ Workspace
-```
-
-and:
-
-```text
-Admin
-→ Dashboard
-→ Payments
-→ Bookings
-→ Mentors
-→ Settings
-```
-
-The visual system must remain coherent across all roles while preserving their different jobs.
-
----
-
-## 43. Short Theory
-
-A strong frontend is not a collection of beautiful pages.
-
-It is:
-
-```text
-Design System
-+
-Reusable Components
-+
-Consistent States
-+
-Responsive Layout
-+
-Theme Architecture
-+
-Accessibility
-+
-Real Application State
-```
-
-The objective is not merely to make the current UI prettier.
-
-The objective is to create a frontend foundation where future Suggest Key features automatically look and behave like part of the same product.
+A strong frontend is not a collection of beautiful pages. It is a design system,
+plus reusable components, plus consistent states, plus responsive layout, plus
+theme architecture, plus accessibility, plus real application state.

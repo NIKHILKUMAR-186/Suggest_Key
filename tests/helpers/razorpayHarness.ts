@@ -28,11 +28,15 @@ import {
   type RazorpayHoldRow,
   type RazorpayPaymentRow,
   type RazorpayStore,
+  type UnmatchedCaptureRow,
 } from '../../src/lib/razorpayService';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+
+/** Re-exported so tests can assert on the same conversion the service uses. */
+export { toPaise };
 
 export const KEY_ID = 'rzp_test_key_id';
 export const KEY_SECRET = 'rzp_test_key_secret_0123456789abcdef';
@@ -98,6 +102,8 @@ export type FakeStore = RazorpayStore & {
   /** `razorpay:<eventId>` -> processed flag, mirroring `webhook_events`. */
   webhookClaims: Map<string, boolean>;
   refunds: RefundRecord[];
+  /** Captures that matched no local payment row, keyed by record id. */
+  unmatched: Map<string, UnmatchedCaptureRow>;
   seedBooking(overrides?: Partial<RazorpayBookingRow>): RazorpayBookingRow;
   seedHold(overrides?: Partial<RazorpayHoldRow>): RazorpayHoldRow;
 };
@@ -109,6 +115,7 @@ export function createFakeStore(): FakeStore {
   const events: PaymentEventInput[] = [];
   const webhookClaims = new Map<string, boolean>();
   const refunds: RefundRecord[] = [];
+  const unmatched = new Map<string, UnmatchedCaptureRow>();
 
   return {
     bookings,
@@ -116,6 +123,7 @@ export function createFakeStore(): FakeStore {
     events,
     webhookClaims,
     refunds,
+    unmatched,
 
     seedBooking(overrides: Partial<RazorpayBookingRow> = {}): RazorpayBookingRow {
       const row: RazorpayBookingRow = {
@@ -291,6 +299,72 @@ export function createFakeStore(): FakeStore {
 
     async completeWebhookEvent(eventId) {
       webhookClaims.set(`razorpay:${eventId}`, true);
+    },
+
+    // --- Unmatched-capture ledger (audit P0-1) -----------------------------
+    // Mirrors the real adapter: identity is `(gateway, razorpay_payment_id)`, so
+    // a redelivery OR a second event id for the same capture collapses onto ONE
+    // record, exactly as the UNIQUE constraint does in Postgres.
+    async recordUnmatchedCapture(input) {
+      const existing = [...unmatched.values()].find(
+        (row) => row.razorpay_payment_id === input.gatewayPaymentId,
+      );
+      if (existing) {
+        existing.last_event_id = input.eventId;
+        existing.last_received_at = input.receivedAt;
+        existing.delivery_count += 1;
+        existing.updated_at = input.receivedAt;
+        return { row: { ...existing }, created: false };
+      }
+      const row: UnmatchedCaptureRow = {
+        id: `unmatched-${unmatched.size + 1}`,
+        gateway: 'razorpay',
+        event_id: input.eventId,
+        last_event_id: input.eventId,
+        event_type: input.eventType,
+        razorpay_payment_id: input.gatewayPaymentId,
+        razorpay_order_id: input.gatewayOrderId,
+        amount_paise: input.amountPaise,
+        currency: input.currency,
+        received_at: input.receivedAt,
+        reason: input.reason,
+        reconciliation_status: 'PENDING',
+        delivery_count: 1,
+        last_received_at: input.receivedAt,
+        resolved_payment_id: null,
+        resolution_note: null,
+        created_at: input.receivedAt,
+        updated_at: input.receivedAt,
+      };
+      unmatched.set(row.id, row);
+      return { row: { ...row }, created: true };
+    },
+
+    async getUnmatchedCaptureById(id) {
+      const row = unmatched.get(id);
+      return row ? { ...row } : null;
+    },
+
+    async getUnmatchedCaptureByGatewayPaymentId(gatewayPaymentId) {
+      const row = [...unmatched.values()].find((r) => r.razorpay_payment_id === gatewayPaymentId);
+      return row ? { ...row } : null;
+    },
+
+    async listUnmatchedCaptures() {
+      return [...unmatched.values()]
+        .filter((row) => row.reconciliation_status !== 'RESOLVED')
+        .map((row) => ({ ...row }));
+    },
+
+    // Conditional on the record still being unresolved, as the real adapter is.
+    async resolveUnmatchedCapture({ id, status, resolvedPaymentId, note, actorId, at }) {
+      const row = unmatched.get(id);
+      if (!row || row.reconciliation_status === 'RESOLVED') return null;
+      row.reconciliation_status = status;
+      row.resolved_payment_id = resolvedPaymentId;
+      row.resolution_note = note;
+      row.updated_at = at;
+      return { ...row };
     },
   };
 }

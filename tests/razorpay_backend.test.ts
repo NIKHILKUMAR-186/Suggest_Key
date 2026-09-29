@@ -67,6 +67,8 @@ type FakeStore = RazorpayStore & {
   payments: Map<string, RazorpayPaymentRow>;
   events: PaymentEventInput[];
   webhookKeys: Map<string, boolean>;  refunds: Array<{ paymentId: string; refundId: string; status: string }>;
+  /** Captures that matched no local payment row (audit P0-1). */
+  unmatched: Map<string, any>;
   seedBooking(overrides?: Partial<RazorpayBookingRow>): RazorpayBookingRow;
   seedHold(overrides?: Partial<RazorpayHoldRow>): RazorpayHoldRow;
 };
@@ -78,6 +80,7 @@ function createFakeStore(): FakeStore {
   const webhookKeys = new Map<string, boolean>();
   const refunds: Array<{ paymentId: string; refundId: string; status: string }> = [];
   const holds = new Map<string, RazorpayHoldRow>();
+  const unmatched = new Map<string, any>();
 
   const store: any = {
     bookings,
@@ -85,6 +88,7 @@ function createFakeStore(): FakeStore {
     events,
     webhookKeys,
     refunds,
+    unmatched,
 
     seedBooking(overrides: Partial<RazorpayBookingRow> = {}) {
       const row: RazorpayBookingRow = {
@@ -220,6 +224,66 @@ function createFakeStore(): FakeStore {
     },
     completeWebhookEvent: async (eventId: string, _at: string) => {
       webhookKeys.set(`razorpay:${eventId}`, true);
+    },
+
+    // --- Unmatched-capture ledger (audit P0-1) -----------------------------
+    // Identity is `(gateway, razorpay_payment_id)`, so a redelivery OR a second
+    // event id for the same capture collapses onto ONE record - the same
+    // guarantee the UNIQUE constraint gives the real adapter.
+    recordUnmatchedCapture: async (input: any) => {
+      const existing = [...unmatched.values()].find(
+        (row: any) => row.razorpay_payment_id === input.gatewayPaymentId,
+      );
+      if (existing) {
+        existing.last_event_id = input.eventId;
+        existing.last_received_at = input.receivedAt;
+        existing.delivery_count += 1;
+        existing.updated_at = input.receivedAt;
+        return { row: { ...existing }, created: false };
+      }
+      const row = {
+        id: `unmatched-${unmatched.size + 1}`,
+        gateway: 'razorpay',
+        event_id: input.eventId,
+        last_event_id: input.eventId,
+        event_type: input.eventType,
+        razorpay_payment_id: input.gatewayPaymentId,
+        razorpay_order_id: input.gatewayOrderId,
+        amount_paise: input.amountPaise,
+        currency: input.currency,
+        received_at: input.receivedAt,
+        reason: input.reason,
+        reconciliation_status: 'PENDING',
+        delivery_count: 1,
+        last_received_at: input.receivedAt,
+        resolved_payment_id: null,
+        resolution_note: null,
+        created_at: input.receivedAt,
+        updated_at: input.receivedAt,
+      };
+      unmatched.set(row.id, row);
+      return { row: { ...row }, created: true };
+    },
+    getUnmatchedCaptureById: async (id: string) => {
+      const row = unmatched.get(id);
+      return row ? { ...row } : null;
+    },
+    getUnmatchedCaptureByGatewayPaymentId: async (gatewayPaymentId: string) => {
+      const row = [...unmatched.values()].find((r: any) => r.razorpay_payment_id === gatewayPaymentId);
+      return row ? { ...row } : null;
+    },
+    listUnmatchedCaptures: async () =>
+      [...unmatched.values()]
+        .filter((row: any) => row.reconciliation_status !== 'RESOLVED')
+        .map((row: any) => ({ ...row })),
+    resolveUnmatchedCapture: async ({ id, status, resolvedPaymentId, note, actorId, at }: any) => {
+      const row = unmatched.get(id);
+      if (!row || row.reconciliation_status === 'RESOLVED') return null;
+      row.reconciliation_status = status;
+      row.resolved_payment_id = resolvedPaymentId;
+      row.resolution_note = note;
+      row.updated_at = at;
+      return { ...row };
     },
   };
   return store as any;
@@ -888,12 +952,20 @@ describe('razorpay: webhook processing', () => {
     assert.equal(store.bookings.get(BOOKING_ID)!.status, 'PAYMENT_PENDING');
   });
 
-  it('acknowledges a capture for a payment we do not know about', async () => {
+  // P0-1 (phase B): this delivery used to be acknowledged with 200 and nothing
+  // written, which meant captured money left no local trace. It must now be
+  // recorded as an exception and answered with a retryable status.
+  it('records a capture it cannot match and refuses to acknowledge it', async () => {
     const store = createFakeStore();
     const body = webhookBody({ orderId: 'order_UNKNOWN', paymentId: 'pay_UNKNOWN' });
     const result = await runRazorpayWebhook({ rawBody: body, signature: signWebhook(body), gateway: createFakeGateway(), store, now: NOW });
-    assert.ok(result.ok && result.handled === 'unmatched');
-    assert.equal(store.payments.size, 0);
+
+    assert.ok(!result.ok, 'an unmatched capture must not be reported as processed');
+    assert.equal(result.error.code, 'RAZORPAY_CAPTURE_UNMATCHED');
+    assert.ok(result.error.httpStatus >= 400, 'the gateway must be told to retry');
+    assert.equal(store.unmatched.size, 1, 'the capture is recorded for reconciliation');
+    assert.equal(store.payments.size, 0, 'no payment row is fabricated');
+    assert.equal(store.bookings.get(BOOKING_ID)?.status ?? null, null, 'no booking is advanced');
   });
 
   it('ignores an unrecognised event type rather than guessing a transition', async () => {

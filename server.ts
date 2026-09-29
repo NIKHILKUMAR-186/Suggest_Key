@@ -59,6 +59,8 @@ import { isRazorpayEnabled, getRazorpayKeyId } from './src/lib/razorpayConfig';
 import { extractWebhookSignature } from './src/lib/razorpaySignature';
 import {
   createRazorpayGatewayClient,
+  listUnmatchedCaptures,
+  reconcileUnmatchedCapture,
   runCreateRazorpayOrder,
   runRazorpayWebhook,
   runVerifyRazorpayPayment,
@@ -2704,6 +2706,27 @@ async function startServer() {
           result: 'failure',
           reason: result.error.code,
         });
+        // A capture that matched no local payment (audit P0-1) is a financial
+        // exception, not a protocol error: the money moved and the platform
+        // could not attribute it. The service has already persisted it to the
+        // unmatched ledger and deliberately returned a non-2xx, so Razorpay
+        // keeps redelivering. Only the reason code and the gateway payment id
+        // are recorded here - never the payload, never the signature.
+        if ('unmatchedCapture' in result) {
+          const signal = result.unmatchedCapture;
+          auditAction(undefined, 'razorpay_capture_unmatched', {
+            entityType: 'payment',
+            entityId: signal.gatewayPaymentId ?? 'unknown',
+            requestId: req.requestId,
+            metadata: {
+              reason: signal.reason,
+              recorded: signal.recorded,
+              unmatchedCaptureId: 'unmatchedCaptureId' in signal ? signal.unmatchedCaptureId : null,
+              deliveryCount: 'deliveryCount' in signal ? signal.deliveryCount : null,
+            },
+          });
+        }
+
         return respondRazorpayFailure(res, result.error);
       }
 
@@ -2745,6 +2768,116 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err, context: 'POST /api/webhooks/razorpay' });
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // ADMIN: UNMATCHED RAZORPAY CAPTURES (audit P0-1)
+  // ---------------------------------------------------------------------------
+  // These two routes are the ONLY way a recorded unmatched capture is resolved.
+  // There is no background job and no automatic attachment: binding captured
+  // money to a booking is a decision a human must be able to see and reverse, so
+  // it is an explicit admin action with a full set of refusal checks in the
+  // service.
+  //
+  // Neither route returns the stored webhook payload. A capture is only ever
+  // written after a valid HMAC, but the raw delivery is gateway data and is not
+  // something an operator's browser needs to render the queue.
+
+  // GET /api/admin/unmatched-captures: the operator queue.
+  app.get('/api/admin/unmatched-captures', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const rows = await listUnmatchedCaptures(createSupabaseRazorpayStore(admin), { limit: 100 });
+
+      return res.json({
+        success: true,
+        unmatchedCaptures: rows.map((row) => ({
+          id: row.id,
+          gateway: row.gateway,
+          eventId: row.event_id,
+          lastEventId: row.last_event_id,
+          eventType: row.event_type,
+          razorpayPaymentId: row.razorpay_payment_id,
+          razorpayOrderId: row.razorpay_order_id,
+          amountPaise: row.amount_paise,
+          currency: row.currency,
+          receivedAt: row.received_at,
+          reason: row.reason,
+          reconciliationStatus: row.reconciliation_status,
+          deliveryCount: row.delivery_count,
+          resolvedPaymentId: row.resolved_payment_id,
+          resolutionNote: row.resolution_note,
+        })),
+      });
+    } catch (err: any) {
+      console.error('Failed to list unmatched captures:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // POST /api/admin/unmatched-captures/:id/reconcile: attempt to resolve one.
+  app.post(
+    '/api/admin/unmatched-captures/:id/reconcile',
+    requireAuth,
+    requireAdmin,
+    expensiveRouteLimiter,
+    async (req: AuthRequest, res) => {
+      try {
+        const admin = getSupabaseAdmin();
+        if (!admin) {
+          return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+        }
+
+        const result = await reconcileUnmatchedCapture({
+          store: createSupabaseRazorpayStore(admin),
+          unmatchedCaptureId: req.params.id,
+          actorId: req.auth!.user.id,
+        });
+
+        auditAction(req.auth, 'razorpay_unmatched_capture_reconciled', {
+          entityType: 'payment',
+          entityId:
+            'unmatchedCaptureId' in result ? result.unmatchedCaptureId : req.params.id,
+          requestId: req.requestId,
+          metadata: { status: result.status },
+        });
+
+        // A conflict is a legitimate, expected answer - the record stays
+        // unresolved on purpose - so it is 409 rather than a 5xx.
+        if (result.status === 'CONFLICT') {
+          return res.status(409).json({
+            success: false,
+            error: { code: 'UNMATCHED_CAPTURE_CONFLICT', message: result.detail },
+            result,
+          });
+        }
+        if (result.status === 'NOT_FOUND') {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'UNMATCHED_CAPTURE_NOT_FOUND', message: result.reason },
+            result,
+          });
+        }
+        if (result.status === 'ALREADY_RESOLVED') {
+          return res.status(409).json({
+            success: false,
+            error: { code: 'UNMATCHED_CAPTURE_ALREADY_RESOLVED', message: 'This capture was already reconciled.' },
+            result,
+          });
+        }
+
+        // STILL_UNMATCHED is not an error either: the payment row may simply not
+        // exist yet, and the gateway keeps retrying meanwhile.
+        return res.json({ success: true, result });
+      } catch (err: any) {
+        console.error('Failed to reconcile unmatched capture:', logSanitizer.safeMessage(err));
+        return respondWithInternalError({ req, res, error: err });
+      }
+    },
+  );
 
   // GET /api/payments/razorpay/config
   //
@@ -6258,7 +6391,7 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const oldHeroImageUrl = (existing.experience_config as Record<string, unknown> | null)?.branding?.heroImageUrl;
+      const oldHeroImageUrl = (existing.experience_config as { branding?: { heroImageUrl?: string } } | null)?.branding?.heroImageUrl;
 
       const experienceConfig = req.body ?? {};
 
@@ -6278,7 +6411,7 @@ async function startServer() {
         metadata: { hasConfig: !!experienceConfig && Object.keys(experienceConfig).length > 0 },
       });
 
-      const newHeroImageUrl = (data.experience_config as Record<string, unknown> | null)?.branding?.heroImageUrl;
+      const newHeroImageUrl = (data.experience_config as { branding?: { heroImageUrl?: string } } | null)?.branding?.heroImageUrl;
       if (oldHeroImageUrl && newHeroImageUrl && oldHeroImageUrl !== newHeroImageUrl) {
         const oldPath = extractSegmentHeroStoragePath(oldHeroImageUrl);
         const newPath = extractSegmentHeroStoragePath(newHeroImageUrl);

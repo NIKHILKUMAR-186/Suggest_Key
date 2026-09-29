@@ -21,6 +21,11 @@ import {
   type RazorpayHoldRow,
   type RazorpayPaymentRow,
   type RazorpayStore,
+  type UnmatchedCaptureInput,
+  type UnmatchedCaptureReason,
+  type UnmatchedReconciliationStatus,
+  type UnmatchedCaptureRow,
+  type UnmatchedCaptureWriteResult,
 } from './razorpayService';
 
 /** Supabase returns snake_case columns; these selects keep the mapping explicit. */
@@ -60,6 +65,81 @@ const readPayment = (row: Record<string, unknown> | null): RazorpayPaymentRow | 
     refund_status: (row.refund_status as string | null) ?? null,
   };
 };
+
+// ---------------------------------------------------------------------------
+// Unmatched-capture ledger (audit P0-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Created by migration
+ * `supabase/migrations/20261003000000_phase28_unmatched_capture_ledger.sql`.
+ *
+ * `payload` is deliberately NOT selected here. It is the raw gateway delivery
+ * and is read only during server-side reconciliation, never through an API
+ * response that a browser could reach.
+ */
+const UNMATCHED_CAPTURE_TABLE = 'razorpay_unmatched_captures';
+
+const UNMATCHED_CAPTURE_COLUMNS = [
+  'id',
+  'gateway',
+  'event_id',
+  'last_event_id',
+  'event_type',
+  'razorpay_payment_id',
+  'razorpay_order_id',
+  'amount_paise',
+  'currency',
+  'received_at',
+  'reason',
+  'reconciliation_status',
+  'delivery_count',
+  'resolved_payment_id',
+  'resolution_note',
+  'created_at',
+  'updated_at',
+].join(', ');
+
+const readUnmatchedCapture = (row: Record<string, unknown> | null): UnmatchedCaptureRow | null => {
+  if (!row || typeof row !== 'object' || typeof (row as { id?: unknown }).id !== 'string') return null;
+  const id = String((row as { id: unknown }).id);
+  return {
+    id,
+    gateway: String(row.gateway ?? 'razorpay'),
+    event_id: String(row.event_id ?? ''),
+    last_event_id: (row.last_event_id as string | null) ?? null,
+    event_type: String(row.event_type ?? ''),
+    razorpay_payment_id: String(row.razorpay_payment_id ?? ''),
+    razorpay_order_id: (row.razorpay_order_id as string | null) ?? null,
+    amount_paise: row.amount_paise === null || row.amount_paise === undefined ? null : Number(row.amount_paise),
+    currency: (row.currency as string | null) ?? null,
+    received_at: String(row.received_at ?? ''),
+    reason: String(row.reason ?? 'PAYMENT_ROW_NOT_FOUND') as UnmatchedCaptureReason,
+    reconciliation_status: String(
+      row.reconciliation_status ?? 'PENDING',
+    ) as UnmatchedReconciliationStatus,
+    delivery_count: Number(row.delivery_count ?? 1),
+    last_received_at: (row.last_received_at as string | null) ?? null,
+    resolved_payment_id: (row.resolved_payment_id as string | null) ?? null,
+    resolution_note: (row.resolution_note as string | null) ?? null,
+    created_at: String(row.created_at ?? ''),
+    updated_at: String(row.updated_at ?? ''),
+  };
+};
+
+async function readUnmatchedCaptureByPaymentId(
+  admin: SupabaseClient,
+  gatewayPaymentId: string,
+): Promise<UnmatchedCaptureRow | null> {
+  const { data, error } = await admin
+    .from(UNMATCHED_CAPTURE_TABLE)
+    .select(UNMATCHED_CAPTURE_COLUMNS)
+    .eq('gateway', RAZORPAY_GATEWAY)
+    .eq('razorpay_payment_id', gatewayPaymentId)
+    .maybeSingle();
+  if (error) throw error;
+  return readUnmatchedCapture(data as unknown as Record<string, unknown> | null);
+}
 
 export function createSupabaseRazorpayStore(admin: SupabaseClient): RazorpayStore {
   return {
@@ -374,6 +454,147 @@ export function createSupabaseRazorpayStore(admin: SupabaseClient): RazorpayStor
         .eq('gateway', RAZORPAY_GATEWAY)
         .eq('event_id', eventId);
       if (error) console.error('Failed to mark webhook event processed:', error.message);
+    },
+
+    // -----------------------------------------------------------------
+    // Unmatched-capture ledger (audit P0-1)
+    // -----------------------------------------------------------------
+
+    // Idempotent on `(gateway, razorpay_payment_id)` - the FINANCIAL identity of
+    // the exception, not the delivery. `ignoreDuplicates` makes the INSERT a
+    // no-op when a record already exists, so a redelivery or a second event id
+    // for the same capture can never create a second financial record. The
+    // follow-up UPDATE then absorbs that delivery onto the existing row.
+    async recordUnmatchedCapture(input) {
+      const base = {
+        gateway: RAZORPAY_GATEWAY,
+        event_id: input.eventId,
+        last_event_id: input.eventId,
+        event_type: input.eventType,
+        razorpay_payment_id: input.gatewayPaymentId,
+        razorpay_order_id: input.gatewayOrderId,
+        amount_paise: input.amountPaise,
+        currency: input.currency,
+        received_at: input.receivedAt,
+        reason: input.reason,
+        payload: (input.payload ?? {}) as Record<string, unknown>,
+        reconciliation_status: 'PENDING',
+        last_received_at: input.receivedAt,
+        updated_at: input.receivedAt,
+      };
+
+      // The financial identity of the exception is `(gateway,
+      // razorpay_payment_id)`, not the delivery. A plain INSERT is therefore
+      // attempted first and a unique violation (23505) is the expected "this
+      // capture is already recorded" signal - not an error. That keeps a
+      // redelivery, or a second event id describing the same capture, from ever
+      // creating a second financial record.
+      const { error: insertError } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .insert({ ...base, delivery_count: 1 });
+
+      if (insertError && insertError.code !== '23505') {
+        // A genuine fault (missing table, bad payload shape). Surfaced rather
+        // than swallowed: a capture that cannot be recorded must not be
+        // acknowledged, and the caller re-throws so the delivery is retried.
+        throw insertError;
+      }
+
+      if (!insertError) {
+        const created = await readUnmatchedCaptureByPaymentId(admin, input.gatewayPaymentId);
+        if (created) return { row: created, created: true };
+        throw new Error('Unmatched capture was inserted but could not be read back.');
+      }
+
+      // Already recorded. Absorb this delivery onto the existing row, preserving
+      // the FIRST-seen `event_id` and `received_at` as the original evidence and
+      // advancing only the redelivery trail.
+      //
+      // `delivery_count` is a diagnostic, not a financial invariant, so it is
+      // advanced from a read rather than by an atomic SQL expression. Two
+      // concurrent redeliveries could under-count it by one; that cannot create,
+      // duplicate or lose a financial record.
+      const existing = await readUnmatchedCaptureByPaymentId(admin, input.gatewayPaymentId);
+      if (!existing) {
+        // The row vanished between the conflict and this read. Throwing keeps
+        // the delivery retryable rather than reporting a record that is not
+        // there as if it were durable.
+        throw new Error('Unmatched capture conflicted on insert but no record could be read.');
+      }
+
+      const { data, error: updateError } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .update({
+          last_event_id: input.eventId,
+          last_received_at: input.receivedAt,
+          delivery_count: existing.delivery_count + 1,
+          updated_at: input.receivedAt,
+        })
+        .eq('gateway', RAZORPAY_GATEWAY)
+        .eq('razorpay_payment_id', input.gatewayPaymentId)
+        .select(UNMATCHED_CAPTURE_COLUMNS)
+        .maybeSingle();
+      if (updateError) throw updateError;
+      if (!data) throw new Error('Unmatched capture could not be updated after a duplicate delivery.');
+
+      const row = readUnmatchedCapture(data as unknown as Record<string, unknown>);
+      if (!row) throw new Error('Unmatched capture could not be read after being updated.');
+      return { row, created: false };
+    },
+
+    async getUnmatchedCaptureById(id) {
+      const { data, error } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .select(UNMATCHED_CAPTURE_COLUMNS)
+        .eq('id', id)
+        .maybeSingle();
+      if (error) throw error;
+      return readUnmatchedCapture(data as unknown as Record<string, unknown> | null);
+    },
+
+    async getUnmatchedCaptureByGatewayPaymentId(gatewayPaymentId) {
+      const { data, error } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .select(UNMATCHED_CAPTURE_COLUMNS)
+        .eq('gateway', RAZORPAY_GATEWAY)
+        .eq('razorpay_payment_id', gatewayPaymentId)
+        .maybeSingle();
+      if (error) throw error;
+      return readUnmatchedCapture(data as unknown as Record<string, unknown> | null);
+    },
+
+    async listUnmatchedCaptures({ limit }) {
+      const { data, error } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .select(UNMATCHED_CAPTURE_COLUMNS)
+        .neq('reconciliation_status', 'RESOLVED')
+        .order('received_at', { ascending: true })
+        .limit(limit);
+      if (error) throw error;
+      return (data ?? [])
+        .map((row) => readUnmatchedCapture(row as unknown as Record<string, unknown>))
+        .filter((row): row is UnmatchedCaptureRow => row !== null);
+    },
+
+    // Conditional on the record still being unresolved, which is what makes a
+    // second reconciliation a no-op rather than a second attach.
+    async resolveUnmatchedCapture({ id, status, resolvedPaymentId, note, actorId, at }) {
+      const { data, error } = await admin
+        .from(UNMATCHED_CAPTURE_TABLE)
+        .update({
+          reconciliation_status: status,
+          resolved_payment_id: resolvedPaymentId,
+          resolution_note: note.slice(0, 500),
+          resolved_at: at,
+          resolved_by: actorId,
+          updated_at: at,
+        })
+        .eq('id', id)
+        .neq('reconciliation_status', 'RESOLVED')
+        .select(UNMATCHED_CAPTURE_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      return readUnmatchedCapture(data as unknown as Record<string, unknown> | null);
     },
   };
 }

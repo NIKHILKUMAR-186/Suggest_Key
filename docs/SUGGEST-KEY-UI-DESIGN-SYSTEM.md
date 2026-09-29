@@ -1,14 +1,15 @@
 # Suggest Key — UI Design System & Frontend Design Bible
 
-**Version:** 2.0
-**Status:** As-built
-**Last verified:** 2026-09-27
+**Version:** 3.1
+**Status:** As-built / Current
+**Last verified:** 2026-09-29
 **Scope:** Frontend UI/UX only
 
 > Version 1.0 of this document was a pre-implementation proposal. It listed
-> components and utilities that were never built. This version describes the
-> system that **actually exists**, and keeps the design principles that still
-> govern it. Anything not present in the repository is marked
+> components and utilities that were never built. Version 3.0 re-verifies the
+> inventory against the current tree and adds the Razorpay checkout surface and
+> the segment-experience theme layer, both of which were built after version 2.
+> Anything not present in the repository is marked
 > **Not currently implemented.**
 
 ---
@@ -132,8 +133,8 @@ third-party component kit.
 Light and dark are both intentionally designed, not inversions. The `.dark`
 class on a root ancestor switches the token block.
 
-`src/index.css` is ~1,100 lines and defines the tokens in `@layer base`. It is
-the **single live source of visual truth**.
+`src/index.css` is **2,844 lines** (97,738 bytes) and defines the tokens in
+`@layer base`. It is the **single live source of visual truth**.
 
 ### 6.1 Semantic token groups (live)
 
@@ -294,11 +295,73 @@ decoration.
 
 ### 10.4 Not currently implemented
 
-There is **no** `Select`, `Checkbox`, `Switch`, `Tabs`, `Toast`, `Table` or
-`Dropdown` primitive. Version 1.0 of this document listed all of these as
-planned Phase 2/3 primitives; they do not exist. Pages that need those
+There is **no** `Select`, `Checkbox`, `Switch`, `Tabs`, `Table` or `Dropdown`
+primitive in `src/components/ui/`. Version 1.0 of this document listed all of
+these as planned Phase 2/3 primitives; they do not exist. Pages that need those
 affordances build them locally. Introducing a shared primitive for one is a
 reasonable refactor, but do not document one as existing.
+
+A **toast system does exist** — `src/context/ToastContext.tsx` provides
+`ToastProvider` with `success` / `error` / `info` variants, an auto-dismiss
+timer, a max-visible cap, and a `useToast` hook. It is a context + host, not a
+`ui/` primitive, which is why it is not in the table above. It has only two
+consumers, so most of the app still uses inline or status-transition feedback.
+
+---
+
+## 10.5 Payment surfaces (added in v3.0)
+
+| Component | Role |
+|---|---|
+| `src/pages/seeker/SeekerPaymentPage.tsx` | The checkout screen. Serves **both** gateways from one route: `/seeker/payment` and `/seeker/checkout` |
+| `src/components/seeker/RazorpayCheckoutCard.tsx` | Razorpay Checkout launcher. Rendered only when `GET /api/payments/razorpay/config` reports `enabled: true` |
+| `src/components/booking/HoldCountdown.tsx` | The live 5-minute hold countdown shown during checkout |
+| `src/components/booking/BookingSummary.tsx` | Booking summary on the payment screen |
+| `src/components/booking/StatePanel.tsx` | Status panel on booking detail |
+| `src/components/booking/StatusPill.tsx` | Status pill, tones from `statusTone.ts` |
+| `src/components/booking/SegmentScope.tsx` | Segment context strip |
+
+**The manual and Razorpay paths are one screen with two branches**, not two
+pages. The UPI id, QR image, payment instructions, account name and currency all
+come from `GET /api/platform-config` and are **never hardcoded**. When Razorpay
+is disabled (the default) the Razorpay card is not rendered at all and the
+screen is manual-only.
+
+UX requirements for payment states:
+
+- The hold countdown must be visible on the payment screen; a payment started
+  after the hold expires must be refused by the server, not merely warned
+  about in the UI.
+- `FAILED` and `REFUNDED` need explicit, non-colour-only presentation.
+- A `PAYMENT_PROCESSING` booking has no tone today — see §15. Latent: the
+  booking never enters that state, so the gap is in the type/tone tables, not in
+  anything a user can currently see.
+
+---
+
+## 10.6 Segment experience theme layer (added in v3.0)
+
+Seeker-facing segment pages are themed at **runtime**, per segment, by
+`SegmentThemeContext` (`src/context/SegmentThemeContext.tsx`) reading
+`src/lib/segmentThemes.ts` and `src/lib/segmentTheme.ts`. The CMS payload itself
+comes from `segments.experience_config` via `SegmentExperienceRenderer.tsx`.
+
+```text
+segments.experience_config (JSONB, admin-authored)
+        ↓
+SegmentExperienceContext  →  SegmentExperienceRenderer
+        ↓
+SegmentThemeContext       →  per-segment colour/icon overrides
+        ↓
+SegmentMentorCard / SegmentMentorGrid / SegmentTopicBar / SegmentSelector
+```
+
+This layer is **not** covered by `src/index.css` tokens. An admin editing a
+segment's experience config in `AdminSegmentExperienceEditor.tsx` can therefore
+produce values that do not follow the shell palette. That is intentional — it is
+a per-brand surface — but it means segment themes must be validated in the
+admin editor with a live preview (`AdminExperiencePreview.tsx`), because there
+is no shell-level QA matrix for them.
 
 ---
 
@@ -363,9 +426,10 @@ Next available slot
 [ View Mentor ]
 ```
 
-Do not overload the card. A mentor with no bookable slot does not appear in
-available results at all; in the directory it appears with an explanation and a
-"choose another date" affordance.
+Do not overload the card. A mentor with no bookable slot is **still listed** in
+the directory — the listing deliberately does not require bookability — and the
+card or detail page explains the availability situation and offers a
+"choose another date" affordance. Do not hide a mentor because today is full.
 
 ---
 
@@ -374,21 +438,40 @@ available results at all; in the directory it appears with an explanation and a
 Status visuals are centralized and never conveyed by colour alone — every status
 has a text label, a semantic treatment, and optionally a supporting icon.
 
-**Booking**: `PAYMENT_PENDING`, `PENDING_VERIFICATION`, `MENTOR_PENDING`,
-`CONFIRMED`, `COMPLETED`, `CANCELLED`, `REJECTED`
+**Booking** (`bookings.status`, 8 values permitted by `bookings_status_check`; 7
+reachable): `PAYMENT_PENDING`, `PENDING_VERIFICATION`, `MENTOR_PENDING`,
+`CONFIRMED`, `COMPLETED`, `CANCELLED`, `REJECTED`, plus `PAYMENT_PROCESSING`
+(permitted, **never written** by current code)
 
-**Payment**: `PENDING_VERIFICATION`, `VERIFIED`, `REJECTED`
+**Payment** (`payments.status`, 8 values — `payments_status_check`):
+`PENDING_VERIFICATION`, `VERIFIED`, `REJECTED`, `PAYMENT_PENDING`,
+`PAYMENT_PROCESSING`, `FAILED`, `REFUNDED`, `REFUND_FAILED`
 
-**Hold**: `ACTIVE`, `CONVERTED`, `EXPIRED`, `RELEASED`
+**Hold** (`slot_holds.status`): `ACTIVE`, `CONVERTED`, `EXPIRED`, `RELEASED`
 
-**Session projection**: `SCHEDULED`, `ACCESS_OPEN`, `IN_PROGRESS`, `COMPLETED`,
-`CANCELLED`
+**Session projection** (computed, not a column): `SCHEDULED`, `ACCESS_OPEN`,
+`IN_PROGRESS`, `COMPLETED`, `CANCELLED`
 
-`IN_PROGRESS` is a computed session state, not a `bookings.status` value. Do not
-style it as though it were a database status.
+Three rules that must not be broken:
 
-Map these onto `Badge` variants (`success`, `warning`, `destructive`,
-`secondary`, `outline`) consistently across every page.
+1. `IN_PROGRESS` is a computed session state, **not** a `bookings.status` value.
+   Do not style it as though it were a database status.
+2. `FAILED`, `REFUNDED` and `REFUND_FAILED` are **payment** statuses. They
+   never appear as a booking status.
+3. `PENDING_VERIFICATION` bookings **still block the mentor's slot** (they are
+   outside the overlap exclusion's excluded set). Do not present them as free
+   time.
+
+Tone mapping lives in `src/components/booking/statusTone.ts` and is rendered by
+`StatusPill`. Map statuses onto `Badge` variants (`success`, `warning`,
+`destructive`, `secondary`, `outline`) consistently across every page.
+
+> **Known gap:** `PAYMENT_PROCESSING` is permitted by `bookings_status_check`
+> but is **not** in the `BookingStatus` union in `src/types/database.ts`, so
+> `statusTone.ts` `BOOKING_LIFECYCLE` (5 entries) has no entry for it and would
+> render it with no stepper position. Impact is currently low: no code path
+> writes that value to a booking, so it cannot be observed today. It becomes
+> live if a future change starts using it. See `docs/technical-audit.md` T1.
 
 ---
 
@@ -431,15 +514,31 @@ are predictable (Cancel / Confirm). Destructive actions must state their
 consequence. Style sizes consistently; the components do not expose a size prop
 today — apply consistent classes at the call site.
 
-There is no Toast system component. Success feedback is currently inline or
-status-transition based.
+**Success feedback is usually inline or a status transition.** A toast host
+does exist (`ToastContext.tsx` → `ToastProvider`, `useToast`, variants
+`success` / `error` / `info`, auto-dismiss, max-visible cap), but it has only
+two consumers. Do not reach for a toast where a status transition or an
+`ErrorState` is the honest representation of what happened — a toast that
+reports a success the server did not confirm is a bug, and the toast host is
+explicitly documented as a message bus rather than a source of truth.
 
 ---
 
 ## 19. Navigation
 
-Centralized and role-aware in `src/config/navigation.ts`, consumed by the
-shells. Do not build ad-hoc navigation inside pages.
+Centralized and role-aware in `src/config/navigation.ts`
+(`ROLE_NAVIGATION`), consumed by `TopNavigation.tsx` (seeker, mentor) and
+`AdminSidebar.tsx` (admin). Do not build ad-hoc navigation inside pages.
+
+| Role | Shell | Items |
+|---|---|---|
+| Seeker | top nav | Home, My Bookings, Notifications, Settings (4) |
+| Mentor | top nav | Home, My Bookings, Availability, Notifications, Settings (5) |
+| Admin | sidebar | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Notifications, System Health, Settings (11) |
+
+Routable but deliberately **not** in the nav config, reached in-page instead:
+`/mentor/gigs`, `/mentor/segments` (mentor); `/admin/users/create`,
+`/admin/system-health/logs` (admin).
 
 Desktop: horizontal top nav for seeker/mentor; persistent sidebar for admin.
 Mobile: compact header with a collapsible menu for seeker/mentor; collapsible
@@ -447,7 +546,7 @@ drawer for admin.
 
 Changing the navigation UI is not authorization. Role access is enforced by
 `ProtectedRoute` in the client and by `requireAuth` / `requireRole` /
-`requireAdmin` on the server.
+`requireAdmin` / `requireActiveMentor` on the server, with RLS underneath.
 
 ---
 

@@ -29,6 +29,7 @@
 
 import { z } from 'zod';
 import type { NextFunction, Request, Response } from 'express';
+import { isSafeSegmentLink, SEGMENT_SECTION_KEYS } from './segmentExperience';
 
 // ---------------------------------------------------------------------------
 // HTML / control-character sanitising
@@ -142,6 +143,29 @@ export const httpUrlField = z
   .trim()
   .pipe(z.url('Enter a valid URL.'))
   .refine((value) => /^https?:\/\//i.test(value), 'Only http and https links are allowed.');
+
+/**
+ * A destination an admin can click in the CMS: an internal app path or an
+ * absolute http(s) URL.
+ *
+ * This is the same contract as the frontend's `isSafeSegmentLink`, and the two
+ * MUST agree. A segment CTA points at the app far more often than the outside
+ * world ("See autism mentors" -> `/mentors`), so a schema that demanded an
+ * absolute URL rejected the product's own intended value and the admin could
+ * never save the config the renderer expects.
+ *
+ * Safety is unchanged by allowing the internal case: an internal link is a
+ * single leading slash, so `//evil.example` (protocol-relative, which escapes
+ * to another origin) is still refused, and `javascript:`, `data:`, `vbscript:`
+ * and `file:` still fail both the slash test and the absolute http(s) test.
+ */
+const linkField = z
+  .string()
+  .trim()
+  .refine(
+    (value) => isSafeSegmentLink(value),
+    'Enter a valid URL: use a path like /mentors, or an http(s) address.'
+  );
 
 export const uuidField = z
   .string()
@@ -345,6 +369,35 @@ const gigUpdateSchema = z.strictObject(gigUpdateShape).refine(
 // ---------------------------------------------------------------------------
 // Segments
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-section on/off toggles.
+ *
+ * The registry is taken from the frontend's own list rather than restated, so
+ * a section the renderer knows can never be refused by the write schema (the
+ * mismatch that made `sections` an unrecognised key and blocked every save).
+ *
+ * `partialRecord`, not `record`: an exhaustive record would demand all ten
+ * toggles, and a config that only sets the two it cares about must save.
+ */
+const sectionToggles = z.partialRecord(
+  z.enum(SEGMENT_SECTION_KEYS),
+  z.strictObject({ enabled: z.boolean() }),
+);
+
+/**
+ * A title/description/icon entry. Shared by topics, quick help, journey steps
+ * and benefits, which are the same shape under different section keys.
+ *
+ * `enabled` is the per-item admin toggle the read model already honours, so the
+ * write schema must accept it or a config using it can never be saved back.
+ */
+const experienceItemSchema = z.strictObject({
+  title: text({ max: 80, label: 'Title' }),
+  description: text({ max: 200, label: 'Description', multiline: true }),
+  icon: z.string().trim().max(40).optional(),
+  enabled: z.boolean().optional(),
+});
 
 const segmentNameField = text({ min: 1, max: MAX_NAME_LENGTH, label: 'Segment name' });
 const segmentDescriptionField = optionalText({
@@ -631,29 +684,14 @@ export const apiSchemas = {
       textMode: z.enum(['auto', 'light', 'dark']).optional(),
       heroImageUrl: httpUrlField.optional(),
     }).optional(),
-    topics: z.array(z.strictObject({
-      title: text({ max: 80, label: 'Title' }),
-      description: text({ max: 200, label: 'Description', multiline: true }),
-      icon: z.string().trim().max(40).optional(),
-    })).max(8, 'Use at most 8 topics.').optional(),
-    quickHelp: z.array(z.strictObject({
-      title: text({ max: 80, label: 'Title' }),
-      description: text({ max: 200, label: 'Description', multiline: true }),
-      icon: z.string().trim().max(40).optional(),
-    })).max(6, 'Use at most 6 quick help items.').optional(),
-    journeySteps: z.array(z.strictObject({
-      title: text({ max: 80, label: 'Title' }),
-      description: text({ max: 200, label: 'Description', multiline: true }),
-      icon: z.string().trim().max(40).optional(),
-    })).max(6, 'Use at most 6 journey steps.').optional(),
-    benefits: z.array(z.strictObject({
-      title: text({ max: 80, label: 'Title' }),
-      description: text({ max: 200, label: 'Description', multiline: true }),
-      icon: z.string().trim().max(40).optional(),
-    })).max(6, 'Use at most 6 benefits.').optional(),
+    topics: z.array(experienceItemSchema).max(8, 'Use at most 8 topics.').optional(),
+    quickHelp: z.array(experienceItemSchema).max(6, 'Use at most 6 quick help items.').optional(),
+    journeySteps: z.array(experienceItemSchema).max(6, 'Use at most 6 journey steps.').optional(),
+    benefits: z.array(experienceItemSchema).max(6, 'Use at most 6 benefits.').optional(),
     faq: z.array(z.strictObject({
       question: text({ max: 200, label: 'Question' }),
       answer: text({ max: 1000, label: 'Answer', multiline: true }),
+      enabled: z.boolean().optional(),
     })).max(8, 'Use at most 8 FAQ items.').optional(),
     guides: z.array(z.strictObject({
       topic: optionalText({ max: 80, label: 'Topic' }),
@@ -662,7 +700,7 @@ export const apiSchemas = {
       readingTime: optionalText({ max: 40, label: 'Reading time' }),
       cta: z.strictObject({
         text: text({ max: 60, label: 'CTA text' }),
-        url: httpUrlField,
+        url: linkField,
       }).optional(),
     })).max(6, 'Use at most 6 guides.').optional(),
     stories: z.array(z.strictObject({
@@ -678,40 +716,24 @@ export const apiSchemas = {
       title: optionalText({ max: 120, label: 'CTA title' }),
       description: optionalText({ max: 300, label: 'CTA description', multiline: true }),
       buttonText: text({ max: 60, label: 'CTA button text' }).optional(),
-      buttonUrl: httpUrlField.optional(),
+      buttonUrl: linkField.optional(),
       text: text({ max: 60, label: 'CTA text' }).optional(),
-      url: httpUrlField.optional(),
+      url: linkField.optional(),
     })
       .refine(
         (c) => Boolean(c.title || c.description || c.buttonText || c.text || c.url || c.buttonUrl),
         { message: 'Add a title, description or button to the CTA.' },
       )
       .optional(),
-  }).optional(),
 
-  /**
-   * Per-section on/off. A section that is explicitly disabled is never
-   * rendered, so an admin can hide a section without deleting its content.
-   * Unknown keys are refused rather than stored, which keeps the payload
-   * inside the closed registry the renderer knows.
-   */
-  sections: z
-    .record(
-      z.enum([
-        'hero',
-        'topics',
-        'quickHelp',
-        'mentors',
-        'journey',
-        'benefits',
-        'guides',
-        'stories',
-        'faq',
-        'cta',
-      ]),
-      z.strictObject({ enabled: z.boolean() }),
-    )
-    .optional(),
+    /**
+     * Per-section on/off. A section that is explicitly disabled is never
+     * rendered, so an admin can hide a section without deleting its content.
+     * Unknown keys are refused rather than stored, which keeps the payload
+     * inside the closed registry the renderer knows.
+     */
+    sections: sectionToggles.optional(),
+  }).optional(),
 
   segmentAddMentor: z.strictObject({
     mentorId: uuidField,

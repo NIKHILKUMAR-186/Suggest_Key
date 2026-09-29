@@ -371,7 +371,7 @@ export const SeekerHeader: React.FC<SeekerHeaderProps> = ({ homeHref = SEEKER_HO
             className="h-9 w-9 rounded-[10px] object-cover shadow-xs ring-1 ring-white/10"
           />
           <span className="font-display text-[17px] font-bold leading-tight tracking-[-0.02em] text-[var(--sk-brand-header-text)]">
-            Suggest Key
+            <img src="/name.png" alt="" className="h-9 rounded-[10px] object-cover" />
           </span>
         </button>
 

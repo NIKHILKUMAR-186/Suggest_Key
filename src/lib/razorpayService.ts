@@ -226,6 +226,91 @@ export interface PaymentEventInput {
 export type WebhookClaim = 'new' | 'duplicate' | 'resume';
 
 /**
+ * Machine-readable reasons an exception record can carry.
+ *
+ * Kept as a narrow union so a new reason is a deliberate code change rather
+ * than a free-text value that no caller can exhaustively handle.
+ */
+export type UnmatchedCaptureReason =
+  /** No local `payments` row matched the captured gateway payment. */
+  | 'PAYMENT_ROW_NOT_FOUND';
+
+/** Lifecycle of one recorded exception. Never overlaps the payment state machine. */
+export type UnmatchedReconciliationStatus = 'PENDING' | 'RESOLVED' | 'CONFLICT';
+
+/**
+ * One captured gateway payment that has no local confirmed payment.
+ *
+ * This is an EXCEPTION record, never a payment. It is never `VERIFIED`, never
+ * implies a booking was paid, and is never refundable by itself - it only tells
+ * an operator that money moved and where to look.
+ */
+export interface UnmatchedCaptureRow {
+  id: string;
+  gateway: string;
+  event_id: string;
+  last_event_id: string | null;
+  event_type: string;
+  razorpay_payment_id: string;
+  razorpay_order_id: string | null;
+  amount_paise: number | null;
+  currency: string | null;
+  received_at: string;
+  reason: UnmatchedCaptureReason;
+  reconciliation_status: UnmatchedReconciliationStatus;
+  delivery_count: number;
+  /** Most recent delivery instant absorbed for this capture. */
+  last_received_at: string | null;
+  resolved_payment_id: string | null;
+  resolution_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UnmatchedCaptureInput {
+  eventId: string;
+  eventType: string;
+  gatewayPaymentId: string;
+  gatewayOrderId: string | null;
+  /** Already range-checked, or null when the event carried no usable amount. */
+  amountPaise: number | null;
+  currency: string | null;
+  receivedAt: string;
+  reason: UnmatchedCaptureReason;
+  /** The original webhook payload, retained for later reconciliation. */
+  payload: unknown;
+}
+
+/** Result of recording an exception, including whether this was a first write. */
+export interface UnmatchedCaptureWriteResult {
+  row: UnmatchedCaptureRow;
+  /** False when an existing record was updated rather than inserted. */
+  created: boolean;
+}
+
+/**
+ * Why a delivery could not be attributed to a local payment, reported to the
+ * route so it can answer with a retryable status instead of 200.
+ */
+export type UnmatchedCaptureSignal =
+  | {
+      /** True when a durable exception row now exists for this capture. */
+      recorded: true;
+      reason: UnmatchedCaptureReason;
+      gatewayPaymentId: string | null;
+      unmatchedCaptureId: string;
+      deliveryCount: number;
+      created: boolean;
+      detail: string;
+    }
+  | {
+      recorded: false;
+      reason: 'MISSING_PAYMENT_ID';
+      gatewayPaymentId: null;
+      detail: string;
+    };
+
+/**
  * The narrow slice of persistence the Razorpay flows need.
  *
  * Every mutating method returns whether it actually changed a row, so the
@@ -329,6 +414,50 @@ export interface RazorpayStore {
    */
   claimWebhookEvent(input: { eventId: string; eventType: string; payload: unknown; at: string }): Promise<WebhookClaim>;
   completeWebhookEvent(eventId: string, at: string): Promise<void>;
+
+  // ---------------------------------------------------------------------
+  // Unmatched-capture ledger (audit P0-1)
+  //
+  // Separate from `payments` on purpose. These methods exist so a captured
+  // gateway payment that has no local row becomes durable and reconcilable
+  // instead of being discarded. They never create, confirm or advance a
+  // payment; `recordUnmatchedCapture` writes an exception row only.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Idempotently records a captured gateway payment that matched no local row.
+   *
+   * Identity is `(gateway, razorpay_payment_id)`, not the event id, so a
+   * redelivery OR a different event id describing the same capture collapses
+   * onto one financial record. Returns `created: false` when an existing record
+   * was updated.
+   *
+   * Throws when the record cannot be persisted or read back, so a capture that
+   * could not be made durable is never reported as recorded.
+   */
+  recordUnmatchedCapture(input: UnmatchedCaptureInput): Promise<UnmatchedCaptureWriteResult>;
+
+  getUnmatchedCaptureById(id: string): Promise<UnmatchedCaptureRow | null>;
+
+  getUnmatchedCaptureByGatewayPaymentId(gatewayPaymentId: string): Promise<UnmatchedCaptureRow | null>;
+
+  /** The operator queue. Only non-resolved records are returned. */
+  listUnmatchedCaptures(input: { limit: number }): Promise<UnmatchedCaptureRow[]>;
+
+  /**
+   * Conditional resolution, scoped to the record still being unresolved.
+   *
+   * Returns false when another operator already resolved or flagged it, which is
+   * what makes a double reconciliation a no-op rather than a second attach.
+   */
+  resolveUnmatchedCapture(input: {
+    id: string;
+    status: 'RESOLVED' | 'CONFLICT';
+    resolvedPaymentId: string | null;
+    note: string;
+    actorId: string | null;
+    at: string;
+  }): Promise<UnmatchedCaptureRow | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -941,11 +1070,33 @@ export interface RazorpayWebhookOutcome {
   /** Carried so the route can attach a real payment id to its notification. */
   paymentId: string | null;
   mentorNotified: boolean;
+  /**
+   * Present ONLY when a capture matched no local payment row (audit P0-1).
+   *
+   * Its presence means the delivery must NOT be acknowledged: the money moved
+   * and the platform could not attribute it, so the route returns a non-2xx
+   * and the gateway keeps redelivering while an operator reconciles.
+   */
+  unmatched?: UnmatchedCaptureSignal;
 }
 
 export type RazorpayWebhookResult =
   | ({ ok: true; duplicateEvent: boolean } & RazorpayWebhookOutcome)
-  | { ok: false; error: RazorpayFailure };
+  | { ok: false; error: RazorpayFailure }
+  /**
+   * A capture that could not be matched to a local payment (audit P0-1).
+   *
+   * This is deliberately NOT `ok: true`. The capture has been persisted to the
+   * unmatched ledger, but nothing has been paid, confirmed or reconciled, so
+   * the gateway must keep redelivering. `outcome` carries the original dispatch
+   * result so the route can log and surface it.
+   */
+  | {
+      ok: false;
+      error: RazorpayFailure;
+      outcome: RazorpayWebhookOutcome;
+      unmatchedCapture: UnmatchedCaptureSignal;
+    };
 
 interface ParsedWebhook {
   eventType: string;
@@ -1073,6 +1224,34 @@ export async function runRazorpayWebhook(input: RazorpayWebhookInput): Promise<R
 
   try {
     const result = await dispatchWebhookEvent(input, event, nowIso);
+
+    // A capture that matched no local payment row has been persisted to the
+    // unmatched ledger, but it is NOT resolved: no payment was confirmed and no
+    // booking was advanced. Acknowledging it with 200 is exactly the P0-1 money
+    // loss, so it is reported as a retryable failure instead and the event is
+    // deliberately left `processed = false`.
+    //
+    // Leaving it unprocessed matters: a later redelivery is then claimed as
+    // `resume` and re-evaluated, so if the missing `payments` row has since
+    // appeared (for example an order-creation response that was lost) the
+    // capture is applied normally with no manual step.
+    if (result.unmatched) {
+      console.error(
+        `Razorpay ${event.eventType} capture is unmatched (${result.unmatched.reason}); ` +
+          'recorded for reconciliation and left unacknowledged so the gateway retries.',
+      );
+      return {
+        ok: false,
+        error: fail(
+          503,
+          'RAZORPAY_CAPTURE_UNMATCHED',
+          'A captured payment could not be matched to a local payment and has been recorded for reconciliation.',
+        ),
+        outcome: result,
+        unmatchedCapture: result.unmatched,
+      };
+    }
+
     await input.store.completeWebhookEvent(event.eventId, nowIso);
     // `resume` is a repeat delivery, but one that had never been applied, so it
     // is reported as a duplicate for the caller while still being processed.
@@ -1126,6 +1305,44 @@ async function resolveWebhookPayment(store: RazorpayStore, event: ParsedWebhook)
   return null;
 }
 
+/**
+ * Writes one captured-but-unmatched gateway payment to the exception ledger.
+ *
+ * Returns null when the event carries no gateway payment id, because
+ * `(gateway, razorpay_payment_id)` is the financial identity of the record and
+ * there is nothing to key it on.
+ *
+ * The amount is range-checked here rather than trusted from the payload: the
+ * column is INTEGER, and a delivery carrying an absurd figure must still be
+ * recorded (with a null amount) rather than fail the whole write and vanish.
+ */
+async function recordUnmatchedCapture(
+  store: RazorpayStore,
+  event: ParsedWebhook,
+  nowIso: string,
+): Promise<UnmatchedCaptureWriteResult | null> {
+  if (!event.gatewayPaymentId) return null;
+
+  return store.recordUnmatchedCapture({
+    eventId: event.eventId,
+    eventType: event.eventType,
+    gatewayPaymentId: event.gatewayPaymentId,
+    gatewayOrderId: event.gatewayOrderId,
+    amountPaise: isStorablePaise(event.amount) ? event.amount : null,
+    currency: event.currency,
+    receivedAt: nowIso,
+    reason: 'PAYMENT_ROW_NOT_FOUND',
+    // The original delivery, retained verbatim for later reconciliation. It is
+    // never logged and never returned to a browser.
+    payload: event.payload,
+  });
+}
+
+/** Integer-safe guard for the ledger's INTEGER amount column. */
+function isStorablePaise(value: number | null): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
 async function handleCaptured(
   input: RazorpayWebhookInput,
   event: ParsedWebhook,
@@ -1133,9 +1350,51 @@ async function handleCaptured(
 ): Promise<RazorpayWebhookOutcome> {
   const payment = await resolveWebhookPayment(input.store, event);
   if (!payment) {
-    // Not one of ours (or the booking was purged). Acknowledged so Razorpay
-    // stops retrying, but nothing is written.
-    return { handled: 'unmatched', bookingId: null, paymentId: null, mentorNotified: false };
+    // The money moved but no local `payments` row claims it (audit P0-1).
+    //
+    // The old behaviour here returned `handled: 'unmatched'` and wrote nothing,
+    // which the route acknowledged with 200. Razorpay therefore stopped
+    // retrying and the captured money had no local record at all.
+    //
+    // Now the capture is made DURABLE first: it is written to the unmatched
+    // ledger with the original payload, then reported as a retryable failure so
+    // the gateway keeps redelivering. It is never turned into a payment, never
+    // advances a booking and never notifies a mentor.
+    const recorded = await recordUnmatchedCapture(input.store, event, nowIso);
+    if (!recorded) {
+      // No usable gateway payment id means there is no financial identity to
+      // key an exception record on, so nothing can be written or reconciled.
+      // Still a retryable failure rather than a silent 200.
+      return {
+        handled: 'unattributable',
+        bookingId: null,
+        paymentId: null,
+        mentorNotified: false,
+        unmatched: {
+          recorded: false,
+          reason: 'MISSING_PAYMENT_ID',
+          gatewayPaymentId: null,
+          detail: 'The capture carried no Razorpay payment id, so it cannot be identified or reconciled.',
+        },
+      };
+    }
+    return {
+      handled: 'unmatched',
+      bookingId: null,
+      paymentId: null,
+      mentorNotified: false,
+      unmatched: {
+        recorded: true,
+        reason: 'PAYMENT_ROW_NOT_FOUND',
+        gatewayPaymentId: event.gatewayPaymentId ?? null,
+        unmatchedCaptureId: recorded.row.id,
+        deliveryCount: recorded.row.delivery_count,
+        created: recorded.created,
+        detail:
+          'A captured payment could not be matched to a local payment row. ' +
+          'The capture has been recorded for operator reconciliation.',
+      },
+    };
   }
 
   // `razorpay_payment_id` is the key duplicate captures are detected by, so a
@@ -1253,4 +1512,216 @@ async function handleRefund(
   // defined yet and must not be invented.
   await input.store.recordRefund({ paymentId: payment.id, refundId: event.refundId, refundStatus, at: new Date().toISOString() });
   return { handled: 'refund_recorded', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
+}
+
+
+// ===========================================================================
+// RECONCILIATION (audit P0-1, phase B)
+//
+// A capture recorded as unmatched is not resolved by waiting or by a hidden
+// job: it is resolved by an explicit operator action. The one thing this must
+// never do is bind money to the wrong booking, so there is no automatic
+// attachment anywhere. Every answer is re-derived from trusted gateway
+// identifiers recorded at capture time plus the real local rows; the only
+// operator input is which exception record to act on.
+// ===========================================================================
+
+export type ReconcileUnmatchedCaptureResult =
+  /** Applied through the normal capture path, with all its guards intact. */
+  | {
+      status: 'APPLIED';
+      unmatchedCaptureId: string;
+      paymentId: string;
+      bookingId: string;
+      outcome: ApplyCaptureOutcome['outcome'];
+      mentorNotified: boolean;
+    }
+  /**
+   * A verified conflict. The record is flagged CONFLICT and stays unresolved, so
+   * a human must look rather than the platform guessing.
+   */
+  | { status: 'CONFLICT'; unmatchedCaptureId: string; reason: string; detail: string }
+  /** Already resolved (possibly by another operator). Not an error. */
+  | { status: 'ALREADY_RESOLVED'; unmatchedCaptureId: string; resolvedPaymentId: string | null }
+  /** No local payment claims the capture yet. It may appear later. */
+  | { status: 'STILL_UNMATCHED'; unmatchedCaptureId: string; reason: string }
+  | { status: 'NOT_FOUND'; reason: string };
+
+export interface ReconcileUnmatchedCaptureInput {
+  store: RazorpayStore;
+  unmatchedCaptureId: string;
+  /** The admin performing the action, recorded for the audit trail. */
+  actorId: string | null;
+  now?: Date;
+}
+
+/**
+ * Attempts to attach one recorded unmatched capture to the payment it belongs to.
+ *
+ * Every step refuses rather than assumes:
+ *   1. the record exists and has not already been resolved;
+ *   2. a local payment claims that exact gateway payment id - or, failing that,
+ *      the exact gateway order id, and ONLY when that payment has no gateway
+ *      payment id of its own, so a later capture cannot be re-bound to a payment
+ *      that merely shares an order;
+ *   3. the payment is a Razorpay payment in a state a capture may apply to;
+ *   4. the capture was not already applied to a different payment;
+ *   5. the recorded amount equals the server-derived amount for that payment;
+ *   6. the recorded currency is the platform currency.
+ *
+ * Only then is `applyCapturedPayment` used, so reconciliation inherits the same
+ * conditional updates, the same booking dead-end handling and the same once-only
+ * mentor notification as a live capture. It cannot invent a payment, cannot
+ * fabricate a booking, and cannot apply a conflicting amount.
+ */
+export async function reconcileUnmatchedCapture(
+  input: ReconcileUnmatchedCaptureInput,
+): Promise<ReconcileUnmatchedCaptureResult> {
+  const nowIso = (input.now ?? new Date()).toISOString();
+  const { store } = input;
+
+  const record = await store.getUnmatchedCaptureById(input.unmatchedCaptureId);
+  if (!record) {
+    return { status: 'NOT_FOUND', reason: 'No unmatched-capture record with that id exists.' };
+  }
+  if (record.reconciliation_status === 'RESOLVED') {
+    return {
+      status: 'ALREADY_RESOLVED',
+      unmatchedCaptureId: record.id,
+      resolvedPaymentId: record.resolved_payment_id,
+    };
+  }
+
+
+  // 2. Resolve only through the trusted gateway identifiers captured earlier.
+  let payment = await store.getPaymentByGatewayPaymentId(record.razorpay_payment_id);
+  if (!payment && record.razorpay_order_id) {
+    const byOrder = await store.getPaymentByOrderId(record.razorpay_order_id);
+    if (byOrder && byOrder.razorpay_payment_id === null) payment = byOrder;
+  }
+  if (!payment) {
+    return {
+      status: 'STILL_UNMATCHED',
+      unmatchedCaptureId: record.id,
+      reason: 'No local payment row claims this capture yet. It stays pending and the gateway keeps retrying.',
+    };
+  }
+
+  // 3. A gateway payment, in a state a capture may legally apply to.
+  if (payment.gateway !== RAZORPAY_GATEWAY) {
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'PAYMENT_NOT_RAZORPAY',
+      `Payment ${payment.id} is not a Razorpay payment.`,
+    );
+  }
+  if (!['PAYMENT_PROCESSING', 'PAYMENT_PENDING'].includes(payment.status)) {
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'PAYMENT_NOT_CAPTURABLE',
+      `Payment ${payment.id} is ${payment.status} and cannot accept a capture.`,
+    );
+  }
+
+  // 4. Never attach a capture to a payment that already records a different
+  //    captured gateway payment: that would double-count one booking.
+  if (payment.razorpay_payment_id && payment.razorpay_payment_id !== record.razorpay_payment_id) {
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'PAYMENT_ALREADY_CAPTURED_ELSEWHERE',
+      `Payment ${payment.id} already records captured payment ${payment.razorpay_payment_id}.`,
+    );
+  }
+
+  // 5 + 6. Amount and currency, against server-derived values only.
+  const expectedPaise = toPaise(payment.amount_inr);
+  if (record.amount_paise !== null && record.amount_paise !== expectedPaise) {
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'AMOUNT_MISMATCH',
+      `Capture was ${record.amount_paise} paise but payment ${payment.id} is worth ${expectedPaise}.`,
+    );
+  }
+  if (record.currency !== null && record.currency !== RAZORPAY_CURRENCY) {
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'CURRENCY_MISMATCH',
+      `Capture was in ${record.currency}, not ${RAZORPAY_CURRENCY}.`,
+    );
+  }
+
+  // All checks passed. Reuse the live capture path so the payment, the booking
+  // and the mentor notification move through exactly the same guarded
+  // transitions a normal webhook uses.
+  let applied: ApplyCaptureOutcome;
+  try {
+    applied = await applyCapturedPayment(
+      store,
+      payment,
+      {
+        gatewayPaymentId: record.razorpay_payment_id,
+        // The gateway signature is never retained in the ledger, so it is null
+        // here. That is safe because the capture was already HMAC-verified when
+        // it was recorded, and because the amount above was re-derived from the
+        // server, not from this record.
+        signature: null,
+        capturedAt: record.received_at,
+        // The raw payload is deliberately not replayed into `gateway_payload`;
+        // it remains in the ledger for audit rather than being copied forward.
+        payload: null,
+      },
+    );
+  } catch (err) {
+    // A conflict raised by the capture path itself (a different gateway payment
+    // already on this booking, or a state that cannot be confirmed). Surface it
+    // rather than forcing a resolution.
+    return flagConflict(
+      store, record, input.actorId, nowIso, 'CAPTURE_PATH_CONFLICT',
+      logSanitizer.safeMessage(err),
+    );
+  }
+
+  await store.resolveUnmatchedCapture({
+    id: record.id,
+    status: 'RESOLVED',
+    resolvedPaymentId: payment.id,
+    note: `Reconciled to payment ${payment.id} (${applied.outcome}).`,
+    actorId: input.actorId,
+    at: nowIso,
+  });
+
+  return {
+    status: 'APPLIED',
+    unmatchedCaptureId: record.id,
+    paymentId: payment.id,
+    bookingId: payment.booking_id,
+    outcome: applied.outcome,
+    mentorNotified: 'mentorNotified' in applied ? applied.mentorNotified : false,
+  };
+}
+
+/**
+ * Marks a record CONFLICT so it stops being retried blindly and waits for a
+ * human. The capture evidence is preserved; nothing is attached.
+ */
+async function flagConflict(
+  store: RazorpayStore,
+  record: UnmatchedCaptureRow,
+  actorId: string | null,
+  at: string,
+  reason: string,
+  detail: string,
+): Promise<ReconcileUnmatchedCaptureResult> {
+  await store.resolveUnmatchedCapture({
+    id: record.id,
+    status: 'CONFLICT',
+    resolvedPaymentId: null,
+    note: `${reason}: ${detail}`.slice(0, 500),
+    actorId,
+    at,
+  });
+  return { status: 'CONFLICT', unmatchedCaptureId: record.id, reason, detail };
+}
+
+/** The operator queue: exception records that still need a decision. */
+export async function listUnmatchedCaptures(
+  store: RazorpayStore,
+  input: { limit?: number } = {},
+): Promise<UnmatchedCaptureRow[]> {
+  return store.listUnmatchedCaptures({ limit: Math.min(Math.max(input.limit ?? 50, 1), 200) });
 }

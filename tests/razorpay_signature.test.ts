@@ -257,11 +257,14 @@ describe('razorpay signature: verification through the Express route', () => {
       const body = webhookBody({ paymentId: 'pay_UNKNOWN' });
       const res = await post(server.url, body, { 'x-razorpay-signature': signWebhook(body) });
 
-      assert.equal(res.status, 200);
-      const payload = (await res.json()) as { success: boolean; handled: string };
-      assert.equal(payload.success, true);
-      // Nothing in this fixture is ours, so the body is acknowledged unmatched.
-      assert.equal(payload.handled, 'unmatched');
+      // Nothing in this fixture is ours, so the capture cannot be matched. Since
+      // P0-1 that is a recorded, retryable failure rather than a 200: a signed
+      // capture of unknown money must never be acknowledged as processed.
+      // What this test still proves is signature acceptance and byte-exactness.
+      assert.equal(res.status, 503);
+      const payload = (await res.json()) as { success: boolean; error: { code: string } };
+      assert.equal(payload.success, false);
+      assert.equal(payload.error.code, 'RAZORPAY_CAPTURE_UNMATCHED');
       // The bytes the handler verified are the bytes that were sent.
       assert.equal(server.received[0], body);
     } finally {
