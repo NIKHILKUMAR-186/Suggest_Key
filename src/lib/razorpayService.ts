@@ -501,25 +501,55 @@ const isPositiveAmount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0;
 
 /**
+ * The canonical hold-validity decision.
+ *
+ * ONE expiry calculation for the whole integration. Order creation and capture
+ * application both ask this question, and two answers would eventually disagree
+ * about the exact instant a slot stopped being payable.
+ *
+ * A booking with no hold, or a hold row that cannot be read, is NOT blocked: the
+ * hold is what reserves the slot, and a booking created by a path that does not
+ * use one is legitimately payable.
+ */
+export type HoldValidity = 'VALID' | 'NOT_ACTIVE' | 'ELAPSED';
+
+export function evaluateHoldValidity(hold: RazorpayHoldRow | null, nowMs: number): HoldValidity {
+  if (!hold) return 'VALID';
+  if (hold.status !== 'ACTIVE' && hold.status !== 'CONVERTED') return 'NOT_ACTIVE';
+  const expiresAt = new Date(hold.expires_at).getTime();
+  if (Number.isFinite(expiresAt) && expiresAt <= nowMs) return 'ELAPSED';
+  return 'VALID';
+}
+
+/**
  * Confirms the hold behind a booking has not elapsed.
  *
  * The hold is what reserves the slot, so paying for an expired hold would let
- * two seekers pay for the same slot while only one of them keeps it. A booking
- * with no hold (created by a path that does not use one) is not blocked.
+ * two seekers pay for the same slot while only one of them keeps it.
  */
 async function assertHoldStillValid(store: RazorpayStore, booking: RazorpayBookingRow, nowMs: number): Promise<RazorpayFailure | null> {
   if (!booking.hold_id) return null;
-  const hold = await store.getHold(booking.hold_id);
-  if (!hold) return null;
-
-  if (hold.status !== 'ACTIVE' && hold.status !== 'CONVERTED') {
-    return fail(409, 'HOLD_EXPIRED', 'Your payment window for this slot has expired. Please book the slot again.');
-  }
-  if (Number.isFinite(new Date(hold.expires_at).getTime()) && new Date(hold.expires_at).getTime() <= nowMs) {
-    return fail(409, 'HOLD_EXPIRED', 'Your payment window for this slot has expired. Please book the slot again.');
-  }
-  return null;
+  const validity = evaluateHoldValidity(await store.getHold(booking.hold_id), nowMs);
+  if (validity === 'VALID') return null;
+  return fail(409, 'HOLD_EXPIRED', 'Your payment window for this slot has expired. Please book the slot again.');
 }
+
+/**
+ * Reads the hold behind a booking, for the capture path.
+ *
+ * Separate from `assertHoldStillValid` only in what it returns: at capture time
+ * an elapsed hold must be distinguished from a hold that is merely not active,
+ * because both divert the capture but describe different operator actions.
+ */
+async function readHoldValidity(
+  store: RazorpayStore,
+  booking: RazorpayBookingRow,
+  nowMs: number,
+): Promise<HoldValidity> {
+  if (!booking.hold_id) return 'VALID';
+  return evaluateHoldValidity(await store.getHold(booking.hold_id), nowMs);
+}
+
 
 // ---------------------------------------------------------------------------
 // 1. Create order
@@ -744,6 +774,16 @@ function isBookingPaymentDeadEnd(status: string | null): boolean {
 }
 
 /**
+ * Why a capture was diverted instead of confirmed.
+ *
+ * Recorded on the payment event so an operator reading the ledger can tell a
+ * booking that was cancelled outright from one whose payment window merely
+ * lapsed. They need different remedies, and only the reason tells them apart.
+ */
+export type DeadBookingCause = 'BOOKING_CLOSED' | 'HOLD_EXPIRED';
+
+
+/**
  * The capture was real, but the booking it paid for is gone. Recorded as a
  * refund-owed state rather than a success, because there is no outbound refund
  * call in this integration and inventing refund policy is out of scope.
@@ -774,10 +814,16 @@ async function recoverCaptureAgainstDeadBooking(
   payment: RazorpayPaymentRow,
   args: { gatewayPaymentId: string; capturedAt: string },
   bookingStatus: string | null,
+  cause: DeadBookingCause = 'BOOKING_CLOSED',
 ): Promise<RecoveredCapture> {
-  const reason = bookingStatus
-    ? `Payment ${args.gatewayPaymentId} was captured after the booking was ${bookingStatus}; a refund is owed.`
-    : `Payment ${args.gatewayPaymentId} was captured after the booking no longer exists; a refund is owed.`;
+  const reason =
+    cause === 'HOLD_EXPIRED'
+      ? `Payment ${args.gatewayPaymentId} was captured after the payment hold expired${
+          bookingStatus ? ` (booking is ${bookingStatus})` : ''
+        }; a refund is owed.`
+      : bookingStatus
+      ? `Payment ${args.gatewayPaymentId} was captured after the booking was ${bookingStatus}; a refund is owed.`
+      : `Payment ${args.gatewayPaymentId} was captured after the booking no longer exists; a refund is owed.`;
 
   const marked = await store.markPaymentRefundPending({
     paymentId: payment.id,
@@ -790,7 +836,7 @@ async function recoverCaptureAgainstDeadBooking(
     await store.insertPaymentEvent({
       paymentId: payment.id,
       status: 'FAILED',
-      eventType: 'CAPTURE_AFTER_BOOKING_CLOSED',
+      eventType: cause === 'HOLD_EXPIRED' ? 'CAPTURE_AFTER_HOLD_EXPIRED' : 'CAPTURE_AFTER_BOOKING_CLOSED',
       gateway: RAZORPAY_GATEWAY,
       gatewayPaymentId: args.gatewayPaymentId,
       amountInr: payment.amount_inr,
@@ -846,6 +892,28 @@ async function applyCapturedPayment(
   const booking = await store.getBooking(payment.booking_id);
   if (isBookingPaymentDeadEnd(booking?.status ?? null)) {
     return recoverCaptureAgainstDeadBooking(store, payment, args, booking?.status ?? null);
+  }
+
+  // The hold is re-checked at the instant the money actually moved, not when the
+  // order was minted. Order expiry and the hold share one duration, so the check
+  // at order-creation time only proves the PAYER had not started yet - Razorpay
+  // keeps an authorization open well past that, and a webhook can be redelivered
+  // for hours, so a capture routinely lands after the window closed.
+  //
+  // This has to be an independent read rather than a look at the booking status,
+  // because hold expiry cancels the booking LAZILY: the sweep runs inside booking
+  // creation (`bookingEngine.ts`), so with no later booking on that mentor the row
+  // is still PAYMENT_PENDING and the capture would otherwise confirm a session
+  // the seeker's slot no longer belongs to.
+  //
+  // Evaluated against `capturedAt`, the authoritative capture instant, so a
+  // redelivery hours later cannot retroactively invalidate a capture that was
+  // genuinely made in time.
+  if (booking) {
+    const holdValidity = await readHoldValidity(store, booking, new Date(args.capturedAt).getTime());
+    if (holdValidity !== 'VALID') {
+      return recoverCaptureAgainstDeadBooking(store, payment, args, booking.status, 'HOLD_EXPIRED');
+    }
   }
 
   // The conditional update is the concurrency gate: only the first caller to
@@ -1108,6 +1176,17 @@ interface ParsedWebhook {
   status: string | null;
   refundId: string | null;
   payload: Record<string, unknown>;
+  /**
+   * The instant the GATEWAY says the money moved, from `created_at` (epoch
+   * seconds) on the payment entity.
+   *
+   * Distinct from the delivery instant on purpose. A webhook can be redelivered
+   * hours later, and any hold-validity judgement that used the arrival time would
+   * retroactively invalidate a capture that was genuinely made in time. The
+   * gateway's own timestamp is the authoritative answer; null when absent, in
+   * which case the caller falls back to the delivery instant.
+   */
+  capturedAt: number | null;
 }
 
 /**
@@ -1156,6 +1235,14 @@ export function parseRazorpayWebhookEvent(rawBody: string): ParsedWebhook | null
   const currency = amountSource && typeof amountSource.currency === 'string' ? amountSource.currency : null;
   const status = amountSource && typeof amountSource.status === 'string' ? amountSource.status : null;
 
+  // `created_at` is epoch seconds on the payment entity. Only a finite, positive
+  // value is trusted; anything else is treated as "the gateway did not say", and
+  // the caller falls back to the delivery instant.
+  const rawCreatedAt = payment && typeof payment.created_at === 'number' ? payment.created_at : null;
+  const capturedAtMs = rawCreatedAt !== null && Number.isFinite(rawCreatedAt) && rawCreatedAt > 0
+    ? rawCreatedAt * 1000
+    : null;
+
   const headerEventId = typeof root.event_id === 'string' ? root.event_id : null;
   const eventId = headerEventId ?? `${eventType}:${gatewayPaymentId ?? refundId ?? gatewayOrderId ?? 'unknown'}`;
 
@@ -1168,6 +1255,7 @@ export function parseRazorpayWebhookEvent(rawBody: string): ParsedWebhook | null
     currency,
     status,
     refundId,
+    capturedAt: capturedAtMs,
     payload: root,
   };
 }
@@ -1423,10 +1511,17 @@ async function handleCaptured(
     return { handled: 'amount_mismatch', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
   }
 
+  // The hold is judged against the instant the GATEWAY says the money moved, not
+  // the instant this delivery arrived. A redelivery can come hours later, and
+  // judging on arrival time would retroactively invalidate a capture that was
+  // genuinely made inside the payment window. The same instant is recorded as
+  // `captured_at`, so the stored audit trail and the judgement agree.
+  const capturedAt = event.capturedAt !== null ? new Date(event.capturedAt).toISOString() : nowIso;
+
   const outcome = await applyCapturedPayment(input.store, payment, {
     gatewayPaymentId: event.gatewayPaymentId,
     signature: null,
-    capturedAt: nowIso,
+    capturedAt,
     payload: event.payload,
   });
 

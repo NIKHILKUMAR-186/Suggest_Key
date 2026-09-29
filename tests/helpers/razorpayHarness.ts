@@ -487,6 +487,12 @@ export interface WebhookBodyOptions {
   errorDescription?: string;
   /** Sets `event_id` on the envelope, as the real gateway sends it. */
   eventId?: string;
+  /**
+   * The payment's `created_at` (epoch seconds), which is the gateway's own
+   * statement of when the money moved. Defaults to NOW so fixtures look like a
+   * capture that happened just now.
+   */
+  createdAt?: Date;
   /** Extra envelope fields, so two deliveries of one event can differ byte-wise. */
   extra?: Record<string, unknown>;
 }
@@ -501,6 +507,7 @@ export function webhookBody(options: WebhookBodyOptions = {}): string {
     currency: 'INR',
     status: 'captured',
     captured: true,
+    created_at: Math.floor((options.createdAt ?? NOW).getTime() / 1000),
   };
   if (options.errorDescription) {
     payment.error_code = 'BAD_CARD_ERROR';
