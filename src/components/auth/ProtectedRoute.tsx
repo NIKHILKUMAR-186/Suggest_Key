@@ -2,8 +2,7 @@ import React from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import type { UserRole } from '@/src/types/auth';
-import type { MentorApplicationStatus } from '@/src/types/database';
-import { ShieldAlert, LogIn, ArrowLeft, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ShieldAlert, LogIn, RefreshCw, ShieldCheck } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 
 interface ProtectedRouteProps {
@@ -17,18 +16,20 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   allowedRoles,
   requireAuth = true,
 }) => {
-  const { user, roles, isAuthenticated, isLoading, activeRole, onboardingStatus } = useAuth();
+const { user, roles, isAuthenticated, isLoading, activeRole, onboardingStatus, mentorVerificationState } = useAuth();
   const { navigate, currentPath } = useNavigation();
 
-  // 1. Loading State
+  // 1. Session loading state. The auth context is still resolving the
+  //    Supabase session and the user_roles lookup, so we cannot yet make any
+  //    claim about the caller's authorization.
   if (isLoading) {
-return (
-    <div className="min-h-[50vh] flex flex-col items-center justify-center space-y-4">
-      <RefreshCw className="h-8 w-8 text-[var(--color-shell-accent)] animate-spin" />
-      <p className="text-xs font-medium text-[var(--color-shell-text-muted)]">Verifying session & role authorizations...</p>
-    </div>
-  );
-}
+    return (
+      <div className="min-h-[50vh] flex flex-col items-center justify-center space-y-4">
+        <RefreshCw className="h-8 w-8 text-[var(--color-shell-accent)] animate-spin" />
+        <p className="text-xs font-medium text-[var(--color-shell-text-muted)]">Verifying session & role authorizations...</p>
+      </div>
+    );
+  }
 
   // 2. Authentication Requirement Check
   if (requireAuth && !isAuthenticated) {
@@ -54,24 +55,35 @@ return (
           </Button>
           <Button
             variant="outline"
-            size="md" 
+            size="md"
             onClick={() => navigate('/')}
             className="text-xs w-full sm:w-auto"
           >
-            Back to Home 
+            Back to Home
           </Button>
         </div>
       </div>
     );
   }
 
-  // 3. Mentor Onboarding Requirement Check
+  // 3. Mentor Onboarding Requirement Check.
+  //
+  // The verification outcome is now an explicit three-state value, not a
+  // nullable boolean. `loading` means the onboarding request has not settled;
+  // it must render a loading UI, NOT the verification-required card. The
+  // previous code computed `applicationStatus !== 'approved'` on a possibly
+  // null `onboardingStatus`, which collapsed `loading` into `not_verified`
+  // and flashed the gate on every portal load.
   const isMentorRoute = currentPath.startsWith('/mentor');
-  const applicationStatus = onboardingStatus?.application?.status as MentorApplicationStatus | null;
-  const mentorProfileApproved = onboardingStatus?.mentorProfile?.is_approved === true
-    && onboardingStatus.mentorProfile.approval_status === 'approved'
-    && onboardingStatus.mentorProfile.is_active === true;
-  if (isAuthenticated && roles.includes('mentor') && applicationStatus !== 'approved' && !mentorProfileApproved && isMentorRoute && currentPath !== '/mentor/verification' && currentPath !== '/mentor') {
+  const isMentorVerificationGate =
+    isAuthenticated &&
+    roles.includes('mentor') &&
+    mentorVerificationState === 'not_verified' &&
+    isMentorRoute &&
+    currentPath !== '/mentor/verification' &&
+    currentPath !== '/mentor';
+
+  if (isMentorVerificationGate) {
     return (
       <div className="max-w-md mx-auto my-12 p-6 rounded-2xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] shadow-xs text-center space-y-4">
         <div className="h-12 w-12 rounded-full bg-[var(--color-shell-warning-soft)] flex items-center justify-center mx-auto text-[var(--color-shell-warning)]">
@@ -101,6 +113,26 @@ return (
             Reload
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  // 3b. While the mentor verification query is still in flight, render the
+  //    existing loading UI instead of the verification card. This is the
+  //    state that previously leaked through as `not_verified` because the
+  //    onboarding payload was null.
+  if (
+    isMentorRoute &&
+    isAuthenticated &&
+    roles.includes('mentor') &&
+    mentorVerificationState === 'loading' &&
+    currentPath !== '/mentor/verification' &&
+    currentPath !== '/mentor'
+  ) {
+    return (
+      <div className="min-h-[50vh] flex flex-col items-center justify-center space-y-4">
+        <RefreshCw className="h-8 w-8 text-[var(--color-shell-accent)] animate-spin" />
+        <p className="text-xs font-medium text-[var(--color-shell-text-muted)]">Checking mentor verification status...</p>
       </div>
     );
   }

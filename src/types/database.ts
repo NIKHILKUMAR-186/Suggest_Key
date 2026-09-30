@@ -167,6 +167,42 @@ export interface Booking {
   seeker?: Profile;
   gig?: Gig;
   segment?: Segment;
+  /** Open request, else the most recent closed one, else null. */
+  rescheduleRequest?: RescheduleRequest | null;
+}
+
+// ----------------------------------------------------------------------
+// 9b. RESCHEDULE REQUESTS
+// ----------------------------------------------------------------------
+/**
+ * A seeker's request to move an EXISTING booking to a different time.
+ *
+ * The booking is not modified while a request is PENDING: `mentor_id`,
+ * `segment_id` and `gig_id` on the booking are immutable across a reschedule,
+ * and only `start_time`/`end_time` change, and only once the mentor approves.
+ */
+export type RescheduleRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
+
+export type RescheduleDecision = 'ACCEPTED' | 'REJECTED';
+
+export interface RescheduleRequest {
+  id: string;
+  booking_id: string;
+  seeker_id: string;
+  mentor_id: string;
+  original_start_time: string; // UTC ISO string, snapshotted at request time
+  original_end_time: string;
+  requested_start_time: string;
+  requested_end_time: string;
+  status: RescheduleRequestStatus;
+  mentor_response: RescheduleDecision | null;
+  rejection_reason: string | null;
+  seeker_requested_at: string;
+  mentor_responded_at: string | null;
+  /** When the held slot is released if the mentor does not answer. */
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ----------------------------------------------------------------------
@@ -257,6 +293,9 @@ export type NotificationEventType =
   | 'SESSION_REMINDER'
   | 'CANCELLATION'
   | 'RESCHEDULING'
+  | 'RESCHEDULE_REQUESTED'
+  | 'RESCHEDULE_APPROVED'
+  | 'RESCHEDULE_REJECTED'
   | 'SESSION_COMPLETED'
   | 'WORKSPACE_UPDATED'
   // Mentor events
@@ -266,6 +305,8 @@ export type NotificationEventType =
   | 'MENTOR_SESSION_REMINDER'
   | 'MENTOR_CANCELLATION'
   | 'MENTOR_RESCHEDULING'
+  | 'MENTOR_RESCHEDULE_REQUESTED'
+  | 'MENTOR_RESCHEDULE_CANCELLED'
   | 'SESSION_COMPLETION'
   // Admin events
   | 'ADMIN_PAYMENT_PROOF_SUBMITTED'

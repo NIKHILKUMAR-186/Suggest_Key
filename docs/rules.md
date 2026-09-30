@@ -227,9 +227,39 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 | N2 | Cancellation is only available in the pre-session statuses. | SERVER | Status check before the transition. |
 | N3 | Cancellation sets `bookings.cancellation_reason`. | DATABASE | The only column a client may update on `bookings`. |
 | N4 | A cancelled booking releases the slot for rebooking. | DATABASE | Exclusion predicate excludes `CANCELLED` and `REJECTED`. |
-| N5 | Reschedule acquires a new hold first, then moves the booking; if the new slot cannot be held, the original booking is untouched. | SERVER | `acquire_slot_hold` is called at `server.ts:2995`, before any write to the booking. |
-| N6 | A reschedule that expires mid-flight leaves the original booking intact. | DATABASE | The new hold is independent of the original booking row. |
 | N7 | Mentor cancellation is a distinct, emergency path with its own reason. | SERVER | Mentor booking detail actions. |
+
+### 13b. Reschedule requests (phase 30)
+
+A reschedule is a **request**, not an edit. The booking does not move until the
+mentor accepts.
+
+| # | Rule | Layer | Enforcement |
+|---|---|---|---|
+| R1 | A reschedule changes **time only**. `mentor_id`, `segment_id` and `gig_id` are immutable across it. | DATABASE | `create_reschedule_request` takes no gig, segment or mentor argument, and reads all three from the booking row. `respond_to_reschedule_request`'s `UPDATE public.bookings` sets only `start_time`, `end_time`, `hold_id`, `updated_at`. |
+| R2 | Rescheduling to another mentor is impossible. | DATABASE | There is no path that writes `bookings.mentor_id` in this flow. The RPC never accepts one. |
+| R3 | Only the booking's seeker may create a request. | DATABASE | `v_booking.seeker_id <> p_seeker_id` raises `FORBIDDEN_NOT_BOOKING_OWNER`. |
+| R4 | Only the booking's mentor may answer it. | DATABASE | `v_request.mentor_id <> p_mentor_id` raises `FORBIDDEN_NOT_BOOKING_OWNER`. The mentor id comes from the session, never the body. |
+| R5 | A request needs `start − now >= 10 min` on the **original** slot. | DATABASE | `reschedule_window_interval()`, read from `platform_config.reschedule_window_minutes`. Re-tested after the mentor row lock. |
+| R6 | Only a live pre-session booking is movable: `MENTOR_PENDING` or `CONFIRMED`. | DATABASE | An unpaid booking is a re-book, not a reschedule. |
+| R7 | The new time is checked against the **mentor's global timeline**: live hours or the date exception, plus every non-cancelled booking and every unexpired hold for that mentor. | DATABASE | Availability and conflict queries are keyed on `mentor_id` and the instant only. **No `gig_id` or `segment_id` predicate appears in either decision.** |
+| R8 | A booking on one gig blocks the same instant on every other gig. | DATABASE | Conflict queries omit the gig, so a Relationship booking at 17:00 makes 17:00 unrequestable for an Autism reschedule. |
+| R9 | The original booking is unchanged while a request is `PENDING`. | DATABASE | `create_reschedule_request` contains no `UPDATE public.bookings`. Its `original_start_time`/`original_end_time` snapshot is what the mentor compares against. |
+| R10 | The requested slot is protected while the mentor decides, by a real hold with a clear expiry. | DATABASE | A `slot_holds` row is written before the request, expiring at `reschedule_request_expiry_interval()` (24h default). `no_overlapping_active_holds` is the concurrency control. |
+| R11 | The hold sweeper must not reap a live request's reservation. | DATABASE | `expire_stale_holds` excludes holds referenced by a `PENDING` `reschedule_requests` row. Without this, every request's slot would be released on the next cron tick. |
+| R12 | At most one open request per booking. | DATABASE | Partial unique index `uq_reschedule_requests_pending_booking` on `booking_id WHERE status = 'PENDING'`, plus an `RESCHEDULE_REQUEST_PENDING` check in the RPC. |
+| R13 | On approval the slot is re-checked before being taken. | DATABASE | Approval re-runs the conflict queries, excluding this booking (`id <> v_booking.id`) and this request's own hold (`id IS DISTINCT FROM v_request.hold_id`). |
+| R14 | On approval: the old hold is `RELEASED`, the request's hold is `CONVERTED`, the booking's times become the requested ones. | DATABASE | One transaction in `respond_to_reschedule_request`. |
+| R15 | On rejection the booking is **not written at all**; the held slot is released and the seeker is notified with the reason. | DATABASE | The `REJECTED` branch contains no reference to `public.bookings`. |
+| R16 | Statuses are `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED`. `CANCELLED` is reachable only by a seeker withdrawing their own request. | DATABASE | `CHECK` constraint; `cancel_reschedule_request` verifies `seeker_id`. |
+| R17 | A request that is answered cannot be answered again, and a request past `expires_at` closes as `EXPIRED` rather than being approved. | DATABASE | `RESCHEDULE_REQUEST_CLOSED` / `RESCHEDULE_REQUEST_EXPIRED`, both inside the row lock. |
+| R18 | Participants may read a request; **nobody** may write one directly. | DATABASE | A `SELECT`-only RLS policy. All transitions go through the RPCs. |
+| R19 | The new RPCs are executable by the service role only. | DATABASE | `REVOKE ... FROM PUBLIC, anon, authenticated` plus a `has_function_privilege('anon')` post-condition. Postgres grants `PUBLIC` EXECUTE by default, so omitting the revoke would expose every ownership check in these bodies to an anonymous caller. |
+| R20 | The reschedule body accepts a time and nothing else. | SERVER | `apiSchemas.bookingReschedule` is a `strictObject` with only `newStartTime`/`newEndTime`. A `gigId` would be rejected as an unknown key. |
+
+**Removed in phase 30:** the old "New gig must belong to the same mentor and
+segment" rule. It described a decision a reschedule is not allowed to make.
+Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 
 ---
 

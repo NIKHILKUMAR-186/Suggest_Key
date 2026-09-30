@@ -32,6 +32,11 @@ import {
 } from '@/src/lib/workspaceService';
 import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import {
+  bookingMatchesRequestedId,
+  evaluateBookingOfferIdentity,
+  resolveRequestedBookingId,
+} from '@/src/lib/workspaceIdentity';
+import {
   SessionWorkspace,
   NextStepItem,
   FollowUpRecommendation,
@@ -46,11 +51,11 @@ export const MentorWorkspacePage: React.FC = () => {
     if (workspace.status === 'PUBLISHED') return 'PUBLISHED';
     return 'DRAFT';
   };
-  const { navigate } = useNavigation();
+  const { navigate, currentPath } = useNavigation();
   const { user } = useAuth();
   const mentorId = user?.id;
 
-  const queryBookingId = new URLSearchParams(window.location.search || '').get('bookingId') || '';
+  const queryBookingId = resolveRequestedBookingId(currentPath, window.location.search);
 
   const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [workspace, setWorkspace] = useState<SessionWorkspace | null>(null);
@@ -77,6 +82,36 @@ export const MentorWorkspacePage: React.FC = () => {
 
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   const [bookingNotFound, setBookingNotFound] = useState<boolean>(false);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const missingBookingId = !queryBookingId;
+
+  // Every field below describes ONE booking. When the requested booking changes,
+  // the previous booking's draft must not survive into the new render.
+  //
+  // The route path is identical for every workspace, so React reuses this
+  // component instance across `?bookingId=A` -> `?bookingId=B`, and
+  // NavigationContext mutates history with pushState, which fires no popstate.
+  // Without this reset, `handleSave` publishes `booking.id` - the PREVIOUS
+  // booking - while the header shows the new one, which is how a mentor
+  // publishes one session's notes onto another.
+  useEffect(() => {
+    if (!queryBookingId) return;
+    setBooking(null);
+    setWorkspace(null);
+    setMentorNotes('');
+    setTakeaways([]);
+    setSuggestions([]);
+    setNextSteps([]);
+    setRecommendFollowUp(false);
+    setFollowUpTopic('');
+    setFollowUpNotes('');
+    setFeedbackError(null);
+    setFeedbackSuccess(null);
+    setAuthorizationError(null);
+    setIdentityError(null);
+    setBookingNotFound(false);
+    setLoading(true);
+  }, [queryBookingId, mentorId]);
 
   useEffect(() => {
     let mounted = true;
@@ -84,7 +119,6 @@ export const MentorWorkspacePage: React.FC = () => {
       if (!queryBookingId || !mentorId) {
         if (mounted) {
           setLoading(false);
-          setBookingNotFound(!queryBookingId);
         }
         return;
       }
@@ -92,6 +126,7 @@ export const MentorWorkspacePage: React.FC = () => {
       setLoading(true);
       setBookingNotFound(false);
       setAuthorizationError(null);
+      setIdentityError(null);
 
       try {
         const data = await fetchBookingDetail(queryBookingId, mentorId);
@@ -103,8 +138,28 @@ export const MentorWorkspacePage: React.FC = () => {
           return;
         }
 
+        // The response must be the booking the URL asked for. A detail
+        // endpoint that answered with some other session is not a booking we
+        // may edit, publish, or even display.
+        if (!bookingMatchesRequestedId(data, queryBookingId)) {
+          setIdentityError(
+            'This workspace link does not match the booking it opened, so nothing can be edited or published.'
+          );
+          setBooking(null);
+          return;
+        }
+
         if (data.mentor_id !== mentorId) {
           setAuthorizationError('You do not have access to this workspace.');
+          setBooking(null);
+          return;
+        }
+
+        const offer = evaluateBookingOfferIdentity(data);
+        if (!offer.unverified && !(offer.segmentConsistent && offer.mentorConsistent)) {
+          setIdentityError(
+            'This booking lists a segment that does not match its own gig, so its workspace cannot be edited or published until it is repaired.'
+          );
           setBooking(null);
           return;
         }
@@ -218,7 +273,10 @@ export const MentorWorkspacePage: React.FC = () => {
   };
 
   const handleSave = async (publish: boolean) => {
-    if (!booking?.id || !mentorId) {
+    // The booking in hand must still be the booking the page was opened for.
+    // `handleSave` publishes `booking.id`, so publishing a booking the URL does
+    // not name is the exact failure this check exists to stop.
+    if (!booking?.id || !mentorId || !bookingMatchesRequestedId(booking, queryBookingId)) {
       setFeedbackError('Missing booking information. Please refresh and try again.');
       return;
     }
@@ -291,7 +349,13 @@ export const MentorWorkspacePage: React.FC = () => {
       ? 'secondary'
       : 'warning';
 
-  const overview = booking ? deriveSessionOverview(booking) : workspace?.session_overview;
+  // The rendered session must be the requested session, or nothing is rendered
+  // at all. `booking` is cleared on every request change, so this holds even in
+  // the frame between a navigation and the new booking loading.
+  const overview =
+    booking && bookingMatchesRequestedId(booking, queryBookingId)
+      ? deriveSessionOverview(booking)
+      : undefined;
 
   const renderMissingBookingId = () => (
     <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
@@ -332,10 +396,26 @@ export const MentorWorkspacePage: React.FC = () => {
     </div>
   );
 
-  if (!queryBookingId) {
+  if (missingBookingId) {
     return (
       <div className="max-w-5xl mx-auto">
         {renderMissingBookingId()}
+      </div>
+    );
+  }
+
+  // A session whose identity cannot be established gets no editor and no
+  // publish button. Reporting it as "not started" would invite the mentor to
+  // publish notes into a session the page cannot actually name.
+  if (identityError) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+        <AlertCircle className="h-10 w-10 text-rose-600 mx-auto" />
+        <h2 className="text-lg font-bold text-zinc-950">Workspace Unavailable</h2>
+        <p className="text-sm text-zinc-600">{identityError}</p>
+        <Button onClick={() => navigate('/mentor/bookings')} variant="outline" size="sm">
+          Back to Mentor Bookings
+        </Button>
       </div>
     );
   }

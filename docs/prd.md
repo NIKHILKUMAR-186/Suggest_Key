@@ -72,7 +72,9 @@ A user may hold more than one.
 - Booking creation with a 5-minute hold
 - Payment: manual UPI/QR proof, or Razorpay when enabled
 - Booking list (upcoming / history / cancelled) and booking detail
-- Cancel and reschedule, subject to the 10-minute window
+- Cancel or request a reschedule, subject to the 10-minute window
+- Reschedule requests: the mentor accepts or rejects, and the booking only
+  moves on acceptance
 - Session page with countdown, T−5 join, and manual end
 - Notifications list, unread count, mark-read, mark-all-read
 - Settings: profile, timezone, password
@@ -416,13 +418,50 @@ session, enforced by a partial unique index rather than by application logic.
   minutes**. The window is evaluated on the server clock. It is not 24 hours.
 - Cancellation records a reason and releases the slot, because the booking
   exclusion constraint excludes `CANCELLED`.
-- Reschedule acquires a hold on the new slot **before** touching the original
-  booking, so a failed hold leaves the booking exactly as it was.
 - If a rescheduled booking is later cancelled, a Razorpay capture that arrives
   afterwards does not revive it; it is recorded as a failed payment.
 - Mentor cancellation is a separate emergency path with its own reason.
 - **No refund is issued by cancellation.** The booking is cancelled; money
   movement, if any, is manual.
+
+### 15b. Rescheduling is a request, not an edit
+
+Rescheduling changed in phase 30. Previously the seeker's chosen time was
+applied immediately and the booking was reset to `PAYMENT_PENDING`; the mentor
+was never shown the change. Now:
+
+- A seeker **requests** a new time. The booking is **not** modified. It keeps
+  its current time, status, mentor, gig, segment and price until the mentor
+  answers.
+- **Only the time changes.** `mentor_id`, `segment_id` and `gig_id` are
+  immutable across a reschedule. The seeker cannot move a booking to another
+  mentor, another gig or another segment, and there is no code path that would
+  do so. The old "New gig must belong to the same mentor and segment" rule is
+  removed, because it described a decision a reschedule is not allowed to make.
+- **The new time is checked against the mentor's global availability**, not
+  against a per-gig calendar. A booking on any of the mentor's gigs blocks the
+  same instant for this reschedule, and a free instant on their timeline is
+  requestable whatever segment the booking belongs to.
+- The requested slot is **protected while the mentor decides** by a temporary
+  hold with a 24-hour expiry, so another seeker cannot take it. The seeker's
+  original slot is *not* released on submission.
+- The mentor is notified and, on the booking detail page, sees the current
+  time, the requested time, the seeker, the gig and the segment, with
+  **Accept** and **Reject**.
+  - **Accept** moves the booking to the requested time, releases the old slot,
+    marks the request `APPROVED` and notifies the seeker. Mentor, gig and
+    segment are unchanged.
+  - **Reject** leaves the booking completely unchanged, releases the requested
+    hold, marks the request `REJECTED` and notifies the seeker with the mentor's
+    reason if one was given.
+- A seeker may **withdraw** their own pending request, which releases the held
+  slot. A request the mentor never answers **expires** after 24 hours and the
+  original time simply stands.
+- Only the booking's seeker can create a request and only the booking's mentor
+  can answer it. Both are enforced in the database, not the client.
+- Rescheduling is available for a live pre-session booking (`MENTOR_PENDING` or
+  `CONFIRMED`). Changing the time of an *unpaid* booking is a re-book, not a
+  reschedule, and goes through the normal gig flow.
 
 ---
 

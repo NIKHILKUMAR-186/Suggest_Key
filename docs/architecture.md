@@ -418,8 +418,79 @@ which inserts the hold, creates the booking, converts the hold and writes a
 error string on refusal. The server parses that prefix. This is why the booking
 transaction is atomic by construction.
 
-`acquire_slot_hold` is now called from exactly one place — the reschedule route
-(`server.ts:2995`).
+`acquire_slot_hold` is no longer called by the reschedule route. Phase 30
+replaced that path (see *Reschedule requests* below); the function remains for
+backwards compatibility and is `service_role`-only.
+
+### Reschedule requests
+
+A reschedule is a **request the mentor decides**, not an edit the seeker makes.
+The old route moved the booking immediately: it acquired a hold, overwrote
+`bookings.start_time`/`end_time`, reset the booking to `PAYMENT_PENDING` and
+invalidated the payment. The mentor was never shown the change, and the route
+carried a rule — "New gig must belong to the same mentor and segment" —
+describing a decision a reschedule is not allowed to make.
+
+**The flow:**
+
+```
+CONFIRMED booking
+   ↓  seeker picks a time
+create_reschedule_request      PENDING, booking untouched
+   ↓                             requested slot held for 24h
+notify mentor
+   ↓
+respond_to_reschedule_request
+   ├── APPROVED → booking times move; old hold RELEASED, request hold CONVERTED
+   └── REJECTED → booking untouched; request hold RELEASED, seeker told why
+```
+
+**A reschedule changes time and nothing else.** `mentor_id`, `segment_id` and
+`gig_id` are read from the booking row, never accepted as arguments, and are
+absent from the approval `UPDATE`. Changing mentor, gig or segment through this
+flow is not merely discouraged — it has no code path.
+
+**Availability is global.** The requested interval is validated against the
+mentor's own clock, their live recurring hours or the date exception, and every
+non-cancelled booking plus every unexpired active hold they have — across *all*
+of their gigs. No `gig_id` or `segment_id` predicate appears in either decision.
+A Relationship booking at 17:00 makes 17:00 unrequestable for an Autism
+reschedule; a free 17:00 is requestable.
+
+**The original booking is not released on submission.** The requested slot is
+protected by a real `slot_holds` row written *before* the request row, expiring
+at `platform_config.reschedule_request_expiry_hours` (24h default) — far longer
+than the 5-minute payment hold, because a mentor may take hours to answer. The
+existing `no_overlapping_active_holds` exclusion makes that insert the
+concurrency control: a competing hold commit first makes the insert fail and the
+whole transaction roll back, so a `PENDING` request never exists without a hold
+behind it.
+
+**One caveat worth knowing.** `expire_stale_holds` ends with a sweep that
+releases any `ACTIVE` hold whose booking is not `PAYMENT_PENDING`. A request's
+hold is attached to `reschedule_requests`, not to a payment-pending booking, so
+phase 30 had to exclude those rows from that sweep. Without it the next cron
+tick would release every pending request's reservation and another seeker could
+take the requested time while the mentor was still deciding.
+
+**Concurrency.** Both `create_reschedule_request` and
+`respond_to_reschedule_request` take `SELECT ... FROM profiles FOR UPDATE` on
+the mentor row, matching `create_booking_with_hold`. Deadline and availability
+checks are re-run *after* the lock is acquired, because a request that waited
+behind another booking may have crossed the cutoff while queued. Approval
+re-checks the slot for conflicts, excluding this booking and this request's own
+hold, so a mentor cannot approve into a slot taken while the request sat open.
+
+| Route | Role | RPC |
+|---|---|---|
+| `POST /api/seeker/bookings/:id/reschedule` | seeker | `create_reschedule_request` |
+| `GET  /api/seeker/bookings/:id/reschedule-request` | seeker | `get_reschedule_request_for_booking` |
+| `POST /api/seeker/bookings/:id/reschedule-request/cancel` | seeker | `cancel_reschedule_request` |
+| `GET  /api/mentor/bookings/:id/reschedule-request` | mentor | `get_reschedule_request_for_booking` |
+| `POST /api/mentor/reschedule-requests/:id/respond` | mentor | `respond_to_reschedule_request` |
+
+Both booking-detail endpoints project the open request as
+`booking.rescheduleRequest`, so neither page needs a second round trip.
 
 ### Hold expiry
 
@@ -429,10 +500,16 @@ transaction is atomic by construction.
 |---|---|---|
 | `expire-stale-holds-every-minute` | `* * * * *` | `SELECT public.expire_stale_holds()` |
 | `complete-expired-sessions-every-minute` | `* * * * *` | `SELECT public.complete_expired_sessions()` |
+| `expire-stale-reschedule-requests-every-minute` | `* * * * *` | `SELECT public.expire_stale_reschedule_requests()` |
 
 `expire_stale_holds()` flips `ACTIVE` holds whose `expires_at <= now()` to
 `EXPIRED`, cancels the linked `PAYMENT_PENDING` booking, and releases holds whose
-booking has left `PAYMENT_PENDING`.
+booking has left `PAYMENT_PENDING` — **except** holds backing a `PENDING`
+reschedule request, which are governed by the request's own `expires_at` instead.
+
+`expire_stale_reschedule_requests()` closes unanswered requests as `EXPIRED` and
+releases their holds. The booking is never touched: an unanswered request leaves
+the seeker's original time in place.
 
 ---
 

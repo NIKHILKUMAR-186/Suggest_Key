@@ -409,11 +409,11 @@ export const AdminBookingsPage: React.FC = () => {
                   <strong>Deadline Status: </strong>
                   {selectedBooking.deadlineInfo?.isOverdue ? (
                     <span className="text-amber-800 font-bold">
-                      OVERDUE (&lt;2h before session). Session remains active.
+                      OVERDUE (&lt; 5min  before session). Session remains active.
                     </span>
                   ) : (
                     <span className="text-zinc-600">
-                      Recommended 2h before session start.
+                      Recommended 5 min  before session start.
                     </span>
                   )}
                 </div>

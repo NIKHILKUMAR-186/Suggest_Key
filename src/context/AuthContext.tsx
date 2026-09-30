@@ -4,6 +4,7 @@ import type { Profile, UserRole, AuthContextType } from '@/src/types/auth';
 import { logSanitizer } from '@/src/lib/logSanitizer';
 import { supabase, isSupabaseConfigured, fetchUserProfile, fetchUserRoles, upsertUserProfile } from '@/src/lib/supabase';
 import { apiFetch } from '@/src/lib/apiClient';
+import { resolveMentorVerification, type MentorVerificationState } from '@/src/lib/mentorVerification';
 
 const isDevMode = process.env.NODE_ENV !== 'production';
 
@@ -74,6 +75,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [isConfigured] = useState<boolean>(isSupabaseConfigured());
   const [onboardingStatus, setOnboardingStatus] = useState<MentorOnboardingData | null>(null);
+  /**
+   * Whether the mentor onboarding/verification query has settled. This is the
+   * gate that separates `loading` from `verified`/`not_verified`. Without it,
+   * a null onboardingStatus during the initial fetch is indistinguishable from
+   * "no application exists" and the route guard renders the verification card.
+   */
+  const [mentorVerificationResolved, setMentorVerificationResolved] = useState<boolean>(false);
 
   const setDemoAuth = (data: DemoAuthResponse) => {
     setUser(data.user as unknown as User);
@@ -546,6 +554,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchOnboardingStatus = useCallback(async () => {
     if (!user) {
       setOnboardingStatus(null);
+      setMentorVerificationResolved(false);
       return;
     }
 
@@ -554,28 +563,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (response.ok) {
         const result = await response.json();
         setOnboardingStatus(result.onboarding || null);
+        // The request settled: whatever the payload says is authoritative.
+        setMentorVerificationResolved(true);
       } else {
         setOnboardingStatus(null);
+        setMentorVerificationResolved(true);
       }
     } catch {
       setOnboardingStatus(null);
+      setMentorVerificationResolved(true);
     }
   }, [user]);
 
 const clearError = () => setError(null);
 
 // Fetch onboarding status when user changes
-useEffect(() => {
-  if (user && roles.includes('mentor')) {
-    fetchOnboardingStatus();
-  } else {
-    setOnboardingStatus(null);
-  }
-}, [user, roles, fetchOnboardingStatus]);
+  useEffect(() => {
+    if (user && roles.includes('mentor')) {
+      fetchOnboardingStatus();
+    } else {
+      setOnboardingStatus(null);
+      // Reset the resolved gate so a non-mentor (or signed-out) user never
+      // inherits a stale `not_verified` from a previous mentor session.
+      setMentorVerificationResolved(false);
+    }
+  }, [user, roles, fetchOnboardingStatus]);
 
   const hasRole = useCallback((role: UserRole): boolean => {
     return roles.includes(role);
   }, [roles]);
+
+  /**
+   * Explicit three-state mentor verification outcome. Derived from the
+   * onboarding payload plus the resolved gate so that `loading` is a real
+   * state that consumers can branch on. A nullable boolean cannot express
+   * "we haven't asked yet" vs "we asked and the answer is no".
+   */
+  const mentorVerificationState: MentorVerificationState = resolveMentorVerification({
+    applicationStatus: onboardingStatus?.application?.status ?? null,
+    mentorProfileIsApproved: onboardingStatus?.mentorProfile?.is_approved ?? null,
+    mentorProfileApprovalStatus: onboardingStatus?.mentorProfile?.approval_status ?? null,
+    mentorProfileIsActive: onboardingStatus?.mentorProfile?.is_active ?? null,
+    resolved: mentorVerificationResolved,
+  });
 
   return (
     <AuthContext.Provider
@@ -591,6 +621,7 @@ useEffect(() => {
         error,
         pendingEmail,
         onboardingStatus,
+        mentorVerificationState,
         signInWithPassword,
         signInWithGoogle,
         signInWithDemoPersona,

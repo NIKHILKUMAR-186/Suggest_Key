@@ -12,6 +12,7 @@ import { useAuth } from '@/src/context/AuthContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
 import { usePaymentSync } from '@/src/hooks/seeker/usePaymentSync';
+import { cn } from '@/src/lib/utils';
 import {
   isBookingUpcoming,
   isAccessGranted,
@@ -37,7 +38,7 @@ import { APP_CONFIG } from '@/src/config/app';
 const paymentStateLabel = (payment: Payment | null | undefined): string | null =>
   payment ? describePaymentStatus(payment.status).label : null;
 export const SeekerBookingsPage: React.FC = () => {
-  const { navigate } = useNavigation();
+  const { navigate, currentPath } = useNavigation();
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'upcoming' | 'history' | 'cancelled'>('upcoming');
   const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
@@ -45,6 +46,26 @@ export const SeekerBookingsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const seekerId = user?.id;
+
+  /**
+   * The booking id the seeker was sent here to act on — the one just created
+   * on the mentor detail page, carried in on the query string.
+   *
+   * This is UI focus only. It is never an identity claim: the list endpoint
+   * remains the single source of truth for what exists, and the highlight is
+   * cleared as soon as the card scrolls into view. A row that does not appear
+   * in the list is simply not highlighted; the page still shows the real
+   * state the server returned.
+   */
+  const focusBookingId = (() => {
+    const params = new URLSearchParams(
+      currentPath.includes('?') ? currentPath.split('?')[1] : ''
+    );
+    return params.get('bookingId') || null;
+  })();
+
+  const focusRef = useRef<string | null>(null);
+  const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   // Authoritative server clock. The list endpoint reconciles expired CONFIRMED
   // rows to COMPLETED and attaches `isUpcoming` / `sessionState` to every
@@ -106,6 +127,41 @@ export const SeekerBookingsPage: React.FC = () => {
   useEffect(() => {
     loadBookings();
   }, [loadBookings]);
+
+  /**
+   * Scrolls the just-created booking into view and rings it, but only once.
+   *
+   * The focus id is read from the query string and is not state that the
+   * page owns: the mentor detail page writes it on the way out and the
+   * list is the only thing that decides whether the row is actually there.
+   * So this runs after the list has loaded, and it never re-fires on a
+   * background refresh — `focusRef` guards against the payment sync
+   * invalidating the list while the seeker is still looking at the ring.
+   */
+  useEffect(() => {
+    if (!focusBookingId) return;
+    if (focusRef.current === focusBookingId) return;
+
+    const focus = () => {
+      const el = cardRefs.current.get(focusBookingId);
+      if (!el) return;
+      focusRef.current = focusBookingId;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.setAttribute('data-focused', 'true');
+      window.setTimeout(() => el.removeAttribute('data-focused'), 2200);
+    };
+
+    // The card may not exist on the first paint if the list is still
+    // loading, so retry until it does or the id stops matching.
+    const id = window.setInterval(() => {
+      if (cardRefs.current.has(focusBookingId)) {
+        window.clearInterval(id);
+        focus();
+      }
+    }, 60);
+    window.setTimeout(() => window.clearInterval(id), 4000);
+    return () => window.clearInterval(id);
+  }, [focusBookingId]);
 
   const filteredBookings = bookings.filter((b) => {
     if (activeTab === 'cancelled') return isCancelledBooking(b);
@@ -212,11 +268,21 @@ export const SeekerBookingsPage: React.FC = () => {
                 ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'].includes(booking.status);
               const sessionState = resolveLifecycle(booking);
               const canJoinNow = isAccessGranted(sessionState);
+              const isFocused = focusBookingId === booking.id;
               return (
                 <motion.div
                   key={booking.id}
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(booking.id, el);
+                    else cardRefs.current.delete(booking.id);
+                  }}
+                  data-focused={isFocused ? 'true' : undefined}
                   variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-                  className="rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all"
+                  className={cn(
+                    'rounded-2xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4 hover:border-[var(--color-shell-border-strong)] transition-all',
+                    isFocused &&
+                      'border-[var(--segment-accent)] ring-2 ring-[var(--segment-accent)] ring-offset-2 ring-offset-[var(--color-shell-surface)]'
+                  )}
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
                     <div className="flex items-center gap-2">

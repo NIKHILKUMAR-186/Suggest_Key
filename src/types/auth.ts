@@ -1,5 +1,6 @@
 import type { User, Session } from '@supabase/supabase-js';
 import type { MentorOnboardingData } from '@/src/types/database';
+import type { MentorVerificationState } from '@/src/lib/mentorVerification';
 
 export type UserRole = 'seeker' | 'mentor' | 'admin';
 
@@ -38,6 +39,16 @@ export interface AuthContextType {
   error: string | null;
   pendingEmail: string | null;
   onboardingStatus: MentorOnboardingData | null;
+  /**
+   * Explicit three-state mentor verification outcome.
+   *
+   * `loading` means the onboarding/verification request has not settled yet.
+   * It MUST NEVER be treated as `not_verified`. The route guard and the home
+   * page both branch on this value instead of nullable booleans, so an
+   * unresolved state renders a loading UI rather than the "Verification
+   * Required" card.
+   */
+  mentorVerificationState: MentorVerificationState;
   signInWithPassword: (email: string, password: string) => Promise<{ error: Error | null; role?: UserRole }>;
   signInWithGoogle: () => Promise<{ error: Error | null }>;
   signInWithDemoPersona: (persona: UserRole) => Promise<{ error: Error | null; role?: UserRole }>;

@@ -74,6 +74,24 @@ for (const file of files) {
   }
 }
 
+// 4. Google Search Console HTML-file ownership verification must survive the
+// build. Google fetches
+// https://<host>/google21eac387d38ffddc.html and compares the response body to
+// the token byte for byte, so a wrong or missing copy reports
+// "Ownership verification failed - Your verification file has the wrong
+// content." The file lives in public/ and Vite copies it to the dist/ root;
+// Vercel serves static output-directory files before applying the SPA rewrite,
+// so it is never routed to index.html.
+const VERIFICATION_FILE = 'google21eac387d38ffddc.html';
+const VERIFICATION_BODY = 'google-site-verification: google21eac387d38ffddc.html';
+
+const verificationPath = join(DIST, VERIFICATION_FILE);
+if (!existsSync(verificationPath)) {
+  problems.push(`Search Console verification file missing from dist/: ${VERIFICATION_FILE}`);
+} else if (readFileSync(verificationPath, 'utf8') !== VERIFICATION_BODY) {
+  problems.push(`Search Console verification file has wrong content: ${VERIFICATION_FILE}`);
+}
+
 if (problems.length > 0) {
   console.error('[build:verify] FAIL - dist/ is not safe to publish:');
   for (const p of problems) console.error(`  - ${p}`);

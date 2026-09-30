@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Calendar,
   Check,
+  CheckCircle2,
   CreditCard,
   FileText,
   Info,
@@ -28,7 +29,7 @@ import {
   EnrichedBookingRecord,
   SessionAccessState,
 } from '@/src/lib/bookingService';
-import { formatClockTime, formatZoneLabel } from '@/src/lib/sessionState';
+import { formatClockTime, formatClockRange, formatZoneLabel } from '@/src/lib/sessionState';
 import type { BookingStatus } from '@/src/types/database';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { APP_CONFIG, CANCELLATION_WINDOW_MS, HOLDOUT_MINUTES } from '@/src/config/app';
@@ -311,6 +312,14 @@ export const SeekerBookingDetailPage: React.FC = () => {
   const changeTone = CHANGE_WINDOW_TONE[changeWindow.tone];
   const cancellationDeadline = new Date(new Date(booking.start_time).getTime() - CANCELLATION_WINDOW_MS);
 
+  // An open request means the mentor has not answered yet. The booking is still
+  // at its current time, and a second request would be refused, so the button is
+  // disabled and the request is shown in place of a fresh prompt.
+  const openReschedule = booking.rescheduleRequest?.status === 'PENDING' ? booking.rescheduleRequest : null;
+  const hasPendingReschedule = !!openReschedule;
+  const lastReschedule =
+    !hasPendingReschedule && booking.rescheduleRequest ? booking.rescheduleRequest : null;
+
   return (
     <SegmentScope slug={booking.segment?.slug} className="mx-auto w-full max-w-4xl">
       <div className="space-y-5">
@@ -583,20 +592,63 @@ export const SeekerBookingDetailPage: React.FC = () => {
                     onClick={handleReschedule}
                     variant="outline"
                     className="w-full gap-2"
-                    disabled={!changeWindow.canChange}
+                    disabled={!changeWindow.canChange || hasPendingReschedule}
                   >
                     <RotateCcw className="h-4 w-4" aria-hidden="true" />
                     <span>
-                      {changeWindow.canChange
-                        ? 'Reschedule session'
-                        : changeWindow.tone === 'closed'
-                          ? 'Reschedule (window closed)'
-                          : 'Reschedule (not available)'}
+                      {hasPendingReschedule
+                        ? 'Reschedule request sent'
+                        : changeWindow.canChange
+                          ? 'Request Reschedule'
+                          : changeWindow.tone === 'closed'
+                            ? 'Reschedule (window closed)'
+                            : 'Reschedule (not available)'}
                     </span>
                   </Button>
                 </div>
               </div>
             </SectionCard>
+
+            {openReschedule && (
+              <InlineNotice
+                tone="info"
+                role="status"
+                icon={RotateCcw}
+                title="Reschedule request sent to mentor"
+              >
+                You asked to move this session to{' '}
+                <strong className="font-semibold">
+                  {formatClockRange(
+                    openReschedule.requested_start_time,
+                    openReschedule.requested_end_time,
+                    displayZone
+                  )}
+                </strong>
+                . Your current time stays confirmed until your mentor responds.
+              </InlineNotice>
+            )}
+
+            {!openReschedule && lastReschedule && (
+              <InlineNotice
+                tone={lastReschedule.status === 'APPROVED' ? 'success' : 'neutral'}
+                role="status"
+                icon={lastReschedule.status === 'APPROVED' ? CheckCircle2 : Info}
+                title={
+                  lastReschedule.status === 'APPROVED'
+                    ? 'Reschedule approved'
+                    : 'Reschedule request declined'
+                }
+              >
+                {lastReschedule.status === 'APPROVED'
+                  ? `Your mentor moved this session to ${formatClockRange(
+                      lastReschedule.requested_start_time,
+                      lastReschedule.requested_end_time,
+                      displayZone
+                    )}.`
+                  : lastReschedule.rejection_reason ||
+                    'Your mentor kept the original time.'}
+              </InlineNotice>
+            )}
           </div>
         </div>
       </div>

@@ -1587,22 +1587,142 @@ originate in the Razorpay dashboard.
 
 # 44. RESCHEDULING
 
-Reschedule is allowed at least:
+## 44.1 The rule
 
-**10 minutes** before session start (`NORMAL_CANCELLATION_WINDOW_MINUTES`).
+Rescheduling is a **request the mentor decides**, not an edit the seeker makes.
 
-The new slot must be genuinely available and must pass the same global mentor
-conflict checks — the same EXCLUDE constraints that guard ordinary booking.
+```
+Existing CONFIRMED booking
+        ↓
+Seeker clicks "Request Reschedule"
+        ↓
+Seeker selects new date/time
+        ↓
+Create RESCHEDULE_PENDING request
+        ↓
+Notify mentor
+        ↓
+Mentor sees: current date/time, requested new date/time, seeker, gig, segment
+        ↓
+  Accept  → new time becomes confirmed
+  Reject  → original booking remains unchanged
+```
 
-Past slots are never allowed, and neither is a slot inside the 5-minute booking
-cutoff.
+Reschedule is allowed at least **10 minutes** before session start
+(`NORMAL_CANCELLATION_WINDOW_MINUTES` / `platform_config.reschedule_window_minutes`),
+measured on the ORIGINAL slot. Past slots are never allowed, and neither is a
+slot inside the 5-minute booking cutoff.
 
-Implementation note: reschedule acquires a hold on the new slot **before**
-touching the original booking (`acquire_slot_hold` is called once, at
-`server.ts:2995`). A failed hold therefore leaves the original booking exactly
-as it was. The hold and the booking update are still two operations rather than
-one transaction, so a crash between them can strand a hold; the hold expires
-on its own after 5 minutes.
+## 44.2 A reschedule changes time and nothing else
+
+`mentor_id`, `segment_id` and `gig_id` are **immutable** across a reschedule.
+The request body carries a time and nothing else, and the server reads those
+three columns from the booking row rather than accepting them. There is no code
+path that moves a booking to another mentor, another gig or another segment.
+
+**Removed:** the old "New gig must belong to the same mentor and segment" rule.
+It described a decision a reschedule is not allowed to make, and rejecting a
+seeker for it is what made the flow feel broken.
+
+Rescheduling applies to a live pre-session booking (`MENTOR_PENDING` or
+`CONFIRMED`). Changing the time of an *unpaid* booking is a re-book, not a
+reschedule, and goes through the normal gig flow.
+
+## 44.3 Global availability
+
+The requested interval is validated against the **mentor's global timeline**:
+
+- the mentor's live recurring hours, or the authoritative date exception
+  (unavailable, or custom hours)
+- every non-cancelled booking for that mentor, across **all** of their gigs
+- every unexpired active hold for that mentor, across **all** of their gigs
+
+**No `gig_id` or `segment_id` predicate appears in the availability or conflict
+decision.** A Relationship gig booking at 17:00 makes 17:00 unrequestable for
+an Autism reschedule; a free 17:00 is requestable for the existing Autism
+booking. The underlying architecture is unchanged — this is the existing global
+per-mentor model, simply no longer filtered by a gig the seeker was never
+allowed to change.
+
+The requested duration must equal the booking's own gig duration, so the
+session length is preserved. That is the only place the gig is consulted, and
+only for its length.
+
+## 44.4 Concurrency and the temporary hold
+
+On submission the seeker's **original booking is not released**. It stays
+confirmed and keeps blocking its slot. The *requested* slot is protected
+separately, by a real `slot_holds` row written before the request row, expiring
+at `platform_config.reschedule_request_expiry_hours` (24h default) — far longer
+than the 5-minute payment hold, because a mentor may take hours to answer.
+
+The existing `no_overlapping_active_holds` exclusion is the concurrency
+control: if another seeker commits a hold for the same instant first, the insert
+fails and the whole transaction rolls back, so a `PENDING` request never exists
+without a reservation behind it.
+
+Both the request and the decision take `SELECT ... FROM profiles FOR UPDATE` on
+the mentor row, matching `create_booking_with_hold`, and re-run their deadline
+and availability checks *after* acquiring it.
+
+| Event | Booking | Requested slot |
+|---|---|---|
+| Request submitted | **unchanged** | held until the request expires |
+| Mentor **accepts** | `start_time`/`end_time` become the requested ones; old hold `RELEASED` | hold `CONVERTED` |
+| Mentor **rejects** | **completely unchanged** | hold `RELEASED` |
+| Seeker withdraws | unchanged | hold `RELEASED` |
+| Unanswered after 24h | unchanged | hold `EXPIRED`, request `EXPIRED` |
+
+Acceptance re-checks the slot for conflicts, excluding this booking and this
+request's own hold, so a mentor cannot approve into a slot that was taken while
+the request sat open.
+
+**Implementation note:** `expire_stale_holds` ends with a sweep that releases
+any `ACTIVE` hold whose booking is not `PAYMENT_PENDING`. A request's hold is
+attached to `reschedule_requests`, not to a payment-pending booking, so it must
+be excluded from that sweep — otherwise the next cron tick releases every
+pending request's reservation. `expire_stale_reschedule_requests` runs on the
+same one-minute schedule and is what actually expires unanswered requests.
+
+Statuses: `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED`
+(`CANCELLED` is reachable only by a seeker withdrawing their own request). At
+most one open request per booking, enforced by a partial unique index.
+
+## 44.5 Access control
+
+- Only the booking's **seeker** can create a request.
+- Only the booking's **mentor** can accept or reject one; the mentor id is taken
+  from the session, never from the body.
+- An admin may read any request through `get_reschedule_request_for_booking`.
+- `reschedule_requests` has a `SELECT`-only RLS policy. **No client can write
+  one directly** — every transition goes through a `service_role`-only
+  `SECURITY DEFINER` RPC, which re-checks ownership against the row.
+- Postgres grants `EXECUTE` to `PUBLIC` on a new function, so phase 30
+  explicitly revokes the new RPCs from `PUBLIC`, `anon` and `authenticated` and
+  carries a `has_function_privilege('anon')` post-condition. Without the revoke
+  the ownership checks inside those bodies would be reachable by an anonymous
+  caller.
+
+## 44.6 Wording
+
+The UI must not imply the change has already happened. "Reschedule to this
+time" is a promise the server does not keep.
+
+| Surface | Text |
+|---|---|
+| Seeker booking detail | "Request Reschedule" |
+| Submit button | "Send Reschedule Request" |
+| After submitting | "Reschedule request sent to mentor" |
+| Mentor panel heading | "Reschedule Request" |
+| Mentor panel | `Current:` 30 Sep, 2:00 PM – 3:00 PM / `Requested:` 30 Sep, 5:00 PM – 6:00 PM |
+| Mentor actions | `[ Accept ]` `[ Reject ]` |
+| After acceptance | "Reschedule approved" |
+| After rejection | "Reschedule request declined" |
+
+The requested slot is not labelled "That time was not available" on every
+refusal. A closed change window, a booking that can no longer move, and a
+request already awaiting an answer each get their own heading, because "that
+time was not available" is untrue for all three.
 
 ---
 

@@ -9,6 +9,10 @@ import {
   SessionOverviewData,
   Booking,
 } from '@/src/types/database';
+import {
+  evaluateBookingOfferIdentity,
+  workspaceBelongsToBooking,
+} from './workspaceIdentity';
 
 const isDevMode = process.env.NODE_ENV !== 'production';
 
@@ -75,18 +79,42 @@ export function deriveSessionOverview(booking: Booking): SessionOverviewData {
   };
 }
 
+export type WorkspaceReadFailure =
+  /** The row found for this booking belongs to a different pair of participants. */
+  | 'WORKSPACE_PARTICIPANT_MISMATCH'
+  /** The booking's gig and segment disagree, so the screen cannot be trusted. */
+  | 'BOOKING_OFFER_MISMATCH';
+
 /**
- * Fetch authoritative session workspace for a given booking ID.
+ * Fetches authoritative session workspace for a given booking ID.
  * Respects RLS and privacy rules:
  * - Seeker: only permitted if published or completed.
  * - Mentor: permitted for own bookings.
  * - Admin: operational access to all.
+ *
+ * Two failures are reported rather than folded into `isPending`, because
+ * "not published yet" is a claim about this session's document and both of these
+ * mean the screen is describing something other than this session:
+ *
+ *   - a row whose `seeker_id`/`mentor_id` are not the booking's participants.
+ *     RLS reads those columns, so such a row is hidden from the rightful seeker
+ *     and shown to the wrong one, while the mentor still sees PUBLISHED;
+ *   - a booking whose `segment_id` and `gig_id` describe two different offers,
+ *     which renders the same gig under two segment names across bookings.
+ *
+ * Returning `isPending` for either would reproduce the reported symptom pair
+ * exactly, so both surface as an error the UI can state plainly.
  */
 export async function fetchWorkspaceByBooking(
   bookingId: string,
   userId?: string,
   role?: string
-): Promise<{ workspace: SessionWorkspace | null; error: Error | null; isPending?: boolean }> {
+): Promise<{
+  workspace: SessionWorkspace | null;
+  error: Error | null;
+  isPending?: boolean;
+  failure?: WorkspaceReadFailure;
+}> {
   // 1. Try real Supabase query if configured
   if (isSupabaseConfigured()) {
     try {
@@ -113,27 +141,58 @@ export async function fetchWorkspaceByBooking(
          } catch (bkErr: any) {
            console.warn('Could not fetch booking for overview:', bkErr.message);
          }
-         const overview = booking ? deriveSessionOverview(booking) : null;
+const overview = booking ? deriveSessionOverview(booking) : null;
 
-        const record: SessionWorkspace = {
-          id: data.id,
-          booking_id: data.booking_id,
-          mentor_id: data.mentor_id,
-          seeker_id: data.seeker_id,
-          status: data.status as WorkspaceStatus,
-          mentor_notes: data.mentor_notes || data.summary || '',
-          summary: data.summary || data.mentor_notes || '',
-          takeaways: Array.isArray(data.takeaways) ? data.takeaways : [],
-          suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
-          next_steps: Array.isArray(data.next_steps) ? data.next_steps : [],
-          action_items: Array.isArray(data.action_items) ? data.action_items : [],
-          follow_up_recommendation: data.follow_up_recommendation || null,
-          resources: Array.isArray(data.resources) ? data.resources : [],
-          published_at: data.published_at || null,
-          created_at: data.created_at,
-          updated_at: data.updated_at,
-          session_overview: overview || undefined,
+         const record: SessionWorkspace = {
+           id: data.id,
+           booking_id: data.booking_id,
+           mentor_id: data.mentor_id,
+           seeker_id: data.seeker_id,
+           status: data.status as WorkspaceStatus,
+           mentor_notes: data.mentor_notes || data.summary || '',
+           summary: data.summary || data.mentor_notes || '',
+           takeaways: Array.isArray(data.takeaways) ? data.takeaways : [],
+           suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+           next_steps: Array.isArray(data.next_steps) ? data.next_steps : [],
+           action_items: Array.isArray(data.action_items) ? data.action_items : [],
+           follow_up_recommendation: data.follow_up_recommendation || null,
+           resources: Array.isArray(data.resources) ? data.resources : [],
+           published_at: data.published_at || null,
+           created_at: data.created_at,
+           updated_at: data.updated_at,
+           session_overview: overview || undefined,
         };
+
+        // The row must be the row FOR this booking. `booking_id` is unique and
+        // is the filter above, so this is belt-and-braces against a filter that
+        // is ever widened by a future edit.
+        if (record.booking_id !== bookingId) {
+          return {
+            workspace: null,
+            error: null,
+            failure: 'WORKSPACE_PARTICIPANT_MISMATCH',
+          };
+        }
+
+        // ...and its participants must be this booking's participants. RLS reads
+        // these two columns, not `bookings`, so this is the only place the
+        // browser can notice that the two disagree.
+        if (booking && !workspaceBelongsToBooking(record, booking)) {
+          return {
+            workspace: null,
+            error: null,
+            failure: 'WORKSPACE_PARTICIPANT_MISMATCH',
+          };
+        }
+
+        // A booking whose gig and segment disagree cannot be presented as one
+        // coherent session, whatever the workspace says.
+        if (booking) {
+          const offer = evaluateBookingOfferIdentity(booking);
+          if (!offer.unverified && !(offer.segmentConsistent && offer.mentorConsistent)) {
+            return { workspace: null, error: null, failure: 'BOOKING_OFFER_MISMATCH' };
+          }
+        }
 
         // Check seeker view restriction
         if (role === 'seeker' && record.status === 'PENDING') {
@@ -155,6 +214,9 @@ export async function fetchWorkspaceByBooking(
       if (json.success) {
         if (json.isPending) {
           return { workspace: null, error: null, isPending: true };
+        }
+        if (json.workspace && json.workspace.booking_id !== bookingId) {
+          return { workspace: null, error: null, failure: 'WORKSPACE_PARTICIPANT_MISMATCH' };
         }
         return { workspace: json.workspace, error: null };
       }
@@ -183,6 +245,17 @@ export async function fetchWorkspaceByBooking(
   if (!ws) {
     // If not found, return null (empty state)
     return { workspace: null, error: null };
+  }
+
+  // Same participant check as the live paths: the dev store must not be able to
+  // hand back a row belonging to a different session.
+  if (!workspaceBelongsToBooking(ws, booking)) {
+    return { workspace: null, error: null, failure: 'WORKSPACE_PARTICIPANT_MISMATCH' };
+  }
+
+  const devOffer = evaluateBookingOfferIdentity(booking);
+  if (!devOffer.unverified && !(devOffer.segmentConsistent && devOffer.mentorConsistent)) {
+    return { workspace: null, error: null, failure: 'BOOKING_OFFER_MISMATCH' };
   }
 
   // Enforce Seeker RLS rule: seekers only see PUBLISHED workspaces

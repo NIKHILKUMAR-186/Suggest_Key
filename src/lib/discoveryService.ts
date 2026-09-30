@@ -12,6 +12,10 @@ import {
 } from '@/src/types/database';
 import { deriveAccountState } from '@/src/lib/adminAccountControl';
 import { normalizeSegmentExperience, type SegmentExperienceConfig } from '@/src/lib/segmentExperience';
+import {
+  describeGigContextMismatch,
+  GIG_CONTEXT_ERROR_MESSAGE,
+} from '@/src/lib/gigContext';
 
 /**
  * Shape returned by `GET /api/mentor-availability/slots` for one mentor.
@@ -20,12 +24,20 @@ import { normalizeSegmentExperience, type SegmentExperienceConfig } from '@/src/
 export interface MentorSlotResponse {
   mentor_id: string;
   timezone: string;
+  /**
+   * The single gig this slot list was generated from. The ownership columns are
+   * echoed by the server so the caller can verify the gig it got is the gig it
+   * asked for, rather than trusting that the lookup picked correctly.
+   */
   gig: {
     id: string;
+    mentor_id: string;
     segment_id: string;
     title: string;
+    description: string | null;
     duration_minutes: number;
     price_inr: number;
+    is_active: boolean;
   } | null;
   slots: GeneratedSlot[];
   available_count: number;
@@ -39,20 +51,36 @@ export interface MentorSlotsResult {
 }
 
 /**
+ * A scope for the slot request.
+ *
+ * `mentorId`, `segmentId` and `gigId` are all forwarded when present. The bug
+ * this replaces used `if ('mentorId' in query) ... else ...`, so asking for a
+ * mentor WITH a segment silently dropped the segment: the server received the
+ * mentor alone and had no segment to narrow the gig lookup on, which is how the
+ * Autism Mentor segment could be answered with a Relationship Guidance gig.
+ * Passing all three keeps the request an exact statement of intent.
+ */
+export type MentorSlotQuery = {
+  mentorId?: string;
+  segmentId?: string;
+  gigId?: string;
+};
+
+/**
  * THE single client entry point for slot availability.
  *
  * Slots are never generated in the browser and never copied into component
  * state: they are produced by the server from the live `mentor_availability`,
  * `mentor_availability_exceptions`, `gigs`, `bookings` and `slot_holds` tables.
  * That matters because the RLS policies on `bookings` and `slot_holds` are
- * participant-scoped â€” a client query would only ever see the caller's own
+ * participant-scoped — a client query would only ever see the caller's own
  * reservations and would offer slots that are already taken.
  *
  * There is no fallback slot list. If the request fails the caller receives an
  * error and must render an error state, never invented times.
  */
 export async function fetchMentorSlots(
-  query: { mentorId: string } | { segmentId: string },
+  query: MentorSlotQuery,
   dateStr: string
 ): Promise<{ data: MentorSlotsResult | null; error: Error | null }> {
   if (!isSupabaseConfigured()) {
@@ -60,11 +88,9 @@ export async function fetchMentorSlots(
   }
 
   const params = new URLSearchParams({ date: dateStr });
-  if ('mentorId' in query) {
-    params.set('mentorId', query.mentorId);
-  } else {
-    params.set('segmentId', query.segmentId);
-  }
+  if (query.mentorId) params.set('mentorId', query.mentorId);
+  if (query.segmentId) params.set('segmentId', query.segmentId);
+  if (query.gigId) params.set('gigId', query.gigId);
 
   let res: Response;
   try {
@@ -387,6 +413,11 @@ function isMentorEligible(profile: any, nowMs: number): boolean {
 /**
  * 4. Fetch specific mentor detail with all slots for a given date and segment.
  *
+ * `gigId` is optional but is the strongest signal available: when the caller
+ * arrived from a specific offer, that exact gig must be the one resolved. It is
+ * forwarded to the server so the slot grid is generated from that gig's
+ * duration, and it is re-verified here so a mismatch can never be rendered.
+ *
  * The slot list is produced by the server (`GET /api/mentor-availability/slots`),
  * never by this browser context, and the page keeps only the returned value — no
  * copied list of times is ever stored client-side. Switching `dateStr` re-runs
@@ -401,11 +432,14 @@ export async function fetchMentorDetail(
   mentorId: string,
   segmentId: string,
   dateStr: string,
+  options: { gigId?: string | null } = {},
   currentUtcTime: Date = new Date()
 ): Promise<{ mentor: DiscoverableMentor | null; error: Error | null }> {
   if (!isSupabaseConfigured()) {
     return { mentor: null, error: new Error('Supabase is not configured') };
   }
+
+  const requestedGigId = options.gigId || null;
 
   try {
     const [segmentRes, mentorRes, slotsRes] = await Promise.all([
@@ -419,7 +453,7 @@ export async function fetchMentorDetail(
         .select('*, profile:profiles(*)')
         .eq('id', mentorId)
         .maybeSingle(),
-      fetchMentorSlots({ mentorId, segmentId }, dateStr),
+      fetchMentorSlots({ mentorId, segmentId, gigId: requestedGigId ?? undefined }, dateStr),
     ]);
 
     if (segmentRes.error) throw segmentRes.error;
@@ -446,6 +480,29 @@ export async function fetchMentorDetail(
 
     const allSlots = slotResult.slots;
     const availableSlots = allSlots.filter((s) => s.is_available);
+
+    // -------------------------------------------------------------------------
+    // GIG / SEGMENT / MENTOR VERIFICATION
+    //
+    // The gig the page is about to render must be provably the gig this call
+    // asked for. All three ownership predicates are checked, plus the explicit
+    // `gigId` when the route carried one. A failure is an error state, never a
+    // substitution: showing this mentor's *other* gig under this segment's name
+    // is the exact defect being fixed, and it is worse than showing nothing.
+    // -------------------------------------------------------------------------
+    const gig = slotResult.gig;
+    const mismatchReason = describeGigContextMismatch({
+      gig,
+      mentorId,
+      segmentId,
+      requestedGigId,
+    });
+    if (mismatchReason) {
+      console.warn(
+        `[discovery] Mentor detail unavailable for ${mentorId}: ${mismatchReason}`
+      );
+      return { mentor: null, error: new Error(GIG_CONTEXT_ERROR_MESSAGE) };
+    }
 
     return {
       mentor: {

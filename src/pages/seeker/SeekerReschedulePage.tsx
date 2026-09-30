@@ -10,8 +10,11 @@ import { DateSelector } from '@/src/components/seeker/DateSelector';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useToast } from '@/src/context/ToastContext';
-import { apiFetch } from '@/src/lib/apiClient';
-import { fetchBookingDetail, type EnrichedBookingRecord } from '@/src/lib/bookingService';
+import {
+  fetchBookingDetail,
+  requestReschedule,
+  type EnrichedBookingRecord,
+} from '@/src/lib/bookingService';
 import { fetchMentorSlots } from '@/src/lib/discoveryService';
 import {
   buildQuickDates,
@@ -19,7 +22,6 @@ import {
   getDateStringInTimezone,
 } from '@/src/lib/slotEngine';
 import { toUserMessage } from '@/src/lib/errorMessages';
-import { HOLDOUT_MINUTES } from '@/src/config/app';
 import type { GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
 
@@ -32,18 +34,66 @@ const SLOT_STATUS_COPY: Record<GeneratedSlot['status'], string> = {
 };
 
 /**
- * Rescheduling a booking onto a different slot.
+ * Headline for each refusal the server can return.
+ *
+ * The old page put every one of these under "That time was not available",
+ * which is simply untrue for a closed change window, a booking that has reached
+ * a final state, or a request the mentor has not answered yet. The body is
+ * always the server's own message; only the framing is chosen here.
+ */
+const RESCHEDULE_ERROR_TITLES: Record<string, string> = {
+  SLOT_ALREADY_BOOKED: 'That time was taken',
+  SLOT_HELD_BY_OTHER: 'That time is on hold',
+  OUTSIDE_AVAILABILITY: 'That time is outside your mentor’s hours',
+  OUTSIDE_EXCEPTION_HOURS: 'That time is outside this date’s hours',
+  DATE_EXCEPTION_UNAVAILABLE: 'Your mentor is unavailable that day',
+  BOOKING_CUTOFF_REACHED: 'That time is too close',
+  PAST_SLOT_FORBIDDEN: 'That time has passed',
+  DURATION_MISMATCH: 'That time is the wrong length',
+  RESCHEDULE_WINDOW_CLOSED: 'The change window has closed',
+  BOOKING_NOT_RESCHEDULABLE: 'This booking can no longer be rescheduled',
+  RESCHEDULE_REQUEST_PENDING: 'A request is already awaiting your mentor',
+  FORBIDDEN_NOT_BOOKING_OWNER: 'You cannot reschedule this booking',
+  BOOKING_NOT_FOUND: 'Booking not found',
+};
+
+/** `30 Sep, 2:00 PM – 3:00 PM`, in the mentor's own timezone. */
+function formatSessionWindow(startIso: string, endIso: string, timeZone: string): string {
+  const fmt = (iso: string) =>
+    new Date(iso).toLocaleString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone,
+    });
+  return `${fmt(startIso)} – ${fmt(endIso).split(', ').pop()}`;
+}
+
+/**
+ * Requesting a new time for an existing booking.
+ *
+ * This page is a REQUEST form, not an edit form. Submitting it does not move the
+ * booking: it asks the mentor to move it, and the booking keeps its current time
+ * until the mentor accepts. That is why the submit button reads "Send Reschedule
+ * Request" and the success message is "Reschedule request sent to mentor" -
+ * wording that implies the change already happened would be a lie the server
+ * does not back up.
+ *
+ * There is no gig or segment picker, and there cannot be: a reschedule changes
+ * TIME only. The booking's mentor, gig and segment are fixed, so the slots
+ * offered here are generated from that booking's own gig - which is what fixes
+ * the duration - while the conflicts are still resolved against the MENTOR'S
+ * GLOBAL TIMELINE. A Relationship booking at 5 PM blocks 5 PM here, and a free
+ * 5 PM is requestable.
  *
  * Every rule that matters is enforced server-side by
- * `POST /api/seeker/bookings/:id/reschedule`: ownership, the reschedulable
- * statuses, the cancellation-window cutoff, gig/segment match, the gig
- * duration, and the slot conflict check. This page therefore does no
- * eligibility arithmetic of its own — it offers the slots the server says are
- * available and reports whatever the server refuses, in the server's words.
- *
- * Rescheduling resets the booking to PAYMENT_PENDING on the new slot, so
- * success hands the seeker straight to payment, which is the same destination
- * the backend's own notification link uses.
+ * `POST /api/seeker/bookings/:id/reschedule` (via the
+ * `create_reschedule_request` RPC): ownership, the reschedulable statuses, the
+ * lead-time window on the original slot, the booking cutoff, duration, the
+ * mentor's live availability, conflicts, and the hold that reserves the
+ * requested slot. This page does no eligibility arithmetic of its own.
  */
 export const SeekerReschedulePage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
@@ -68,10 +118,15 @@ export const SeekerReschedulePage: React.FC = () => {
   const [slotsError, setSlotsError] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<GeneratedSlot | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState<{ title: string; message: string } | null>(null);
 
   const today = getDateStringInTimezone(new Date(), userTimezone);
   const quickDates = useMemo(() => buildQuickDates(today, 6), [today]);
+
+  // While a request is open, another one would be refused by the server. Saying
+  // so here is a courtesy, not a control: the server is still the authority.
+  const pendingRequest = booking?.rescheduleRequest?.status === 'PENDING' ? booking.rescheduleRequest : null;
 
   const backToBooking = useCallback(
     () => navigate(bookingId ? `/seeker/booking-detail?bookingId=${bookingId}` : '/seeker/bookings'),
@@ -104,7 +159,14 @@ export const SeekerReschedulePage: React.FC = () => {
     setSlotsLoading(true);
     setSlotsError(null);
     try {
-      const { data, error } = await fetchMentorSlots({ mentorId: booking.mentor_id }, selectedDate);
+      // `gigId`/`segmentId` pin the grid to THIS booking's offer, so the
+      // duration the slots are cut to is the duration the session actually has.
+      // Only the gig lookup is narrowed; conflicts are still resolved against
+      // every booking and hold the mentor has, on every gig they hold.
+      const { data, error } = await fetchMentorSlots(
+        { mentorId: booking.mentor_id, segmentId: booking.segment_id, gigId: booking.gig_id },
+        selectedDate
+      );
       if (error) throw error;
       setSlots(data?.byMentorId.get(booking.mentor_id)?.slots || []);
     } catch (err: any) {
@@ -125,39 +187,38 @@ export const SeekerReschedulePage: React.FC = () => {
     setRescheduleError(null);
   }, [selectedDate]);
 
-  const handleConfirm = async () => {
+  const handleSendRequest = async () => {
     if (!booking || !selectedSlot || submitting) return;
     setSubmitting(true);
     setRescheduleError(null);
     try {
-      const res = await apiFetch(
-        `/api/seeker/bookings/${encodeURIComponent(booking.id)}/reschedule`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            newStartTime: selectedSlot.utc_start_time,
-            newEndTime: selectedSlot.utc_end_time,
-          }),
-        }
+      const result = await requestReschedule(
+        booking.id,
+        selectedSlot.utc_start_time,
+        selectedSlot.utc_end_time
       );
-      const payload = await res.json().catch(() => null);
 
-      if (!res.ok || !payload?.success) {
+      if (!result.success) {
         // The server owns every rule here, so its message is the honest one to
-        // show; the slot list is reloaded because a refusal usually means the
-        // availability we rendered has just changed.
-        setRescheduleError(payload?.error?.message || 'We could not reschedule to that time.');
+        // show. The heading is picked from the code because "that time was not
+        // available" was the wrong story for a closed window, a booking that
+        // can no longer move, or a request already awaiting an answer.
+        const code = result.error?.code || 'RESCHEDULE_REQUEST_FAILED';
+        setRescheduleError({
+          title: RESCHEDULE_ERROR_TITLES[code] || 'We could not send that request',
+          message: result.error?.message || 'We could not send that request.',
+        });
         await loadSlots();
         return;
       }
 
-      toast.success('Booking rescheduled. Please complete payment for the new slot.', {
-        title: 'Booking Rescheduled',
-      });
-      navigate(`/seeker/payment?bookingId=${booking.id}`);
+      setSent(true);
+      toast.success('Reschedule request sent to mentor.', { title: 'Request sent' });
     } catch (err: any) {
-      setRescheduleError(toUserMessage(err, 'We could not reschedule to that time.'));
+      setRescheduleError({
+        title: 'We could not send that request',
+        message: toUserMessage(err, 'We could not send that request.'),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -166,7 +227,7 @@ export const SeekerReschedulePage: React.FC = () => {
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-6">
-        <PageHeading title="Reschedule session" back={{ label: 'Back to booking', onClick: backToBooking }} />
+        <PageHeading title="Request a new time" back={{ label: 'Back to booking', onClick: backToBooking }} />
         <SectionCard aria-label="Loading booking">
           <Skeleton className="h-6 w-1/3" />
           <Skeleton className="mt-4 h-24 w-full" />
@@ -178,24 +239,55 @@ export const SeekerReschedulePage: React.FC = () => {
   if (loadError || !booking) {
     return (
       <div className="mx-auto w-full max-w-3xl space-y-6">
-        <PageHeading title="Reschedule session" back={{ label: 'Back to bookings', onClick: () => navigate('/seeker/bookings') }} />
+        <PageHeading title="Request a new time" back={{ label: 'Back to bookings', onClick: () => navigate('/seeker/bookings') }} />
         <ErrorState title="Booking unavailable" message={loadError || 'Booking not found.'} onRetry={loadBooking} />
       </div>
     );
   }
 
+  if (sent || pendingRequest) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-6">
+        <PageHeading
+          eyebrow={`Booking ${booking.booking_code}`}
+          title="Reschedule request sent to mentor"
+          back={{ label: 'Back to booking', onClick: backToBooking }}
+        />
+        <InlineNotice tone="success" role="status" icon={Check} title="Reschedule request sent to mentor">
+          {booking.segment?.name ? `Your ${booking.segment.name} session with ${booking.mentor?.full_name || 'your mentor'} ` : 'Your session '}
+          is still booked for its current time until your mentor responds. You will be notified as soon as they decide.
+        </InlineNotice>
+        <div className="flex justify-end">
+          <Button onClick={backToBooking}>Back to booking</Button>
+        </div>
+      </div>
+    );
+  }
+
   const selectable = slots.filter((s) => s.is_available);
+  const currentSlot = booking.gig?.duration_minutes
+    ? formatSessionWindow(booking.start_time, booking.end_time, booking.mentor_timezone)
+    : null;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       <PageHeading
         eyebrow={`Booking ${booking.booking_code}`}
         title="Choose a new time"
-        description={`Pick an available time with the same mentor. Your booking returns to payment once the new slot is held for ${HOLDOUT_MINUTES} minutes.`}
+        description="Pick a time that is free on your mentor's calendar. Your mentor approves the change before anything moves."
         back={{ label: 'Back to booking', onClick: backToBooking }}
       />
 
-      <SectionCard title="Pick a date" description="Availability is generated by the server from live hours, bookings and holds.">
+      {currentSlot && (
+        <SectionCard title="Current booking" description="This time stays confirmed until your mentor approves a new one.">
+          <p className="text-sm font-semibold text-[var(--color-shell-text)]">{currentSlot}</p>
+          <p className="mt-1 text-xs text-[var(--color-shell-text-muted)]">
+            Same mentor, same session, same price. Only the time changes.
+          </p>
+        </SectionCard>
+      )}
+
+      <SectionCard title="Pick a date" description="Availability is generated by the server from live hours, bookings and holds across all of this mentor's sessions.">
         <DateSelector
           selectedDate={selectedDate}
           minDate={today}
@@ -220,8 +312,8 @@ export const SeekerReschedulePage: React.FC = () => {
         ) : selectable.length === 0 ? (
           <EmptyState
             icon={CalendarClock}
-            title="All times are booked"
-            description="Every time on this date is already taken or held. Try another date."
+            title="All times are taken"
+            description="Every time on this date is already booked or held. Try another date."
             actionLabel="Choose another date"
             onAction={() => quickDates[1] && setSelectedDate(quickDates[1].value)}
           />
@@ -264,8 +356,8 @@ export const SeekerReschedulePage: React.FC = () => {
       </SectionCard>
 
       {rescheduleError && (
-        <InlineNotice tone="danger" role="alert" icon={AlertCircle} title="That time was not available">
-          {rescheduleError}
+        <InlineNotice tone="danger" role="alert" icon={AlertCircle} title={rescheduleError.title}>
+          {rescheduleError.message}
         </InlineNotice>
       )}
 
@@ -273,9 +365,9 @@ export const SeekerReschedulePage: React.FC = () => {
         <Button variant="outline" onClick={backToBooking} disabled={submitting}>
           Cancel
         </Button>
-        <Button onClick={handleConfirm} disabled={!selectedSlot || submitting} isLoading={submitting} className="gap-2">
+        <Button onClick={handleSendRequest} disabled={!selectedSlot || submitting} isLoading={submitting} className="gap-2">
           {!submitting && <Check className="h-4 w-4" aria-hidden="true" />}
-          <span>Reschedule to this time</span>
+          <span>Send Reschedule Request</span>
         </Button>
       </div>
     </div>

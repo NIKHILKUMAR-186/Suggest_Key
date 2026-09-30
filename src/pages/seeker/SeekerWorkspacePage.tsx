@@ -22,15 +22,20 @@ import {
   fetchWorkspaceByBooking,
   deriveSessionOverview,
 } from '@/src/lib/workspaceService';
-import { fetchSeekerBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { fetchBookingDetail, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import {
+  bookingMatchesRequestedId,
+  evaluateBookingOfferIdentity,
+  resolveRequestedBookingId,
+} from '@/src/lib/workspaceIdentity';
 import { SessionWorkspace, NextStepItem } from '@/src/types/database';
 
 export const SeekerWorkspacePage: React.FC = () => {
-  const { navigate } = useNavigation();
+  const { navigate, currentPath } = useNavigation();
   const { user } = useAuth();
   const seekerId = user?.id;
 
-  const queryBookingId = new URLSearchParams(window.location.search || '').get('bookingId') || '';
+  const queryBookingId = resolveRequestedBookingId(currentPath, window.location.search);
 
   const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [workspace, setWorkspace] = useState<SessionWorkspace | null>(null);
@@ -40,16 +45,26 @@ export const SeekerWorkspacePage: React.FC = () => {
 
   const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
   const [bookingNotFound, setBookingNotFound] = useState<boolean>(false);
-  const [missingBookingId, setMissingBookingId] = useState<boolean>(false);
+  const missingBookingId = !queryBookingId;
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
 
+  // Everything below describes ONE booking. When the requested booking changes
+  // the previous booking's state must not survive into the new render: the route
+  // path is unchanged, so React reuses this component instance and `navigate()`
+  // uses pushState, which fires no popstate of its own. Holding the old booking
+  // here is how a page ends up rendering - and, in the mentor's editor,
+  // publishing - one session's workspace under another session's URL.
   useEffect(() => {
-    if (!queryBookingId) {
-      setMissingBookingId(true);
-      setLoading(false);
-      return;
-    }
-    setMissingBookingId(false);
+    if (!queryBookingId) return;
+    setBooking(null);
+    setWorkspace(null);
+    setIsPending(false);
+    setError(null);
+    setIdentityError(null);
+    setBookingNotFound(false);
+    setCompletedSteps({});
+    setLoading(true);
   }, [queryBookingId]);
 
   useEffect(() => {
@@ -60,15 +75,15 @@ export const SeekerWorkspacePage: React.FC = () => {
       setLoading(true);
       setBookingNotFound(false);
       setAuthorizationError(null);
+      setIdentityError(null);
       setError(null);
 
       try {
-        const bookings = await fetchSeekerBookings(seekerId);
+        // The requested booking, resolved by the server and scoped to this
+        // seeker - not by scanning the seeker's whole booking list in the
+        // browser, which resolves against whatever list came back.
+        const found = await fetchBookingDetail(queryBookingId);
         if (!mounted) return;
-
-        const found = bookings.find(
-          (b) => b.id === queryBookingId || b.booking_code === queryBookingId
-        );
 
         if (!found) {
           setBookingNotFound(true);
@@ -76,8 +91,28 @@ export const SeekerWorkspacePage: React.FC = () => {
           return;
         }
 
+        // The response must be the booking the URL asked for. A booking that
+        // matched no requested identifier is a different session, whatever it
+        // happens to be.
+        if (!bookingMatchesRequestedId(found, queryBookingId)) {
+          setIdentityError(
+            'This workspace link does not match the booking it opened. Nothing is shown, because the session behind it cannot be identified.'
+          );
+          setBooking(null);
+          return;
+        }
+
         if (found.seeker_id !== seekerId) {
           setAuthorizationError("You don't have access to this workspace.");
+          setBooking(null);
+          return;
+        }
+
+        const offer = evaluateBookingOfferIdentity(found);
+        if (!offer.unverified && !(offer.segmentConsistent && offer.mentorConsistent)) {
+          setIdentityError(
+            'This booking lists a segment that does not match its own gig, so the session it describes cannot be shown reliably. Please contact support.'
+          );
           setBooking(null);
           return;
         }
@@ -121,6 +156,30 @@ export const SeekerWorkspacePage: React.FC = () => {
         const res = await fetchWorkspaceByBooking(booking.id, seekerId, 'seeker');
 
         if (!isActive()) return;
+
+        if (res.failure === 'WORKSPACE_PARTICIPANT_MISMATCH') {
+          // Not "pending". The row exists for this booking but names a different
+          // pair of people, and RLS reads that row's seeker_id - so reporting it
+          // as merely unpublished would describe a document this seeker is not
+          // the audience for while showing them the mentor's session as awaiting.
+          setIdentityError(
+            'This workspace is linked to different participants than this booking. Please contact support.'
+          );
+          setError(null);
+          setWorkspace(null);
+          setIsPending(false);
+          return;
+        }
+
+        if (res.failure === 'BOOKING_OFFER_MISMATCH') {
+          setIdentityError(
+            'This booking lists a segment that does not match its own gig, so the session it describes cannot be shown reliably. Please contact support.'
+          );
+          setError(null);
+          setWorkspace(null);
+          setIsPending(false);
+          return;
+        }
 
         if (res.error) {
           setError(res.error.message);
@@ -173,7 +232,14 @@ export const SeekerWorkspacePage: React.FC = () => {
     window.print();
   };
 
-  const overview = booking ? deriveSessionOverview(booking) : workspace?.session_overview;
+  // The rendered session must be the requested session. `booking` is nulled
+  // whenever the request changes, so this can only be false in the frame between
+  // an identity mismatch being detected and the state clearing - and in that
+  // frame nothing is rendered at all.
+  const overview =
+    booking && bookingMatchesRequestedId(booking, queryBookingId)
+      ? deriveSessionOverview(booking)
+      : undefined;
 
   const renderMissingBookingId = () => (
     <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
@@ -232,6 +298,23 @@ export const SeekerWorkspacePage: React.FC = () => {
     return (
       <div className="max-w-4xl mx-auto">
         {renderAuthorizationError()}
+      </div>
+    );
+  }
+
+  // A session whose identity cannot be established is never rendered as
+  // "awaiting" and never rendered as content. This is deliberately a distinct
+  // screen from both: it tells the truth about a data problem instead of
+  // implying the mentor simply has not written anything yet.
+  if (identityError) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 text-center space-y-4">
+        <AlertCircle className="h-10 w-10 text-rose-600 mx-auto" />
+        <h2 className="text-lg font-bold text-zinc-950">Workspace Unavailable</h2>
+        <p className="text-sm text-zinc-600">{identityError}</p>
+        <Button onClick={() => navigate('/seeker/bookings')} variant="outline" size="sm">
+          Back to My Bookings
+        </Button>
       </div>
     );
   }

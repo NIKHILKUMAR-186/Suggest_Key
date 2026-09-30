@@ -150,6 +150,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const paramMentorId = searchParams.get('mentorId') || '';
   const paramSegmentSlug = searchParams.get('segmentSlug') || '';
   const paramSegmentId = searchParams.get('segmentId') || '';
+  const paramGigId = searchParams.get('gigId') || '';
   const paramDate = searchParams.get('date') || '';
   const hasRequiredParams = Boolean(paramMentorId && (paramSegmentSlug || paramSegmentId));
 
@@ -163,6 +164,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const [isSlotsLoading, setIsSlotsLoading] = useState<boolean>(true);
   const [slotsError, setSlotsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [staleContextError, setStaleContextError] = useState<string | null>(null);
   const [nextBoundaryAt, setNextBoundaryAt] = useState<string | null>(null);
   const [resolvedSegmentId, setResolvedSegmentId] = useState<string>('');
 
@@ -215,12 +217,29 @@ export const SeekerMentorDetailPage: React.FC = () => {
         const { mentor, error: err } = await fetchMentorDetail(
           paramMentorId,
           resolvedSegmentId,
-          selectedDate
+          selectedDate,
+          { gigId: paramGigId || null }
         );
         if (err) throw err;
 
         setMentorData(mentor);
         setNextBoundaryAt(mentor?.next_hold_expires_at ?? mentor?.next_slot_start_at ?? null);
+
+        // `fetchMentorDetail` has already proven that the resolved gig is the one
+        // this route asked for: same mentor, same segment, still active, and the
+        // same `gigId` when the route carried one. So a returned mentor is
+        // renderable and every field on it — segment name, gig title, gig
+        // description, duration, price and the slot grid — comes from that single
+        // gig row.
+        //
+        // The only remaining stale-context case is a mentor with no usable offer
+        // in this segment at all, which is a real state the seeker must be told
+        // about rather than a bug.
+        setStaleContextError(
+          mentor
+            ? null
+            : 'This mentor has no active session offer in the segment you selected.'
+        );
 
         setSelectedSlot((prev) => {
           if (!prev) return mentor?.available_slots?.[0] ?? null;
@@ -241,7 +260,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
         setIsSlotsLoading(false);
       }
     },
-    [hasRequiredParams, resolvedSegmentId, paramMentorId, selectedDate]
+    [hasRequiredParams, resolvedSegmentId, paramMentorId, paramGigId, selectedDate]
   );
 
   const reloadMentorSlots = useCallback(() => loadMentor(), [loadMentor]);
@@ -319,6 +338,14 @@ export const SeekerMentorDetailPage: React.FC = () => {
       setActiveHold(result.hold);
       setHoldSecondsRemaining(remainingSeconds);
       await reloadMentorSlots();
+
+      // The server created the booking and the hold. The hold is the only
+      // authority on how long the slot is reserved, and the booking is in
+      // PAYMENT_PENDING — so the seeker is sent straight to My Bookings,
+      // where the new row is highlighted and its "Pay Now" action is the
+      // first thing they can reach. Nothing here marks the booking paid or
+      // confirmed: payment still has to happen through the existing flow.
+      navigate(`/seeker/bookings?bookingId=${encodeURIComponent(result.booking.id)}`);
     } catch (err: any) {
       setBookingError(describeBookingError(undefined, err?.message));
       await reloadMentorSlots();
@@ -403,6 +430,15 @@ export const SeekerMentorDetailPage: React.FC = () => {
             <Skeleton className="mt-4 h-12 w-full" />
             <Skeleton className="mt-4 h-40 w-full" />
           </div>
+        </div>
+      ) : staleContextError ? (
+        <div className="mt-6">
+          <EmptyState
+            title="Session offer mismatch"
+            description={staleContextError}
+            actionLabel="Back to mentors"
+            onAction={() => navigate(backPath)}
+          />
         </div>
       ) : !mentorData ? (
         <div className="mt-6">

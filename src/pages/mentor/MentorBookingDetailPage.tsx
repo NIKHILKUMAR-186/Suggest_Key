@@ -31,6 +31,7 @@ import {
   fetchBookingDetail,
   confirmMentorBooking,
   endSessionByMentor,
+  respondToRescheduleRequest,
   EnrichedBookingRecord,
 } from '@/src/lib/bookingService';
 import { validateMeetingUrl } from '@/src/lib/bookingEngine';
@@ -47,6 +48,27 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
   REJECTED: 'Rejected',
 };
+
+/**
+ * A reschedule window as the mentor reads it: `30 Sep, 2:00 PM – 3:00 PM`.
+ *
+ * Rendered in the MENTOR's timezone, because the decision is the mentor's and
+ * the slot the mentor gave up was in the mentor's own calendar. Showing it in
+ * the seeker's zone would make "5:00 PM" ambiguous, which is precisely the
+ * mistake that makes a reschedule look like it moved to the wrong hour.
+ */
+function formatRescheduleWindow(startIso: string, endIso: string, timeZone: string): string {
+  const fmt = (iso: string) =>
+    new Date(iso).toLocaleString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone,
+    });
+  return `${fmt(startIso)} – ${fmt(endIso).split(', ').pop()}`;
+}
 
 export const MentorBookingDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
@@ -346,6 +368,55 @@ export const MentorBookingDetailPage: React.FC = () => {
   // button; the server rejects that call anyway, so the button was a dead end.
   const canEndSession = sessionState === 'IN_PROGRESS' && hasStarted && !hasEnded;
 
+  // ---- Reschedule request ----
+  //
+  // A reschedule is a request, not an edit. The booking is still at
+  // `start_time`; the request is a separate row that names the time the seeker
+  // wants instead. Accepting moves the booking, rejecting leaves it alone, and
+  // both go through the server, which re-checks ownership and the slot's
+  // availability inside the same transaction.
+  const rescheduleRequest = booking?.rescheduleRequest || null;
+  const isReschedulePending = rescheduleRequest?.status === 'PENDING';
+  const [responding, setResponding] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+
+  const handleRescheduleDecision = async (decision: 'APPROVED' | 'REJECTED', reason?: string) => {
+    if (!rescheduleRequest || responding) return;
+    const bookingId = booking?.id;
+    if (!bookingId) return;
+    setResponding(true);
+    setFeedbackError(null);
+    setFeedbackSuccess(null);
+    try {
+      const result = await respondToRescheduleRequest(rescheduleRequest.id, decision, reason);
+      if (result.success) {
+        setShowRejectModal(false);
+        setRejectReason('');
+        setFeedbackSuccess(
+          decision === 'APPROVED'
+            ? 'Reschedule approved. The seeker has been notified and the previous slot is free again.'
+            : 'Reschedule request declined. The original session time is unchanged and the seeker has been notified.'
+        );
+        toast.success(
+          decision === 'APPROVED' ? 'Reschedule approved.' : 'Reschedule request declined.',
+          { title: decision === 'APPROVED' ? 'Reschedule approved' : 'Request declined' }
+        );
+        await loadBooking(bookingId);
+      } else {
+        const message = result.error?.message || 'We could not record your decision.';
+        setFeedbackError(message);
+        toast.error(message, { title: 'Decision not recorded' });
+      }
+    } catch (err: unknown) {
+      const message = toUserMessage(err, 'We could not record your decision. Please try again.');
+      setFeedbackError(message);
+      toast.error(message, { title: 'Decision not recorded' });
+    } finally {
+      setResponding(false);
+    }
+  };
+
   // ---- Render ----
   if (loading) {
     return (
@@ -462,6 +533,86 @@ export const MentorBookingDetailPage: React.FC = () => {
               This session begins in less than 2 hours. While missing the recommended 2-hour deadline does not cancel your session, prompt submission is required so the seeker can prepare.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* ===== Reschedule Request ===== */}
+      {rescheduleRequest && (
+        <div
+          id="reschedule-request-panel"
+          className={`rounded-xl border p-6 shadow-xs space-y-5 ${
+            isReschedulePending
+              ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/10'
+              : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]'
+          }`}
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-inherit pb-3">
+            <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
+              <Calendar className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
+              Reschedule Request
+            </h3>
+            <Badge variant={isReschedulePending ? 'warning' : rescheduleRequest.status === 'APPROVED' ? 'success' : 'secondary'}>
+              {isReschedulePending
+                ? 'Awaiting your decision'
+                : rescheduleRequest.status === 'APPROVED'
+                  ? 'Approved'
+                  : rescheduleRequest.status === 'REJECTED'
+                    ? 'Declined'
+                    : rescheduleRequest.status === 'EXPIRED'
+                      ? 'Expired'
+                      : 'Withdrawn'}
+            </Badge>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-3">
+              <span className="block font-medium text-[var(--color-shell-text-muted)]">Current</span>
+              <span className="mt-0.5 block font-semibold text-[var(--color-shell-text)]">
+                {formatRescheduleWindow(rescheduleRequest.original_start_time, rescheduleRequest.original_end_time, booking.mentor_timezone)}
+              </span>
+            </div>
+            <div className="rounded-lg border border-amber-300 bg-amber-50/60 dark:bg-amber-900/20 p-3">
+              <span className="block font-medium text-amber-800 dark:text-amber-200">Requested</span>
+              <span className="mt-0.5 block font-semibold text-amber-900 dark:text-amber-100">
+                {formatRescheduleWindow(rescheduleRequest.requested_start_time, rescheduleRequest.requested_end_time, booking.mentor_timezone)}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-xs text-[var(--color-shell-text-muted)]">
+            {booking.seeker?.full_name || 'The seeker'} · {gigTitle} · {segmentName}.{' '}
+            {isReschedulePending
+              ? 'The current time stays confirmed and the requested time is held until you decide.'
+              : rescheduleRequest.status === 'APPROVED'
+                ? `Approved ${new Date(rescheduleRequest.mentor_responded_at || rescheduleRequest.updated_at).toLocaleString('en-IN')}.`
+                : rescheduleRequest.status === 'REJECTED'
+                  ? rescheduleRequest.rejection_reason || 'The seeker was notified that the original time stands.'
+                  : 'This request closed without a change.'}
+          </p>
+
+          {isReschedulePending && (
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <Button
+                id="btn-accept-reschedule"
+                onClick={() => handleRescheduleDecision('APPROVED')}
+                disabled={responding}
+                isLoading={responding}
+                className="gap-1.5 text-xs"
+              >
+                {!responding && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+                <span>Accept</span>
+              </Button>
+              <Button
+                id="btn-reject-reschedule"
+                onClick={() => setShowRejectModal(true)}
+                variant="outline"
+                disabled={responding}
+                className="gap-1.5 text-xs"
+              >
+                <span>Reject</span>
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -730,6 +881,56 @@ export const MentorBookingDetailPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* ===== Reject Reschedule Request Modal ===== */}
+      <Modal
+        isOpen={showRejectModal}
+        onClose={() => setShowRejectModal(false)}
+        title="Decline this reschedule?"
+        description="The booking keeps its current date and time. The requested slot is released and the seeker is told."
+      >
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label htmlFor="reschedule-reject-reason" className="block text-xs font-medium text-[var(--color-shell-text)]">
+              Reason (optional)
+            </label>
+            <textarea
+              id="reschedule-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+              maxLength={500}
+              className="w-full rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-3 text-sm text-[var(--color-shell-text)] placeholder:text-[var(--color-shell-text-subtle)] focus:outline-none focus:ring-2 focus:ring-[var(--color-shell-accent)] focus:border-transparent resize-none"
+              placeholder="e.g., I am not free at that time that day."
+            />
+            <div className="text-[10px] text-[var(--color-shell-text-subtle)] text-right">
+              {rejectReason.length}/500
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button
+              onClick={() => setShowRejectModal(false)}
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              disabled={responding}
+            >
+              Keep Request Open
+            </Button>
+            <Button
+              onClick={() => handleRescheduleDecision('REJECTED', rejectReason)}
+              variant="destructive"
+              size="sm"
+              isLoading={responding}
+              loadingText="Declining..."
+              className="flex-1"
+            >
+              Decline
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* ===== End Session Confirmation Modal ===== */}
       <Modal

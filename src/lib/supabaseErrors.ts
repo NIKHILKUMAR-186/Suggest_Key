@@ -74,9 +74,20 @@ export function describeSupabaseError(error: unknown): SupabaseErrorInfo {
  * answer with. PostgREST answers relationship ambiguity with HTTP 300, which is
  * never a valid API status - it is a server-side query defect, so it becomes a
  * 500 and is recorded in System Health.
+ *
+ * `42501 insufficient_privilege` maps to 403 rather than falling through to
+ * 500. It means the caller asked for something their role is not allowed to do,
+ * which is an authorization outcome and not a server fault. Reporting it as a
+ * 500 misdirected a mentor-facing workflow failure into "our side is broken"
+ * when the accurate answer was "not permitted", and it is exactly the code the
+ * column-privilege work on `session_workspaces` / `mentor_applications` is
+ * designed to raise. The client still only ever sees GENERIC_ERROR_MESSAGE, so
+ * nothing about the schema leaks.
  */
 export function resolveHttpStatusForSupabaseError(info: SupabaseErrorInfo): number {
   switch (info.code) {
+    case '42501': // insufficient_privilege: the caller is not permitted to do this
+      return 403;
     case '23505': // unique constraint violation (e.g. duplicate email / duplicate role)
       return 409;
     case '23503': // foreign key violation

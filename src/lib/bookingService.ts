@@ -1,6 +1,6 @@
 import { apiFetch } from './apiClient';
 import { isSupabaseConfigured } from './supabase';
-import { Booking, SlotHold, Payment, Notification } from '@/src/types/database';
+import { Booking, SlotHold, Payment, Notification, RescheduleRequest } from '@/src/types/database';
 import { supabase } from './supabase';
 import {
   executeAtomicBookingWithHold,
@@ -18,6 +18,7 @@ import {
   lifecycleFromAccessState,
   AuthoritativeJoinResult,
 } from './bookingEngine';
+import { bookingMatchesRequestedId } from './workspaceIdentity';
 
 export type {
   SessionAccessResult,
@@ -980,6 +981,96 @@ export interface EnrichedBookingRecord extends Booking {
     hoursUntilSession: number;
     minutesUntilSession: number;
   };
+  /**
+   * Open reschedule request, else the most recent closed one, else absent.
+   * Present because the booking detail endpoints project it; a booking that was
+   * never rescheduled simply has none.
+   */
+  rescheduleRequest?: RescheduleRequest | null;
+}
+
+// ----------------------------------------------------------------------------
+// RESCHEDULE REQUESTS
+// ----------------------------------------------------------------------------
+//
+// Rescheduling is a REQUEST, not an edit. Nothing here changes a booking: the
+// server keeps the original time until the mentor approves, and these functions
+// only create or answer a request. There is deliberately no
+// "rescheduleBooking" that writes times straight through.
+
+export interface RescheduleRequestResult {
+  success: boolean;
+  request?: RescheduleRequest | null;
+  /** When the requested slot stops being held if the mentor does not answer. */
+  holdExpiresAt?: string | null;
+  error?: { code: string; message: string };
+}
+
+/**
+ * Asks the mentor to move a booking to a new time.
+ *
+ * The body carries the target interval and nothing else. `gigId`, `segmentId`
+ * and `mentorId` are not parameters and cannot be: a reschedule changes the
+ * time of an existing booking, and the rest of its identity is fixed.
+ */
+export async function requestReschedule(
+  bookingId: string,
+  newStartTime: string,
+  newEndTime: string
+): Promise<RescheduleRequestResult> {
+  const res = await apiFetch(`/api/seeker/bookings/${encodeURIComponent(bookingId)}/reschedule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newStartTime, newEndTime }),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.ok && data?.success) {
+    return { success: true, request: data.request || null, holdExpiresAt: data.holdExpiresAt || null };
+  }
+  return {
+    success: false,
+    error: data?.error || { code: 'RESCHEDULE_REQUEST_FAILED', message: 'Could not send the reschedule request.' },
+  };
+}
+
+/** Withdraws the seeker's own pending request and releases the held slot. */
+export async function cancelRescheduleRequest(bookingId: string): Promise<RescheduleRequestResult> {
+  const res = await apiFetch(
+    `/api/seeker/bookings/${encodeURIComponent(bookingId)}/reschedule-request/cancel`,
+    { method: 'POST' }
+  );
+  const data = await res.json().catch(() => null);
+  if (res.ok && data?.success) {
+    return { success: true, request: data.request || null };
+  }
+  return {
+    success: false,
+    error: data?.error || { code: 'RESCHEDULE_REQUEST_FAILED', message: 'Could not withdraw the request.' },
+  };
+}
+
+/**
+ * The mentor's decision on a request. `reason` is optional and shown to the
+ * seeker on either outcome, so a rejection does not leave them guessing.
+ */
+export async function respondToRescheduleRequest(
+  requestId: string,
+  decision: 'APPROVED' | 'REJECTED',
+  reason?: string
+): Promise<RescheduleRequestResult> {
+  const res = await apiFetch(`/api/mentor/reschedule-requests/${encodeURIComponent(requestId)}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decision, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.ok && data?.success) {
+    return { success: true, request: data.request || null };
+  }
+  return {
+    success: false,
+    error: data?.error || { code: 'RESCHEDULE_REQUEST_FAILED', message: 'Could not record your decision.' },
+  };
 }
 
 /**
@@ -1066,6 +1157,11 @@ export async function fetchMentorBookings(
 
 /**
  * Fetches bookings for a seeker, enriched with mentor, gig, and segment data.
+ *
+ * The in-memory seed database stands in only when the request never reached the
+ * server. A response the server actually sent - including a 403 or a 5xx - is
+ * a failure, and substituting the seed database for it would show bookings that
+ * do not exist for this user.
  */
 export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBookingRecord[]> {
   // Try server API first, then Supabase
@@ -1074,9 +1170,12 @@ export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBoo
     if (res.ok) {
       const data = await res.json();
       if (data.bookings) return data.bookings;
+      throw new Error('BOOKINGS_RESPONSE_INVALID');
     }
-  } catch {
-    // API unreachable
+    throw new Error(`BOOKINGS_REQUEST_FAILED_${res.status}`);
+  } catch (err: any) {
+    const reached = !(err instanceof Error) || !/^BOOKINGS_/.test(err.message);
+    if (!reached) throw err;
   }
 
   if (!isDevMode) {
@@ -1092,6 +1191,17 @@ export async function fetchSeekerBookings(seekerId: string): Promise<EnrichedBoo
 
 /**
  * Fetches details for a single booking.
+ *
+ * The response MUST name the booking that was asked for. The previous version
+ * fell back to `data.bookings[0]` when the body carried a list instead of a
+ * single `booking`, which silently resolved to the FIRST booking in that list
+ * rather than the requested one. On a mentor with several sessions that is a
+ * plausible-looking workspace for the wrong session, and because the page then
+ * publishes against `booking.id`, the write goes to the wrong booking too.
+ *
+ * There is no list-shaped fallback here. If the server answers with something
+ * that is not the requested booking, the booking does not exist as far as this
+ * call is concerned, and an unverifiable identity must fail closed.
  */
 export async function fetchBookingDetail(
   bookingId: string,
@@ -1104,11 +1214,21 @@ export async function fetchBookingDetail(
     const res = await apiFetch(url);
     if (res.ok) {
       const data = await res.json();
-      if (data.booking) return data.booking;
-      if (data.bookings && data.bookings[0]) return data.bookings[0];
+      if (data.booking && bookingMatchesRequestedId(data.booking as Booking, bookingId)) {
+        return data.booking as EnrichedBookingRecord;
+      }
+      if (data.booking) {
+        throw new Error('BOOKING_IDENTITY_MISMATCH');
+      }
+      throw new Error('BOOKING_RESPONSE_INVALID');
     }
-  } catch {
-    // API unreachable
+  } catch (err: any) {
+    // A response the server actually sent is never downgraded to the in-memory
+    // seed database. Doing so would substitute a DIFFERENT booking that happens
+    // to share an identifier, which is the one failure mode this call must not
+    // have. Only a request that never reached the server may fall back.
+    const reached = !(err instanceof Error) || !/^BOOKING_/.test(err.message);
+    if (!reached) throw err;
   }
 
   if (!isDevMode) {

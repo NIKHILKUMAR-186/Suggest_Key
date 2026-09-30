@@ -20,6 +20,7 @@ import {
   BookingEngineContext,
 } from './src/lib/bookingEngine';
 import { generateMentorSlots, addDaysToDateString } from './src/lib/slotEngine';
+import { describeBookingContextMismatch } from './src/lib/gigContext';
 import {
   isBookingIdShape,
   isSafeBookingIdentifier,
@@ -30,6 +31,12 @@ import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingSe
 import {
   deriveSessionOverview,
 } from './src/lib/workspaceService';
+import {
+  createSupabaseWorkspaceStore,
+  isWorkspaceVisibleToSeeker,
+  saveWorkspace,
+  type WorkspaceWriteInput,
+} from './src/lib/workspaceStore.server';
 import {
   requireAuth,
   requireAdmin,
@@ -130,7 +137,7 @@ import {
   validateAccountStatusAction,
   type AccountStatusAction,
 } from './src/lib/adminAccountControl';
-import { APP_CONFIG, HOLDOUT_MINUTES } from './src/config/app';
+import { APP_CONFIG } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
 import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
@@ -486,6 +493,101 @@ async function loadMentorBookingRows(
 }
 
 /**
+ * Failure codes raised by the `*_reschedule_request` RPCs.
+ *
+ * The SQL raises `code: X, human reason`, matching the convention
+ * `create_booking_with_hold` already uses. Parsing it here is what lets the
+ * client distinguish "this time is not on the mentor's calendar" from "this
+ * booking can no longer be moved" - the previous handler collapsed every
+ * refusal into one generic 400 and the UI labelled all of them as a slot
+ * availability problem.
+ */
+type RescheduleFailureCode =
+  | 'INVALID_INTERVAL'
+  | 'PAST_SLOT_FORBIDDEN'
+  | 'BOOKING_CUTOFF_REACHED'
+  | 'BOOKING_NOT_FOUND'
+  | 'GIG_NOT_FOUND'
+  | 'BOOKING_NOT_RESCHEDULABLE'
+  | 'FORBIDDEN_NOT_BOOKING_OWNER'
+  | 'RESCHEDULE_WINDOW_CLOSED'
+  | 'RESCHEDULE_REQUEST_PENDING'
+  | 'OUTSIDE_AVAILABILITY'
+  | 'OUTSIDE_EXCEPTION_HOURS'
+  | 'DATE_EXCEPTION_UNAVAILABLE'
+  | 'DURATION_MISMATCH'
+  | 'SLOT_ALREADY_BOOKED'
+  | 'SLOT_HELD_BY_OTHER'
+  | 'RESCHEDULE_REQUEST_NOT_FOUND'
+  | 'RESCHEDULE_REQUEST_CLOSED'
+  | 'RESCHEDULE_REQUEST_EXPIRED'
+  | 'INVALID_DECISION'
+  | 'RESCHEDULE_REQUEST_FAILED';
+
+const RESCHEDULE_FAILURE_CODES: RescheduleFailureCode[] = [
+  'INVALID_INTERVAL',
+  'PAST_SLOT_FORBIDDEN',
+  'BOOKING_CUTOFF_REACHED',
+  'BOOKING_NOT_FOUND',
+  'GIG_NOT_FOUND',
+  'BOOKING_NOT_RESCHEDULABLE',
+  'FORBIDDEN_NOT_BOOKING_OWNER',
+  'RESCHEDULE_WINDOW_CLOSED',
+  'RESCHEDULE_REQUEST_PENDING',
+  'OUTSIDE_AVAILABILITY',
+  'OUTSIDE_EXCEPTION_HOURS',
+  'DATE_EXCEPTION_UNAVAILABLE',
+  'DURATION_MISMATCH',
+  'SLOT_ALREADY_BOOKED',
+  'SLOT_HELD_BY_OTHER',
+  'RESCHEDULE_REQUEST_NOT_FOUND',
+  'RESCHEDULE_REQUEST_CLOSED',
+  'RESCHEDULE_REQUEST_EXPIRED',
+  'INVALID_DECISION',
+];
+
+function rescheduleFailureCode(message: string | undefined): RescheduleFailureCode {
+  const matched = (message || '').match(/code:\s*([A-Z0-9_]+)/i)?.[1]?.toUpperCase();
+  return (RESCHEDULE_FAILURE_CODES as string[]).includes(matched || '')
+    ? (matched as RescheduleFailureCode)
+    : 'RESCHEDULE_REQUEST_FAILED';
+}
+
+function rescheduleFailureReason(message: string | undefined): string {
+  return (message || '').match(/code:\s*[A-Z0-9_]+,\s*([\s\S]*)$/i)?.[1]?.trim() || 'Could not process the reschedule request.';
+}
+
+/**
+ * Maps a reschedule RPC failure code to an HTTP status.
+ *
+ * `404` for a missing row, `403` for an ownership failure, `409` for a rule the
+ * caller can only fix by changing what they asked for or waiting, and `400` for
+ * a malformed request. The client renders the code's own message either way, so
+ * the split is about HTTP semantics, not about wording.
+ */
+function rescheduleFailureStatus(message: string | undefined): number {
+  const code = rescheduleFailureCode(message);
+  if (code === 'BOOKING_NOT_FOUND' || code === 'GIG_NOT_FOUND' || code === 'RESCHEDULE_REQUEST_NOT_FOUND') {
+    return 404;
+  }
+  if (code === 'FORBIDDEN_NOT_BOOKING_OWNER') return 403;
+  if (
+    code === 'RESCHEDULE_REQUEST_PENDING' ||
+    code === 'RESCHEDULE_REQUEST_CLOSED' ||
+    code === 'RESCHEDULE_REQUEST_EXPIRED' ||
+    code === 'BOOKING_NOT_RESCHEDULABLE' ||
+    code === 'RESCHEDULE_WINDOW_CLOSED' ||
+    code === 'SLOT_ALREADY_BOOKED' ||
+    code === 'SLOT_HELD_BY_OTHER' ||
+    code === 'BOOKING_CUTOFF_REACHED' ||
+    code === 'PAST_SLOT_FORBIDDEN'
+  ) {
+    return 409;
+  }
+  return 400;
+}
+
+/**
  * Shapes a live booking row into the payload the mentor UI consumes.
  *
  * Nothing here invents data: the gig/segment/seeker are the joined relations of
@@ -499,6 +601,7 @@ function enrichMentorBookingProjection(
   booking: any,
   payment: any | null,
   hold: any | null = null,
+  rescheduleRequest: any | null = null,
 ): Record<string, any> {
   const durationMinutes = (() => {
     const start = new Date(booking.start_time).getTime();
@@ -518,7 +621,32 @@ function enrichMentorBookingProjection(
     // Duration as it was booked, so a later gig edit cannot rewrite history.
     duration_minutes: durationMinutes ?? booking.gig?.duration_minutes ?? null,
     deadlineInfo: calculateMeetingLinkDeadline(booking.start_time),
+    // The open (or most recent) reschedule request, so the detail page renders
+    // the Accept/Reject decision without a second round trip.
+    rescheduleRequest: rescheduleRequest || null,
   };
+}
+
+/**
+ * Reads the open reschedule request for a booking, or the most recent closed
+ * one, or null. Read through the RPC rather than a raw select because that
+ * function is the one place that decides who may see a request, so a direct
+ * read here cannot drift from the ownership rule it applies.
+ *
+ * Returns null on failure on purpose: this is supplementary data on a booking
+ * detail response, and a missing decision panel must not fail the whole page.
+ */
+async function readRescheduleRequest(
+  admin: SupabaseClient,
+  bookingId: string,
+  callerId: string,
+): Promise<Record<string, any> | null> {
+  const { data, error } = await admin.rpc('get_reschedule_request_for_booking', {
+    p_booking_id: bookingId,
+    p_caller_id: callerId,
+  });
+  if (error) return null;
+  return (data as Record<string, any> | null) || null;
 }
 
 /**
@@ -675,12 +803,24 @@ async function loadSegmentGigs(
 export interface MentorSlotResult {
   mentor_id: string;
   timezone: string;
+  /**
+   * The ONE gig this slot list belongs to. Every field here is read from the
+   * same `gigs` row, so duration, price, title and the generated slot grid can
+   * never describe two different offers.
+   *
+   * `mentor_id` / `segment_id` / `is_active` are echoed deliberately: they let
+   * the client assert the context it asked for is the context it got, instead
+   * of trusting that the server picked correctly.
+   */
   gig: {
     id: string;
+    mentor_id: string;
     segment_id: string;
     title: string;
+    description: string | null;
     duration_minutes: number;
     price_inr: number;
+    is_active: boolean;
   } | null;
   slots: GeneratedSlot[];
   available_count: number;
@@ -692,9 +832,9 @@ export interface MentorSlotResult {
 
 async function computeMentorSlotsForDate(
   admin: SupabaseClient,
-  params: { mentorIds: string[]; dateStr: string; segmentId?: string; now: Date }
+  params: { mentorIds: string[]; dateStr: string; segmentId?: string; gigId?: string; now: Date }
 ): Promise<{ results: Map<string, MentorSlotResult>; error: any | null }> {
-  const { mentorIds, dateStr, segmentId, now } = params;
+  const { mentorIds, dateStr, segmentId, gigId, now } = params;
   const results = new Map<string, MentorSlotResult>();
 
   if (mentorIds.length === 0) return { results, error: null };
@@ -751,11 +891,47 @@ async function computeMentorSlotsForDate(
   const exceptionRows = exceptionsRes.data || [];
   const bookingRows = bookingsRes.data || [];
   const holdRows = holdsRes.data || [];
-  const activeGigs = (gigsRes.data || []).filter((g: any) => !segmentId || g.segment_id === segmentId);
 
   for (const mentorId of mentorIds) {
     const timezone = timezoneByMentor.get(mentorId) || APP_CONFIG.DEFAULT_TIMEZONE;
-    const gig = activeGigs.find((g: any) => g.mentor_id === mentorId) || null;
+
+    // -------------------------------------------------------------------------
+    // GIG RESOLUTION — the single authoritative decision for "which offer".
+    //
+    // A gig belongs to exactly one segment through `gigs.segment_id`, and a
+    // mentor may hold one active gig per segment. The bug this replaces: the
+    // lookup matched on `mentor_id` ALONE, so for a mentor with gigs in several
+    // segments it returned whichever row PostgREST happened to order first.
+    // A seeker who arrived from the Autism Mentor segment therefore saw that
+    // mentor's "Relationship Guidance session" gig — the slot grid, the duration
+    // and the price were all computed from the WRONG gig.
+    //
+    // The rules, in priority order:
+    //   1. An explicit `gigId` is resolved as THAT row or nothing. The caller
+    //      has already chosen; substituting a different gig is never correct.
+    //   2. Otherwise the active gig for `segmentId` is used.
+    //   3. With neither, there is no unambiguous answer, so there is no gig.
+    //      Falling back to "the mentor's first gig" is exactly the defect.
+    // A gig that fails any of the three ownership predicates below yields
+    // `gig: null`, which the routes surface as an explicit stale-context error
+    // instead of a plausible-looking wrong offer.
+    // -------------------------------------------------------------------------
+    const mentorGigs = (gigsRes.data || []).filter((g: any) => g.mentor_id === mentorId);
+
+    let gig: any = null;
+    if (gigId) {
+      const requested = mentorGigs.find((g: any) => g.id === gigId) || null;
+      if (
+        requested &&
+        requested.mentor_id === mentorId &&
+        (!segmentId || requested.segment_id === segmentId) &&
+        requested.is_active === true
+      ) {
+        gig = requested;
+      }
+    } else if (segmentId) {
+      gig = mentorGigs.find((g: any) => g.segment_id === segmentId) || null;
+    }
 
     if (!gig) {
       // No active offer for this segment: nothing is bookable, and saying so
@@ -802,10 +978,13 @@ async function computeMentorSlotsForDate(
       timezone,
       gig: {
         id: gig.id,
+        mentor_id: gig.mentor_id,
         segment_id: gig.segment_id,
         title: gig.title,
+        description: gig.description ?? null,
         duration_minutes: gig.duration_minutes,
         price_inr: gig.price_inr,
+        is_active: gig.is_active === true,
       },
       slots,
       available_count: slots.filter((s) => s.is_available).length,
@@ -1700,6 +1879,56 @@ async function startServer() {
           });
         }
 
+        // -------------------------------------------------------------------------
+        // GIG / SEGMENT / MENTOR CONSISTENCY
+        //
+        // The three ids in the body are independent client-supplied values, so
+        // the combination must be proven against the database before the RPC is
+        // called. Without this, a body carrying the Autism segment id together
+        // with the mentor's Relationship gig id would create a booking whose
+        // `segment_id` and `gig_id` describe two different offers, and the
+        // segment shown to the seeker would contradict the session they booked.
+        //
+        // A gig belongs to exactly one segment (`gigs.segment_id`), so the only
+        // valid combination is the one that row itself describes. Mismatches are
+        // rejected; there is no substitution of a "close enough" gig.
+        // -------------------------------------------------------------------------
+        const { data: bookingGig, error: bookingGigErr } = await admin
+          .from('gigs')
+          .select('id, mentor_id, segment_id, is_active')
+          .eq('id', gigId)
+          .maybeSingle();
+        if (bookingGigErr) throw bookingGigErr;
+
+        if (!bookingGig) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'GIG_NOT_FOUND', message: 'Session offer not found.' },
+          });
+        }
+
+        // The shared guard is the single definition of "these three ids describe
+        // one offer". Keeping the rule in one module means the browser render,
+        // the slot resolution and this write path cannot drift apart.
+        const bookingContextProblem = describeBookingContextMismatch({
+          gig: bookingGig,
+          mentorId,
+          segmentId,
+          gigId,
+        });
+        if (bookingContextProblem) {
+          const inactive = bookingGig.is_active !== true;
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: inactive ? 'GIG_INACTIVE' : 'GIG_MISMATCH',
+              message: inactive
+                ? 'That session offer is no longer available.'
+                : 'That session offer does not match the selected mentor and segment.',
+            },
+          });
+        }
+
         // A deactivated or suspended mentor must stop receiving new bookings
         // (prompt section 5). Checked server-side so it cannot be bypassed by
         // calling this endpoint directly.
@@ -2023,9 +2252,15 @@ async function startServer() {
         // COMPLETED immediately, on the very first request.
         const [reconciledDetail] = await reconcileAndAnnotateBookingRows(supabaseAdmin, [booking]);
 
+        // The open (or most recent) reschedule request, so the mentor's page can
+        // render the Accept/Reject decision without a second round trip. Read
+        // through the RPC rather than a raw select: it is the one place that
+        // decides who may see a request, so a direct read cannot drift from it.
+        const rescheduleRequest = await readRescheduleRequest(supabaseAdmin, booking.id, callerId);
+
         return res.json({
           success: true,
-          booking: enrichMentorBookingProjection(reconciledDetail, payment || null, hold || null),
+          booking: enrichMentorBookingProjection(reconciledDetail, payment || null, hold || null, rescheduleRequest),
           serverNow: new Date().toISOString(),
         });
       }
@@ -2130,6 +2365,11 @@ async function startServer() {
         // URL in the payload.
         const [reconciledSeekerDetail] = await reconcileAndAnnotateBookingRows(admin, [booking]);
 
+        // The seeker's own pending request, so the detail page can say
+        // "Reschedule request sent to mentor" instead of offering to send a
+        // second one while the mentor is still deciding.
+        const rescheduleRequest = await readRescheduleRequest(admin, bookingId, callerId);
+
         const enriched = redactMeetingUrlForParticipant(
           {
             ...reconciledSeekerDetail,
@@ -2139,6 +2379,7 @@ async function startServer() {
             mentor: reconciledSeekerDetail.mentor || null,
             payment: payment || null,
             hold: hold || null,
+            rescheduleRequest: rescheduleRequest || null,
           },
           { isAdmin, isMentor: false }
         );
@@ -3076,195 +3317,232 @@ async function startServer() {
   });
 
   // POST /api/seeker/bookings/:id/reschedule
-  // Reschedules a booking to a new slot if the session starts in >= 10 minutes.
-  // The new slot must pass all availability/conflict checks.
+  //
+  // Creates a RESCHEDULE REQUEST. It does not move the booking.
+  //
+  // A reschedule changes TIME and nothing else. The booking keeps its
+  // mentor_id, segment_id, gig_id, amount and status, and the seeker has no way
+  // to influence any of them: the request carries only the target instant, and
+  // `create_reschedule_request` reads the gig, the segment and the mentor from
+  // the booking row itself. That is why there is no `newGigId` on the body
+  // schema any more, and why the old "New gig must belong to the same mentor and
+  // segment" rule is gone - it described a decision this endpoint is no longer
+  // allowed to make.
+  //
+  // The new time is checked against the MENTOR'S GLOBAL TIMELINE: live hours or
+  // the date exception, plus every other booking and every unexpired hold for
+  // that mentor across all of their gigs. Nothing is scoped by gig or segment.
+  //
+  // Every rule - ownership, reschedulable status, the lead-time window on the
+  // ORIGINAL slot, the booking cutoff, duration, global availability, conflicts,
+  // one open request per booking, and the hold that reserves the requested slot -
+  // is enforced inside the RPC, in one transaction. This handler only maps the
+  // failure code to a status code.
   app.post('/api/seeker/bookings/:id/reschedule', requireAuth, requireRole('seeker'), validateBody(apiSchemas.bookingReschedule), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
       const callerId = req.auth!.user.id;
-      const { newStartTime, newEndTime, newGigId } = req.body as { newStartTime: string; newEndTime: string; newGigId?: string };
+      const { newStartTime, newEndTime } = req.body as { newStartTime: string; newEndTime: string };
 
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
       }
 
-      const now = new Date();
+      const { data, error } = await admin.rpc('create_reschedule_request', {
+        p_booking_id: bookingId,
+        p_seeker_id: callerId,
+        p_requested_start_time: newStartTime,
+        p_requested_end_time: newEndTime,
+      });
 
-      // Fetch current booking
-      const { data: booking, error: bookingErr } = await admin
-        .from('bookings')
-        .select('id, booking_code, seeker_id, mentor_id, gig_id, segment_id, status, start_time, end_time, hold_id, amount_inr')
-        .eq('id', bookingId)
-        .maybeSingle();
-
-      if (bookingErr) throw bookingErr;
-      if (!booking) {
-        return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
-      }
-      if (booking.seeker_id !== callerId) {
-        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to reschedule this booking.' } });
-      }
-
-      // Check if booking is in a reschedulable state
-      const reschedulableStatuses = ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'];
-      if (!reschedulableStatuses.includes(booking.status)) {
-        return res.status(409).json({
+      if (error) {
+        return res.status(rescheduleFailureStatus(error.message)).json({
           success: false,
-          error: { code: 'BOOKING_NOT_RESCHEDULABLE', message: `This booking is ${booking.status.toLowerCase().replace(/_/g, ' ')} and cannot be rescheduled.` },
+          error: { code: rescheduleFailureCode(error.message), message: rescheduleFailureReason(error.message) },
         });
       }
 
-      // Enforce 10-minute rescheduling window
-      const sessionStartMs = new Date(booking.start_time).getTime();
-      const nowMs = now.getTime();
-      const minutesUntilStart = (sessionStartMs - nowMs) / (1000 * 60);
-
-      if (minutesUntilStart < APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES) {
-        return res.status(409).json({
-          success: false,
-          error: {
-            code: 'RESCHEDULE_WINDOW_CLOSED',
-            message: `Normal rescheduling is only available until ${APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES} minutes before the session. The session starts in ${Math.ceil(minutesUntilStart)} minutes.`,
-          },
-        });
-      }
-
-      // Validate new slot times
-      const newStartMs = new Date(newStartTime).getTime();
-      const newEndMs = new Date(newEndTime).getTime();
-
-      if (isNaN(newStartMs) || isNaN(newEndMs) || newStartMs >= newEndMs) {
-        return res.status(400).json({ success: false, error: { code: 'INVALID_INTERVAL', message: 'Invalid new slot times.' } });
-      }
-      if (newStartMs <= nowMs) {
-        return res.status(400).json({ success: false, error: { code: 'PAST_SLOT_FORBIDDEN', message: 'Cannot reschedule to a slot in the past.' } });
-      }
-
-      // Determine target gig (same gig by default, or new gig if provided)
-      const targetGigId = newGigId || booking.gig_id;
-      const { data: targetGig, error: gigErr } = await admin
-        .from('gigs')
-        .select('id, mentor_id, segment_id, duration_minutes, price_inr, is_active')
-        .eq('id', targetGigId)
-        .maybeSingle();
-
-      if (gigErr) throw gigErr;
-      if (!targetGig || !targetGig.is_active) {
-        return res.status(404).json({ success: false, error: { code: 'GIG_INACTIVE', message: 'Selected gig is not active.' } });
-      }
-
-      // If changing gig, verify it belongs to same mentor and segment
-      if (targetGig.mentor_id !== booking.mentor_id || targetGig.segment_id !== booking.segment_id) {
-        return res.status(400).json({ success: false, error: { code: 'GIG_MISMATCH', message: 'New gig must belong to the same mentor and segment.' } });
-      }
-
-      // Check duration matches
-      const newDurationMinutes = Math.round((newEndMs - newStartMs) / 60000);
-      if (newDurationMinutes !== targetGig.duration_minutes) {
-        return res.status(400).json({
-          success: false,
-          error: { code: 'DURATION_MISMATCH', message: `New slot duration (${newDurationMinutes}m) must match gig duration (${targetGig.duration_minutes}m).` },
-        });
-      }
-
-      // Release old hold if PAYMENT_PENDING
-      if (booking.status === 'PAYMENT_PENDING' && booking.hold_id) {
-        await admin
-          .from('slot_holds')
-          .update({ status: 'RELEASED', updated_at: now.toISOString() })
-          .eq('id', booking.hold_id)
-          .eq('status', 'ACTIVE');
-      }
-
-      // Create new hold and update booking atomically via RPC
-      // We reuse the atomic booking function but need a variant that updates existing booking
-      // For simplicity, we'll do the checks and updates in a transaction-like manner
-      // The RPC will fail if slot is not available; if it succeeds, we have a new hold
-      const { data: holdResult, error: holdErr } = await admin.rpc('acquire_slot_hold', {
-        p_mentor_id: booking.mentor_id,
-        p_seeker_id: booking.seeker_id,
-        p_gig_id: targetGigId,
-        p_start_time: newStartTime,
-        p_end_time: newEndTime,
-      });
-
-      if (holdErr) {
-        const codeMatch = holdErr.message.match(/code:\s*([A-Z0-9_]+)/i);
-        const code = codeMatch?.[1]?.toUpperCase() || 'RESCHEDULE_FAILED';
-        const reasonMatch = holdErr.message.match(/code:\s*[A-Z0-9_]+,\s*(.*)$/i);
-        const reason = (reasonMatch?.[1] || '').trim();
-
-        const status = ['SLOT_ALREADY_BOOKED', 'SLOT_HELD_BY_OTHER', 'OUTSIDE_AVAILABILITY', 'OUTSIDE_EXCEPTION_HOURS', 'DATE_EXCEPTION_UNAVAILABLE', 'DURATION_MISMATCH', 'PAST_SLOT_FORBIDDEN', 'BOOKING_CUTOFF_REACHED'].includes(code)
-          ? 409
-          : 400;
-
-        return res.status(status).json({ success: false, error: { code, message: reason || 'Could not reschedule to the requested slot.' } });
-      }
-
-      // Update booking with new slot and new hold
-      const { data: updatedBooking, error: updateErr } = await admin
-        .from('bookings')
-        .update({
-          gig_id: targetGigId,
-          hold_id: holdResult.id,
-          start_time: newStartTime,
-          end_time: newEndTime,
-          amount_inr: targetGig.price_inr,
-          status: 'PAYMENT_PENDING', // Reset to payment pending for new slot
-          updated_at: now.toISOString(),
-        })
-        .eq('id', bookingId)
-        .select()
-        .single();
-
-      if (updateErr) throw updateErr;
-
-      // Cancel old payment if exists (will be replaced when new payment submitted)
-      await admin
-        .from('payments')
-        .update({ status: 'REJECTED', rejection_reason: 'Booking rescheduled to new slot', updated_at: now.toISOString() })
-        .eq('booking_id', bookingId)
-        .eq('status', 'PENDING_VERIFICATION');
-
-      // Notify seeker
-      await admin.from('notifications').insert({
-        user_id: booking.seeker_id,
-        title: 'Booking Rescheduled',
-        message: `Your booking ${booking.booking_code} has been rescheduled. Please complete payment for the new slot within ${HOLDOUT_MINUTES} minutes.`,
-        type: 'BOOKING',
-        event_type: 'RESCHEDULING',
-        entity_type: 'booking',
-        entity_id: booking.id,
-        link: `/seeker/payment?bookingId=${booking.id}`,
-        is_read: false,
-      });
-
-      // Notify mentor
-      await admin.from('notifications').insert({
-        user_id: booking.mentor_id,
-        title: 'Seeker Rescheduled Booking',
-        message: `Booking ${booking.booking_code} was rescheduled by the seeker.`,
-        type: 'BOOKING',
-        event_type: 'MENTOR_RESCHEDULING',
-        entity_type: 'booking',
-        entity_id: booking.id,
-        link: '/mentor/bookings',
-        is_read: false,
-      });
-
-      auditAction(req.auth, 'booking_rescheduled', {
+      auditAction(req.auth, 'reschedule_requested', {
         entityType: 'booking',
-        entityId: booking.id,
+        entityId: bookingId,
         requestId: req.requestId,
-        metadata: { bookingCode: booking.booking_code, newStartTime, newEndTime },
+        metadata: { requestedStartTime: newStartTime, requestedEndTime: newEndTime, rescheduleRequestId: data?.request?.id },
       });
 
-      return res.json({ success: true, booking: updatedBooking, hold: holdResult, message: 'Booking rescheduled. Please complete payment for the new slot.' });
+      return res.status(201).json({
+        success: true,
+        request: data?.request || null,
+        holdExpiresAt: data?.hold_expires_at || null,
+        message: 'Reschedule request sent to mentor.',
+      });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/reschedule' });
     }
   });
+
+  // GET /api/seeker/bookings/:id/reschedule-request
+  // The open request for this booking, or the most recent closed one, or null.
+  app.get('/api/seeker/bookings/:id/reschedule-request', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const { data, error } = await admin.rpc('get_reschedule_request_for_booking', {
+        p_booking_id: req.params.id,
+        p_caller_id: req.auth!.user.id,
+      });
+      if (error) throw error;
+
+      return res.json({ success: true, request: data || null, serverNow: new Date().toISOString() });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/bookings/:id/reschedule-request' });
+    }
+  });
+
+  // POST /api/seeker/bookings/:id/reschedule-request/cancel
+  // Seeker withdraws their own pending request. The booking is untouched and the
+  // held slot is released, exactly as on a rejection.
+  app.post('/api/seeker/bookings/:id/reschedule-request/cancel', requireAuth, requireRole('seeker'), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const { data: request, error: lookupErr } = await admin
+        .from('reschedule_requests')
+        .select('id, booking_id')
+        .eq('booking_id', req.params.id)
+        .eq('seeker_id', req.auth!.user.id)
+        .eq('status', 'PENDING')
+        .maybeSingle();
+      if (lookupErr) throw lookupErr;
+
+      if (!request) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'RESCHEDULE_REQUEST_NOT_FOUND', message: 'No pending reschedule request was found for this booking.' },
+        });
+      }
+
+      const { data, error } = await admin.rpc('cancel_reschedule_request', {
+        p_request_id: request.id,
+        p_seeker_id: req.auth!.user.id,
+      });
+      if (error) {
+        return res.status(rescheduleFailureStatus(error.message)).json({
+          success: false,
+          error: { code: rescheduleFailureCode(error.message), message: rescheduleFailureReason(error.message) },
+        });
+      }
+
+      auditAction(req.auth, 'reschedule_request_cancelled', {
+        entityType: 'booking',
+        entityId: req.params.id,
+        requestId: req.requestId,
+        metadata: { rescheduleRequestId: request.id },
+      });
+
+      return res.json({ success: true, request: data || null, message: 'Reschedule request withdrawn.' });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/reschedule-request/cancel' });
+    }
+  });
+
+  // GET /api/mentor/bookings/:id/reschedule-request
+  // Read-only projection of the same RPC. Used by the mentor booking detail page
+  // and reachable by admins through the same route.
+  app.get('/api/mentor/bookings/:id/reschedule-request', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const { data, error } = await admin.rpc('get_reschedule_request_for_booking', {
+        p_booking_id: req.params.id,
+        p_caller_id: req.auth!.user.id,
+      });
+      if (error) throw error;
+
+      return res.json({ success: true, request: data || null, serverNow: new Date().toISOString() });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/bookings/:id/reschedule-request' });
+    }
+  });
+
+  // POST /api/mentor/reschedule-requests/:id/respond
+  //
+  // The mentor's decision. `decision` is APPROVED or REJECTED.
+  //
+  //   APPROVED -> booking.start_time/end_time become the requested interval.
+  //               mentor_id, segment_id and gig_id are not in the RPC's UPDATE
+  //               list, so they cannot change. The old slot is released and the
+  //               request's hold is CONVERTED, both inside the same transaction.
+  //   REJECTED -> the booking row is never written at all. Only the hold is
+  //               released, and the seeker is notified with the reason.
+  //
+  // Ownership is enforced in SQL against the request's mentor_id, so a mentor
+  // cannot answer another mentor's request even by guessing an id.
+  app.post('/api/mentor/reschedule-requests/:id/respond', requireAuth, requireRole('mentor'), validateBody(apiSchemas.rescheduleRespond), async (req: AuthRequest, res) => {
+    try {
+      const mentorId = req.auth!.user.id;
+      const { decision, reason } = req.body as { decision: 'APPROVED' | 'REJECTED'; reason?: string };
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const { data: request, error: lookupErr } = await admin
+        .from('reschedule_requests')
+        .select('id, booking_id')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (lookupErr) throw lookupErr;
+
+      if (!request) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'RESCHEDULE_REQUEST_NOT_FOUND', message: 'Reschedule request not found.' },
+        });
+      }
+
+      const { data, error } = await admin.rpc('respond_to_reschedule_request', {
+        p_request_id: request.id,
+        p_mentor_id: mentorId,
+        p_decision: decision,
+        p_reason: reason?.trim() || null,
+      });
+      if (error) {
+        return res.status(rescheduleFailureStatus(error.message)).json({
+          success: false,
+          error: { code: rescheduleFailureCode(error.message), message: rescheduleFailureReason(error.message) },
+        });
+      }
+
+      auditAction(req.auth, decision === 'APPROVED' ? 'reschedule_approved' : 'reschedule_rejected', {
+        entityType: 'booking',
+        entityId: request.booking_id,
+        requestId: req.requestId,
+        metadata: { rescheduleRequestId: request.id, reason: reason?.trim() || null },
+      });
+
+      return res.json({
+        success: true,
+        decision,
+        requestId: request.id,
+        booking: data?.booking || null,
+        message: decision === 'APPROVED' ? 'Reschedule approved.' : 'Reschedule request declined.',
+      });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/mentor/reschedule-requests/:id/respond' });
+    }
+  });
+
 
   // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
   app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorBookingConfirm), async (req: AuthRequest, res) => {
@@ -4201,9 +4479,19 @@ async function startServer() {
   //
   //   ?mentorId=<uuid>&date=YYYY-MM-DD   -> one mentor
   //   ?segmentId=<uuid>&date=YYYY-MM-DD   -> every active mentor in the segment
+  //   ?mentorId=&segmentId=&gigId=        -> ONE mentor pinned to ONE exact gig
+  //
+  // The three parameters are NOT mutually exclusive. `mentorId` + `segmentId`
+  // together used to be a 400, which forced the browser client to send one and
+  // silently drop the other. That is what let a seeker who opened a mentor from
+  // the Autism Mentor segment be served that mentor's Relationship Guidance
+  // gig: the request reaching this route carried the mentor but no segment, so
+  // the gig lookup had nothing to narrow on. `gigId` closes the loop — when the
+  // route names a gig, that exact row is the only acceptable answer.
   //
   // Always JSON: 200 on success, 400 on a malformed request, 401 when the caller
-  // has no session, 404 when the mentor/segment does not exist, 500 on failure.
+  // has no session, 404 when the mentor/segment/gig does not exist, 409 when the
+  // named gig does not belong to the named mentor/segment, 500 on failure.
   // The response carries the fully generated slot list with a real status
   // (AVAILABLE / HELD / BOOKED / PAST) so the browser never computes
   // availability itself and can never render a fake slot.
@@ -4218,29 +4506,24 @@ async function startServer() {
         });
       }
 
-      const { mentorId, segmentId, date } = req.query as Record<string, string | undefined>;
+      const { mentorId, segmentId, gigId, date } = req.query as Record<string, string | undefined>;
       const mentorIdRaw = (mentorId || '').trim();
       const segmentIdRaw = (segmentId || '').trim();
+      const gigIdRaw = (gigId || '').trim();
       const dateRaw = (date || '').trim();
 
       // A shape check, not an RFC-4122 version check: seeded platform rows use
       // nil-prefixed ids that a version-strict pattern would reject.
-      if (!UUID_SHAPE_PATTERN.test(mentorIdRaw) && !UUID_SHAPE_PATTERN.test(segmentIdRaw)) {
+      if (
+        !UUID_SHAPE_PATTERN.test(mentorIdRaw) &&
+        !UUID_SHAPE_PATTERN.test(segmentIdRaw) &&
+        !UUID_SHAPE_PATTERN.test(gigIdRaw)
+      ) {
         return res.status(400).json({
           success: false,
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'A valid mentorId or segmentId query parameter is required.',
-          },
-        });
-      }
-
-      if (mentorIdRaw && segmentIdRaw) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Provide either mentorId or segmentId, not both.',
+            message: 'A valid mentorId, segmentId or gigId query parameter is required.',
           },
         });
       }
@@ -4250,6 +4533,62 @@ async function startServer() {
           success: false,
           error: { code: 'VALIDATION_ERROR', message: 'date must be a YYYY-MM-DD calendar date.' },
         });
+      }
+
+      // A `gigId` is the most specific statement of intent available, so it is
+      // honoured first and everything else is derived from that same row. This
+      // reads `gigs.segment_id` and `gigs.mentor_id` from the database rather
+      // than assuming a relationship, so a gig from another segment can never be
+      // presented as though it belonged to this one.
+      let resolvedGig: { id: string; mentor_id: string; segment_id: string; is_active: boolean } | null = null;
+      if (gigIdRaw) {
+        const { data: gigRow, error: gigErr } = await admin
+          .from('gigs')
+          .select('id, mentor_id, segment_id, is_active')
+          .eq('id', gigIdRaw)
+          .maybeSingle<{
+            id: string;
+            mentor_id: string;
+            segment_id: string;
+            is_active: boolean;
+          }>();
+        if (gigErr) throw gigErr;
+        if (!gigRow) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'GIG_NOT_FOUND', message: 'Session offer not found.' },
+          });
+        }
+        // A cross-mentor or cross-segment pairing is rejected outright.
+        // Substituting a different gig here is precisely the defect being fixed.
+        if (mentorIdRaw && gigRow.mentor_id !== mentorIdRaw) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'GIG_MISMATCH',
+              message: 'That session offer does not belong to this mentor.',
+            },
+          });
+        }
+        if (segmentIdRaw && gigRow.segment_id !== segmentIdRaw) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'GIG_MISMATCH',
+              message: 'That session offer belongs to a different segment.',
+            },
+          });
+        }
+        if (gigRow.is_active !== true) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'GIG_INACTIVE',
+              message: 'That session offer is no longer available.',
+            },
+          });
+        }
+        resolvedGig = gigRow;
       }
 
       let mentorIds: string[] = [];
@@ -4268,6 +4607,8 @@ async function startServer() {
           });
         }
         mentorIds = [mentorIdRaw];
+      } else if (resolvedGig) {
+        mentorIds = [resolvedGig.mentor_id];
       } else {
         const { data, error } = await admin
           .from('mentor_segments')
@@ -4306,7 +4647,12 @@ async function startServer() {
       const { results, error } = await computeMentorSlotsForDate(admin, {
         mentorIds,
         dateStr: dateRaw,
-        segmentId: segmentIdRaw || undefined,
+        // Both are forwarded so the engine resolves the exact gig and re-checks
+        // the pairing itself. The segment is never re-derived from a mentor
+        // default or a `mentor_segments.is_primary` flag: it comes from the
+        // route, or from the gig's own `segment_id`.
+        segmentId: segmentIdRaw || resolvedGig?.segment_id || undefined,
+        gigId: gigIdRaw || undefined,
         now,
       });
 
@@ -9918,17 +10264,17 @@ async function startServer() {
         });
       }
 
-      // Seeker access rule: Seekers can only view PUBLISHED workspaces
-      if (isSeeker && !isAdmin && !isMentor) {
-        if (ws.status !== 'PUBLISHED') {
-          return res.json({
-            success: true,
-            workspace: null,
-            isPending: true,
-            session_overview: overview,
-            message: 'Mentor notes are currently being prepared and not yet published.',
-          });
-        }
+      // Seeker access rule: Seekers can only view PUBLISHED workspaces.
+      // Same predicate as the RLS SELECT policy, so the API and the database
+      // cannot disagree about when a mentor's notes become visible.
+      if (!isWorkspaceVisibleToSeeker(ws as { status: 'PENDING' | 'PUBLISHED' }, roles)) {
+        return res.json({
+          success: true,
+          workspace: null,
+          isPending: true,
+          session_overview: overview,
+          message: 'Mentor notes are currently being prepared and not yet published.',
+        });
       }
 
       return res.json({
@@ -9939,7 +10285,7 @@ async function startServer() {
         },
       });
     } catch (err: any) {
-      return respondWithInternalError({ req, res, error: err });
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/workspaces/booking/:bookingId' });
     }
   });
 
@@ -9974,15 +10320,28 @@ async function startServer() {
       // schema validates both, and whichever is present wins.
       const steps = nextSteps ?? next_steps ?? [];
 
+      const input: WorkspaceWriteInput = {
+        mentorNotes,
+        takeaways,
+        suggestions,
+        nextSteps: steps,
+        followUpRecommendation,
+        publish,
+      };
+
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // Fetch booking
+      // Fetch booking. `id`, `booking_code`, `mentor_id` and `seeker_id` are the
+      // only columns the WRITE consumes - participant identity always comes
+      // from this row, never from the body. `start_time`, `end_time` and
+      // `status` are also read because the response carries the session
+      // overview, and `deriveSessionOverview` derives the duration from them.
       const { data: booking, error: bookingErr } = await admin
         .from('bookings')
-        .select('*')
+        .select('id, booking_code, mentor_id, seeker_id, start_time, end_time, status')
         .or(`id.eq.${bookingId},booking_code.eq.${bookingId}`)
         .maybeSingle();
 
@@ -9994,82 +10353,64 @@ async function startServer() {
         });
       }
 
-      // Authorization validation: only the assigned mentor or an admin may
-      // create/update a workspace. Identity comes from the verified token.
-      const callerId = req.auth!.user.id;
-      const isAdmin = req.auth!.roles.includes('admin');
-      const isAssignedMentor = booking.mentor_id === callerId;
+      // Identity comes from the verified token, never from the body, so a
+      // client cannot nominate itself as the mentor of a booking it does not
+      // own. A seeker is not a special case: participants may read a published
+      // workspace but never author or publish one.
+      const result = await saveWorkspace({
+        store: createSupabaseWorkspaceStore(admin),
+        booking: {
+          id: booking.id,
+          booking_code: booking.booking_code,
+          mentor_id: booking.mentor_id,
+          seeker_id: booking.seeker_id,
+        },
+        input,
+        callerId: req.auth!.user.id,
+        roles: req.auth!.roles,
+        nowIso: new Date().toISOString(),
+        newId: randomUUID(),
+      });
 
-      if (!isAdmin && !isAssignedMentor) {
-        return res.status(403).json({
+      if (!result.ok) {
+        // 409 rather than 403 for stored data that disagrees with its booking:
+        // the caller is genuinely the booking's mentor, so this is not an
+        // authorization failure and retrying with the same payload will never
+        // succeed. It has to be reported differently or the mentor sees a
+        // misleading "you are not allowed" on a workspace they own.
+        const status =
+          result.reason === 'BOOKING_NOT_FOUND'
+            ? 404
+            : result.reason === 'PARTICIPANT_MISMATCH'
+              ? 409
+              : 403;
+        const message =
+          result.reason === 'BOOKING_NOT_FOUND'
+            ? 'Booking does not exist.'
+            : result.reason === 'PARTICIPANT_MISMATCH'
+              ? 'This workspace record is linked to different participants than the booking. It has not been changed, and it needs to be repaired before it can be published.'
+              : 'Only the assigned mentor or an administrator can create or update this workspace.';
+        return res.status(status).json({
           success: false,
           error: {
-            code: 'FORBIDDEN',
-            message: 'Only the assigned mentor or an administrator can create or update this workspace.',
+            code: result.reason,
+            message,
           },
         });
       }
 
-      const nowIso = new Date().toISOString();
       const overview = deriveSessionOverview(booking as any);
-      const status = publish ? 'PUBLISHED' : 'PENDING';
-
-      // Upsert workspace in Supabase.
-      // Every list is a real array and every string already markup-free: the
-      // schema rejected or normalised all of it before the handler ran.
-      const upsertRecord = {
-        booking_id: booking.id,
-        mentor_id: booking.mentor_id,
-        seeker_id: booking.seeker_id,
-        status,
-        mentor_notes: mentorNotes || '',
-        summary: mentorNotes || '',
-        takeaways,
-        suggestions,
-        next_steps: steps,
-        action_items: steps.map((step, index) => ({
-          id: step.id || `act-${Date.now()}-${index}`,
-          text: step.text,
-          completed: !!step.completed,
-        })),
-        follow_up_recommendation: followUpRecommendation ?? null,
-        resources: [],
-        published_at: publish ? nowIso : null,
-        created_at: nowIso,
-        updated_at: nowIso,
-      };
-
-      const { data: wsData, error: upsertErr } = await admin
-        .from('session_workspaces')
-        .upsert(upsertRecord, { onConflict: 'booking_id' })
-        .select()
-        .single();
-
-      if (upsertErr) throw upsertErr;
-
-      // In-app notification for Seeker if published
-      if (publish) {
-        const { error: notifErr } = await admin.from('notifications').insert({
-          user_id: booking.seeker_id,
-          title: 'Session Workspace Published',
-          message: `Your mentor has published takeaways and recommendations for session ${booking.booking_code}.`,
-          type: 'WORKSPACE',
-          link: `/seeker/workspace?bookingId=${booking.id}`,
-          is_read: false,
-        });
-        if (notifErr) console.warn('Failed to create notification:', notifErr.message);
-      }
 
       return res.status(200).json({
         success: true,
         workspace: {
-          ...wsData,
+          ...result.workspace,
           session_overview: overview,
         },
         message: publish ? 'Workspace published to seeker successfully.' : 'Workspace saved as draft.',
       });
     } catch (err: any) {
-      return respondWithInternalError({ req, res, error: err });
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/workspaces' });
     }
   });
 

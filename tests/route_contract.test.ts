@@ -201,15 +201,56 @@ describe('the reschedule route exists end to end', () => {
   it('the page is a real page, not a stub', () => {
     const page = code('src/pages/seeker/SeekerReschedulePage.tsx');
     assert.ok(
-      page.includes('/reschedule'),
-      'it must call the real backend route, not fake a reschedule',
+      page.includes('requestReschedule'),
+      'it must call the real backend service, not fake a reschedule',
     );
-    assert.ok(page.includes('apiFetch'), 'it must send the request authenticated');
+    // The page no longer builds its own request: `requestReschedule` owns the
+    // authenticated call. That indirection is allowed only because the service
+    // it delegates to really does use apiFetch.
+    const service = code('src/lib/bookingService.ts');
+    assert.match(
+      service,
+      /export async function requestReschedule[\s\S]*?apiFetch\(`\/api\/seeker\/bookings\/\$\{encodeURIComponent\(bookingId\)\}\/reschedule`/,
+      'the reschedule request must go out authenticated through apiFetch',
+    );
     // Server owns every eligibility rule; the page must not re-decide them.
     assert.equal(
       /acquire_slot_hold|slot_holds|from\('bookings'\)/.test(page),
       false,
       'the page must not touch storage or booking state directly',
+    );
+  });
+
+  it('the page requests a change instead of implying the booking already moved', () => {
+    const page = code('src/pages/seeker/SeekerReschedulePage.tsx');
+    assert.ok(
+      page.includes('Send Reschedule Request'),
+      'the submit button must ask the mentor, not announce a completed move',
+    );
+    assert.ok(
+      page.includes('Reschedule request sent to mentor'),
+      'the confirmation must say the request was sent, not that the time changed',
+    );
+    assert.equal(
+      page.includes('Reschedule to this time'),
+      false,
+      '"Reschedule to this time" is a promise the server does not keep',
+    );
+  });
+
+  it('a reschedule cannot smuggle a gig, a segment or a mentor past the server', () => {
+    // Time only. The booking's identity is read from the row, not the body.
+    const schema = code('src/lib/validation.ts');
+    const block = schema.slice(
+      schema.indexOf('bookingReschedule:'),
+      schema.indexOf('// -- mentor reschedule decision')
+    );
+    assert.match(block, /newStartTime: isoDateTimeField/);
+    assert.match(block, /newEndTime: isoDateTimeField/);
+    assert.equal(
+      /gigId|segmentId|mentorId/.test(block),
+      false,
+      'the reschedule body must not accept a gig, a segment or a mentor',
     );
   });
 

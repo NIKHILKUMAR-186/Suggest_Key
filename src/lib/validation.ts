@@ -575,10 +575,29 @@ export const apiSchemas = {
     reason: optionalText({ max: MAX_REASON_LENGTH, label: 'Reason', multiline: true }),
   }),
 
+  /**
+   * Body of `POST /api/seeker/bookings/:id/reschedule`.
+   *
+   * TIME ONLY. There is no `gigId`, `segmentId` or `mentorId` field, and that
+   * omission is the rule: a reschedule may not change who the session is with
+   * or what it is for. The server reads all three from the booking row itself,
+   * so adding such a field here would be rejected as an unknown key rather than
+   * silently ignored.
+   */
   bookingReschedule: z.strictObject({
     newStartTime: isoDateTimeField,
     newEndTime: isoDateTimeField,
-    newGigId: uuidField.optional(),
+  }),
+
+  // -- mentor reschedule decision -------------------------------------------
+  /**
+   * Body of `POST /api/mentor/reschedule-requests/:id/respond`. `reason` is
+   * optional but honoured on both outcomes, so a mentor can tell a seeker why a
+   * time did not work without the seeker having to ask.
+   */
+  rescheduleRespond: z.strictObject({
+    decision: z.enum(['APPROVED', 'REJECTED'], { message: 'Decision must be APPROVED or REJECTED.' }),
+    reason: optionalText({ max: MAX_REASON_LENGTH, label: 'Reason', multiline: true }),
   }),
 
   // -- mentor ---------------------------------------------------------------

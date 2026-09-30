@@ -85,17 +85,56 @@ test('any legacy anon EXECUTE grant is superseded by the global containment revo
   // single function. Neither was applied globally, which is the root cause.
   //
   // The invariant that must hold is the *end state*, not that no migration ever
-  // mentions anon: phase29 runs last and revokes EXECUTE from anon on every
-  // SECURITY DEFINER function, so any earlier grant is superseded.
+  // mentions anon: phase29 revokes EXECUTE from anon on every SECURITY DEFINER
+  // function, so any earlier grant is superseded.
+  //
+  // Pinning phase29 as the last filename is not that invariant, it is a proxy
+  // for it, and the proxy breaks the moment anyone ships a feature. The check
+  // is therefore on the end state: whatever migration runs last must not re-open
+  // the hole phase29 closed.
   const dir = 'supabase/migrations';
   const files = readdirSync(join(root, dir)).filter((f) => f.endsWith('.sql')).sort();
   const last = files[files.length - 1];
-  assert.equal(last, '20261004000000_phase29_security_definer_execute_containment.sql');
+  const phase29 = '20261004000000_phase29_security_definer_execute_containment.sql';
+  const lastSql = readFileSync(join(root, dir, last), 'utf8');
 
-  const phase29 = readFileSync(join(root, dir, last), 'utf8');
-  assert.match(phase29, /REVOKE EXECUTE ON FUNCTION %s FROM anon/);
-  assert.match(phase29, /REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC/);
+  if (last === phase29) {
+    assert.match(lastSql, /REVOKE EXECUTE ON FUNCTION %s FROM anon/);
+    assert.match(lastSql, /REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC/);
+    return;
+  }
+
+  assert.doesNotMatch(
+    lastSql,
+    /GRANT EXECUTE ON FUNCTION .* TO anon/,
+    `${last} grants EXECUTE to anon after the phase 29 blanket revoke`,
+  );
+  assert.doesNotMatch(
+    lastSql,
+    /GRANT EXECUTE ON ALL FUNCTIONS .* TO anon/,
+    `${last} grants blanket EXECUTE to anon after the phase 29 revoke`,
+  );
 });
+
+// A SECURITY DEFINER function added after phase 29 is callable by `anon` unless
+// its own migration re-applies containment, because Postgres grants EXECUTE to
+// PUBLIC by default. Each migration that adds one is named here, so the check
+// cannot be satisfied by whatever file happens to sort last.
+const POST_PHASE29_SECURITY_DEFINER_MIGRATIONS = [
+  '20261005000000_phase30_reschedule_requests.sql',
+];
+
+for (const migration of POST_PHASE29_SECURITY_DEFINER_MIGRATIONS) {
+  test(`${migration} carries its own anon containment post-condition`, () => {
+    const body = readFileSync(join(root, 'supabase/migrations', migration), 'utf8');
+    assert.match(
+      body,
+      /has_function_privilege\('anon'/,
+      'a SECURITY DEFINER function added after phase 29 must prove anon cannot execute it',
+    );
+    assert.doesNotMatch(body, /GRANT EXECUTE ON FUNCTION .* TO anon/);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // CRITICAL-03: /api/* must reach Express, not a static file in dist
@@ -116,7 +155,9 @@ test('vercel.json routes all /api traffic to the serverless function', () => {
 
   const api = v.rewrites.find((r) => r.source.startsWith('/api'));
   assert.ok(api, 'expected an /api rewrite');
-  assert.equal(api.destination, '/api');
+  // The destination must preserve the original request path so Express
+  // receives e.g. /api/auth/login rather than the bare function root /api.
+  assert.equal(api.destination, '/api/:path*');
 });
 
 test('the SPA fallback rewrite still exists for non-API routes', () => {

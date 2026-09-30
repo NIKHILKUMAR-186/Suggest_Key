@@ -34,7 +34,7 @@ interface Booking {
 }
 
 export const MentorHomePage: React.FC = () => {
-  const { user, profile, onboardingStatus } = useAuth();
+  const { user, profile, onboardingStatus, mentorVerificationState } = useAuth();
   const { navigate } = useNavigation();
   const toast = useToast();
   const [actionBooking, setActionBooking] = useState<Booking | null>(null);
@@ -42,14 +42,16 @@ export const MentorHomePage: React.FC = () => {
   const [todaySessions, setTodaySessions] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const mentorApproved =
-    onboardingStatus?.application?.status === 'approved' ||
-    (onboardingStatus?.mentorProfile?.is_approved === true
-      && onboardingStatus.mentorProfile.approval_status === 'approved'
-      && onboardingStatus.mentorProfile.is_active === true);
+  // Explicit three-state verification outcome. The previous code computed a
+  // nullable `mentorApproved` boolean from possibly-null onboarding fields,
+  // which collapsed the unresolved state into "not approved" and flashed the
+  // verification card before the backend had answered.
+  const isVerified = mentorVerificationState === 'verified';
+  const isNotVerified = mentorVerificationState === 'not_verified';
+  const isVerificationLoading = mentorVerificationState === 'loading';
 
   const fetchData = useCallback(async () => {
-    if (!user?.id || !mentorApproved) {
+    if (!user?.id || !isVerified) {
       setLoading(false);
       return;
     }
@@ -88,7 +90,7 @@ export const MentorHomePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [user?.id, mentorApproved]);
+  }, [user?.id, isVerified]);
 
   useEffect(() => {
     fetchData();
@@ -127,7 +129,7 @@ export const MentorHomePage: React.FC = () => {
     return `${startDate.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: tz })} – ${endDate.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: tz })}`;
   };
 
-  if (loading) {
+  if (loading || isVerificationLoading) {
     return (
       <div className="space-y-6">
         <div className="h-8 bg-[var(--color-shell-border)] rounded animate-pulse w-1/4" />
@@ -138,7 +140,7 @@ export const MentorHomePage: React.FC = () => {
   }
 
   const application = onboardingStatus?.application;
-  if (!mentorApproved) {
+  if (isNotVerified) {
     const statusMessage = application?.status === 'pending_review'
       ? 'Your mentor application is under Admin review.'
       : application?.status === 'rejected'

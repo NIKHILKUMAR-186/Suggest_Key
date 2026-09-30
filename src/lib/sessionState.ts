@@ -221,6 +221,22 @@ export function formatClockTime(iso: string | null | undefined, timeZone?: strin
   });
 }
 
+/**
+ * A whole session window on one line, e.g. `30 Sep, 2:00 PM – 3:00 PM`.
+ *
+ * The date comes from the start and the end time from the end, so a window that
+ * crosses a clock change or a midnight boundary still reads correctly instead
+ * of repeating or dropping a day.
+ */
+export function formatClockRange(
+  startIso: string | null | undefined,
+  endIso: string | null | undefined,
+  timeZone?: string | null
+): string {
+  const day = formatInZone(startIso, timeZone, { day: 'numeric', month: 'short' });
+  return `${day}, ${formatClockTime(startIso, timeZone)} – ${formatClockTime(endIso, timeZone)}`;
+}
+
 /** e.g. `Asia/Kolkata`, with a short offset label beside the times. */
 export function formatZoneLabel(timeZone: string | null | undefined): string {
   if (!timeZone) return '';

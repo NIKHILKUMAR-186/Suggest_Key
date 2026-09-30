@@ -74,14 +74,84 @@ function tsSources(dir: string): string[] {
   });
 }
 
-/** The newest migration that installs the hold-writing functions. */
+/**
+ * The migration that INSTALLS the canonical hold-duration reader.
+ *
+ * This must match on the `CREATE OR REPLACE FUNCTION public.hold_duration_interval`
+ * definition, not merely on a mention of the name. A later migration may
+ * legitimately redefine `create_booking_with_hold` — to add a validation, say —
+ * and that body still has to read the canonical duration, but it does not
+ * re-declare the config table or the reader. Matching a bare mention made this
+ * selector pick that migration and then assert on a config insert it never
+ * contained, which fails for a correct file.
+ */
 function latestHoldMigration(): string {
   const dir = 'supabase/migrations';
   const file = readdirSync(dir)
     .filter((name) => name.endsWith('.sql'))
     .sort()
-    .filter((name) => readFileSync(join(dir, name), 'utf8').includes('hold_duration_interval()'))
+    .filter((name) =>
+      readFileSync(join(dir, name), 'utf8').includes(
+        'CREATE OR REPLACE FUNCTION public.hold_duration_interval()'
+      )
+    )
     .pop();
   assert.ok(file, 'a migration must install hold_duration_interval()');
   return join(dir, file);
 }
+
+/**
+ * Every hold-writing function installed AFTER the canonical reader must read it.
+ *
+ * This is the invariant that keeps a 5-minute hold from silently reverting to
+ * 15: the original `INTERVAL '15 minutes'` literal is what that phase removed,
+ * and a redefinition that hardcodes a window again would reintroduce it.
+ *
+ * Scope matters. The schema and the first `acquire_slot_hold` predate
+ * `hold_duration_interval()`, so at that point a literal was the only option and
+ * asserting otherwise would flag correct history. The check therefore starts at
+ * the migration that introduces the reader: from there on, every installed
+ * hold-writing function has to use it. A later migration may legitimately
+ * redefine `create_booking_with_hold` to add a validation, and that is exactly
+ * the case this covers.
+ */
+test('every hold-writing function installed after the canonical reader uses it', () => {
+  const dir = 'supabase/migrations';
+  const names = readdirSync(dir).filter((name) => name.endsWith('.sql')).sort();
+  const reader = names.find((name) =>
+    readFileSync(join(dir, name), 'utf8').includes(
+      'CREATE OR REPLACE FUNCTION public.hold_duration_interval()'
+    )
+  );
+  assert.ok(reader, 'a migration must install hold_duration_interval()');
+
+  const fromReaderOnwards = names.slice(names.indexOf(reader));
+  let checked = 0;
+
+  for (const name of fromReaderOnwards) {
+    const sql = readFileSync(join(dir, name), 'utf8');
+    const installed = sql
+      .split(/CREATE OR REPLACE FUNCTION/)
+      .slice(1)
+      .map((body) => body.split(/\$\$;/)[0]);
+
+    for (const body of installed) {
+      const fn = body.slice(0, body.indexOf('(')).trim();
+      if (!/hold$/.test(fn)) continue; // hold_duration_interval, expire_stale_holds
+      if (!/INSERT INTO public\.slot_holds/.test(body)) continue; // writes no hold
+      checked += 1;
+      assert.match(
+        body,
+        /expires_at[\s\S]{0,200}hold_duration_interval\(\)/,
+        `${name}: ${fn} must read the canonical hold duration`
+      );
+      assert.doesNotMatch(
+        body,
+        /15 minutes/,
+        `${name}: ${fn} must not reintroduce the 15-minute literal`
+      );
+    }
+  }
+
+  assert.ok(checked > 0, 'at least one hold-writing function must be checked');
+});

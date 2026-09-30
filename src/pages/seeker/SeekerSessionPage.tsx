@@ -607,7 +607,7 @@ export const SeekerSessionPage: React.FC = () => {
               </div>
             )}
 
-            {state === 'IN_PROGRESS' && (
+            {/* {state === 'IN_PROGRESS' && (
               <div className="pt-1">
                 <Button
                   onClick={() => setShowEndModal(true)}
@@ -623,7 +623,7 @@ export const SeekerSessionPage: React.FC = () => {
                   session workspace stays available.
                 </p>
               </div>
-            )}
+            )} */}
           </div>
         )}
       </section>
