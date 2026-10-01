@@ -16,7 +16,7 @@ import { AuthCallback } from '@/src/pages/auth/AuthCallback';
 import { LandingPage } from '@/src/pages/public/LandingPage';
 import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 
-// Shared Support / Help & Support (seeker, mentor and admin all render this page)
+// Support Center (seeker + mentor share one page; admin gets the queue)
 import { SupportPage } from '@/src/components/support/SupportPage';
 
 // Seeker Pages
@@ -65,6 +65,7 @@ import { AdminPaymentsPage } from '@/src/pages/admin/AdminPaymentsPage';
 import { AdminNotificationsPage } from '@/src/pages/admin/AdminNotificationsPage';
 import { AdminSystemHealthPage } from '@/src/pages/admin/AdminSystemHealthPage';
 import { AdminSettingsPage } from '@/src/pages/admin/AdminSettingsPage';
+import { AdminSupportPage } from '@/src/pages/admin/AdminSupportPage';
 
 export const Router: React.FC = () => {
   const { currentPath } = useNavigation();
@@ -133,7 +134,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/admin/coupons') return <AdminCouponsPage />;
           if (pathname === '/admin/notifications') return <AdminNotificationsPage />;
           if (pathname === '/admin/system-health' || pathname === '/admin/system-health/logs' || pathname.startsWith('/admin/system-health/logs/')) return <AdminSystemHealthPage />;
-          if (pathname === '/admin/support') return <SupportPage />;
+          if (pathname === '/admin/support') return <AdminSupportPage />;
           if (pathname === '/admin/settings') return <AdminSettingsPage />;
           return <AdminDashboardPage />;
         })()}

@@ -406,7 +406,7 @@ DECLARE
   v_code TEXT;
   v_subject TEXT;
   v_message_text TEXT;
-  v_admin_id UUID;
+  v_id UUID;
   v_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
   -- ---- 1. Identity, re-derived from user_roles ---------------------------

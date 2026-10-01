@@ -442,7 +442,16 @@ export type NotificationEventType =
   | 'REFUND_PENDING'
   | 'REFUND_COMPLETED'
   | 'REFUND_FAILED'
-  | 'MANUAL_REFUND_REQUIRED';
+  | 'MANUAL_REFUND_REQUIRED'
+  // Support Center events (phase 41). Written into the SAME notifications table
+  // by the support RPCs - there is no second notification system.
+  | 'SUPPORT_TICKET_CREATED'
+  | 'SUPPORT_TICKET_REPLY'
+  | 'SUPPORT_TICKET_WAITING_FOR_USER'
+  | 'SUPPORT_TICKET_RESOLVED'
+  | 'SUPPORT_TICKET_REOPENED'
+  | 'SUPPORT_TICKET_ASSIGNED'
+  | 'SUPPORT_REFUND_UPDATED';
 
 export interface Notification {
   id: string;

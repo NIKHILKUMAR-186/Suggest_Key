@@ -1196,6 +1196,23 @@ export const apiSchemas = {
   supportReopen: z.strictObject({
     reason: text({ min: 1, max: SUPPORT_MESSAGE_MAX, label: 'Reason', multiline: true }),
   }),
+/**
+   * Body of `GET /api/support/tickets/:ticketCode/attachments/upload-url`.
+   *
+   * The client describes the file; the server decides where it goes. There is
+   * deliberately no `storagePath` here, so a client cannot name its own object
+   * key - the signed upload URL is minted for a path the server generated.
+   */
+  supportAttachmentUploadRequest: z.strictObject({
+    fileName: z.string().trim().min(1).max(255),
+    mimeType: z.enum(SUPPORT_ATTACHMENT_MIME_TYPES, {
+      message: 'Only PNG, JPG, WebP or PDF files can be attached.',
+    }),
+    fileSize: z
+      .int('File size must be a whole number of bytes.')
+      .positive('That file is empty.')
+      .max(SUPPORT_ATTACHMENT_MAX_BYTES, 'Attachments must be 5 MB or smaller.'),
+  }),
 
   /**
    * Body of `POST /api/support/tickets/:ticketCode/attachments`.

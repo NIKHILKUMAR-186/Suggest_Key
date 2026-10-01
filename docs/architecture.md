@@ -1207,66 +1207,98 @@ redirects to `/auth/login` when unauthenticated, `/auth/unauthorized` on role
 mismatch, and shows a loading state while the session is resolving. It is a UX
 gate only; every route is independently authorized server-side.
 
-### 14.7 Help & Support (Formspree)
+### 14.7 Help & Support (in-app ticket system)
 
-One shared support surface, three entry points, no backend:
+One shared support surface, three entry points, one database record:
 
 ```
 user (seeker / mentor / admin)
-   -> shared SupportForm (src/components/support/)
-   -> Formspree (browser POST)
-   -> support email
+   -> SupportPage / AdminSupportPage (src/components/support/, src/pages/admin/)
+   -> authenticated API (/api/support/*, server.ts)
+   -> SECURITY DEFINER RPCs (phase 41 migration)
+   -> support_tickets / support_messages / support_attachments / support_audit_events
+   -> in-app notification for the other party
 ```
+
+The previous Formspree form (`src/config/support.ts`,
+`src/components/support/SupportForm.tsx`) and its `VITE_FORMSPREE_SUPPORT_ENDPOINT`
+variable have been removed. Support is no longer a third-party inbox: a ticket is
+a row, so it has a history, a status, an owner and an audit trail.
 
 | File | Role |
 |---|---|
-| `src/config/support.ts` | The single configuration source: endpoint, limits, per-role categories, validation, payload builder |
-| `src/components/support/SupportForm.tsx` | The one form; role comes from `useAuth()` |
-| `src/components/support/SupportPage.tsx` | The framed page mounted at all three routes |
+| `src/lib/supportDomain.ts` | Shared, framework-free rules: statuses, transitions, priorities, per-role categories, limits, filename sanitising, formatting, notification copy |
+| `src/lib/validation.ts` | Zod bodies for every support endpoint |
+| `src/lib/supportService.ts` | The only module the browser uses; every call goes through `apiFetch` so it carries the bearer token |
+| `src/components/support/SupportPage.tsx` | Requester view: list, new ticket, conversation, reopen, attachments |
+| `src/components/support/SupportBadges.tsx` | Status/priority/ticket-code presentation (never colour-only) |
+| `src/pages/admin/AdminSupportPage.tsx` | Operational queue: metrics, filters, detail, public reply, internal note, resolve/reopen |
+| `supabase/migrations/20261015000000_phase41_support_center.sql` | Tables, RLS, private bucket, ticket-code generator, RPCs, grants, containment post-conditions |
 
 **Entry points**
 
 | Role | Entry point | Route |
 |---|---|---|
-| Seeker | Settings → Help & Support tab; booking detail → "Help & Support" | `/seeker/support` |
-| Mentor | Settings → Help & Support tab; booking detail → "Help & Support" | `/mentor/support` |
+| Seeker | Settings → Help & Support; booking detail → "Contact support" | `/seeker/support` |
+| Mentor | Settings → Help & Support; booking detail → "Help & Support" | `/mentor/support` |
 | Admin | Sidebar → Support | `/admin/support` |
 
-Seeker and mentor top navigation is unchanged (4 and 5 items). All three routes
-render the same `SupportPage`, and the authenticated role selects the category
-list: seeker gets Booking/Payment/Session/Mentor/Account/Technical Issue/Other,
-mentor adds Availability and Profile, admin gets User/Mentor/Booking/Payment/System
-Issue/Technical Issue/Other.
+Seeker and mentor top navigation is unchanged (4 and 5 items). Seeker and mentor
+render the same `SupportPage`; the authenticated role selects the category list,
+and the server re-derives that role and re-checks the list, so a hand-crafted
+request cannot pick a category the role may not use.
 
-**Configuration**
+**Endpoints** — every one authenticated; the four admin operations additionally
+require the admin role.
 
-`VITE_FORMSPREE_SUPPORT_ENDPOINT` — the Formspree form URL, e.g.
-`https://formspree.io/f/abcdwxyz`. It is read in `src/config/support.ts` and
-nowhere else. It is client-visible by design (the browser POSTs to Formspree), so
-only a `VITE_`-prefixed name is correct here, and no secret belongs behind it. An
-unset value is a supported state: the form renders a configuration notice instead
-of pretending to send.
+| Method & path | Actor | Notes |
+|---|---|---|
+| `GET /api/support/tickets` | any | Own tickets, or the queue when `scope=ADMIN` |
+| `GET /api/support/tickets/metrics` | admin | Open / in-progress / waiting / urgent / resolved today |
+| `POST /api/support/tickets` | any | Optional human booking code; priority fixed to NORMAL |
+| `GET /api/support/tickets/:ticketCode` | owner or admin | Thread with internal notes filtered out for non-admins |
+| `POST /api/support/tickets/:ticketCode/messages` | owner or admin | Public reply |
+| `POST /api/support/tickets/:ticketCode/internal-notes` | admin | Never visible to a requester |
+| `PATCH /api/support/tickets/:ticketCode` | admin | Status, priority, assignee — never RESOLVED |
+| `POST /api/support/tickets/:ticketCode/resolve` | admin | Requires a resolution message; records the refund state as context only |
+| `POST /api/support/tickets/:ticketCode/reopen` | owner or admin | Resolved only; a closed ticket needs a new ticket |
+| `GET /api/support/tickets/:ticketCode/attachments/upload-url` | owner or admin | Mints a signed URL for a **server-generated** path |
+| `POST /api/support/tickets/:ticketCode/attachments` | owner or admin | Records an uploaded object |
+| `GET /api/support/tickets/:ticketCode/attachments/:attachmentId` | owner or admin | 300-second signed read URL |
 
-**Submitted** — an explicit allow-list (`SUPPORT_PAYLOAD_FIELDS`): `name`,
-`email`, `role`, `category`, `subject`, `message`, optional `booking_code`,
-`current_page` (pathname only — the query string is dropped so an internal
-`?bookingId=<uuid>` is never forwarded), and the Formspree honeypot field.
+**Nothing is trusted from the client.** No support body carries `requesterId`,
+`userId`, `role`, `priority`, `status` (on create) or `isInternal`. Every body
+schema is a `strictObject`, so an unrecognised key is a 400. Ownership is proved
+server-side before a signed upload URL is minted, and again inside the RPC.
 
-**Never submitted**: access/refresh tokens, the Supabase service-role key, Razorpay
-key or webhook secrets, passwords, internal database records, payment proof files,
-mentor verification documents, admin notes, or any raw auth object. `role` is
-context for the support team; it is not an authorization input, and access to the
-page is decided by the existing route guards and the server.
+**Writes go through RPCs only.** Each support table has exactly one SELECT policy
+and no INSERT/UPDATE/DELETE policy, so a direct client write is impossible; all
+mutations are `SECURITY DEFINER` functions that re-derive the actor from
+`auth.uid()`, refuse a session that does not match the named actor, and re-check
+the role. `EXECUTE` is revoked from `PUBLIC`, `anon` and `authenticated` and
+granted to `service_role` only. The migration aborts if any of that does not hold,
+if any direct-write policy exists, or if the `support-attachments` bucket is not
+private.
 
-**Spam**: Formspree's own `_gotcha` honeypot (hidden, `tabindex="-1"`,
-`aria-hidden`), which Formspree uses to discard bot submissions. There is no
-custom frontend-only "security" mechanism and no support API route.
+**Ticket codes** are generated in the database (`SK-YYYYMMDD-NNNNNN`) from a
+sequence and constrained by a CHECK; no endpoint accepts a code at creation.
 
-**Current limitation**: support messages live entirely outside Suggest Key. They
-are emailed, not stored in the database, so there is no message history and no
-ticket queue. An in-app support ticket system (`support_tickets`, admin inbox,
-realtime thread) is **future work and is not implemented** — the admin page says
-so on screen.
+**Attachments** live in the private `support-attachments` bucket under
+`support/<ticket-uuid>/<random>-<sanitised-name>`, which is the literal folder
+name the bucket policy matches. Allowed types are PNG, JPEG, WebP and PDF — the
+same list in Zod, in the RPC and in the bucket's `allowed_mime_types` — capped at
+5 MB. Objects are read through 300-second signed URLs; a public URL is never
+returned.
+
+**Booking and payment context** is resolved from the human booking code, and
+ownership is checked per role (a seeker's ticket must reference the seeker's own
+booking). The ticket records the payment id, amount and refund **status** for the
+support agent to read. It exposes no gateway payload, order id or signature.
+
+**No money moves here.** There is deliberately no refund endpoint and no amount
+parameter: the refund lifecycle lives on `payments` and is settled by
+`complete_manual_refund` or a Razorpay refund event. A ticket only reports that
+state.
 
 ---
 
@@ -1465,15 +1497,15 @@ Verified open as of 2026-09-29. Full detail, severity and evidence in
    until someone looks.
 10. **No code splitting.** The main JS bundle is a single large chunk; Vite
     emits a chunk-size warning on build.
-11. **Support messages are external to the database.** §14.7 sends them to
-    Formspree and an email inbox by design. There is no `support_tickets` table,
-    no admin inbox, no reply-from-the-app path and no message history: nothing
-    submitted through the support form is retrievable from Suggest Key. This is
-    an accepted MVP limitation, not a defect in the existing architecture.
-12. **`VITE_FORMSPREE_SUPPORT_ENDPOINT` is not set in this repository's local
-    env**, so the support form renders a configuration notice rather than
-    sending. Support is inert until a Formspree form is created and the variable
-    is provided.
+11. **Support is synchronous and text-first.** §14.7 stores every ticket,
+    reply and internal note in the database, but a ticket has no SLA timer, no
+    assignment queue beyond a single `assigned_admin_id`, no canned responses,
+    no macros, no ticket merge and no escalation. Attachments are PNG/JPEG/WebP
+    and PDF up to 5 MB, and there is no antivirus scan of an uploaded object.
+12. **No realtime support thread.** A ticket updates when its page is loaded or
+    refreshed; a reply arriving in another tab is not pushed. The existing
+    notification infrastructure notifies the other party in-app, but the open
+    conversation does not live-update.
 
 ---
 

@@ -150,7 +150,9 @@ export const canTransitionSupportStatus = (from: string, to: string): boolean =>
  * CLOSED ticket is finished, and reopening it is deliberately not offered.
  */
 export const isSupportTicketReplyable = (status: string): boolean =>
-  (['OPEN', 'IN_PROGRESS', 'WAITING_FOR_USER'] as const).includes(status as SupportTicketStatus);
+  (SUPPORT_TICKET_STATUSES as readonly string[]).includes(status) &&
+  status !== 'RESOLVED' &&
+  status !== 'CLOSED';
 
 /** Whether the "Reopen" button should appear. */
 export const isSupportTicketReopenable = (status: string): boolean => status === 'RESOLVED';
@@ -207,6 +209,47 @@ export const isValidBookingCode = (value: string): boolean =>
 
 /** `SK-20261015-000042`. The public identifier users and admins quote. */
 export const SUPPORT_TICKET_CODE_PATTERN = /^SK-[0-9]{8}-[0-9]{6}$/;
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/** The private bucket created by phase 41. Never public, never URL-addressable. */
+export const SUPPORT_ATTACHMENT_BUCKET = 'support-attachments';
+
+/**
+ * Builds the storage object key for one attachment:
+ *
+ *     support/<ticketUuid>/<random>-<sanitisedName>
+ *
+ * The ticket folder comes from the resolved ticket, never from the request, and
+ * the random segment means a re-upload never overwrites the previous
+ * attachment. `sanitiseSupportFileName` strips path separators and control
+ * characters, so a crafted filename cannot escape the folder or forge an
+ * extension.
+ *
+ * Mirrors the CHECK constraint on `support_attachments.storage_path`, so a key
+ * that passes this function always passes the database's own shape check.
+ */
+export const buildSupportAttachmentPath = (
+  ticketId: string,
+  fileName: string,
+  uniquePart: string,
+): string => `support/${ticketId}/${uniquePart}-${sanitiseSupportFileName(fileName)}`;
+
+/**
+ * Reduces a filename to a safe display name.
+ *
+ * Every character outside `[0-9A-Za-z._-]` becomes `_`, and the result is
+ * clamped, so the object key can never contain a `/`, a `..`, a backslash or a
+ * control character. An input that sanitises away entirely yields `attachment`
+ * rather than an empty name that would produce a trailing dash.
+ */
+export function sanitiseSupportFileName(raw: unknown): string {
+  const base = String(raw ?? '').split(/[/\\]/).pop() ?? '';
+  const cleaned = base.replace(/[^0-9A-Za-z._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
+  return cleaned.length > 0 ? cleaned : 'attachment';
+}
 
 // ---------------------------------------------------------------------------
 // Notification wording

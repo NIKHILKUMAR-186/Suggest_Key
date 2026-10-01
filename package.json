@@ -7,11 +7,11 @@
     "dev": "tsx server.ts",
     "build": "npm run build:web && npm run build:server && npm run build:verify",
     "build:web": "vite build",
-    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --log-override:commonjs-variable-in-esm=silent --outfile=.build/server.cjs",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --log-override:commonjs-variable-in-esm=silent --outfile=api/_build/server.cjs",
     "build:verify": "node scripts/verify-dist.mjs",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist .build",
+    "clean": "rm -rf dist .build api/_build",
     "lint": "tsc --noEmit",
     "test": "tsx --test --test-force-exit \"tests/**/*.test.ts\""
   },

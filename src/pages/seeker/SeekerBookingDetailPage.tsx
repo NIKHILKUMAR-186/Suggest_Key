@@ -330,7 +330,21 @@ export const SeekerBookingDetailPage: React.FC = () => {
           description={descriptor.hint}
           back={{ label: 'Back to my bookings', onClick: backToBookings }}
           aside={
-            <StatusPill tone={descriptor.tone} label={descriptor.label} size="md" srPrefix="Status" />
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  navigate(
+                    `/seeker/support?bookingCode=${encodeURIComponent(booking.booking_code)}&new=1`,
+                  )
+                }
+              >
+                <LifeBuoy className="h-4 w-4" aria-hidden="true" />
+                Contact support
+              </Button>
+              <StatusPill tone={descriptor.tone} label={descriptor.label} size="md" srPrefix="Status" />
+            </>
           }
         />
 

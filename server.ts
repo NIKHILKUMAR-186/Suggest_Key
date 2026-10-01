@@ -7,7 +7,6 @@ import express, {
 import path from 'path';
 import { timingSafeEqual, randomUUID } from 'crypto';
 import { createServer as createHttpServer, type Server as HttpServer } from 'http';
-import { createServer as createViteServer } from 'vite';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   executeAtomicBookingWithHold,
@@ -52,6 +51,10 @@ import {
   type AuthRequest,
 } from './src/lib/supabaseServer';
 import { generateRequestId } from './src/lib/requestId';
+import {
+  SUPPORT_ATTACHMENT_BUCKET,
+  buildSupportAttachmentPath,
+} from './src/lib/supportDomain';
 import { logApiRequest, requestIdMiddleware, requestLoggerMiddleware, fetchSystemLogs, fetchAuditLogs, fetchSystemHealthMetrics, logApiError, logger } from './src/lib/logger';
 import { logSanitizer } from './src/lib/logSanitizer';
 import { recordLoginFailure, resetLoginFailures } from './src/lib/loginFailureTracker';
@@ -10720,6 +10723,653 @@ async function startServer() {
     }
   });
 
+// --------------------------------------------------------------------------
+  // Phase 41: Support Center
+  // --------------------------------------------------------------------------
+  //
+  // Every handler below is a thin adapter. It resolves the caller's identity
+  // from the verified bearer token, hands it to a SECURITY DEFINER RPC, and
+  // returns the RPC's JSON. There is no handler-local authorization logic,
+  // because the RPC re-verifies the same identity against `user_roles` and
+  // against the row itself - so a handler bug cannot widen access, and a
+  // compromised service-role key is still refused.
+  //
+  // Nothing here accepts an actor id, a role, `is_internal`, `requester_id`,
+  // `payment_id` or `assigned_admin_id` from the body. The requester id and the
+  // admin id only ever come from `req.auth`.
+  //
+  // Refund note: this feature MOVES NO MONEY. There is deliberately no refund
+  // endpoint here. The refund lifecycle lives on the payments table and is
+  // settled either by `complete_manual_refund` or by a Razorpay refund event; a
+  // ticket only reads that state for context. A "refund" button on this route
+  // would need a real provider call, an idempotency key and a webhook - none of
+  // which exist for support - so the surface is deliberately not offered.
+  // --------------------------------------------------------------------------
+
+  /**
+   * Maps a support RPC's `code: X, message` failure onto an HTTP status and a
+   * safe client message. The raw database text is never returned: a Postgres
+   * message can name a table, a constraint or a row, none of which belongs in a
+   * user-facing error.
+   */
+  const SUPPORT_ERROR_CODES = new Set([
+    'UNAUTHORIZED',
+    'FORBIDDEN_NOT_TICKET_OWNER',
+    'FORBIDDEN_NOT_BOOKING_PARTICIPANT',
+    'FORBIDDEN_STORAGE_PATH',
+    'TICKET_NOT_FOUND',
+    'TICKET_NOT_REPLYABLE',
+    'TICKET_CLOSED',
+    'INVALID_TRANSITION',
+    'CATEGORY_NOT_ALLOWED',
+    'SUBJECT_INVALID',
+    'MESSAGE_INVALID',
+    'RESOLUTION_REQUIRED',
+    'BOOKING_NOT_FOUND',
+    'PRIORITY_INVALID',
+    'STATUS_INVALID',
+    'ASSIGNEE_NOT_ADMIN',
+    'FILE_TYPE_NOT_ALLOWED',
+    'FILE_TOO_LARGE',
+    'USE_RESOLVE_ENDPOINT',
+    'NO_CHANGES',
+  ]);
+
+  const SUPPORT_ERROR_MESSAGES: Record<string, string> = {
+    UNAUTHORIZED: 'You are not authorized to perform this action.',
+    FORBIDDEN_NOT_TICKET_OWNER: 'You are not authorized to view this support ticket.',
+    FORBIDDEN_NOT_BOOKING_PARTICIPANT: 'That booking reference is not yours.',
+    FORBIDDEN_STORAGE_PATH: 'That file does not belong to this ticket.',
+    TICKET_NOT_FOUND: 'Support ticket not found.',
+    TICKET_NOT_REPLYABLE: 'This ticket is closed and cannot receive new replies.',
+    TICKET_CLOSED: 'This ticket is closed. Please raise a new support ticket.',
+    INVALID_TRANSITION: 'That change is not allowed for the current ticket status.',
+    CATEGORY_NOT_ALLOWED: 'Choose a category available for your account type.',
+    SUBJECT_INVALID: 'The subject must be between 4 and 140 characters.',
+    MESSAGE_INVALID: 'That message is not a valid length.',
+    RESOLUTION_REQUIRED: 'Write a resolution message for the user.',
+    BOOKING_NOT_FOUND: 'No booking matches that reference.',
+    PRIORITY_INVALID: 'Unknown ticket priority.',
+    STATUS_INVALID: 'Unknown ticket status.',
+    ASSIGNEE_NOT_ADMIN: 'A ticket can only be assigned to an admin.',
+    FILE_TYPE_NOT_ALLOWED: 'Only PNG, JPG, WebP or PDF files can be attached.',
+    FILE_TOO_LARGE: 'Attachments must be 5 MB or smaller.',
+    USE_RESOLVE_ENDPOINT: 'Resolving a ticket requires a resolution message.',
+    NO_CHANGES: 'No changes were requested.',
+  };
+
+  function supportFailure(res: Response, context: string, dbMessage: string): void {
+    const match = /code:\s*([A-Z_]+)/.exec(dbMessage ?? '');
+    const code = match && SUPPORT_ERROR_CODES.has(match[1]) ? match[1] : 'SUPPORT_OPERATION_FAILED';
+
+    const status =
+      code === 'UNAUTHORIZED' || code.startsWith('FORBIDDEN') ? 403
+      : code === 'TICKET_NOT_FOUND' || code === 'BOOKING_NOT_FOUND' ? 404
+      : code === 'SUPPORT_OPERATION_FAILED' ? 500
+      : 409;
+
+    // Only an unmapped failure is logged: a mapped one is an ordinary refusal
+    // that already produced a correct 4xx.
+    if (status === 500) {
+      console.error(`[Support] ${context}:`, logSanitizer.safeMessage(dbMessage));
+    }
+
+    res.status(status).json({
+      success: false,
+      error: {
+        code,
+        message:
+          SUPPORT_ERROR_MESSAGES[code] ??
+          'We could not complete that support action. Please try again.',
+      },
+    });
+  }
+
+  /** Runs a support RPC and relays its result, mapping a failure to a safe error. */
+  async function runSupportRpc(
+    res: Response,
+    context: string,
+    fn: () => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+  ): Promise<void> {
+    const { data, error } = await fn();
+    if (error) {
+      supportFailure(res, context, error.message);
+      return;
+    }
+    res.status(200).json(data);
+  }
+
+  const supportUnavailable = (res: Response) =>
+    res.status(503).json({
+      success: false,
+      error: { code: 'SERVICE_UNAVAILABLE', message: 'Support is temporarily unavailable.' },
+    });
+
+  /**
+   * GET /api/support/tickets
+   *
+   * There is no `user_id` parameter. A requester's list is scoped to the
+   * authenticated caller inside `list_support_tickets`; only an admin can pass
+   * `scope=ADMIN`, and the RPC refuses that combination itself.
+   */
+  app.get('/api/support/tickets', requireAuth, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) return supportUnavailable(res);
+
+    // The query is parsed with the same strict schema as a body, so an
+    // unexpected key is a 400 rather than a silently ignored filter.
+    const parsed = apiSchemas.supportQueueQuery.safeParse(req.query ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: formatValidationFailure(parsed.error).message,
+        },
+      });
+    }
+    const q = parsed.data;
+
+    return runSupportRpc(res, 'GET /api/support/tickets', () =>
+      admin.rpc('list_support_tickets', {
+        p_caller_id: req.auth!.user.id,
+        p_scope: q.scope,
+        p_status: q.status ?? null,
+        p_priority: q.priority ?? null,
+        p_category: q.category ?? null,
+        p_requester_role: q.requesterRole ?? null,
+        p_assigned_admin_id: null,
+        p_search: q.search ?? null,
+        p_limit: 200,
+        p_offset: 0,
+      }),
+    );
+  });
+
+  /**
+   * GET /api/support/tickets/metrics
+   *
+   * Registered BEFORE `/api/support/tickets/:ticketCode` on purpose: Express
+   * matches in registration order, so a literal path registered second would be
+   * swallowed by the parameterised one.
+   */
+  app.get('/api/support/tickets/metrics', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) return supportUnavailable(res);
+
+    return runSupportRpc(res, 'GET /api/support/tickets/metrics', () =>
+      admin.rpc('support_ticket_metrics', { p_caller_id: req.auth!.user.id }),
+    );
+  });
+
+  // POST /api/support/tickets: raise a ticket about yourself.
+  app.post(
+    '/api/support/tickets',
+    requireAuth,
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.supportTicketCreate),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { category, subject, message, bookingCode } = req.body ?? {};
+
+      const { data, error } = await admin.rpc('create_support_ticket', {
+        // The caller's real id. There is no body field that could override it.
+        p_requester_id: req.auth!.user.id,
+        p_category: category,
+        p_subject: subject,
+        p_message: message,
+        p_booking_code: bookingCode ?? null,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_created', {
+        entityType: 'support_ticket',
+        entityId: (data as { ticket?: { ticketCode?: string } } | null)?.ticket?.ticketCode,
+        requestId: req.requestId,
+        metadata: { category },
+      });
+
+      return res.status(201).json(data);
+    },
+  );
+
+  // GET /api/support/tickets/:ticketCode
+  //
+  // One ticket, its conversation, its attachments, and its booking and payment
+  // context. The internal-note filter and the ownership check both live inside
+  // `get_support_ticket`, so no response shape can carry an internal note to a
+  // non-admin.
+  app.get('/api/support/tickets/:ticketCode', requireAuth, async (req: AuthRequest, res) => {
+    const admin = getSupabaseAdmin();
+    if (!admin) return supportUnavailable(res);
+
+    return runSupportRpc(res, 'GET /api/support/tickets/:ticketCode', () =>
+      admin.rpc('get_support_ticket', {
+        p_ticket_code: req.params.ticketCode,
+        p_caller_id: req.auth!.user.id,
+      }),
+    );
+  });
+
+  // POST /api/support/tickets/:ticketCode/messages: a public reply.
+  //
+  // No `is_internal` in the schema and none in the RPC, so a reply can never be
+  // stored as an internal note.
+  app.post(
+    '/api/support/tickets/:ticketCode/messages',
+    requireAuth,
+    validateBody(apiSchemas.supportMessageCreate),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { data, error } = await admin.rpc('add_support_message', {
+        p_ticket_code: req.params.ticketCode,
+        p_actor_id: req.auth!.user.id,
+        p_message: req.body?.message,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets/:ticketCode/messages', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_message_sent', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+      });
+
+      return res.status(200).json(data);
+    },
+  );
+
+  // POST /api/support/tickets/:ticketCode/internal-notes: admin only.
+  //
+  // `requireAdmin` here AND `has_role(admin)` inside the RPC. Two independent
+  // checks, because this is the one write whose output must never reach a user.
+  app.post(
+    '/api/support/tickets/:ticketCode/internal-notes',
+    requireAuth,
+    requireAdmin,
+    validateBody(apiSchemas.supportInternalNote),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { data, error } = await admin.rpc('add_support_internal_note', {
+        p_ticket_code: req.params.ticketCode,
+        p_admin_id: req.auth!.user.id,
+        p_note: req.body?.note,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets/:ticketCode/internal-notes', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_internal_note_added', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+      });
+
+      return res.status(200).json(data);
+    },
+  );
+
+  // PATCH /api/support/tickets/:ticketCode: admin status / priority / assignment.
+  //
+  // RESOLVED is not an accepted status here. Resolving needs a resolution
+  // message, so it has its own endpoint, and a status field can never quietly
+  // close a ticket without telling the user what was decided.
+  app.patch(
+    '/api/support/tickets/:ticketCode',
+    requireAuth,
+    requireAdmin,
+    validateBody(apiSchemas.supportAdminUpdate),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { status, priority, assignedAdminId } = req.body ?? {};
+
+      const { data, error } = await admin.rpc('update_support_ticket', {
+        p_ticket_code: req.params.ticketCode,
+        p_admin_id: req.auth!.user.id,
+        p_status: status ?? null,
+        p_priority: priority ?? null,
+        // Taken from the admin's own choice, but the RPC re-checks that the
+        // assignee really holds the admin role.
+        p_assigned_admin_id: assignedAdminId ?? null,
+        p_unassign: assignedAdminId === null,
+      });
+
+      if (error) {
+        supportFailure(res, 'PATCH /api/support/tickets/:ticketCode', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_updated', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+        metadata: {
+          status: status ?? null,
+          priority: priority ?? null,
+          assignmentChanged: assignedAdminId !== undefined,
+        },
+      });
+
+      return res.status(200).json(data);
+    },
+  );
+
+  // POST /api/support/tickets/:ticketCode/resolve: admin only, resolution mandatory.
+  app.post(
+    '/api/support/tickets/:ticketCode/resolve',
+    requireAuth,
+    requireAdmin,
+    validateBody(apiSchemas.supportResolve),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { data, error } = await admin.rpc('resolve_support_ticket', {
+        p_ticket_code: req.params.ticketCode,
+        p_admin_id: req.auth!.user.id,
+        p_resolution: req.body?.resolution,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets/:ticketCode/resolve', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_resolved', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+      });
+
+      return res.status(200).json(data);
+    },
+  );
+
+  // POST /api/support/tickets/:ticketCode/reopen: the requester, or an admin.
+  //
+  // A CLOSED ticket is deliberately not reopenable. The supported route is a new
+  // ticket, and silently resurrecting a closed case would rewrite the fact that
+  // it was finished.
+  app.post(
+    '/api/support/tickets/:ticketCode/reopen',
+    requireAuth,
+    validateBody(apiSchemas.supportReopen),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { data, error } = await admin.rpc('reopen_support_ticket', {
+        p_ticket_code: req.params.ticketCode,
+        p_actor_id: req.auth!.user.id,
+        p_reason: req.body?.reason,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets/:ticketCode/reopen', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_ticket_reopened', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+      });
+
+      return res.status(200).json(data);
+    },
+  );
+
+  /**
+   * GET /api/support/tickets/:ticketCode/attachments/upload-url
+   *
+   * Two-step upload, matching the payment-proof and verification-document
+   * flows:
+   *
+   *   1. this route mints a short-lived signed upload URL for a path THIS SERVER
+   *      generates, inside this ticket's own folder;
+   *   2. the browser PUTs the bytes there and posts the resulting key back to
+   *      `POST .../attachments`.
+   *
+   * Because step 1 is server-generated, the client cannot influence the folder,
+   * and `add_support_attachment` re-checks that the posted path really is inside
+   * this ticket's folder before recording it. The bucket is private, so step 1
+   * is the only way any bytes get in.
+   */
+  app.get(
+    '/api/support/tickets/:ticketCode/attachments/upload-url',
+    requireAuth,
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.supportAttachmentUploadRequest),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const callerId = req.auth!.user.id;
+      const { fileName, mimeType, fileSize } = req.body ?? {};
+
+      // Ownership is proved before any signed URL is minted. Without this an
+      // authenticated user could request an upload slot against any ticket code.
+      const { data: ticket, error: ticketErr } = await admin
+        .from('support_tickets')
+        .select('id, requester_id, status')
+        .eq('ticket_code', String(req.params.ticketCode).toUpperCase())
+        .maybeSingle();
+
+      if (ticketErr) {
+        return respondWithInternalError({
+          req,
+          res,
+          error: ticketErr,
+          context: 'GET support attachment upload-url',
+        });
+      }
+      if (!ticket) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'TICKET_NOT_FOUND', message: 'Support ticket not found.' },
+        });
+      }
+
+      const callerIsAdmin = req.auth!.roles.includes('admin');
+      if (!callerIsAdmin && ticket.requester_id !== callerId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN_NOT_TICKET_OWNER', message: 'You are not authorized to view this support ticket.' },
+        });
+      }
+      if (ticket.status === 'CLOSED') {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'TICKET_CLOSED', message: 'This ticket is closed. Please raise a new support ticket.' },
+        });
+      }
+
+      // The random segment means a re-upload never overwrites the previous
+      // attachment, and the sanitised name means the object's display name
+      // cannot smuggle a path separator or a control character.
+      const safeName = buildSupportAttachmentPath(ticket.id, fileName, randomUUID().slice(0, 8));
+      const { data: signed, error: signErr } = await admin.storage
+        .from(SUPPORT_ATTACHMENT_BUCKET)
+        .createSignedUploadUrl(safeName);
+
+      if (signErr || !signed?.token) {
+        console.error('[Support] Failed to mint an attachment upload URL:', logSanitizer.safeMessage(signErr));
+        return res.status(500).json({
+          success: false,
+          error: { code: 'UPLOAD_UNAVAILABLE', message: 'We could not prepare that upload. Please try again.' },
+        });
+      }
+
+      auditAction(req.auth, 'support_attachment_upload_url_issued', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+        metadata: { mimeType, fileSize },
+      });
+
+      return res.json({
+        success: true,
+        // The path the browser must POST back. Generated here, not by the client.
+        storagePath: safeName,
+        token: signed.token,
+        bucket: SUPPORT_ATTACHMENT_BUCKET,
+      });
+    },
+  );
+
+  // POST /api/support/tickets/:ticketCode/attachments: record an uploaded file.
+  app.post(
+    '/api/support/tickets/:ticketCode/attachments',
+    requireAuth,
+    validateBody(apiSchemas.supportAttachmentCreate),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const { storagePath, fileName, mimeType, fileSize } = req.body ?? {};
+
+      const { data, error } = await admin.rpc('add_support_attachment', {
+        p_ticket_code: req.params.ticketCode,
+        p_actor_id: req.auth!.user.id,
+        p_storage_path: storagePath,
+        p_file_name: fileName,
+        p_mime_type: mimeType,
+        p_file_size: fileSize,
+        p_message_id: null,
+      });
+
+      if (error) {
+        supportFailure(res, 'POST /api/support/tickets/:ticketCode/attachments', error.message);
+        return;
+      }
+
+      auditAction(req.auth, 'support_attachment_added', {
+        entityType: 'support_ticket',
+        entityId: req.params.ticketCode,
+        requestId: req.requestId,
+        metadata: { mimeType, fileSize },
+      });
+
+      return res.status(201).json(data);
+    },
+  );
+
+  /**
+   * GET /api/support/tickets/:ticketCode/attachments/:attachmentId
+   *
+   * The only way to read an attachment's bytes. Ownership is re-proved here, and
+   * the response is a SHORT-LIVED SIGNED URL, never the storage path and never a
+   * permanent public link: the bucket is private and this route is the single
+   * egress.
+   */
+  app.get(
+    '/api/support/tickets/:ticketCode/attachments/:attachmentId',
+    requireAuth,
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) return supportUnavailable(res);
+
+      const callerId = req.auth!.user.id;
+
+      const { data: attachment, error: attachErr } = await admin
+        .from('support_attachments')
+        .select('id, ticket_id, storage_path, file_name, mime_type')
+        .eq('id', req.params.attachmentId)
+        .maybeSingle();
+
+      if (attachErr) {
+        return respondWithInternalError({
+          req,
+          res,
+          error: attachErr,
+          context: 'GET support attachment',
+        });
+      }
+      if (!attachment) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'TICKET_NOT_FOUND', message: 'Attachment not found.' },
+        });
+      }
+
+      // Fetch the owning ticket and compare BOTH the ticket code in the URL and
+      // the ticket the attachment actually belongs to, so neither can be used to
+      // read somebody else's file.
+      const { data: ticket, error: ticketErr } = await admin
+        .from('support_tickets')
+        .select('id, ticket_code, requester_id')
+        .eq('ticket_code', String(req.params.ticketCode).toUpperCase())
+        .maybeSingle();
+
+      if (ticketErr) {
+        return respondWithInternalError({
+          req,
+          res,
+          error: ticketErr,
+          context: 'GET support attachment (ticket)',
+        });
+      }
+      if (!ticket || ticket.id !== attachment.ticket_id) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'TICKET_NOT_FOUND', message: 'Attachment not found.' },
+        });
+      }
+
+      const callerIsAdmin = req.auth!.roles.includes('admin');
+      if (!callerIsAdmin && ticket.requester_id !== callerId) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN_NOT_TICKET_OWNER', message: 'You are not authorized to view this support ticket.' },
+        });
+      }
+
+      const { data: signed, error: signErr } = await admin.storage
+        .from(SUPPORT_ATTACHMENT_BUCKET)
+        .createSignedUrl(attachment.storage_path, 300, { download: attachment.file_name });
+
+      if (signErr || !signed?.signedUrl) {
+        console.error('[Support] Failed to sign an attachment URL:', logSanitizer.safeMessage(signErr));
+        return res.status(500).json({
+          success: false,
+          error: { code: 'ATTACHMENT_UNAVAILABLE', message: 'We could not open that file right now.' },
+        });
+      }
+
+      auditAction(req.auth, 'support_attachment_viewed', {
+        entityType: 'support_ticket',
+        entityId: ticket.ticket_code,
+        requestId: req.requestId,
+        metadata: { attachmentId: attachment.id },
+      });
+
+      return res.json({
+        success: true,
+        // Short-lived (300s) and scoped to this one object.
+        url: signed.signedUrl,
+        fileName: attachment.file_name,
+        mimeType: attachment.mime_type,
+        expiresInSeconds: 300,
+      });
+    },
+  );
   // --------------------------------------------------------------------------
   // Phase 11: In-App Notifications Endpoints
   // --------------------------------------------------------------------------
@@ -13846,6 +14496,12 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const hmrEnabled = process.env.DISABLE_HMR !== 'true';
     httpServer = createHttpServer(app);
+    // Loaded lazily on purpose. A static import of vite compiles to an eager
+    // top-level require("vite") in the serverless bundle, which puts a
+    // devDependency on the cold-start path of the Vercel function. This branch
+    // is unreachable when NODE_ENV=production, so vite must never be resolved
+    // there.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: { server: httpServer },
