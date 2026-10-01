@@ -14490,6 +14490,21 @@ async function startServer() {
   });
 
   // --------------------------------------------------------------------------
+  // Unmatched /api/* -> JSON 404
+  // --------------------------------------------------------------------------
+  // Registered after every API route and before the SPA fallback, so an unknown
+  // API path can never fall through to Express's default HTML error page. A
+  // client doing `res.json()` on `text/html` fails with "Unexpected token '<'",
+  // which is indistinguishable from the deployment-level failure where the API
+  // route was never reached at all. Returning JSON keeps the two cases legible.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'API endpoint not found' },
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Vite Middleware (Development) / Static Files (Production)
   // --------------------------------------------------------------------------
   let httpServer: HttpServer | null = null;

@@ -154,8 +154,6 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
         </div>
       )}
 
-      {discoveryCta}
-
       {hideTopicBar ? (
         <SegmentMentorGrid
           className="sk-section"
@@ -193,6 +191,9 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
           />
         </>
       )}
+
+      
+      {discoveryCta}
     </>
   );
 

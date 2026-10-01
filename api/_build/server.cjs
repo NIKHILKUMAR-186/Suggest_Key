@@ -16411,6 +16411,12 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err });
     }
   });
+  app.use("/api", (_req, res) => {
+    res.status(404).json({
+      success: false,
+      error: { code: "NOT_FOUND", message: "API endpoint not found" }
+    });
+  });
   let httpServer = null;
   if (process.env.NODE_ENV !== "production") {
     const hmrEnabled = process.env.DISABLE_HMR !== "true";

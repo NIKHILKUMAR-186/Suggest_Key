@@ -719,6 +719,10 @@ describe('support tables are locked down in the database', () => {
   it('gives no support table a direct INSERT, UPDATE or DELETE policy', () => {
     // A write policy would let a client bypass every check the RPCs perform. The
     // migration's own post-condition asserts this too; this is the regression net.
+    //
+    // Necessary but NOT sufficient: with only a SELECT policy, PostgreSQL still
+    // applies it to UPDATE and DELETE. The privilege revoke is what actually
+    // closes the direct-write path - see the test below.
     const policyBlocks = [...SUPPORT_MIGRATION.matchAll(
       /CREATE POLICY\s+"?([\w\s]+?)"?\s+ON\s+public\.(support_\w+)\s+(FOR\s+\w+)/gi,
     )];
@@ -984,6 +988,80 @@ describe('support tables are locked down in the database', () => {
       read('supabase/migrations/20261014000000_phase40_manual_refund_completion.sql'),
       /complete_manual_refund/,
       'the payments feature must be the thing that moves money',
+    );
+  });
+
+  it('get_support_ticket never selects a partial column list into a composite variable', () => {
+    // Regression: `v_requester public.profiles` + `SELECT p.full_name, p.email
+    // INTO v_requester` makes Postgres fill the row variable's attributes
+    // positionally, so the name is cast into profiles.id (a uuid) and EVERY
+    // ticket read dies with `22P02: invalid input syntax for type uuid`. It only
+    // showed up against a live database; no source-level check can see it.
+    const fn = SUPPORT_MIGRATION.slice(
+      SUPPORT_MIGRATION.indexOf('CREATE OR REPLACE FUNCTION public.get_support_ticket('),
+      SUPPORT_MIGRATION.indexOf('CREATE OR REPLACE FUNCTION public.list_support_tickets('),
+    );
+    // The general rule behind the bug: a partial column list and the variable
+    // list it is assigned to must have the same arity. `SELECT *` into a row
+    // type is fine; `SELECT a, b` into a row type is what casts a name to a uuid.
+    const arityMismatches = [...fn.matchAll(/SELECT\s+(.+?)\s+INTO\s+([a-z_0-9,\s]+?)\s+FROM/gi)]
+      .filter(([, list, targets]) => {
+        const columns = list.trim();
+        if (columns === '*') return false;
+        return columns.split(',').length !== targets.split(',').length;
+      })
+      .map(([, list, targets]) => `${list.trim()} -> ${targets.trim()}`);
+    assert.deepEqual(
+      arityMismatches,
+      [],
+      `a SELECT column list and its INTO targets disagree in length: ${arityMismatches.join(' | ')}`,
+    );
+    assert.match(fn, /SELECT p\.full_name, p\.email INTO v_requester_name, v_requester_email/);
+    assert.equal(/v_requester\./.test(fn), false, 'no field access on the removed composite variable');
+  });
+
+  it('authenticated holds NO write privilege on a support table', () => {
+    // Regression, and the important one. PostgreSQL applies a SELECT policy's
+    // USING clause to UPDATE and DELETE when no UPDATE/DELETE policy exists, so
+    // a lone read policy is not containment: verified live, a signed-in user
+    // could UPDATE their own ticket (status, priority, assigned_admin_id,
+    // resolution) and DELETE it, entirely around the RPC checks. INSERT was
+    // already refused, which is exactly what hid it.
+    for (const table of [
+      'support_tickets',
+      'support_messages',
+      'support_attachments',
+      'support_audit_events',
+    ]) {
+      assert.match(
+        SUPPORT_MIGRATION,
+        new RegExp(`REVOKE INSERT, UPDATE, DELETE ON public\\.${table}\\s+FROM authenticated`),
+        `authenticated can still write ${table} directly`,
+      );
+    }
+    // And the migration refuses to finish if that ever comes back.
+    assert.match(
+      SUPPORT_MIGRATION,
+      /PHASE-41 containment incomplete: authenticated can WRITE/,
+    );
+    assert.match(
+      SUPPORT_MIGRATION,
+      /has_table_privilege\('authenticated',[\s\S]{0,160}'UPDATE'[\s\S]{0,160}'DELETE'/,
+      'the post-condition must probe UPDATE and DELETE, not just INSERT',
+    );
+  });
+
+  it('the RPCs are unaffected by that revoke, because they run as service_role', () => {
+    // SECURITY DEFINER plus a service-role caller is why removing the client's
+    // table privileges costs the application nothing.
+    for (const fn of ['create_support_ticket', 'add_support_message', 'add_support_attachment']) {
+      const start = SUPPORT_MIGRATION.indexOf(`CREATE OR REPLACE FUNCTION public.${fn}(`);
+      const body = SUPPORT_MIGRATION.slice(start, SUPPORT_MIGRATION.indexOf('$$;', start));
+      assert.match(body, /SECURITY DEFINER/, `${fn} must be SECURITY DEFINER`);
+    }
+    assert.match(
+      SUPPORT_MIGRATION,
+      /GRANT EXECUTE ON FUNCTION public\.create_support_ticket\([^)]*\)\s+TO service_role/,
     );
   });
 

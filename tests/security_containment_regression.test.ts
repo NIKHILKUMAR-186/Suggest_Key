@@ -168,18 +168,34 @@ test('the SPA fallback rewrite still exists for non-API routes', () => {
   const v = JSON.parse(
     read('vercel.json').replace(/^\s*\/\/[^\n]*\n/gm, '')
   ) as { rewrites: { source: string; destination: string }[] };
-  assert.ok(v.rewrites.some((r) => r.destination === '/index.html'));
+  const spa = v.rewrites.find((r) => r.destination === '/index.html');
+  assert.ok(spa, 'SPA fallback rewrite is missing');
+
+  // The fallback must not swallow /api. This is the rewrite that turned a
+  // request which never reached the function into 200 text/html, which the
+  // client reported as `Unexpected token '<'`. Excluding /api turns the same
+  // breakage into an honest 404 instead of a JSON parse error. The lookahead
+  // must be wrapped in a group: vercel.json `rewrites` (unlike `routes`) only
+  // accepts a bare `(?!...)` inside a capture group.
+  assert.match(spa.source, /\(\?!api\)/);
 });
 
 test('the server bundle is built outside the published output directory', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-  assert.match(pkg.scripts['build:server'], /--outfile=\.build\/server\.cjs/);
+  // The bundle must stay inside api/ so Vercel packages it as the function's
+  // file, and out of dist/, which Vercel publishes as static output. Assert the
+  // intent rather than one hardcoded path so a future move cannot silently
+  // reintroduce the published-source or missing-bundle outages.
+  assert.match(pkg.scripts['build:server'], /--outfile=api\/_build\/server\.cjs/);
   assert.doesNotMatch(pkg.scripts['build:server'], /--outfile=dist\//);
 });
 
 test('a serverless entrypoint re-exports the Express app', () => {
   const entry = read('api/index.cjs');
-  assert.match(entry, /module\.exports\s*=\s*require\('\.\.\/\.build\/server\.cjs'\)/);
+  // Relative to api/index.cjs: the bundle has to resolve INSIDE the function
+  // directory. A ../ reference reaches outside the function package, and Vercel's
+  // require tracer drops it, which emits no function at all.
+  assert.match(entry, /module\.exports\s*=\s*require\('\.\/_build\/server\.cjs'\)/);
 });
 
 test('server.ts exports the app synchronously so Vercel receives a real handler', () => {

@@ -1263,7 +1263,14 @@ AS $$
 DECLARE
   v_ticket public.support_tickets;
   v_is_admin boolean;
-  v_requester public.profiles;
+  -- Two scalars, not `public.profiles`. Selecting a couple of columns INTO a
+  -- composite variable makes Postgres fill that variable's attributes
+  -- positionally, so `full_name` lands in `profiles.id` (a uuid) and the cast
+  -- fails on every ticket read with `22P02: invalid input syntax for type uuid`.
+  -- Found against a live database; no source-level check can see it. Separate
+  -- text variables cannot drift that way.
+  v_requester_name TEXT;
+  v_requester_email TEXT;
   v_booking jsonb;
   v_payment jsonb;
   v_messages jsonb;
@@ -1285,7 +1292,8 @@ BEGIN
     RAISE EXCEPTION 'code: FORBIDDEN_NOT_TICKET_OWNER, You are not authorized to view this support ticket';
   END IF;
 
-  SELECT p.full_name, p.email INTO v_requester FROM public.profiles p WHERE p.id = v_ticket.requester_id;
+  SELECT p.full_name, p.email INTO v_requester_name, v_requester_email
+  FROM public.profiles p WHERE p.id = v_ticket.requester_id;
 
   -- ---- conversation ------------------------------------------------------
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -1368,8 +1376,8 @@ BEGIN
       'ticketCode', v_ticket.ticket_code,
       'requesterId', v_ticket.requester_id,
       'requesterRole', v_ticket.requester_role,
-      'requesterName', v_requester.full_name,
-      'requesterEmail', v_requester.email,
+'requesterName', v_requester_name,
+      'requesterEmail', v_requester_email,
       'category', v_ticket.category,
       'subject', v_ticket.subject,
       'status', v_ticket.status,
@@ -1588,7 +1596,30 @@ GRANT EXECUTE ON FUNCTION public.support_ticket_metrics(UUID)                TO 
 
 
 -- -----------------------------------------------------------------------------
--- 17. POST-CONDITIONS
+-- 17. CLIENT WRITE PRIVILEGES
+-- -----------------------------------------------------------------------------
+-- RLS alone is NOT enough here, and this is the one place in this schema where
+-- that matters. PostgreSQL applies a SELECT policy's USING clause to UPDATE and
+-- DELETE when no UPDATE/DELETE policy exists, and falls back to its (empty)
+-- WITH CHECK for the new row. So the single read policy below would, by itself,
+-- have let any signed-in user UPDATE their own ticket straight through
+-- PostgREST - setting status, priority, assigned_admin_id or resolution without
+-- going through a single RPC check, rewriting message history, or deleting the
+-- ticket outright. Verified against a live role: INSERT was correctly refused,
+-- UPDATE and DELETE were not.
+--
+-- Every support write is an RPC, and the RPCs run as `service_role`, which
+-- bypasses RLS and keeps its own grants. Removing the table-level write
+-- privileges from `authenticated` therefore costs the application nothing and
+-- closes the direct-write path for good.
+-- ==============================================================================
+REVOKE INSERT, UPDATE, DELETE ON public.support_tickets      FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.support_messages     FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.support_attachments   FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.support_audit_events  FROM authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 18. POST-CONDITIONS
 -- -----------------------------------------------------------------------------
 -- These must hold after the migration runs. A failure here means a leak, not a
 -- style problem, so the migration aborts rather than finishing half-secured.
@@ -1633,6 +1664,20 @@ BEGIN
     RAISE EXCEPTION 'PHASE-41 invariant violated: support tables must have no direct write policy';
   END IF;
 
+  -- 4. `authenticated` must hold no table-level write privilege on a support
+  --    table. With no write policy, RLS still falls back to the SELECT policy
+  --    for UPDATE and DELETE, which would otherwise leave a direct-write path
+  --    around every RPC check. See section 17.
+  SELECT string_agg(t, ', ')
+    INTO leaked
+    FROM unnest(ARRAY['support_tickets','support_messages','support_attachments','support_audit_events']) AS t
+   WHERE has_table_privilege('authenticated', format('public.%I', t), 'INSERT')
+      OR has_table_privilege('authenticated', format('public.%I', t), 'UPDATE')
+      OR has_table_privilege('authenticated', format('public.%I', t), 'DELETE');
+  IF leaked IS NOT NULL THEN
+    RAISE EXCEPTION 'PHASE-41 containment incomplete: authenticated can WRITE: %', leaked;
+  END IF;
+
   RAISE NOTICE 'PHASE-41 applied: support center is private, admin-only for internal notes, and RPC-only for writes.';
 END $$;
 
@@ -1643,6 +1688,8 @@ END $$;
 --   SELECT ticket_code FROM public.support_messages WHERE is_internal;  -- 0 rows
 --   SELECT ticket_code FROM public.support_audit_events;                 -- 0 rows
 --   INSERT INTO public.support_tickets (...) VALUES (...);               -- permission denied
+--   UPDATE public.support_tickets SET status = 'CLOSED';                -- permission denied
+--   DELETE FROM public.support_tickets;                                 -- permission denied
 --
 -- Direct RPC call as anon (must fail, not silently succeed):
 --   SELECT public.create_support_ticket(gen_random_uuid(), 'PAYMENT', 'test', 'a message long enough');
