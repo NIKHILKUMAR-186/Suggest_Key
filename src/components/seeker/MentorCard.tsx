@@ -4,15 +4,22 @@ import {
   ArrowRight,
   BadgeCheck,
   CalendarClock,
+  CalendarX,
   Clock,
   Globe,
   Languages,
   Star,
 } from 'lucide-react';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
-import { formatInr, formatNextAvailableLabel, formatOriginalPrice } from '@/src/lib/seekerFormat';
+import {
+  formatInr,
+  formatNextAvailableLabel,
+  formatOriginalPrice,
+  formatShortDate,
+} from '@/src/lib/seekerFormat';
 import { getInitials } from '@/src/lib/avatar';
 import { mentorDetailPath, mentorProfilePath, type MentorOrigin } from '@/src/lib/mentorNav';
+import type { DirectoryMentorAvailability } from '@/src/lib/discoveryService';
 import type { DiscoverableMentor, DirectoryMentor, GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
 
@@ -29,6 +36,15 @@ export interface MentorCardProps {
   availableMentor?: DiscoverableMentor;
   directoryMentor?: DirectoryMentor;
   isFeatured?: boolean;
+  /**
+   * The global directory's server-computed availability for the date being
+   * displayed. It is DISPLAY ONLY: a mentor with `state: 'none'` is still on
+   * the card, still "Verified", and still fully openable. The distinction this
+   * card must keep visually clear is "busy on this date" versus "not an
+   * approved, active mentor" — and the latter never reaches this component,
+   * because the directory query filters it out before a card is built.
+   */
+  directoryAvailability?: DirectoryMentorAvailability | null;
   /**
    * Where this card was opened from. Defaults to the mentor list, which is the
    * only host that renders this card today. Carrying the origin in the URL is
@@ -128,6 +144,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
   today,
   availableMentor,
   directoryMentor,
+  directoryAvailability = null,
   isFeatured = false,
   origin = 'mentor-list',
   className,
@@ -223,6 +240,59 @@ export const MentorCard: React.FC<MentorCardProps> = ({
     ? formatOriginalPrice(cheapestGig.price_inr, cheapestGig.original_price_inr)
     : '';
   const directoryDuration = directoryGigs[0]?.duration_minutes ?? 0;
+
+  /**
+   * Availability for the date the directory is currently displaying.
+   *
+   * `hasBookableSlot` is true ONLY when the server reported a real free slot.
+   * That flag is the single gate on the booking CTA, so a card can never offer
+   * "Book session" for a time that does not exist. An `unknown` result — the
+   * availability service did not answer — is treated exactly like `none`: the
+   * mentor still appears, and the seeker is sent to their profile, which
+   * re-validates availability server-side before it arms anything.
+   */
+  const hasBookableSlot =
+    variant === 'availability' ? true : directoryAvailability?.state === 'available';
+
+  const directoryDateLabel = formatShortDate(selectedDate);
+  const directorySlotTime = directoryAvailability?.nextLocalStartTime
+    ? formatLocalTimeLabel(directoryAvailability.nextLocalStartTime)
+    : null;
+
+  /**
+   * The availability statement. Two visual states, from the existing design
+   * tokens, so "busy that day" is unmistakably different from the error styling
+   * a genuinely broken mentor would get — and never resembles it:
+   *
+   *   available -> positive (success)
+   *   none      -> NEUTRAL, not negative. A neutral pill reads as "try another
+   *                date", which is the truth. An error-red pill would say
+   *                "something is wrong with this mentor", which is a lie about
+   *                an approved, active, verified person.
+   */
+  const directoryAvailabilityBadge =
+    variant === 'discovery' && directoryDateLabel
+      ? directoryAvailability?.state === 'available'
+        ? (
+            <span className="badge badge-success">
+              <CalendarClock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              {`Available on ${directoryDateLabel}`}
+              {directorySlotTime ? ` · ${directorySlotTime}` : ''}
+            </span>
+          )
+        : directoryAvailability?.state === 'none'
+          ? (
+              <span className="badge badge-neutral">
+                <CalendarX className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {`No slots on ${directoryDateLabel}`}
+              </span>
+            )
+          : (
+              <span className="text-[11px] text-[var(--color-shell-text-subtle)]">
+                {`Availability for ${directoryDateLabel} is being refreshed`}
+              </span>
+            )
+      : null;
 
   return (
     <motion.article
@@ -378,26 +448,30 @@ export const MentorCard: React.FC<MentorCardProps> = ({
           )}
 
           {variant === 'discovery' && directoryMentor && (
-            <div className="flex items-end justify-between gap-4">
-              <div className="min-w-0 text-[12px] text-[var(--color-shell-text-subtle)]">
-                {directoryGigs.length > 0 ? (
-                  <p className="truncate">
-                    {directoryGigs.length === 1
-                      ? directoryGigs[0].title
-                      : `${directoryGigs.length} active sessions`}
+            <div className="flex flex-col gap-3">
+              {directoryAvailabilityBadge}
+
+              <div className="flex items-end justify-between gap-4">
+                <div className="min-w-0 text-[12px] text-[var(--color-shell-text-subtle)]">
+                  {directoryGigs.length > 0 ? (
+                    <p className="truncate">
+                      {directoryGigs.length === 1
+                        ? directoryGigs[0].title
+                        : `${directoryGigs.length} active sessions`}
+                    </p>
+                  ) : (
+                    <p>No active session listed</p>
+                  )}
+                  {directoryDuration > 0 && <p className="mt-0.5">{directoryDuration} min</p>}
+                </div>
+                {directoryStartingPrice && (
+                  <p className="price-display shrink-0 text-right">
+                    <span className="price-label">From </span>
+                    {directoryWasPrice && <span className="price-original">{directoryWasPrice}</span>}
+                    <span className="price-amount">{directoryStartingPrice}</span>
                   </p>
-                ) : (
-                  <p>No active session listed</p>
                 )}
-                {directoryDuration > 0 && <p className="mt-0.5">{directoryDuration} min</p>}
               </div>
-              {directoryStartingPrice && (
-                <p className="price-display shrink-0 text-right">
-                  <span className="price-label">From </span>
-                  {directoryWasPrice && <span className="price-original">{directoryWasPrice}</span>}
-                  <span className="price-amount">{directoryStartingPrice}</span>
-                </p>
-              )}
             </div>
           )}
 
@@ -411,15 +485,30 @@ export const MentorCard: React.FC<MentorCardProps> = ({
             >
               <span>View profile</span>
             </button>
-            <button
-              type="button"
-              onClick={() => navigate(bookPath)}
-              aria-label={`Book a session with ${fullName}`}
-              className="btn-primary-segment flex-1"
-            >
-              <span>Book session</span>
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </button>
+            {hasBookableSlot ? (
+              <button
+                type="button"
+                onClick={() => navigate(bookPath)}
+                aria-label={`Book a session with ${fullName}`}
+                className="btn-primary-segment flex-1"
+              >
+                <span>Book session</span>
+                <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </button>
+            ) : (
+              // No real slot on this date. The profile is where another date can
+              // be chosen and re-validated, so the CTA says exactly that instead
+              // of arming a booking that cannot be completed.
+              <button
+                type="button"
+                onClick={() => navigate(profilePath)}
+                aria-label={`Choose another date with ${fullName}`}
+                className="btn-secondary flex-1"
+              >
+                <span>Choose another date</span>
+                <CalendarClock className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
       </div>

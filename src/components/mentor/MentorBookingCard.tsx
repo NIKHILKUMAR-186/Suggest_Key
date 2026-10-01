@@ -3,8 +3,16 @@ import { cn } from '@/src/lib/utils';
 import { Badge } from '@/src/components/ui/Badge';
 import { Button } from '@/src/components/ui/Button';
 import { motion } from 'motion/react';
-import { CalendarDays, CheckCircle2, Clock, ShieldCheck, Video } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
+  Clock,
+  ShieldCheck,
+  Video,
+} from 'lucide-react';
 import type { EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { formatOverdueDuration } from '@/src/lib/bookingLifecycle';
 import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 
 export interface MentorBookingCardProps {
@@ -25,9 +33,14 @@ const statusTone: Record<string, 'success' | 'warning' | 'secondary' | 'destruct
 /**
  * Plain-language labels for the existing booking statuses. The underlying
  * status model is unchanged; only the wording on the card is.
+ *
+ * `MENTOR_PENDING` deliberately does NOT read "Awaiting your confirmation" in
+ * the overdue card: an overdue booking is not awaiting a routine confirmation,
+ * and the copy below the badge is what explains why.
  */
 const statusLabel: Record<string, string> = {
   PAYMENT_PENDING: 'Awaiting payment',
+  PAYMENT_PROCESSING: 'Payment in progress',
   PENDING_VERIFICATION: 'Payment under review',
   MENTOR_PENDING: 'Awaiting your confirmation',
   CONFIRMED: 'Confirmed',
@@ -46,8 +59,14 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
   const isPending = status === 'MENTOR_PENDING';
   const isConfirmed = status === 'CONFIRMED';
   const isCompleted = status === 'COMPLETED';
-  const isOverdue = booking.deadlineInfo?.isOverdue;
+
+  // The server's verdict, not a local computation. A booking whose bucket the
+  // server could not resolve is treated as NOT overdue rather than being
+  // guessed at; the page itself refuses to render such a row at all.
+  const lifecycle = booking.lifecycle;
+  const isOverdue = lifecycle?.bucket === 'OVERDUE';
   const minutesLeft = booking.deadlineInfo?.minutesUntilSession;
+
   const seekerName = booking.seeker?.full_name || 'Seeker';
   const initials = seekerName
     .split(' ')
@@ -103,41 +122,86 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
       timeZone: timezone,
     });
 
-  const actionConfig = isPending
-    ? { label: 'Add Meeting Link & Confirm', variant: 'default' as const }
-    : isConfirmed
-      ? { label: 'View Booking', variant: 'outline' as const }
-      : isCompleted
-        ? { label: 'Open Workspace', variant: 'outline' as const }
-        : { label: 'View Details', variant: 'outline' as const };
+  const formatDateTime = (iso: string | null | undefined) =>
+    iso
+      ? `${new Date(iso).toLocaleDateString('en-IN', {
+          day: 'numeric',
+          month: 'short',
+          timeZone: timezone,
+        })}, ${new Date(iso).toLocaleTimeString('en-IN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: timezone,
+        })}`
+      : 'Not recorded';
+
+  /**
+   * How long the booking has been overdue, as MEASURED BY THE SERVER.
+   *
+   * This is deliberately the server's `overdueByMs` and nothing derived from
+   * the local clock: adding a local delta would let a rewound browser report
+   * "less than a minute" on a booking that has been overdue for an hour. The
+   * value advances because the sync hook refetches and the server re-measures,
+   * not because a timer on this device counted.
+   */
+  const overdueLabel = formatOverdueDuration(lifecycle?.overdueByMs ?? 0);
+
+  /**
+   * The overdue action is "Review Booking", not "Add Meeting Link & Confirm".
+   *
+   * The existing server rule still accepts a late link - `MENTOR_PENDING` has
+   * no timer - so the capability is not gone, but the one-tap path is: past the
+   * deadline a mentor may reasonably want to add the link, reschedule, or cancel
+   * and refund, and silently confirming on their behalf would pick one of those
+   * for them. The detail page is where the decision belongs.
+   */
+  const actionConfig = isOverdue
+    ? { label: 'Review Booking', variant: 'default' as const }
+    : isPending
+      ? { label: 'Add Meeting Link & Confirm', variant: 'default' as const }
+      : isConfirmed
+        ? { label: 'View Booking', variant: 'outline' as const }
+        : isCompleted
+          ? { label: 'Open Workspace', variant: 'outline' as const }
+          : { label: 'View Details', variant: 'outline' as const };
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        'rounded-xl border bg-white p-5 shadow-xs space-y-4 transition-all',
-        isPending
-          ? isOverdue
-            ? 'border-amber-400 bg-amber-50/20'
-            : 'border-amber-200'
-          : 'border-zinc-200',
+        'rounded-xl border p-5 shadow-xs space-y-4 transition-all',
+        'bg-white dark:bg-[var(--color-shell-surface)]',
+        isOverdue
+          ? 'border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)]/30'
+          : isPending
+            ? 'border-[var(--color-shell-warning)]/40 dark:border-[var(--color-shell-border)]'
+            : 'border-zinc-200 dark:border-[var(--color-shell-border)]',
         className
       )}
     >
       {/* Status / identity bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant={statusTone[status] || 'secondary'} className="text-xs">
-            {statusLabel[status] || status}
-          </Badge>
-          <span className="text-xs font-mono font-bold text-zinc-600">#{booking.booking_code}</span>
+          {isOverdue ? (
+            <Badge variant="warning" className="text-xs">
+              Overdue
+            </Badge>
+          ) : (
+            <Badge variant={statusTone[status] || 'secondary'} className="text-xs">
+              {statusLabel[status] || status}
+            </Badge>
+          )}
+          <span className="text-xs font-mono font-bold text-zinc-600 dark:text-[var(--color-shell-text-muted)]">
+            #{booking.booking_code}
+          </span>
           <span
             className={cn(
               'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded border',
               isPaymentVerified
-                ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                : 'text-zinc-600 bg-zinc-50 border-zinc-200'
+                ? 'text-[var(--color-shell-success)] bg-[var(--color-shell-success-soft)] border-[var(--color-shell-success)]/35'
+                : 'text-zinc-600 bg-zinc-50 border-zinc-200 dark:text-[var(--color-shell-text-muted)] dark:bg-[var(--color-shell-bg-hover)] dark:border-[var(--color-shell-border)]'
             )}
           >
             {isPaymentVerified ? <ShieldCheck className="h-3 w-3" /> : null}
@@ -145,20 +209,17 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
             {isPaymentVerified ? ` · ₹${booking.amount_inr}` : ''}
           </span>
         </div>
-        {isPending && (
-          <div className="flex items-center gap-2">
-            {isOverdue ? (
-              <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-800 bg-amber-100 px-2.5 py-1 rounded-md border border-amber-300">
-                Overdue Link
-              </span>
-            ) : (
-              <span className="text-xs font-medium text-zinc-500">
-                Link deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start
-                {minutesLeft !== undefined && minutesLeft > 0 ? ` (~${minutesLeft}m left)` : ''}
-              </span>
-            )}
-          </div>
-        )}
+        {isOverdue ? (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-shell-warning)]">
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+            Meeting link deadline missed
+          </span>
+        ) : isPending ? (
+          <span className="text-xs font-medium text-zinc-500 dark:text-[var(--color-shell-text-muted)]">
+            Link deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start
+            {minutesLeft !== undefined && minutesLeft > 0 ? ` (~${minutesLeft}m left)` : ''}
+          </span>
+        ) : null}
         {isConfirmed && booking.meeting_url && (
           <span className="text-xs font-medium text-emerald-700 flex items-center gap-1">
             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -167,6 +228,40 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
         )}
       </div>
 
+      {/* Overdue detail. Scheduled time, the deadline that was missed, and the
+          server-measured delay - the three facts a mentor needs to decide. */}
+      {isOverdue && (
+        <div className="rounded-lg border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-surface)] p-3 space-y-2">
+          <p className="text-xs font-semibold text-[var(--color-shell-text)]">
+            This session has no meeting link and its deadline has passed.
+          </p>
+          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 text-[11px]">
+            <div>
+              <dt className="text-[var(--color-shell-text-muted)] font-medium">Scheduled</dt>
+              <dd className="text-[var(--color-shell-text)] font-semibold">
+                {formatDate(booking.start_time)}, {formatTime(booking.start_time)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[var(--color-shell-text-muted)] font-medium">Deadline</dt>
+              <dd className="text-[var(--color-shell-text)] font-semibold">
+                {formatDateTime(lifecycle?.meetingLinkDeadlineUtc)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[var(--color-shell-text-muted)] font-medium">Overdue by</dt>
+              <dd className="text-[var(--color-shell-warning)] font-bold">{overdueLabel}</dd>
+            </div>
+          </dl>
+          <p className="text-[11px] text-[var(--color-shell-text-muted)]">
+            {lifecycle?.sessionStarted
+              ? 'The session start time has already passed, so adding a link now will not reach the seeker in time.'
+              : 'The seeker is still waiting and has not been notified of any cancellation.'}{' '}
+            This booking has not been cancelled and nothing has been refunded.
+          </p>
+        </div>
+      )}
+
       {/* Gig-first body: a mentor with multiple gigs must never have to guess
           which session a booking belongs to. */}
       <div className="space-y-2.5">
@@ -174,14 +269,16 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
           <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
             Gig / Session
           </span>
-          <h3 className="text-base font-bold leading-snug text-zinc-950">{gigTitle}</h3>
+          <h3 className="text-base font-bold leading-snug text-zinc-950 dark:text-[var(--color-shell-text)]">
+            {gigTitle}
+          </h3>
           <div className="flex flex-wrap items-center gap-2 pt-0.5">
             {segmentName ? (
-              <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700">
+              <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[11px] font-medium text-zinc-700 dark:border-[var(--color-shell-border)] dark:bg-[var(--color-shell-bg-hover)] dark:text-[var(--color-shell-text-muted)]">
                 {segmentName}
               </span>
             ) : null}
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-600">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-600 dark:text-[var(--color-shell-text-muted)]">
               <Clock className="h-3 w-3 text-zinc-400" />
               {durationLabel}
             </span>
@@ -189,18 +286,20 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
-          <div className="h-9 w-9 rounded-full bg-zinc-100 font-bold text-zinc-800 text-xs flex items-center justify-center border border-zinc-200 shrink-0">
+          <div className="h-9 w-9 rounded-full bg-zinc-100 font-bold text-zinc-800 text-xs flex items-center justify-center border border-zinc-200 shrink-0 dark:bg-[var(--color-shell-bg-hover)] dark:text-[var(--color-shell-text)] dark:border-[var(--color-shell-border)]">
             {initials}
           </div>
           <div className="min-w-0">
             <span className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
               Seeker
             </span>
-            <p className="text-sm font-semibold text-zinc-950 truncate">{seekerName}</p>
+            <p className="text-sm font-semibold text-zinc-950 truncate dark:text-[var(--color-shell-text)]">
+              {seekerName}
+            </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-700">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-700 dark:text-[var(--color-shell-text-muted)]">
           <span className="flex items-center gap-1.5 font-medium">
             <CalendarDays className="h-3.5 w-3.5 text-zinc-400" />
             {formatDate(booking.start_time)}
@@ -212,13 +311,13 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
         </div>
 
         {booking.meeting_url && (
-          <div className="text-xs text-zinc-600 font-mono break-all">
+          <div className="text-xs text-zinc-600 font-mono break-all dark:text-[var(--color-shell-text-muted)]">
             <span className="font-sans text-zinc-400 select-none">Meeting link: </span>
             <a
               href={booking.meeting_url}
               target="_blank"
               rel="noreferrer noopener"
-              className="text-zinc-900 underline hover:text-zinc-600"
+              className="text-zinc-900 underline hover:text-zinc-600 dark:text-[var(--color-shell-text)]"
             >
               {booking.meeting_url}
             </a>
@@ -233,7 +332,11 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
           onClick={() => onAction(booking)}
           className="text-xs gap-1.5"
         >
-          {isPending ? <Video className="h-3.5 w-3.5" /> : null}
+          {isOverdue ? (
+            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : isPending ? (
+            <Video className="h-3.5 w-3.5" />
+          ) : null}
           {actionConfig.label}
         </Button>
         {onSecondaryAction && (isConfirmed || isCompleted) && (

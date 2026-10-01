@@ -76,6 +76,7 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/seeker/workspace', meta: privatePage('Workspace') },
   { path: '/seeker/notifications', meta: privatePage('Notifications') },
   { path: '/seeker/settings', meta: privatePage('Settings') },
+  { path: '/seeker/support', meta: privatePage('Help & Support') },
   { prefix: '/seeker', meta: privatePage('Home') },
 
   // ---- Mentor directory (seeker facing) -----------------------------------
@@ -88,6 +89,7 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/mentor/bookings', meta: privatePage('My Bookings') },
   { path: '/mentor/notifications', meta: privatePage('Notifications') },
   { path: '/mentor/settings', meta: privatePage('Settings') },
+  { path: '/mentor/support', meta: privatePage('Help & Support') },
   { path: '/mentor/gigs', meta: privatePage('My Gigs') },
   { path: '/mentor/segments', meta: privatePage('My Segments') },
   { path: '/mentor/workspace', meta: privatePage('Workspace') },
@@ -110,6 +112,7 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/admin/payments', meta: privatePage('Payments') },
   { path: '/admin/notifications', meta: privatePage('Notifications') },
   { prefix: '/admin/system-health', meta: privatePage('System Health') },
+  { path: '/admin/support', meta: privatePage('Support') },
   { path: '/admin/settings', meta: privatePage('Settings') },
   { prefix: '/admin', meta: privatePage('Admin Dashboard') },
 ];

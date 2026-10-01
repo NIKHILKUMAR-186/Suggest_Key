@@ -42,6 +42,16 @@ export interface AdminPaymentRow {
   refundStatus: RefundStatus | null;
   refundId: string | null;
   failureReason: string | null;
+  /** Integer paise as stored. Null until a refund is completed. */
+  refundAmountPaise: number | null;
+  /** Only ever 'UPI' or 'BANK_TRANSFER'; the rails a manual refund can take. */
+  refundMethod: string | null;
+  /** The provider-issued UTR of the OUTBOUND transfer. Never generated here. */
+  refundReference: string | null;
+  refundedAt: string | null;
+  /** The admin who recorded the completion. Never a display name. */
+  refundedBy: string | null;
+  refundAdminNote: string | null;
 }
 
 /** The raw `payments` columns this view reads. */
@@ -61,6 +71,12 @@ export interface AdminPaymentSource {
   refund_status?: RefundStatus | null;
   refund_id?: string | null;
   failure_reason?: string | null;
+  refund_amount_paise?: number | null;
+  refund_method?: string | null;
+  refund_reference?: string | null;
+  refunded_at?: string | null;
+  refunded_by?: string | null;
+  refund_admin_note?: string | null;
   booking?: {
     booking_code?: string | null;
     status?: string | null;
@@ -119,4 +135,13 @@ export const projectAdminPayment = (
   refundStatus: p.refund_status ?? null,
   refundId: p.refund_id ?? null,
   failureReason: p.failure_reason ?? null,
+  refundAmountPaise:
+    p.refund_amount_paise === null || p.refund_amount_paise === undefined
+      ? null
+      : Number(p.refund_amount_paise),
+  refundMethod: p.refund_method ?? null,
+  refundReference: p.refund_reference ?? null,
+  refundedAt: p.refunded_at ?? null,
+  refundedBy: p.refunded_by ?? null,
+  refundAdminNote: p.refund_admin_note ?? null,
 });

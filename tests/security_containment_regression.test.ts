@@ -155,9 +155,13 @@ test('vercel.json routes all /api traffic to the serverless function', () => {
 
   const api = v.rewrites.find((r) => r.source.startsWith('/api'));
   assert.ok(api, 'expected an /api rewrite');
-  // The destination must preserve the original request path so Express
-  // receives e.g. /api/auth/login rather than the bare function root /api.
-  assert.equal(api.destination, '/api/:path*');
+  // All /api/* traffic must be routed to the api/index.cjs serverless function.
+  // On Vercel the destination only selects which function to invoke; the
+  // original request URL (e.g. /api/admin/dashboard/overview) is still the
+  // value Express sees for routing. A no-op rewrite to /api/:path* fails to
+  // match any function for paths deeper than /api, so the request falls
+  // through to the SPA fallback and index.html is served instead of JSON.
+  assert.equal(api.destination, '/api');
 });
 
 test('the SPA fallback rewrite still exists for non-API routes', () => {

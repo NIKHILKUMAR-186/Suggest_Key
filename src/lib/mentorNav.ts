@@ -1,8 +1,30 @@
 /**
  * MENTOR DISCOVERY NAVIGATION.
  *
- * Mentor detail can be entered from two different places, and they are NOT the
- * same destination:
+ * There are TWO mentor listings and they answer different questions. Mixing them
+ * up is the defect this module exists to prevent:
+ *
+ *   /mentors                 "Who is on the platform?"
+ *                            EVERY approved + active mentor. Bookability on a
+ *                            given date is NEVER a membership condition, so a
+ *                            mentor with no free slot today still appears. This
+ *                            is what "See all mentors" and "Browse every mentor"
+ *                            mean, so both resolve here via `mentorDirectoryPath`.
+ *
+ *   /seeker/mentors?...      "Who can I book on <date>?"
+ *                            Availability-first. Requires a real, server
+ *                            generated slot on the selected date, so it can
+ *                            legitimately show zero mentors. Reached from the
+ *                            date-driven flows, NOT from "show me everything".
+ *
+ * The directory therefore accepts a segment as a VISUAL FILTER only. It must
+ * never be given a `date` from a caller that means "filter by this date": the
+ * directory computes its own availability display date from the server, so a
+ * date handed in here could only ever be used to remove mentors, which is
+ * exactly what it must not do.
+ *
+ * Mentor detail itself can be entered from two different places, and they are
+ * NOT the same destination:
  *
  *   segment landing  (/seeker?segment=<slug>)  -> "See all mentors"
  *   mentor list      (/seeker/mentors?...)     -> "View profile" / "Book session"
@@ -24,6 +46,16 @@ import { ALL_TOPICS, isValidTopicSlug } from '@/src/lib/segmentTopics';
 export const SEEKER_HOME = '/seeker';
 export const MENTOR_LIST_ROUTE = '/seeker/mentors';
 export const MENTOR_DETAIL_ROUTE = '/seeker/mentor-detail';
+/**
+ * The canonical GLOBAL mentor directory: every approved + active mentor on the
+ * platform, regardless of whether they have a bookable slot on any given date.
+ *
+ * This is a different route from `MENTOR_LIST_ROUTE` on purpose. The list route
+ * is availability-first discovery and may legitimately be empty; this one is
+ * membership, and its emptiness means "no mentors are approved and active yet",
+ * never "everyone is booked".
+ */
+export const MENTOR_DIRECTORY_ROUTE = '/mentors';
 /**
  * The PUBLIC MENTOR PROFILE, which is a different experience from mentor detail.
  *
@@ -117,6 +149,54 @@ export function segmentLandingPath(state: DiscoveryState = {}): string {
 export function mentorListPath(state: DiscoveryState = {}): string {
   const query = discoveryParams(state).toString();
   return query ? `${MENTOR_LIST_ROUTE}?${query}` : MENTOR_LIST_ROUTE;
+}
+
+/**
+ * The GLOBAL mentor directory: "show me all mentors".
+ *
+ * Only a segment is carried, as a visual filter, so a seeker who clicked
+ * "See all mentors" from the Autism landing page lands on Autism mentors rather
+ * than on the unfiltered directory and has to find the filter themselves.
+ *
+ * `date` and `topic` are deliberately NOT accepted. The directory resolves its
+ * own availability date from the server and the authenticated session's
+ * timezone, and the whole point of this route is that a date cannot remove a
+ * mentor from it. There is no parameter to pass one, which is the guarantee
+ * rather than a convention.
+ */
+export function mentorDirectoryPath(state: { segmentSlug?: string | null } = {}): string {
+  const params = new URLSearchParams();
+  const slug = (state.segmentSlug || '').trim();
+  if (SEGMENT_SLUG.test(slug)) params.set('segmentSlug', slug);
+  const query = params.toString();
+  return query ? `${MENTOR_DIRECTORY_ROUTE}?${query}` : MENTOR_DIRECTORY_ROUTE;
+}
+
+/**
+ * Reads a `date` parameter destined for the directory.
+ *
+ * It is accepted, because a shared link like `/mentors?date=2026-10-02` is a
+ * reasonable thing for someone to send, and the page is expected to describe
+ * availability for that day. What it may never do is remove a mentor, which is
+ * why this returns a plain validated string and nothing else: no caller has a
+ * query object here to thread it into `fetchAllMentors`.
+ *
+ * A missing, malformed or impossible date (`2026-02-31`, which matches the shape
+ * but is not a real day) yields null so the caller falls back to today.
+ */
+export function parseAvailabilityDateParam(raw: string | null | undefined): string | null {
+  const value = (raw || '').trim();
+  if (!DATE_STRING.test(value)) return null;
+  const [y, m, d] = value.split('-').map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (
+    probe.getUTCFullYear() !== y ||
+    probe.getUTCMonth() !== m - 1 ||
+    probe.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return value;
 }
 
 /**

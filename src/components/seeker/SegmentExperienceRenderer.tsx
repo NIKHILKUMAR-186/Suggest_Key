@@ -26,6 +26,7 @@ import { ArrowRight, ArrowUpRight, ChevronDown, MessageSquareQuote } from 'lucid
 import { Button } from '@/src/components/ui/Button';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { resolveSegmentIcon } from '@/src/lib/segmentIcons';
+import { mentorDirectoryPath } from '@/src/lib/mentorNav';
 import { cn } from '@/src/lib/utils';
 import {
   isSafeSegmentLink,
@@ -218,10 +219,20 @@ const Hero: React.FC<{
                 </CtaLink>
               )}
 
-              {/* Secondary action: the full mentor directory. Structural
-                  navigation, not configured copy. */}
+              {/* Secondary action: the GLOBAL mentor directory. Structural
+                  navigation, not configured copy.
+                  "Browse every mentor" and "See all mentors" mean the same
+                  thing to a seeker, so both resolve through the same helper to
+                  `/mentors`. That page lists every approved + active mentor and
+                  never removes one for lacking a slot today; the separate
+                  `/seeker/mentors` route is availability-first discovery and is
+                  reached from the date-driven flows instead. */}
               {onNavigate && (
-                <button type="button" className="sk-link-light" onClick={() => onNavigate('/mentors')}>
+                <button
+                  type="button"
+                  className="sk-link-light"
+                  onClick={() => onNavigate(mentorDirectoryPath())}
+                >
                   Browse every mentor
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </button>

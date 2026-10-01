@@ -70,6 +70,7 @@ const STATIC_ROUTES = new Set([
   '/mentor/segments',
   '/mentor/notifications',
   '/mentor/settings',
+  '/mentor/support',
   '/seeker',
   '/seeker/mentors',
   '/seeker/mentor-profile',
@@ -83,6 +84,7 @@ const STATIC_ROUTES = new Set([
   '/seeker/workspace',
   '/seeker/notifications',
   '/seeker/settings',
+  '/seeker/support',
   '/admin',
   '/admin/users',
   '/admin/users/create',
@@ -97,6 +99,7 @@ const STATIC_ROUTES = new Set([
   '/admin/system-health',
   '/admin/system-health/logs',
   '/admin/settings',
+  '/admin/support',
 ]);
 
 /** Parameterised routes, matched by their documented prefix. */

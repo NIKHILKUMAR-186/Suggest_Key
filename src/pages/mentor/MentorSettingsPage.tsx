@@ -8,12 +8,13 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { upsertUserProfile } from '@/src/lib/supabase';
+import { SupportPage } from '@/src/components/support/SupportPage';
 
 export const MentorSettingsPage: React.FC = () => {
   const { navigate } = useNavigation();
   const { profile, user } = useAuth();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<'profile' | 'security'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'support'>('profile');
   const [isSaving, setIsSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState(false);
 
@@ -102,6 +103,7 @@ export const MentorSettingsPage: React.FC = () => {
         {[
           { id: 'profile' as const, label: 'Profile' },
           { id: 'security' as const, label: 'Security' },
+          { id: 'support' as const, label: 'Help & Support' },
         ].map((tab) => (
           <button
             key={tab.id}
@@ -216,6 +218,10 @@ export const MentorSettingsPage: React.FC = () => {
             are not editable from this page.
           </p>
         </div>
+      )}
+
+      {activeTab === 'support' && (
+        <SupportPage showHeading={false} />
       )}
 
       <p className="flex items-center gap-2 text-[11px] text-[var(--color-shell-text-subtle)]">

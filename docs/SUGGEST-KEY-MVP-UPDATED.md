@@ -1569,8 +1569,11 @@ Cancellation records a reason (`bookings.cancellation_reason`, the only column
 an `authenticated` client may update) and releases the slot, because the booking
 overlap exclusion constraint excludes `CANCELLED`.
 
-**No refund is issued by cancellation.** The booking is cancelled; money
-movement is a manual operational step.
+**Cancellation queues the refund; it does not move the money itself.** A
+Razorpay payment is refunded through the gateway API and confirmed by webhook. A
+manual UPI/QR payment cannot be refunded by the platform, so the refund is queued
+for an admin to transfer externally and the seeker is told it is **pending admin
+processing** — never that it was initiated.
 
 ---
 
@@ -1584,10 +1587,11 @@ Seeker receives a notification.
 
 Admin is notified.
 
-Because payment may be manually verified in the MVP, refund handling is an
-admin-controlled operational workflow. **No refund initiation endpoint exists**
-on either path — the Razorpay webhook only *consumes* refund events that
-originate in the Razorpay dashboard.
+Because payment may be manually verified in the MVP, refund handling for a manual
+payment is an admin-controlled operational workflow: an admin transfers the money
+externally and then records the full amount, the rail (UPI or bank transfer), the
+transfer reference and a receipt image. Recording it is atomic and happens once,
+and the receipt is stored privately. See `docs/prd.md` §15c.
 
 ---
 

@@ -4,6 +4,27 @@
 **Audit type:** Read-only forensic review. No code, schema, configuration or data was modified.
 **Scope:** Manual UPI/QR path, Razorpay path, payment state machines, hold interaction, storage, RLS, money integrity, concurrency, notifications, realtime, admin/seeker UI, tests, migrations, deployment posture.
 
+> **Addendum (2026-10-01) — findings superseded since this audit.**
+> The body below is preserved as written on the audit date. Three of its claims no
+> longer describe the code, and the remediation it recommends has since landed:
+>
+> - **P1-2 / "no refund initiation, anywhere" (§Summary, §Table, §Priorities) is
+>   stale.** `RazorpayGatewayClient` now implements a third method,
+>   `createRefund`, and `runCreateRazorpayRefund` calls it for Razorpay payments.
+>   A seeker-facing notification no longer claims a manual refund was initiated —
+>   a manual refund is described as **pending** until an admin records it.
+> - **Manual refund completion now exists.** Phase 40 adds
+>   `POST /api/admin/payments/:id/complete-manual-refund`: admin-only, full
+>   amount, external reference and receipt required, atomic and once-only, with
+>   the proof in the existing private bucket. See `docs/prd.md` §15c and
+>   `docs/architecture.md` §11.3a.
+> - **The "two methods" claim (§Table) is wrong for the current code.** See
+>   `src/lib/razorpayService.ts` for the actual gateway surface.
+>
+> Findings that are unaffected, notably **P0-1** (an unresolvable capture is
+> silently discarded) and **P1-1** (the `payment-qr` bucket is created by no
+> migration), still stand.
+
 ## Evidence Basis and Confidence Legend
 
 | Label | Meaning |

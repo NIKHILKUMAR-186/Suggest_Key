@@ -434,7 +434,7 @@ regress. `tests/` covers each.
 | 5 | Notification latency up to 30 s and a permanently-polling background tab (**R1**) | Certain | Low | None. |
 | 6 | Rate limit multiplied by instance count (**O2**) | Certain on serverless | Low | Database-enforced login threshold covers auth; other routes are authenticated-only. |
 | 7 | Manual payment path stays the default, so admin verification is a permanent operational queue | Certain | Medium | By design for now; Razorpay is the intended exit and is already built. |
-| 8 | No automated refund initiation; a cancelled post-capture booking has no self-service remedy | Medium | Medium | Manual intervention via Razorpay dashboard; the webhook records the outcome when it happens. |
+| 8 | A cancelled post-capture manual booking has no self-service remedy; it needs a human | Certain for manual payments | Medium | A Razorpay refund is issued through the gateway. A manual UPI/QR refund is queued and completed by an admin recording the external transfer (phase 40, `docs/prd.md` §15c). There is still no reconciliation job over `refund_status='PENDING'`, so a forgotten manual refund stays pending. |
 | 9 | Single-bundle JS costs first paint (**O3**) | Certain | Low | None. |
 
 ---

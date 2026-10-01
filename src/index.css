@@ -1039,8 +1039,8 @@
   /* ---------------------------------------------------------------------------
      TYPOGRAPHY SCALE (premium editorial feel)
      --------------------------------------------------------------------------- */
-  --text-hero clamp: clamp(2.1rem, 5.5vw, 3.25rem);
-  --text-section clamp: clamp(1.5rem, 2.5vw, 2rem);
+  --text-hero: clamp(2.1rem, 5.5vw, 3.25rem);
+  --text-section: clamp(1.5rem, 2.5vw, 2rem);
   --text-card-title: clamp(1rem, 1.4vw, 1.125rem);
 
   /* ---------------------------------------------------------------------------

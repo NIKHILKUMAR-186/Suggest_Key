@@ -27,6 +27,10 @@ import {
   redactMeetingUrlForParticipant,
   SESSION_ACCESS_WINDOW_MS,
 } from './src/lib/sessionAccess';
+import {
+  resolveBookingLifecycle,
+  isMeetingLinkDeadlineOpen,
+} from './src/lib/bookingLifecycle';
 import { getLocalBookingEngineContext, enrichBooking } from './src/lib/bookingService';
 import {
   deriveSessionOverview,
@@ -66,6 +70,20 @@ import {
   normaliseTransactionReference,
   validateProofFile,
 } from './src/lib/paymentProof';
+import {
+  REFUND_PROOF_MAX_LABEL,
+  REFUND_PROOF_PATH_PREFIX,
+  canProcessManualRefund,
+  isRefundProofPathFor,
+  normaliseRefundAmount,
+  normaliseRefundMethod,
+  normaliseRefundReference,
+  refundNotice,
+  refundMethodLabel,
+  toPaise,
+  validateRefundProofFile,
+  type RefundNoticeKind,
+} from './src/lib/refundCompletion';
 import { isRazorpayEnabled, getRazorpayKeyId } from './src/lib/razorpayConfig';
 import { extractWebhookSignature } from './src/lib/razorpaySignature';
 import {
@@ -400,6 +418,114 @@ async function notifyPaymentReviewed(
 }
 
 /**
+ * Tells the seeker their refund is PENDING - and nothing more than that.
+ *
+ * This exists because the previous code sent a notification claiming the refund
+ * had been initiated whenever `runCreateRazorpayRefund` returned successfully.
+ * For a manual UPI/QR payment that success means only "an admin still has to
+ * transfer the money": nothing was initiated, so the seeker was told a
+ * falsehood. A gateway refund is likewise only pending until the gateway
+ * confirms it.
+ *
+ * All wording lives in `refundNotice`, which is the single tested definition of
+ * the pending / completed / failed messages.
+ *
+ * Written only when the refund ENTERS the pending state. `runCreateRazorpayRefund`
+ * is the sole caller and it is reached only from a cancellation that just moved
+ * the payment into `refund_status = 'PENDING'`, and it refuses a refund that is
+ * already pending, so a repeat call cannot produce a second notification.
+ */
+async function notifyRefundState(
+  admin: SupabaseClient,
+  input: {
+    booking: { seeker_id: string; booking_code: string };
+    refundInfo: { paymentId: string; amountInr: number; status: string };
+    kind: RefundNoticeKind;
+  },
+): Promise<void> {
+  const notice = refundNotice(input.kind, {
+    amountInr: input.refundInfo.amountInr,
+    bookingCode: input.booking.booking_code,
+  });
+
+  await insertPaymentNotifications(admin, {
+    userIds: [input.booking.seeker_id],
+    title: notice.title,
+    message: notice.message,
+    type: 'PAYMENT',
+    eventType: notice.eventType,
+    entityType: 'payment',
+    entityId: input.refundInfo.paymentId,
+    link: '/seeker/bookings',
+    metadata: {
+      bookingCode: input.booking.booking_code,
+      paymentId: input.refundInfo.paymentId,
+      amountInr: input.refundInfo.amountInr,
+    },
+  });
+}
+
+/**
+ * Maps the `complete_manual_refund` RPC's failure onto the machine-readable code
+ * the UI branches on.
+ *
+ * The function raises `code: X, message` so the code survives the round trip
+ * through Postgres. Anything unrecognised becomes `REFUND_COMPLETION_FAILED`,
+ * which the admin sees as a generic failure with a request id rather than as a
+ * leaked database error.
+ */
+function refundCompletionFailureCode(dbMessage: string): string {
+  const match = /code:\s*([A-Z_]+)/.exec(dbMessage ?? '');
+  const known = new Set([
+    'UNAUTHORIZED',
+    'PAYMENT_NOT_FOUND',
+    'REFUND_NOT_MANUAL',
+    'ALREADY_REFUNDED',
+    'PAYMENT_NOT_REFUNDABLE',
+    'REFUND_NOT_PENDING',
+    'REFUND_AMOUNT_INVALID',
+    'REFUND_AMOUNT_EXCEEDS_PAYMENT',
+    'REFUND_AMOUNT_NOT_FULL',
+    'REFUND_REFERENCE_REQUIRED',
+    'REFUND_METHOD_INVALID',
+    'REFUND_PROOF_REQUIRED',
+    'REFUND_NOTE_TOO_LONG',
+  ]);
+  return match && known.has(match[1]) ? match[1] : 'REFUND_COMPLETION_FAILED';
+}
+
+/** HTTP status for a refund-completion failure code. */
+function refundCompletionFailureStatus(code: string): number {
+  if (code === 'PAYMENT_NOT_FOUND') return 404;
+  if (code === 'UNAUTHORIZED') return 403;
+  if (code === 'REFUND_COMPLETION_FAILED') return 500;
+  // Every other code is a refusal of the request as it stands, which is a 409:
+  // the payment is not in a state this refund can be completed from.
+  return 409;
+}
+
+/** A safe, factual message per failure code. Never the raw database message. */
+function refundCompletionFailureReason(code: string): string {
+  const reasons: Record<string, string> = {
+    UNAUTHORIZED: 'Only an admin can complete a refund.',
+    PAYMENT_NOT_FOUND: 'Payment not found.',
+    REFUND_NOT_MANUAL: 'This refund is settled by the payment gateway, not by an admin.',
+    ALREADY_REFUNDED: 'This payment has already been refunded.',
+    PAYMENT_NOT_REFUNDABLE: 'This payment is not in a refundable state.',
+    REFUND_NOT_PENDING: 'This payment has no manual refund awaiting completion.',
+    REFUND_AMOUNT_INVALID: 'The refund amount must be more than zero.',
+    REFUND_AMOUNT_EXCEEDS_PAYMENT: 'The refund amount cannot exceed the amount that was paid.',
+    REFUND_AMOUNT_NOT_FULL: 'Only a full refund is supported for this payment.',
+    REFUND_REFERENCE_REQUIRED: 'Enter the refund reference / UTR from the transfer receipt.',
+    REFUND_METHOD_INVALID: 'Choose either UPI or bank transfer.',
+    REFUND_PROOF_REQUIRED: 'Attach the refund receipt as proof.',
+    REFUND_NOTE_TOO_LONG: 'The admin note is too long.',
+    REFUND_COMPLETION_FAILED: 'The refund could not be completed. Nothing was recorded; please try again.',
+  };
+  return reasons[code] ?? reasons.REFUND_COMPLETION_FAILED;
+}
+
+/**
  * Tells the mentor their booking is paid and awaiting their confirmation.
  *
  * Only ever called by the caller that WON the conditional
@@ -611,6 +737,7 @@ function enrichMentorBookingProjection(
   payment: any | null,
   hold: any | null = null,
   rescheduleRequest: any | null = null,
+  nowMs: number = Date.now(),
 ): Record<string, any> {
   const durationMinutes = (() => {
     const start = new Date(booking.start_time).getTime();
@@ -618,6 +745,12 @@ function enrichMentorBookingProjection(
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
     return Math.round((end - start) / 60000);
   })();
+
+  // The authoritative bucket every tab groups on. Computed here, on the server
+  // clock, from the row the server just read. A client that rewinds its own
+  // clock cannot move a booking out of OVERDUE, because the field that decides
+  // that was written by this line.
+  const lifecycle = resolveBookingLifecycle(booking, nowMs);
 
   return {
     ...booking,
@@ -629,7 +762,11 @@ function enrichMentorBookingProjection(
     hold: hold || null,
     // Duration as it was booked, so a later gig edit cannot rewrite history.
     duration_minutes: durationMinutes ?? booking.gig?.duration_minutes ?? null,
-    deadlineInfo: calculateMeetingLinkDeadline(booking.start_time),
+    // `deadlineInfo` is retained for the surfaces that render the raw deadline
+    // arithmetic, but `lifecycle` is what decides which tab a booking belongs
+    // in, so the two can never disagree about the tabs.
+    deadlineInfo: calculateMeetingLinkDeadline(booking.start_time, new Date(nowMs)),
+    lifecycle,
     // The open (or most recent) reschedule request, so the detail page renders
     // the Accept/Reject decision without a second round trip.
     rescheduleRequest: rescheduleRequest || null,
@@ -2161,6 +2298,13 @@ async function startServer() {
       const mentorId = req.auth!.user.id;
       const statusFilter = typeof status === 'string' && status && status !== 'ALL' ? status : null;
 
+      // ONE clock reading for the whole response. Reconciliation, session
+      // annotation and the OVERDUE bucket must all be judged against the same
+      // instant: if they sampled `Date.now()` separately, a request that landed
+      // either side of the deadline could return a row that is simultaneously
+      // reconciled as COMPLETED and bucketed as OVERDUE.
+      const nowMs = Date.now();
+
       const supabaseAdmin = getSupabaseAdmin();
       if (supabaseAdmin) {
         const { data: bookings, error: bookingsErr } = await loadMentorBookingRows(
@@ -2186,13 +2330,27 @@ async function startServer() {
         // must never contain a session that has already ended.
         const reconciledMentor = await reconcileAndAnnotateBookingRows(
           supabaseAdmin,
-          [...(bookings || [])]
+          [...(bookings || [])],
+          nowMs
         );
         const enriched = reconciledMentor.map((booking: any) =>
-          enrichMentorBookingProjection(booking, paymentByBooking.get(booking.id) || null)
+          enrichMentorBookingProjection(
+            booking,
+            paymentByBooking.get(booking.id) || null,
+            null,
+            null,
+            nowMs
+          )
         );
 
-        return res.json({ success: true, bookings: enriched, serverNow: new Date().toISOString() });
+        return res.json({
+          success: true,
+          bookings: enriched,
+          // The authoritative instant every `lifecycle` verdict above was
+          // computed against. The client uses this to correct its own clock
+          // rather than to decide anything.
+          serverNow: new Date(nowMs).toISOString(),
+        });
       }
 
       // Fallback to the in-memory dev DB only when Supabase is not configured.
@@ -2259,7 +2417,12 @@ async function startServer() {
 
         // Reconcile + annotate so a detail page opened the next morning shows
         // COMPLETED immediately, on the very first request.
-        const [reconciledDetail] = await reconcileAndAnnotateBookingRows(supabaseAdmin, [booking]);
+        const detailNowMs = Date.now();
+        const [reconciledDetail] = await reconcileAndAnnotateBookingRows(
+          supabaseAdmin,
+          [booking],
+          detailNowMs
+        );
 
         // The open (or most recent) reschedule request, so the mentor's page can
         // render the Accept/Reject decision without a second round trip. Read
@@ -2269,8 +2432,14 @@ async function startServer() {
 
         return res.json({
           success: true,
-          booking: enrichMentorBookingProjection(reconciledDetail, payment || null, hold || null, rescheduleRequest),
-          serverNow: new Date().toISOString(),
+          booking: enrichMentorBookingProjection(
+            reconciledDetail,
+            payment || null,
+            hold || null,
+            rescheduleRequest,
+            detailNowMs
+          ),
+          serverNow: new Date(detailNowMs).toISOString(),
         });
       }
 
@@ -3491,18 +3660,19 @@ async function startServer() {
         is_read: false,
       });
 
-      // Send refund notification if applicable
+      // Send the refund-state notification if applicable.
+      //
+      // The wording comes from `refundNotice`, which never claims a refund was
+      // INITIATED. A manual UPI/QR payment has had no money move at all — the
+      // transfer happens outside the application — so it is described as
+      // pending admin processing. A gateway refund is only pending until the
+      // gateway confirms it. The seeker is told "Refund Completed" only after a
+      // real completion, which is written by `complete_manual_refund`.
       if (refundInfo) {
-        await admin.from('notifications').insert({
-          user_id: booking.seeker_id,
-          title: 'Refund Initiated',
-          message: `A refund of ₹${refundInfo.amountInr} has been initiated for booking ${booking.booking_code}. ${refundInfo.message}`,
-          type: 'PAYMENT',
-          event_type: 'REFUND_INITIATED',
-          entity_type: 'payment',
-          entity_id: refundInfo.paymentId,
-          link: '/seeker/bookings',
-          is_read: false,
+        await notifyRefundState(admin, {
+          booking,
+          refundInfo,
+          kind: refundInfo.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
         });
       }
 
@@ -3753,6 +3923,21 @@ async function startServer() {
 
 
   // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
+  //
+  // Deadlines are evaluated here, on the server clock, BEFORE the transition.
+  // Two rules, deliberately different:
+  //
+  //   * A late link is still ACCEPTED. `docs/rules.md` M4 records that
+  //     `MENTOR_PENDING` "has no timer" and nothing moves it automatically;
+  //     phase 8 states a missed meeting-link deadline "never cancels the
+  //     booking". Refusing here would strand a paid seeker with no room, so
+  //     the mentor may still confirm and the lateness is recorded for audit.
+  //   * A booking that is no longer MENTOR_PENDING is refused. That is the
+  //     real gate, and it lives in `confirm_booking` (ownership + status), not
+  //     in any client-side check.
+  //
+  // Nothing the client sends influences either verdict: `nowMs` is sampled
+  // here, and the request body carries only the URL.
   app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorBookingConfirm), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
@@ -3763,13 +3948,43 @@ async function startServer() {
 
       const admin = getSupabaseAdmin();
       if (admin) {
+        const confirmNowMs = Date.now();
+
+        // Read the booking first purely to measure lateness against the server
+        // clock. The authoritative write is still `confirm_booking`, which
+        // re-checks ownership and status inside its own transaction; this read
+        // grants no authority and is not trusted for the transition.
+        const { data: prior } = await admin
+          .from('bookings')
+          .select('start_time, status, meeting_url')
+          .eq('id', bookingId)
+          .maybeSingle();
+
+        const deadlineOpen = prior
+          ? isMeetingLinkDeadlineOpen(prior, confirmNowMs)
+          : null;
+
         const { data: booking, error } = await admin.rpc('confirm_booking', {
           p_booking_id: bookingId,
           p_meeting_url: meetingUrl,
           p_mentor_id: mentorId,
         });
         if (error) throw error;
-        return res.json({ success: true, booking, isOverdue: false, message: 'Session confirmed.' });
+
+        // `isOverdue` previously answered a hardcoded `false` on this path,
+        // which reported even an hours-late confirmation as on time. It is now
+        // the measured fact, and it is what the mentor UI shows as
+        // "confirmed after the deadline".
+        return res.json({
+          success: true,
+          booking,
+          isOverdue: deadlineOpen === false,
+          confirmedAfterDeadline: deadlineOpen === false,
+          message:
+            deadlineOpen === false
+              ? 'Session confirmed after the recommended meeting-link deadline.'
+              : 'Session confirmed.',
+        });
       }
 
       const db = getLocalBookingEngineContext();
@@ -3925,18 +4140,13 @@ async function startServer() {
         is_read: false,
       });
 
-      // Send refund notification if applicable
+      // Send the refund-state notification if applicable. Same wording rule as
+      // the seeker cancellation path: a pending refund is described as pending.
       if (refundInfo) {
-        await admin.from('notifications').insert({
-          user_id: booking.seeker_id,
-          title: 'Refund Initiated',
-          message: `A refund of ₹${refundInfo.amountInr} has been initiated for booking ${booking.booking_code}. ${refundInfo.message}`,
-          type: 'PAYMENT',
-          event_type: 'REFUND_INITIATED',
-          entity_type: 'payment',
-          entity_id: refundInfo.paymentId,
-          link: '/seeker/bookings',
-          is_read: false,
+        await notifyRefundState(admin, {
+          booking,
+          refundInfo,
+          kind: refundInfo.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
         });
       }
 
@@ -3991,22 +4201,24 @@ async function startServer() {
         return respondWithInternalError({ req, res, error });
       }
 
-      const now = Date.now();
+      const nowMs = Date.now();
       const bookings = (data ?? []).map((b: any) => {
         const startMs = b.start_time ? new Date(b.start_time).getTime() : null;
         const minutesUntilStart =
-          startMs === null ? null : Math.round((startMs - now) / 60000);
-        const meetingLinkDeadlineMs =
-          startMs === null ? null : startMs - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
+          startMs === null ? null : Math.round((startMs - nowMs) / 60000);
+        // The SAME resolver the mentor ledger and the admin ledger use. This
+        // route previously carried its own `deadlineMs <= now` predicate, which
+        // disagreed with the canonical strict `>` at the exact boundary
+        // instant, so an admin tool and the mentor's own tab could classify one
+        // booking differently within the same millisecond.
+        const lifecycle = resolveBookingLifecycle(b, nowMs);
         return {
           ...b,
           minutes_until_start: minutesUntilStart,
-          meeting_link_deadline:
-            meetingLinkDeadlineMs === null
-              ? null
-              : new Date(meetingLinkDeadlineMs).toISOString(),
-          is_overdue:
-            meetingLinkDeadlineMs !== null && meetingLinkDeadlineMs <= now,
+          meeting_link_deadline: lifecycle.meetingLinkDeadlineUtc,
+          is_overdue: lifecycle.isOverdue,
+          overdue_by_ms: lifecycle.overdueByMs,
+          session_started: lifecycle.sessionStarted,
         };
       });
 
@@ -4046,9 +4258,11 @@ async function startServer() {
       // cron job would have corrected it within a minute, but an operational
       // ledger that disagrees with the seeker and mentor views in the meantime
       // is exactly the kind of mismatch that makes people chase phantom bugs.
+      const adminNowMs = Date.now();
       const reconciledBookings = await reconcileAndAnnotateBookingRows(
         admin,
-        [...(bookings || [])]
+        [...(bookings || [])],
+        adminNowMs
       );
 
       // Get payment info for all bookings
@@ -4063,14 +4277,15 @@ async function startServer() {
         paymentByBooking.set(payment.booking_id, payment);
       }
 
-      // Calculate deadline info for each booking
-      const now = new Date();
+      // One resolver, one clock. This route previously computed its own
+      // `isOverdue` with an extra `startTime > now` guard, which meant a
+      // session that had already started with no meeting link reported NOT
+      // overdue here while the admin dashboard exception centre reported it as
+      // the worst kind of overdue. Requirement 11 is that both surfaces read the
+      // same authoritative bucket, so both now do.
       const enrichedBookings = reconciledBookings.map((booking: any) => {
         const payment = paymentByBooking.get(booking.id);
-        const startTime = new Date(booking.start_time);
-        const deadlineMs = startTime.getTime() - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
-        const isOverdue = !booking.meeting_url && now.getTime() > deadlineMs && startTime > now;
-        const hoursUntilSession = Math.max(0, Math.round((startTime.getTime() - now.getTime()) / (1000 * 60 * 60)));
+        const lifecycle = resolveBookingLifecycle(booking, adminNowMs);
 
         return {
           ...booking,
@@ -4082,11 +4297,20 @@ async function startServer() {
             proof_storage_path: payment.proof_storage_path,
             transaction_reference: payment.transaction_reference,
           } : null,
+          lifecycle,
+          // Retained for the admin UI's raw deadline readout. `lifecycle` is
+          // what decides classification, so these two cannot disagree.
           deadlineInfo: {
-            deadlineUtc: new Date(deadlineMs).toISOString(),
-            isOverdue,
-            hoursUntilSession,
-            minutesUntilSession: Math.max(0, Math.round((startTime.getTime() - now.getTime()) / (1000 * 60))),
+            deadlineUtc: lifecycle.meetingLinkDeadlineUtc,
+            isOverdue: lifecycle.isOverdue,
+            hoursUntilSession: Math.max(
+              0,
+              Math.round((new Date(booking.start_time).getTime() - adminNowMs) / (1000 * 60 * 60))
+            ),
+            minutesUntilSession: Math.max(
+              0,
+              Math.round((new Date(booking.start_time).getTime() - adminNowMs) / (1000 * 60))
+            ),
           },
         };
       });
@@ -4094,6 +4318,7 @@ async function startServer() {
       return res.json({
         success: true,
         bookings: enrichedBookings,
+        serverNow: new Date(adminNowMs).toISOString(),
       });
     } catch (err: any) {
       return respondWithServerError({
@@ -9897,19 +10122,79 @@ async function startServer() {
     }
   });
 
-  // POST /api/admin/payments/:id/complete-manual-refund: Complete manual refund (admin only)
-  app.post('/api/admin/payments/:id/complete-manual-refund', requireAuth, requireAdmin, validateBody(apiSchemas.bookingCancel), async (req: AuthRequest, res) => {
+  // POST /api/admin/payments/:id/complete-manual-refund
+  //
+  // Records that an admin has ALREADY transferred the money for a manual UPI/QR
+  // refund. This endpoint moves no money: the transfer happened in the admin's
+  // bank, outside the application. What it does is record that transfer as
+  // evidence - amount, rail, external UTR, screenshot, note and who did it.
+  //
+  // The previous version of this route accepted only a free-text reason and
+  // flipped the payment to REFUNDED on that alone, so a refund that never
+  // happened could be recorded as settled and the seeker told it "has been
+  // processed". Everything that makes a refund believable is now required, and
+  // the transition itself lives in the `complete_manual_refund` SQL function so
+  // it is atomic and concurrency-safe: two admins submitting the same refund
+  // serialise on a row lock, the loser is refused, and exactly one notification
+  // is ever written.
+  //
+  // The order is upload-verify-then-commit on purpose. If the proof cannot be
+  // confirmed in storage the database call is never made, so a payment can never
+  // be marked REFUNDED without a persisted proof. If the upload succeeded but
+  // the database call then failed, the orphaned object is removed rather than
+  // left behind, and the response is a failure - never a false success.
+  app.post('/api/admin/payments/:id/complete-manual-refund', requireAuth, requireAdmin, validateBody(apiSchemas.manualRefundComplete), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const body = req.body as {
+      refundAmountInr: number;
+      refundMethod: string;
+      refundReference: string;
+      storagePath: string;
+      fileName: string;
+      mimeType: string;
+      fileSize: number;
+      adminNote?: string;
+    };
+
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    /** Best-effort removal of an uploaded object the completion could not use. */
+    const discardUpload = async () => {
+      try {
+        await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([body.storagePath]);
+      } catch (cleanupErr) {
+        console.error('Failed to clean up orphaned refund proof:', logSanitizer.safeMessage(cleanupErr));
+      }
+    };
+
     try {
-      const { id } = req.params;
-      const { reason } = req.body as { reason?: string };
-      const admin = getSupabaseAdmin();
-      if (!admin) {
-        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      // ---- 1. Field rules. Mirrored in full inside the RPC; this layer exists
+      //         so a mistyped form is refused with a readable message. --------
+      const method = normaliseRefundMethod(body.refundMethod);
+      if (!method.ok) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'refundMethod', message: method.message } });
       }
 
-      const now = new Date();
+      const reference = normaliseRefundReference(body.refundReference);
+      if (!reference.ok) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'refundReference', message: reference.message } });
+      }
 
-      // Fetch payment
+      const proofFile = validateRefundProofFile({ name: body.fileName, type: body.mimeType, size: body.fileSize });
+      if (!proofFile.ok) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'storagePath', message: proofFile.message } });
+      }
+
+      // The object key is server-shaped, never client-chosen. A crafted path is
+      // refused here and again by the RPC's prefix check.
+      if (!isRefundProofPathFor(id, body.storagePath)) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_STORAGE_PATH', message: 'That file does not belong to this payment.' } });
+      }
+
+      // ---- 2. The payment, and whether it may be completed at all ----------
       const { data: payment, error: paymentErr } = await admin
         .from('payments')
         .select('id, booking_id, seeker_id, amount_inr, status, gateway, manual_refund_required, refund_status, refund_id')
@@ -9921,86 +10206,148 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'PAYMENT_NOT_FOUND', message: 'Payment not found.' } });
       }
 
-      if (payment.gateway !== 'manual') {
-        return res.status(400).json({ success: false, error: { code: 'INVALID_GATEWAY', message: 'This endpoint is only for manual payments.' } });
+      if (!canProcessManualRefund({
+        gateway: payment.gateway,
+        status: payment.status,
+        refundStatus: payment.refund_status,
+        manualRefundRequired: payment.manual_refund_required,
+      })) {
+        // One honest refusal for every ineligible state: a gateway refund, a
+        // payment that never captured, and a refund that is already completed
+        // all mean "an admin cannot complete this refund here".
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: payment.refund_status === 'REFUNDED' || payment.status === 'REFUNDED' ? 'ALREADY_REFUNDED' : 'REFUND_NOT_PENDING',
+            message: payment.refund_status === 'REFUNDED' || payment.status === 'REFUNDED'
+              ? 'This payment has already been refunded.'
+              : 'This payment has no manual refund awaiting completion.',
+          },
+        });
       }
 
-      if (!payment.manual_refund_required) {
-        return res.status(409).json({ success: false, error: { code: 'NO_MANUAL_REFUND_REQUIRED', message: 'This payment does not require a manual refund.' } });
+      const amount = normaliseRefundAmount(body.refundAmountInr, payment.amount_inr);
+      if (!amount.ok) {
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'refundAmountInr', message: amount.message } });
       }
 
-      if (payment.refund_status === 'REFUNDED') {
-        return res.status(409).json({ success: false, error: { code: 'ALREADY_REFUNDED', message: 'This payment has already been refunded.' } });
+      // ---- 3. Confirm the proof really is in storage ----------------------
+      // The browser uploaded it straight to the private bucket; verifying it
+      // here means a payment row can never point at a path holding no image,
+      // and lets the REAL stored byte count be checked rather than a
+      // client-claimed number.
+      const objectName = body.storagePath.split('/').pop() as string;
+      const { data: storedFile, error: statErr } = await admin.storage
+        .from(PAYMENT_PROOF_BUCKET)
+        .list(`${REFUND_PROOF_PATH_PREFIX}/${id}`, { search: objectName, limit: 10 });
+
+      if (statErr) {
+        console.error('Refund proof lookup failed:', statErr.message);
+        return respondWithInternalError({ req, res, error: statErr, context: 'POST /api/admin/payments/:id/complete-manual-refund (storage lookup)' });
       }
 
-      // Fetch booking for notifications
-      const { data: booking } = await admin
-        .from('bookings')
-        .select('id, booking_code, seeker_id, mentor_id')
-        .eq('id', payment.booking_id)
-        .maybeSingle();
-
-      // Mark manual refund as completed
-      const { data: updatedPayment, error: updateErr } = await admin
-        .from('payments')
-        .update({
-          status: 'REFUNDED',
-          refund_status: 'REFUNDED',
-          manual_refund_required: false,
-          refunded_at: now.toISOString(),
-          refund_reason: reason || 'manual_payment_refund',
-          updated_at: now.toISOString(),
-        })
-        .eq('id', id)
-        .eq('status', 'VERIFIED')
-        .eq('manual_refund_required', true)
-        .select()
-        .maybeSingle();
-
-      if (updateErr) throw updateErr;
-      if (!updatedPayment) {
-        return res.status(409).json({ success: false, error: { code: 'UPDATE_FAILED', message: 'Payment could not be updated. It may have been modified by another process.' } });
+      const storedObject = (storedFile || []).find((f) => f.name === objectName);
+      if (!storedObject) {
+        return res.status(400).json({ success: false, error: { code: 'PROOF_NOT_STORED', message: 'We could not find that refund receipt. Please attach it again.' } });
       }
 
-      // Record payment event
-      await admin.from('payment_events').insert({
-        payment_id: payment.id,
-        status: 'REFUNDED',
-        event_type: 'MANUAL_REFUND_COMPLETED',
-        gateway: 'manual',
-        gateway_payment_id: null,
-        amount_inr: payment.amount_inr,
-        reason: reason || 'Manual refund completed by admin',
-        created_by: req.auth!.user.id,
-        created_at: now.toISOString(),
+      const storedBytes = storedObject.metadata?.size;
+      if (typeof storedBytes === 'number' && storedBytes > PAYMENT_PROOF_MAX_BYTES) {
+        await discardUpload();
+        return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'storagePath', message: `That image is too large. Please attach one under ${REFUND_PROOF_MAX_LABEL}.` } });
+      }
+
+      // ---- 4. The atomic completion --------------------------------------
+      // The RPC validates again, takes the row lock, performs the transition,
+      // writes the payment event and writes the ONE seeker notification - all in
+      // one transaction.
+      const { data: result, error: rpcErr } = await admin.rpc('complete_manual_refund', {
+        p_payment_id: id,
+        p_admin_id: req.auth!.user.id,
+        p_amount_paise: toPaise(amount.value),
+        p_method: method.value,
+        p_reference: reference.value,
+        p_proof_path: body.storagePath,
+        p_admin_note: typeof body.adminNote === 'string' ? body.adminNote : null,
       });
 
-      // Notify seeker
-      if (booking) {
-        await admin.from('notifications').insert({
-          user_id: booking.seeker_id,
-          title: 'Refund Completed',
-          message: `Your refund of ₹${payment.amount_inr} for booking ${booking.booking_code} has been processed.`,
-          type: 'PAYMENT',
-          event_type: 'REFUND_COMPLETED',
-          entity_type: 'payment',
-          entity_id: payment.id,
-          link: '/seeker/bookings',
-          is_read: false,
+      if (rpcErr) {
+        // The money may or may not have moved, but the platform has NOT recorded
+        // it as refunded, so the uploaded proof is discarded and the admin is
+        // told the completion failed. Reporting success here would be a lie.
+        await discardUpload();
+        const code = refundCompletionFailureCode(rpcErr.message);
+        return res.status(refundCompletionFailureStatus(code)).json({
+          success: false,
+          error: { code, message: refundCompletionFailureReason(code) },
         });
       }
 
       auditAction(req.auth, 'manual_refund_completed', {
         entityType: 'payment',
-        entityId: payment.id,
+        entityId: id,
         requestId: req.requestId,
-        metadata: { bookingId: payment.booking_id, amountInr: payment.amount_inr, reason: reason || 'manual_payment_refund' },
+        // Names and the reference only. Never the proof contents, never a
+        // storage path, never a credential.
+        metadata: {
+          bookingId: payment.booking_id,
+          amountInr: amount.value,
+          refundMethod: method.value,
+          refundReference: reference.value,
+        },
       });
 
-      return res.json({ success: true, payment: updatedPayment, message: 'Manual refund completed successfully.' });
+      return res.json({
+        success: true,
+        refund: result,
+        message: `The refund of ₹${amount.value.toLocaleString('en-IN')} was recorded as completed by ${refundMethodLabel(method.value)}.`,
+      });
     } catch (err: any) {
       console.error('Failed to complete manual refund:', logSanitizer.safeMessage(err));
-      return respondWithInternalError({ req, res, error: err });
+      await discardUpload();
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/admin/payments/:id/complete-manual-refund' });
+    }
+  });
+
+  // GET /api/admin/payments/:id/refund-proof
+  //
+  // The refund receipt, as a short-lived SIGNED url minted server-side from the
+  // private bucket. The raw object key is never returned, there is no permanent
+  // public url, and the route is admin-only - a seeker is never shown the admin's
+  // bank confirmation.
+  app.get('/api/admin/payments/:id/refund-proof', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: payment, error: paymentErr } = await admin
+        .from('payments')
+        .select('refund_proof_storage_path')
+        .eq('id', req.params.id)
+        .maybeSingle();
+
+      if (paymentErr) throw paymentErr;
+      if (!payment) {
+        return res.status(404).json({ success: false, error: { code: 'PAYMENT_NOT_FOUND', message: 'Payment not found.' } });
+      }
+      if (!isRefundProofPathFor(req.params.id, payment.refund_proof_storage_path)) {
+        return res.status(404).json({ success: false, error: { code: 'PROOF_NOT_STORED', message: 'No refund proof is stored for this payment.' } });
+      }
+
+      const { data: signed, error: signedErr } = await admin.storage
+        .from(PAYMENT_PROOF_BUCKET)
+        .createSignedUrl(payment.refund_proof_storage_path as string, 300);
+
+      if (signedErr) {
+        console.error('Failed to sign refund proof:', signedErr.message);
+        return res.status(500).json({ success: false, error: { code: 'PROOF_NOT_STORED', message: 'The refund proof could not be opened right now.' } });
+      }
+
+      return res.json({ success: true, url: signed?.signedUrl ?? null });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/payments/:id/refund-proof' });
     }
   });
 

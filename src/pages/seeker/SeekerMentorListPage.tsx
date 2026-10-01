@@ -21,7 +21,7 @@ import {
   fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
 import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
-import { mentorListPath, segmentLandingPath } from '@/src/lib/mentorNav';
+import { mentorDirectoryPath, mentorListPath, segmentLandingPath } from '@/src/lib/mentorNav';
 import { pluralizeSegmentName } from '@/src/lib/segmentNaming';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
@@ -278,8 +278,26 @@ export const SeekerMentorListPage: React.FC = () => {
             {selectedSegment ? pluralizeSegmentName(selectedSegment.name) : 'Mentors'}
           </h1>
           <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--color-shell-text-muted)]">
-            Find a verified mentor for a 1:1 session. Every mentor below has a real,
-            bookable slot on the day you pick.
+            {/*
+              This page is AVAILABILITY-FIRST discovery, and the heading says so.
+              Every mentor below has a real, server-generated bookable slot on the
+              day you pick, so an empty list is a true answer rather than a
+              failure. That is the opposite contract from /mentors, which lists
+              every approved and active mentor regardless of the date — the two
+              pages must never be merged, or one of them starts lying.
+            */}
+            Mentors you can book on the day you pick. Every mentor below has a real,
+            bookable slot on that date.
+          </p>
+          <p className="mt-2 max-w-xl text-xs leading-relaxed text-[var(--color-shell-text-subtle)]">
+            Looking for every mentor instead of only those free today?{' '}
+            <button
+              type="button"
+              onClick={() => navigate(mentorDirectoryPath({ segmentSlug: selectedSegment?.slug || paramSegmentSlug }))}
+              className="cursor-pointer font-semibold text-[var(--color-shell-primary)] underline underline-offset-2 hover:opacity-80 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)]"
+            >
+              Browse all mentors
+            </button>
           </p>
         </div>
       </div>

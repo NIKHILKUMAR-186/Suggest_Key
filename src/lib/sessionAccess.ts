@@ -46,6 +46,7 @@ export interface MeetingUrlCarrier {
   end_time?: string | null;
   meeting_url?: string | null;
   actual_ended_at?: string | null;
+  status?: string | null;
 }
 
 /**
@@ -80,12 +81,25 @@ export function isInsideSessionAccessWindow(
  *
  * Admins keep full visibility for operational support, and the mentor is never
  * redacted because the mentor is the party that supplies the URL.
+ *
+ * Cancelled and rejected bookings are revoked regardless of the window. That
+ * check is separate from the time gate on purpose: a cancellation normally
+ * happens *before* the session, so a cancelled row is typically still inside
+ * T-5 and would otherwise pass the time gate and hand the seeker a room for a
+ * session that is not happening.
  */
 export function redactMeetingUrlForParticipant<
   T extends MeetingUrlCarrier,
 >(booking: T, options: { isAdmin: boolean; isMentor: boolean; now?: Date }): T {
   if (options.isAdmin || options.isMentor) return booking;
   if (!booking.meeting_url) return booking;
+  // A cancelled or rejected booking has no session. It may well sit inside the
+  // T-5 window - a mentor can cancel ten minutes before the start - so the time
+  // gate alone would happily release the room to a seeker for a session that is
+  // never going to happen. Status is therefore checked before the window.
+  if (booking.status === 'CANCELLED' || booking.status === 'REJECTED') {
+    return { ...booking, meeting_url: null };
+  }
   // Once the mentor has manually ended the session the link is irrevocably
   // revoked, regardless of the T-5 window.
   if (booking.actual_ended_at) return { ...booking, meeting_url: null };

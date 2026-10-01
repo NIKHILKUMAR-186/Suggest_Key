@@ -125,6 +125,7 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 | B8 | Booking state changes are emitted by the server as notifications so the mentor and seeker are not polling. | SERVER | `notifyMentorOfPaymentCaptured` and the notification insert helpers. |
 | B9 | The booked gig, segment, mentor and seeker are frozen by `ON DELETE RESTRICT`. | DATABASE | FK actions on `bookings`. |
 | B10 | `amount_inr` on the booking is snapshotted at creation and is the amount charged. | DATABASE | `CHECK (amount_inr >= 0)`. |
+| B11 | There is **no `OVERDUE` status and no deadline column**. The mentor-side `OVERDUE` bucket is derived on read from `status`, `meeting_url` and the server clock. | SERVER | `resolveBookingLifecycle()`. See §9 M5–M8 and `docs/architecture.md` §10.1. |
 
 ---
 
@@ -160,7 +161,11 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 | P19 | A webhook already seen is acknowledged with `200` and not reprocessed. | DATABASE + SERVER | `UNIQUE (gateway, event_id)` on `webhook_events`. |
 | P20 | A capture arriving after the booking is cancelled or rejected does not revive it. The payment is marked `FAILED` with a reason and a `payment_events` row is written. | SERVER | `recoverCaptureAgainstDeadBooking()`. |
 | P21 | A failed Razorpay payment is `FAILED`; a refund outcome is `REFUNDED` or `REFUND_FAILED`. | DATABASE | `payments_status_check`; `refund_status` CHECK. |
-| P22 | **Refund events are consumed, never initiated.** No endpoint creates a refund. | — | No refund-initiation route exists. |
+| P22 | A refund is never described as **initiated** to a seeker unless the platform really initiated it. A refund that only needs a human is **pending**, not initiated. | SERVER | `refundNotice()` in `refundCompletion.ts`; `REFUND_PENDING` event type. |
+| P22a | A manual UPI/QR refund is never marked complete without the external reference and a proof image. Neither is ever generated, defaulted or inferred by the application. | DATABASE + SERVER | `refund_reference` has no `DEFAULT`; `complete_manual_refund()` raises `REFUND_REFERENCE_REQUIRED` / `REFUND_PROOF_REQUIRED` before the transition. |
+| P22b | A manual refund is **full amount only**. | DATABASE + SERVER | `REFUND_AMOUNT_NOT_FULL` in the RPC; `normaliseRefundAmount()`. |
+| P22c | A manual refund is completed at most once, atomically with its event and its single seeker notification. | DATABASE | `complete_manual_refund()` takes `FOR UPDATE`, then rejects `ALREADY_REFUNDED`; `service_role`-only grant. |
+| P22d | A refund receipt is a **private object key**, never a URL. It is unreadable by a seeker and reachable by an admin only through a short-lived signed URL. | DATABASE + SERVER | `refunds/<paymentId>/…` under the existing `payment-proofs` bucket; `createSignedUrl(..., 300)`. |
 | P23 | A Razorpay order sets the **payment** to `PAYMENT_PROCESSING` and leaves the **booking** at `PAYMENT_PENDING`; a verified capture moves the booking straight to `MENTOR_PENDING`. The booking never passes through `PAYMENT_PROCESSING`. There is no human approval step. | SERVER | `razorpayService.ts` module header (explicit design note); `markBookingMentorPending()`; `attachGatewayOrder()`. |
 | P24 | The mentor is notified once, with the real payment id, so the notification link resolves. | SERVER | `notifyMentorOfPaymentCaptured({ source: 'razorpay', paymentId })`. |
 
@@ -199,6 +204,12 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 | M2 | Confirmation requires an HTTPS meeting URL. | SERVER + DATABASE | zod `mentorBookingConfirm` requires a real http(s) URL; `chk_meeting_url_https` re-checks in the database. |
 | M3 | Confirmation moves the booking `MENTOR_PENDING` → `CONFIRMED` and the payment to `VERIFIED` (manual path only). | SERVER | `review_payment()` / `confirm_booking()`. |
 | M4 | `MENTOR_PENDING` is the mentor's action queue. It has no timer. | — | Nothing in code moves it automatically. |
+| M5 | A booking whose meeting-link deadline has passed **without** a link is `OVERDUE`: it leaves Pending Confirmation and appears under Overdue / Action Required. | SERVER | Derived by `resolveBookingLifecycle()` (`src/lib/bookingLifecycle.ts`) from `status = 'MENTOR_PENDING' AND meeting_url IS NULL AND now_server > start_time − 5 min`. **Derived, never persisted** — no ninth `bookings.status` value exists. |
+| M6 | The overdue bucket is decided by the **server clock**. A client clock cannot move a booking between sections, and a booking the server did not classify is an error rather than an assumed "not overdue". | SERVER | The server stamps `lifecycle` on every projection; `requireLifecycle()` fails closed with `BOOKING_STATE_UNAVAILABLE`. No page derives a deadline from `Date.now()`. |
+| M7 | `OVERDUE` **never** cancels a booking, raises a refund, or notifies the seeker of a cancellation. | — | No cron, RPC or handler acts on deadline expiry. `docs/architecture.md` §10.1. Refunds run only through the explicit mentor/admin cancellation path. |
+| M8 | A **late** meeting link is still accepted; lateness is recorded, not refused. | SERVER | `confirm_booking()` gates on ownership and `status = 'MENTOR_PENDING'` only. The response carries `isOverdue` / `confirmedAfterDeadline`, measured against the server clock (it previously answered a hardcoded `false`). |
+| M9 | `Pending Confirmation → OVERDUE` must not require a browser refresh. | CLIENT + SERVER | `useMentorBookingSync` schedules an exact timer at the nearest deadline (the transition writes nothing, so no realtime event fires for it), plus Realtime on `bookings`, a visibility-gated interval and focus/online revalidation. Every trigger re-reads the server. |
+| M10 | Cancelled and rejected bookings revoke the meeting link **regardless of the T−5 window**, and are never `OVERDUE`. | SERVER | `redactMeetingUrlForParticipant()` checks status ahead of `isInsideSessionAccessWindow()`; `resolveBookingLifecycle()` orders `CANCELLED` first. A cancellation normally precedes the session, so the time gate alone would release a room that is not happening. |
 
 ---
 

@@ -8,6 +8,7 @@ import {
   CreditCard,
   FileText,
   Info,
+  LifeBuoy,
   Lock,
   RotateCcw,
   Trash2,
@@ -445,6 +446,27 @@ export const SeekerBookingDetailPage: React.FC = () => {
             </Button>
           </SectionCard>
         )}
+
+        {/* Reach support from the booking itself, carrying the human-readable
+            booking code. The internal booking UUID is never forwarded. */}
+        <SectionCard
+          title="Need help with this booking?"
+          description="Send the Suggest Key support team a message about this booking without leaving your account."
+          icon={LifeBuoy}
+        >
+          <Button
+            onClick={() =>
+              navigate(
+                `/seeker/support?bookingCode=${encodeURIComponent(booking.booking_code)}`,
+              )
+            }
+            variant="outline"
+            className="w-full gap-2 sm:w-auto"
+          >
+            <LifeBuoy className="h-4 w-4" aria-hidden="true" />
+            <span>Help &amp; Support</span>
+          </Button>
+        </SectionCard>
 
         {/* End Session action for live sessions */}
         {canEndSession && (

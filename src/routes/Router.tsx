@@ -16,6 +16,9 @@ import { AuthCallback } from '@/src/pages/auth/AuthCallback';
 import { LandingPage } from '@/src/pages/public/LandingPage';
 import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 
+// Shared Support / Help & Support (seeker, mentor and admin all render this page)
+import { SupportPage } from '@/src/components/support/SupportPage';
+
 // Seeker Pages
 import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
 import { SeekerMentorListPage } from '@/src/pages/seeker/SeekerMentorListPage';
@@ -130,6 +133,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/admin/coupons') return <AdminCouponsPage />;
           if (pathname === '/admin/notifications') return <AdminNotificationsPage />;
           if (pathname === '/admin/system-health' || pathname === '/admin/system-health/logs' || pathname.startsWith('/admin/system-health/logs/')) return <AdminSystemHealthPage />;
+          if (pathname === '/admin/support') return <SupportPage />;
           if (pathname === '/admin/settings') return <AdminSettingsPage />;
           return <AdminDashboardPage />;
         })()}
@@ -161,6 +165,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/mentor/segments') return <MentorSegmentsPage />;
           if (pathname === '/mentor/notifications') return <MentorNotificationsPage />;
           if (pathname === '/mentor/settings') return <MentorSettingsPage />;
+          if (pathname === '/mentor/support') return <SupportPage />;
           if (pathname === '/mentor') return <MentorHomePage />;
           // Any other /mentor/* path is not a route. Returning the home page
           // here made a stale or mistyped link look like a successful
@@ -198,6 +203,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/seeker/workspace') return <SeekerWorkspacePage />;
           if (pathname === '/seeker/notifications') return <SeekerNotificationsPage />;
           if (pathname === '/seeker/settings') return <SeekerSettingsPage />;
+          if (pathname === '/seeker/support') return <SupportPage />;
           return <SeekerHomePage />;
         })()}
       </ProtectedRoute>

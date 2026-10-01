@@ -13,6 +13,7 @@ import {
   FileText,
   Activity,
   Percent,
+  LifeBuoy,
 } from 'lucide-react';
 import type { RoleNavConfig, UserRole } from '@/src/types/navigation';
 
@@ -23,12 +24,14 @@ import type { RoleNavConfig, UserRole } from '@/src/types/navigation';
  *
  * Seeker:
  *   Home, My Bookings, Notifications, Settings (Top Navigation)
+ *   Help & Support is reached from Settings, not from the top nav.
  *
  * Mentor:
  *   Home, My Bookings, Availability, Notifications, Settings (Top Navigation)
+ *   Help & Support is reached from Settings, not from the top nav.
  *
  * Admin:
- *   Dashboard, Users, Mentors, Segments, Bookings, Payments, Notifications, Settings (Sidebar)
+ *   Dashboard, Users, Mentors, Segments, Bookings, Payments, Notifications, Settings, Support (Sidebar)
  */
 
 export const ROLE_NAVIGATION: Record<UserRole, RoleNavConfig> = {
@@ -71,6 +74,7 @@ export const ROLE_NAVIGATION: Record<UserRole, RoleNavConfig> = {
   { id: 'admin-coupons', label: 'Coupons', href: '/admin/coupons', icon: Percent },
       { id: 'admin-notifications', label: 'Notifications', href: '/admin/notifications', icon: Bell },
       { id: 'admin-system-health', label: 'System Health', href: '/admin/system-health', icon: Activity },
+      { id: 'admin-support', label: 'Support', href: '/admin/support', icon: LifeBuoy },
       { id: 'admin-settings', label: 'Settings', href: '/admin/settings', icon: Settings },
     ],
   },

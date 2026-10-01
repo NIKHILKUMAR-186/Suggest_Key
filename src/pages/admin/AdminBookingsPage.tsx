@@ -8,6 +8,7 @@ import { ShortId } from '@/src/components/shared/ShortId';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { apiFetch } from '@/src/lib/apiClient';
 import { APP_CONFIG, MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
+import { formatOverdueDuration, type BookingLifecycle } from '@/src/lib/bookingLifecycle';
 
 interface EnrichedBookingRecord {
   id: string;
@@ -45,6 +46,15 @@ interface EnrichedBookingRecord {
     hoursUntilSession: number;
     minutesUntilSession: number;
   };
+  /**
+   * The server-resolved lifecycle bucket, stamped by `GET /api/admin/bookings`
+   * from the same resolver the mentor ledger uses.
+   *
+   * This page filters on `lifecycle.bucket === 'OVERDUE'` rather than on its own
+   * `status + deadlineInfo.isOverdue` predicate, so an admin and a mentor can
+   * never be looking at two different overdue sets for the same booking.
+   */
+  lifecycle?: BookingLifecycle;
 }
 
 export const AdminBookingsPage: React.FC = () => {
@@ -69,7 +79,10 @@ export const AdminBookingsPage: React.FC = () => {
       enriched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
       setBookings(enriched);
 
-      const overdue = enriched.filter((b) => b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue);
+      // The server's own bucket. `lifecycle` is absent only from a response
+      // produced before the field existed, and a booking whose deadline state
+      // cannot be read is not silently counted as fine.
+      const overdue = enriched.filter((b) => b.lifecycle?.bucket === 'OVERDUE');
       setOverdueCount(overdue.length);
     } catch (err) {
       setError(
@@ -87,7 +100,7 @@ export const AdminBookingsPage: React.FC = () => {
   const filtered = bookings.filter((b) => {
     if (filterStatus === 'ALL') return true;
     if (filterStatus === 'OVERDUE_LINKS') {
-      return b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue;
+      return b.lifecycle?.bucket === 'OVERDUE';
     }
     return b.status === filterStatus;
   });
@@ -227,8 +240,8 @@ export const AdminBookingsPage: React.FC = () => {
                   </tr>
                 ) : (
                   filtered.map((b) => {
-                const isOverdue = b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue;
-                 const minutesLeft = b.deadlineInfo?.minutesUntilSession;
+const isOverdue = b.lifecycle?.bucket === 'OVERDUE';
+                  const minutesLeft = b.deadlineInfo?.minutesUntilSession;
 
                 return (
                   <tr
@@ -287,7 +300,7 @@ export const AdminBookingsPage: React.FC = () => {
                       ) : isOverdue ? (
                         <span className="inline-flex items-center gap-1 text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[11px] border border-amber-300">
                           <AlertTriangle className="h-3 w-3 text-amber-700" />
-                          OVERDUE LINK (&lt;{MEETING_LINK_DEADLINE_MINUTES}m)
+                          OVERDUE · {formatOverdueDuration(b.lifecycle?.overdueByMs ?? 0)}
                         </span>
                       ) : b.status === 'MENTOR_PENDING' ? (
                         <span className="text-zinc-500 text-[11px]">
@@ -407,9 +420,10 @@ export const AdminBookingsPage: React.FC = () => {
                 </div>
                 <div>
                   <strong>Deadline Status: </strong>
-                  {selectedBooking.deadlineInfo?.isOverdue ? (
+                  {selectedBooking.lifecycle?.bucket === 'OVERDUE' ? (
                     <span className="text-amber-800 font-bold">
-                      OVERDUE (&lt; {MEETING_LINK_DEADLINE_MINUTES}min before session). Session remains active.
+                      OVERDUE — deadline was {selectedBooking.deadlineInfo?.deadlineUtc ? new Date(selectedBooking.deadlineInfo.deadlineUtc).toLocaleString('en-IN') : 'T-5min'} before session start, missed by{' '}
+                      {formatOverdueDuration(selectedBooking.lifecycle?.overdueByMs ?? 0)}. The booking is NOT auto-cancelled and no refund has been raised.
                     </span>
                   ) : (
                     <span className="text-zinc-600">

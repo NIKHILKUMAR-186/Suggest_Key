@@ -30,6 +30,19 @@
 import { z } from 'zod';
 import type { NextFunction, Request, Response } from 'express';
 import { isSafeSegmentLink, SEGMENT_SECTION_KEYS } from './segmentExperience';
+import {
+  BOOKING_CODE_PATTERN,
+  SUPPORT_ATTACHMENT_MAX_BYTES,
+  SUPPORT_ATTACHMENT_MIME_TYPES,
+  SUPPORT_MESSAGE_MAX,
+  SUPPORT_MESSAGE_MIN,
+  SUPPORT_RESOLUTION_MAX,
+  SUPPORT_RESOLUTION_MIN,
+  SUPPORT_SUBJECT_MAX,
+  SUPPORT_SUBJECT_MIN,
+  SUPPORT_TICKET_PRIORITIES,
+  SUPPORT_TICKET_STATUSES,
+} from './supportDomain';
 
 // ---------------------------------------------------------------------------
 // HTML / control-character sanitising
@@ -76,6 +89,8 @@ const HHMM = /^\d{2}:\d{2}(:\d{2})?$/;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ALLOWED_DOCUMENT_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] as const;
+/** A refund proof is an image of a transfer receipt - never a PDF. */
+const ALLOWED_REFUND_PROOF_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const ALLOWED_GIG_DURATIONS = [30, 45, 60, 90, 120] as const;
 const MAX_AVAILABILITY_RULES = 50;
@@ -1017,6 +1032,40 @@ export const apiSchemas = {
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: 'Rejection reason', multiline: true }),
   }),
 
+  /**
+   * Body of `POST /api/admin/payments/:id/complete-manual-refund`.
+   *
+   * The shape is the point: an admin records a transfer that has ALREADY
+   * happened outside the application, so every field that makes the record
+   * believable is required and nothing is defaulted. There is no
+   * `paymentStatus`/`refundStatus` field - the transition is decided by the
+   * database from the payment's real state, never by the caller.
+   *
+   * The money and reference rules are re-checked against the stored payment by
+   * the `complete_manual_refund` RPC; this layer only bounds the shape.
+   */
+  manualRefundComplete: z.strictObject({
+    refundAmountInr: z
+      .number('Enter the refund amount as a number.')
+      .finite('Enter the refund amount as a number.')
+      .positive('The refund amount must be more than zero.')
+      .max(10_000_000, 'Refund amount is unrealistically high.'),
+    refundMethod: z.enum(['UPI', 'BANK_TRANSFER'], {
+      message: 'Choose either UPI or bank transfer.',
+    }),
+    refundReference: text({ min: 1, max: 64, label: 'Refund reference' }),
+    storagePath: idField,
+    fileName: z.string().max(255, 'That filename is too long.'),
+    mimeType: z.enum(ALLOWED_REFUND_PROOF_MIME_TYPES, {
+      message: 'Upload a PNG, JPG, or WebP image.',
+    }),
+    fileSize: z
+      .int('File size must be a whole number of bytes.')
+      .positive('That file is empty.')
+      .max(MAX_DOCUMENT_BYTES, `That image is larger than ${MAX_DOCUMENT_BYTES / (1024 * 1024)} MB.`),
+    adminNote: optionalText({ max: MAX_REASON_LENGTH, label: 'Admin note', multiline: true }),
+  }),
+
   mentorApplicationReject: z.strictObject({
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: 'Rejection reason', multiline: true }),
   }),
@@ -1081,6 +1130,138 @@ export const apiSchemas = {
       message: 'Status must be ACTIVE, INACTIVE or ARCHIVED.',
     }),
   }),
+
+  // -- support ---------------------------------------------------------------
+  /**
+   * Body of `POST /api/support/tickets`.
+   *
+   * `strictObject` is the load-bearing part of this schema. There is
+   * deliberately NO `requesterId`, `role`, `priority`, `status`,
+   * `assignedAdminId`, `paymentId` or `isInternal` field, and because the object
+   * is strict a client that sends one gets a 400 "unrecognized key" instead of
+   * having it quietly dropped. Identity, role and the initial NORMAL priority
+   * are derived server-side from the verified session.
+   *
+   * `bookingCode` is a human reference, not a UUID. The server resolves it
+   * against `bookings` and refuses a booking that is not the caller's own.
+   */
+  supportTicketCreate: z.strictObject({
+    category: z.enum(
+      ['BOOKING', 'PAYMENT', 'SESSION', 'MENTOR', 'ACCOUNT', 'TECHNICAL', 'OTHER'],
+      { message: 'Choose a category.' },
+    ),
+    subject: text({ min: SUPPORT_SUBJECT_MIN, max: SUPPORT_SUBJECT_MAX, label: 'Subject' }),
+    message: text({ min: SUPPORT_MESSAGE_MIN, max: SUPPORT_MESSAGE_MAX, label: 'Message', multiline: true }),
+    bookingCode: z
+      .string()
+      .trim()
+      .max(40)
+      .regex(BOOKING_CODE_PATTERN, 'Use the booking code from your booking, for example BK-1234.')
+      .optional()
+      .or(z.literal('').transform(() => undefined)),
+  }),
+
+  /**
+   * Body of `POST /api/support/tickets/:ticketCode/messages`.
+   *
+   * There is no `isInternal` field. A public reply structurally cannot become
+   * an internal note: the RPC that inserts it takes no such parameter, and the
+   * separate admin-only RPC is the sole writer of `is_internal = TRUE`.
+   */
+  supportMessageCreate: z.strictObject({
+    message: text({ min: 1, max: SUPPORT_MESSAGE_MAX, label: 'Message', multiline: true }),
+  }),
+
+  /** Body of `POST /api/support/tickets/:ticketCode/internal-notes`. Admin only. */
+  supportInternalNote: z.strictObject({
+    note: text({ min: 1, max: SUPPORT_MESSAGE_MAX, label: 'Note', multiline: true }),
+  }),
+
+  /**
+   * Body of `POST /api/support/tickets/:ticketCode/resolve`. Admin only.
+   *
+   * The resolution is mandatory and is stored as a public conversation message,
+   * so the user reads the same words the admin wrote.
+   */
+  supportResolve: z.strictObject({
+    resolution: text({
+      min: SUPPORT_RESOLUTION_MIN,
+      max: SUPPORT_RESOLUTION_MAX,
+      label: 'Resolution',
+      multiline: true,
+    }),
+  }),
+
+  /** Body of `POST /api/support/tickets/:ticketCode/reopen`. Requester or admin. */
+  supportReopen: z.strictObject({
+    reason: text({ min: 1, max: SUPPORT_MESSAGE_MAX, label: 'Reason', multiline: true }),
+  }),
+
+  /**
+   * Body of `POST /api/support/tickets/:ticketCode/attachments`.
+   *
+   * The bytes never reach this route. The browser PUTs them to a signed upload
+   * URL the server minted for a path IT generated, then posts that path here.
+   * `mimeType` is an allow-list rather than a free string, and the same list is
+   * the bucket's `allowed_mime_types`, so an executable cannot be uploaded even
+   * if this check were bypassed.
+   */
+  supportAttachmentCreate: z.strictObject({
+    storagePath: idField,
+    fileName: z.string().trim().min(1).max(255),
+    mimeType: z.enum(SUPPORT_ATTACHMENT_MIME_TYPES, {
+      message: 'Only PNG, JPG, WebP or PDF files can be attached.',
+    }),
+    fileSize: z
+      .int('File size must be a whole number of bytes.')
+      .positive('That file is empty.')
+      .max(SUPPORT_ATTACHMENT_MAX_BYTES, 'Attachments must be 5 MB or smaller.'),
+  }),
+
+  /**
+   * Admin filters for `GET /api/support/tickets?scope=ADMIN`.
+   *
+   * There is deliberately no `userId` field. A requester's list is scoped to the
+   * authenticated caller inside the RPC, so there is no parameter here that
+   * could ask for somebody else's tickets.
+   */
+  supportQueueQuery: z.strictObject({
+    scope: z.enum(['USER', 'ADMIN']).optional().default('USER'),
+    status: z.enum(SUPPORT_TICKET_STATUSES).optional(),
+    priority: z.enum(SUPPORT_TICKET_PRIORITIES).optional(),
+    category: z.enum([
+      'BOOKING', 'PAYMENT', 'SESSION', 'MENTOR', 'AVAILABILITY', 'PROFILE',
+      'ACCOUNT', 'USER', 'SYSTEM', 'TECHNICAL', 'OTHER',
+    ]).optional(),
+    requesterRole: z.enum(['seeker', 'mentor', 'admin']).optional(),
+    search: z.string().trim().max(120).optional(),
+  }),
+
+  /**
+   * Body of the admin `PATCH /api/support/tickets/:ticketCode`.
+   *
+   * Three optional admin-only fields, at least one required. `RESOLVED` is
+   * refused here on purpose: resolving requires a resolution message and goes
+   * through `POST /api/support/tickets/:ticketCode/resolve`, so a status field
+   * can never resolve a ticket without telling the user what was decided.
+   *
+   * There is no `status: 'RESOLVED'` path and no `requesterId`, no
+   * `requesterRole`, no `ticketCode` and no `resolution` here: the RPC
+   * re-verifies the admin, resolves the ticket by its code, and derives the
+   * actor from the caller's verified session.
+   */
+  supportAdminUpdate: z
+    .strictObject({
+      status: z.enum(['OPEN', 'IN_PROGRESS', 'WAITING_FOR_USER', 'CLOSED']).optional(),
+      priority: z.enum(SUPPORT_TICKET_PRIORITIES).optional(),
+      // `null` unassigns. Only an admin id is accepted, and the RPC checks it.
+      assignedAdminId: z.union([uuidField, z.null()]).optional(),
+    })
+    .refine(
+      (body) =>
+        body.status !== undefined || body.priority !== undefined || body.assignedAdminId !== undefined,
+      { message: 'Change a status, a priority, or an assignee.' },
+    ),
 
   // -- notifications, sessions, workspaces ---------------------------------
   notificationRead: z.strictObject({

@@ -188,7 +188,11 @@ Defined in `src/config/navigation.ts` (`ROLE_NAVIGATION`), consumed by
 `/mentor/segments` but are **not** in `ROLE_NAVIGATION`. They are reached by
 in-page links, not by the top nav.
 
-### Admin — sidebar (11 items)
+Support is deliberately **not** a seeker or mentor navigation item. It is reached
+from inside Settings → Help & Support (`/seeker/support`,
+`/mentor/support`), because seeker and mentor keep their existing top-nav shape.
+
+### Admin — sidebar (12 items)
 
 | id | Label | Href |
 |---|---|---|
@@ -203,7 +207,10 @@ in-page links, not by the top nav.
 | `admin-coupons` | Coupons | `/admin/coupons` |
 | `admin-notifications` | Notifications | `/admin/notifications` |
 | `admin-system-health` | System Health | `/admin/system-health` |
+| `admin-support` | Support | `/admin/support` |
 | `admin-settings` | Settings | `/admin/settings` |
+
+Support is inserted between System Health and Settings; no existing item moved.
 
 `/admin/users/create` and `/admin/system-health/logs` are routable but not
 separate nav entries.
@@ -239,7 +246,8 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 `/seeker` · `/seeker/mentors` · `/seeker/mentor-profile` ·
 `/seeker/mentor-detail` · `/seeker/payment` and `/seeker/checkout` ·
 `/seeker/bookings` · `/seeker/booking-detail` · `/seeker/session` ·
-`/seeker/workspace` · `/seeker/notifications` · `/seeker/settings`
+`/seeker/workspace` · `/seeker/notifications` · `/seeker/settings` ·
+`/seeker/support`
 
 `/seeker/mentor-profile` (`SeekerMentorProfilePage`) is the **read-only**
 public mentor profile, and `/seeker/mentor-detail`
@@ -292,7 +300,8 @@ with an explicit `gigId` so that booking context is named rather than inferred.
 
 `/mentor` · `/mentor/availability` · `/mentor/bookings` ·
 `/mentor/booking-detail` · `/mentor/workspace` · `/mentor/gigs` ·
-`/mentor/segments` · `/mentor/notifications` · `/mentor/settings`
+`/mentor/segments` · `/mentor/notifications` · `/mentor/settings` ·
+`/mentor/support`
 
 ### Admin only (allowedRoles `['admin']`)
 
@@ -302,7 +311,7 @@ with an explicit `gigId` so that booking context is named rather than inferred.
 `/admin/segments/:slug` · `/admin/bookings` · `/admin/workspaces` ·
 `/admin/payments` · `/admin/coupons` · `/admin/notifications` ·
 `/admin/system-health` and
-`/admin/system-health/logs[/:requestId]` · `/admin/settings`
+`/admin/system-health/logs[/:requestId]` · `/admin/support` · `/admin/settings`
 
 Segment detail uses the strict regex `^/admin/segments/[^/]+$` so a deeper path
 cannot be misread as a segment slug.
@@ -611,6 +620,90 @@ never written (see §11.2).
 | `PAYMENT_PENDING` → `CANCELLED` | `expire_stale_holds()` cron, or `POST /api/seeker/bookings/:id/cancel` |
 | `CONFIRMED` → `COMPLETED` | `complete_expired_sessions()` cron, `POST /api/sessions/:bookingId/complete`, or `reconcile_expired_sessions` |
 | → `PAYMENT_PROCESSING` | **Nobody.** Permitted by the CHECK, written by no current code path. |
+| `MENTOR_PENDING` → `OVERDUE` | **Nobody.** Derived on read (§10.1), never written. |
+| `OVERDUE` → `CONFIRMED` | The mentor acts: `POST /api/mentor/bookings/:id/confirm` (records `confirmedAfterDeadline`) |
+| `OVERDUE` → `CANCELLED` | The mentor or an admin acts explicitly: `POST /api/mentor/bookings/:id/cancel`, or the admin cancellation route. Never automatic. |
+
+### 10.1 The `OVERDUE` projection — derived, never persisted
+
+`bookings.status` cannot express "the mentor has not supplied a meeting link and
+the deadline for doing so has passed". That is a real operational state, and it
+is not a status: the booking is no longer a routine pending confirmation, but it
+is emphatically not cancelled and the money has not moved back. Rather than add a
+ninth status duplicating facts already in `status`, `meeting_url` and the clock,
+`OVERDUE` is **derived on read** by one function —
+`resolveBookingLifecycle()` in `src/lib/bookingLifecycle.ts`:
+
+```
+OVERDUE  iff  status = 'MENTOR_PENDING'
+             AND meeting_url IS NULL
+             AND now_server > start_time - MEETING_LINK_DEADLINE_MS
+             AND status NOT IN ('CANCELLED', 'REJECTED', 'COMPLETED')
+```
+
+The function is a pure classifier: it reads, it never writes. Every endpoint that
+returns a booking row stamps its verdict on the row, so the mentor ledger, the
+admin ledger and the admin overdue-links inspection all classify identically.
+
+**The server is authoritative.** The stamp is produced from a clock sampled in
+the request handler and is the field every client groups on. No page computes a
+deadline from `Date.now()`, so a browser with a rewound clock cannot move a
+booking back into Pending Confirmation. A booking the server could not classify is
+reported as an error (`BOOKING_STATE_UNAVAILABLE`) rather than being guessed at
+into "not overdue" — `requireLifecycle()` in `src/lib/bookingService.ts` enforces
+that, because defaulting a missing bucket to false is precisely the defect this
+projection removes.
+
+**Precedence** (see the function's doc comment for the reasoning): cancelled /
+rejected → completed / manually ended → `MENTOR_PENDING` (overdue or pending) →
+elapsed window → confirmed → pre-payment. `MENTOR_PENDING` is deliberately
+checked **before** the elapsed window, because only `CONFIRMED` rows are
+reconciled to `COMPLETED`; a session that began with no meeting link stays
+overdue rather than being filed as delivered.
+
+**Boundary.** Overdue is a strict `now > deadline`, so at exactly
+`start_time - 5 min` the booking is still inside its window and flips one
+millisecond later. This matches the T−5 access window (`now >= start - 5 min`)
+used for seeker link visibility, and it is the boundary
+`tests/meetingLinkDeadline.test.ts` already pinned.
+
+#### What `OVERDUE` is *not*
+
+- **It does not cancel.** `docs/rules.md` M4 records that `MENTOR_PENDING` "has
+  no timer" and that nothing in code moves it automatically; phase 8 records that
+  a missed deadline "never blocks booking and never cancels one". There is no
+  cron, no RPC and no handler that cancels on deadline expiry, and none was added.
+  A missed deadline therefore raises **no refund** and **no cancellation
+  notification**. The booking stays `MENTOR_PENDING` and the seeker is still
+  waiting.
+- **It is not a hard gate on confirmation.** A late link is still accepted and
+  recorded as late (`confirmedAfterDeadline: true` on the confirm response).
+  Refusing it would strand a paid seeker with no room. The real gate is the
+  existing one: `confirm_booking()` re-checks ownership and requires
+  `status = 'MENTOR_PENDING'`.
+- **It does not hide the meeting link.** Link visibility is governed solely by the
+  T−5 access window (`redactMeetingUrlForParticipant`), plus two revocations:
+  a recorded `actual_ended_at`, and a `CANCELLED` / `REJECTED` status — the latter
+  checked ahead of the time gate, because a cancellation normally happens before
+  the session and the window alone would otherwise hand the seeker a room for a
+  session that is not happening.
+
+#### How the mentor page reaches `OVERDUE` without a refresh
+
+`src/hooks/useMentorBookingSync.ts`. Because `OVERDUE` writes nothing, no
+`postgres_changes` event fires when a deadline passes — so a realtime-only
+listener would sit on "Pending Confirmation" indefinitely. Three transports
+therefore combine:
+
+1. an **exact boundary timer** at the nearest pending deadline (the transition),
+2. Supabase Realtime on `bookings`, scoped to `mentor_id` (the transitions that
+   do write: confirmation, admin cancellation, session reconciliation),
+3. a visibility-gated interval plus `visibilitychange` / `focus` / `online` /
+   `pageshow` revalidation (a socket that dropped events, and the backstop when
+   realtime is unavailable).
+
+Every one of them triggers a **fresh authoritative read**. Nothing on the client
+promotes a booking to overdue on its own.
 
 ### Three distinct concepts — do not conflate
 
@@ -619,9 +712,12 @@ never written (see §11.2).
 | **Booking status** | `bookings.status` (column) | the 8 above |
 | **Payment status** | `payments.status` (column) | `PENDING_VERIFICATION`, `VERIFIED`, `REJECTED`, `PAYMENT_PENDING`, `PAYMENT_PROCESSING`, `FAILED`, `REFUNDED`, `REFUND_FAILED` |
 | **Session projection** | computed by `resolve_session_state()` / `resolveSessionLifecycle()` — **not a column** | `SCHEDULED`, `ACCESS_OPEN`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED` |
+| **Mentor lifecycle bucket** | computed by `resolveBookingLifecycle()` — **not a column** | `AWAITING_PAYMENT`, `AWAITING_VERIFICATION`, `PENDING_CONFIRMATION`, `OVERDUE`, `CONFIRMED`, `COMPLETED`, `CANCELLED` |
 
 `IN_PROGRESS` is not a `bookings.status` value. `FAILED`, `REFUNDED` and
-`REFUND_FAILED` are `payments.status` values, not booking states.
+`REFUND_FAILED` are `payments.status` values, not booking states. `OVERDUE` is
+not a `bookings.status` value either — it is the mentor-side bucket that says a
+`MENTOR_PENDING` row has run out of confirmation time (§10.1).
 
 ### Type drift (open)
 
@@ -761,10 +857,21 @@ Key properties, all verified in code:
   rather than reviving the booking.
 - **Retry.** `runCreateRazorpayOrder` will mint a new order when the previous one
   is `FAILED` with no refund in flight.
-- **Refunds.** Refund *events* are consumed by the webhook
-  (`refund.created`/`processed`/`failed` → `REFUNDED` / `FAILED` /
-  `REFUND_FAILED`). **There is no refund-initiation endpoint.** Nothing in this
-  repository calls Razorpay's refund API.
+- **Refunds.** Two distinct paths, split by `payments.gateway` inside
+  `runCreateRazorpayRefund`:
+  - **Razorpay payments** call the gateway's refund API (`createRefund`), record
+    a `REFUND_INITIATED` payment event, and stay `refund_status='PENDING'` until
+    the webhook confirms. The gateway gate (`assertRazorpayUsable`) lives inside
+    the Razorpay branch only, so a manual refund is still queued when Razorpay is
+    switched off.
+  - **Manual UPI/QR payments** cannot be refunded by the platform. They are marked
+    `refund_status='PENDING'` + `manual_refund_required=true`, which queues them
+    in the admin refund list; an admin then transfers the money externally and
+    records it through `POST /api/admin/payments/:id/complete-manual-refund`.
+
+  A refund is described as **pending** until something settles it. No notification
+  claims a refund was initiated for a manual payment, because nothing was. See
+  §11.3a for the completion path.
 - **Order expiry.** `RAZORPAY_ORDER_EXPIRY_SECONDS` is derived from
   `APP_CONFIG.HOLD_DURATION_MS / 1000` = 300, so an order can never outlive the
   hold it pays for. It is a derived value, not a second literal.
@@ -783,6 +890,8 @@ Key properties, all verified in code:
 | `GET` | `/api/admin/payments` | yes | admin | Payment queue |
 | `PATCH` | `/api/admin/payments/:id/approve` | yes | admin | Manual path only |
 | `PATCH` | `/api/admin/payments/:id/reject` | yes | admin | Manual path only, `reason` required |
+| `POST` | `/api/admin/payments/:id/complete-manual-refund` | yes | admin | Record a completed external refund transfer (see §11.3a) |
+| `GET` | `/api/admin/payments/:id/refund-proof` | yes | admin | Five-minute signed URL for the stored refund receipt |
 | `GET` | `/api/admin/users/:id/payments` | yes | admin | Per-user payment history |
 | `POST` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Apply a code; body is `{ code }` and nothing else |
 | `DELETE` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Remove the coupon and restore the base amount |
@@ -794,6 +903,46 @@ Key properties, all verified in code:
 
 The four `PATCH`/admin approve-reject routes remain live and are correct: they
 only act on `gateway = 'manual'` rows, which is the only path that needs a human.
+
+### 11.3a Manual refund completion
+
+A manual UPI/QR payment cannot be refunded by the platform. Cancelling the
+booking queues the refund (`refund_status='PENDING'`,
+`manual_refund_required=true`) and notifies the seeker that it is **pending admin
+processing** — never that it was initiated, because nothing was.
+
+An admin then transfers the money outside the application and records it:
+
+```
+POST /api/admin/payments/:id/complete-manual-refund
+{ refundAmountInr, refundMethod: 'UPI' | 'BANK_TRANSFER',
+  refundReference, storagePath, fileName, mimeType, fileSize, adminNote? }
+```
+
+- **Full refund only.** `refundAmountInr` must equal `amount_inr`, matching the
+  documented no-partial-refund policy. The amount is stored as integer paise in
+  the existing `refund_amount_paise` column.
+- **Nothing is invented.** `refundReference` (the outbound UTR) has no `DEFAULT`
+  and no generating code path; `refundMethod` is a closed allow-list mirroring
+  `REFUND_METHODS` in `src/lib/refundCompletion.ts`.
+- **The proof is an object key, not a URL.** It is stored in the existing private
+  `payment-proofs` bucket under `refunds/<paymentId>/…`. That prefix's first
+  folder is the literal word `refunds`, so the bucket's existing seeker policy
+  `foldername(name)[1] = auth.uid()` can never match it; only the admin
+  `is_admin()` policy can. No new bucket and no new policy. The admin sees it via
+  the five-minute signed URL route above.
+- **The database is the security boundary.** `complete_manual_refund(...)` is
+  `SECURITY DEFINER` and re-checks the admin role, the session owner, the
+  gateway, the current state, the amount against the stored payment, the method
+  and the proof path — all before taking a `FOR UPDATE` row lock — then performs
+  the transition, the `payment_events` row and the single seeker notification in
+  one transaction. It is granted to `service_role` only, and revoked from
+  `PUBLIC`, `anon` and `authenticated`. Two admins completing the same refund
+  serialise on the lock; the loser sees `ALREADY_REFUNDED`.
+- **A failure never claims success.** If the RPC refuses, the route discards the
+  uploaded receipt and maps the database code to a safe message, so a refund that
+  was not recorded can never look recorded. No automatic retry: that stays an
+  operational matter.
 
 ### 11.4 Payment events and webhook events
 
@@ -887,7 +1036,7 @@ Authoritative source: `src/config/app.ts` for the server copy and display, and
 | `HOLD_DURATION_MS` | **5 min** | How long a slot is reserved during checkout. DB-enforced via `hold_duration_interval()`. |
 | `BOOKING_CUTOFF_MS` | **5 min** | A slot stays bookable while `slotStart − now >= 5 min`, on absolute instants. Replaces the old 2-hour advance rule, which no longer exists. DB-enforced in `create_booking_with_hold()` via `clock_timestamp()`. |
 | `SESSION_ACCESS_WINDOW_MS` | **5 min (T−5)** | Meeting link becomes readable at `start − 5 min`. |
-| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. Audit/overdue only; it never blocks booking and never cancels one. |
+| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. Audit/overdue only; it never blocks booking and never cancels one. Crossing it moves the booking into the derived `OVERDUE` bucket (§10.1) — a presentation and audit state, never a write, never a cancellation, and never a block on confirming late. |
 | `NORMAL_CANCELLATION_WINDOW_MINUTES` | **10 min** | Seeker may cancel/reschedule while `start − now >= 10 min`. |
 | `DEFAULT_TIMEZONE` | `Asia/Kolkata` | Default on `profiles.timezone`, `bookings.*_timezone`, `mentor_availability.timezone`. |
 
@@ -1057,6 +1206,67 @@ tracker. Admins read active threats through
 redirects to `/auth/login` when unauthenticated, `/auth/unauthorized` on role
 mismatch, and shows a loading state while the session is resolving. It is a UX
 gate only; every route is independently authorized server-side.
+
+### 14.7 Help & Support (Formspree)
+
+One shared support surface, three entry points, no backend:
+
+```
+user (seeker / mentor / admin)
+   -> shared SupportForm (src/components/support/)
+   -> Formspree (browser POST)
+   -> support email
+```
+
+| File | Role |
+|---|---|
+| `src/config/support.ts` | The single configuration source: endpoint, limits, per-role categories, validation, payload builder |
+| `src/components/support/SupportForm.tsx` | The one form; role comes from `useAuth()` |
+| `src/components/support/SupportPage.tsx` | The framed page mounted at all three routes |
+
+**Entry points**
+
+| Role | Entry point | Route |
+|---|---|---|
+| Seeker | Settings → Help & Support tab; booking detail → "Help & Support" | `/seeker/support` |
+| Mentor | Settings → Help & Support tab; booking detail → "Help & Support" | `/mentor/support` |
+| Admin | Sidebar → Support | `/admin/support` |
+
+Seeker and mentor top navigation is unchanged (4 and 5 items). All three routes
+render the same `SupportPage`, and the authenticated role selects the category
+list: seeker gets Booking/Payment/Session/Mentor/Account/Technical Issue/Other,
+mentor adds Availability and Profile, admin gets User/Mentor/Booking/Payment/System
+Issue/Technical Issue/Other.
+
+**Configuration**
+
+`VITE_FORMSPREE_SUPPORT_ENDPOINT` — the Formspree form URL, e.g.
+`https://formspree.io/f/abcdwxyz`. It is read in `src/config/support.ts` and
+nowhere else. It is client-visible by design (the browser POSTs to Formspree), so
+only a `VITE_`-prefixed name is correct here, and no secret belongs behind it. An
+unset value is a supported state: the form renders a configuration notice instead
+of pretending to send.
+
+**Submitted** — an explicit allow-list (`SUPPORT_PAYLOAD_FIELDS`): `name`,
+`email`, `role`, `category`, `subject`, `message`, optional `booking_code`,
+`current_page` (pathname only — the query string is dropped so an internal
+`?bookingId=<uuid>` is never forwarded), and the Formspree honeypot field.
+
+**Never submitted**: access/refresh tokens, the Supabase service-role key, Razorpay
+key or webhook secrets, passwords, internal database records, payment proof files,
+mentor verification documents, admin notes, or any raw auth object. `role` is
+context for the support team; it is not an authorization input, and access to the
+page is decided by the existing route guards and the server.
+
+**Spam**: Formspree's own `_gotcha` honeypot (hidden, `tabindex="-1"`,
+`aria-hidden`), which Formspree uses to discard bot submissions. There is no
+custom frontend-only "security" mechanism and no support API route.
+
+**Current limitation**: support messages live entirely outside Suggest Key. They
+are emailed, not stored in the database, so there is no message history and no
+ticket queue. An in-app support ticket system (`support_tickets`, admin inbox,
+realtime thread) is **future work and is not implemented** — the admin page says
+so on screen.
 
 ---
 
@@ -1248,9 +1458,22 @@ Verified open as of 2026-09-29. Full detail, severity and evidence in
    unlike the other sync hooks.
 8. **`mentor_application_audit.action` is unconstrained** `TEXT`; the phase12
    CHECK was not carried into the phase13 table definition.
-9. **No refund initiation endpoint.** Refund events are consumed, never raised.
+9. **Manual refunds still need a human outside the app.** A Razorpay refund is
+   issued through the gateway, but a manual UPI/QR refund requires an admin to
+   transfer the money and then record it (§11.3a). There is no reconciliation job
+   over `refund_status='PENDING'`, so a forgotten manual refund stays pending
+   until someone looks.
 10. **No code splitting.** The main JS bundle is a single large chunk; Vite
     emits a chunk-size warning on build.
+11. **Support messages are external to the database.** §14.7 sends them to
+    Formspree and an email inbox by design. There is no `support_tickets` table,
+    no admin inbox, no reply-from-the-app path and no message history: nothing
+    submitted through the support form is retrievable from Suggest Key. This is
+    an accepted MVP limitation, not a defect in the existing architecture.
+12. **`VITE_FORMSPREE_SUPPORT_ENDPOINT` is not set in this repository's local
+    env**, so the support form renders a configuration notice rather than
+    sending. Support is inert until a Formspree form is created and the variable
+    is provided.
 
 ---
 

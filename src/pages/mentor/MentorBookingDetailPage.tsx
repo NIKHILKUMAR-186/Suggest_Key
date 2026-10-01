@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
+import { formatOverdueDuration } from '@/src/lib/bookingLifecycle';
 import {
   ArrowLeft,
   Video,
@@ -16,6 +17,7 @@ import {
   FileText,
   AlertCircle,
   Info,
+  LifeBuoy,
   Timer,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
@@ -329,7 +331,11 @@ export const MentorBookingDetailPage: React.FC = () => {
   // CANCELLED is deliberately not folded into `isCompleted`: it gates the
   // "Open Workspace" affordance, and a cancelled session never had one.
   const isCompleted = sessionState === 'COMPLETED';
-  const isOverdue = booking?.deadlineInfo?.isOverdue;
+  // The server's bucket, not a local recomputation. `deadlineInfo.isOverdue` is
+  // purely arithmetic and is true for every booking past T-5m including
+  // confirmed ones, so it must never be the thing that decides this.
+  const isOverdue = booking?.lifecycle?.bucket === 'OVERDUE';
+  const overdueByMs = booking?.lifecycle?.overdueByMs ?? 0;
 
   const paymentStatus =
     (booking?.payment?.status || '').toLowerCase() === 'verified' ? 'verified' : 'pending';
@@ -500,6 +506,18 @@ export const MentorBookingDetailPage: React.FC = () => {
               <span>Open Session Workspace</span>
             </Button>
           )}
+          {/* Support for this booking, carrying the human-readable code only. */}
+          <Button
+            onClick={() =>
+              navigate(`/mentor/support?bookingCode=${encodeURIComponent(booking.booking_code)}`)
+            }
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs"
+          >
+            <LifeBuoy className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Help &amp; Support</span>
+          </Button>
         </div>
       </div>
 
@@ -526,12 +544,17 @@ export const MentorBookingDetailPage: React.FC = () => {
 
       {/* Overdue warning */}
       {isPending && isOverdue && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 p-4 flex items-start gap-3 text-xs text-amber-900 dark:text-amber-100">
-          <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+        <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-4 flex items-start gap-3 text-xs text-[var(--color-shell-text)]">
+          <AlertCircle className="h-5 w-5 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold block text-sm">Overdue Meeting Link Notice (&lt;{MEETING_LINK_DEADLINE_MINUTES}m)</span>
+            <span className="font-bold block text-sm">
+              Meeting link deadline missed by {formatOverdueDuration(overdueByMs)}
+            </span>
             <p>
-              This session begins in less than {MEETING_LINK_DEADLINE_MINUTES} minutes. While missing the recommended {MEETING_LINK_DEADLINE_MINUTES}-minute deadline does not cancel your session, prompt submission is required so the seeker can prepare.
+              This is no longer a routine pending confirmation. The booking has <strong>not</strong>{' '}
+              been cancelled and no refund has been raised &mdash; {booking?.seeker?.full_name || 'the seeker'} is
+              still waiting. You can still attach a link and confirm (it will be recorded as a late
+              confirmation), or cancel the booking, which releases the slot and starts a refund.
             </p>
           </div>
         </div>
@@ -767,7 +790,11 @@ export const MentorBookingDetailPage: React.FC = () => {
                   }`}
                 >
                   <Clock className="h-3 w-3" />
-                  Deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start ({isOverdue ? 'Overdue' : `~${minutesLeft}m remaining`})
+                  Deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start (
+                  {isOverdue
+                    ? `overdue by ${formatOverdueDuration(overdueByMs)}`
+                    : `~${minutesLeft}m remaining`}
+                  )
                 </span>
               )}
             </div>

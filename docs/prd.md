@@ -259,6 +259,11 @@ Three separate concepts, often conflated:
 - **Session state** — a *computed projection*, not a column:
   `SCHEDULED`, `ACCESS_OPEN`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`. Only
   `COMPLETED` and `CANCELLED` are also real booking statuses.
+- **Mentor lifecycle bucket** — also a *computed projection*, not a column:
+  `AWAITING_PAYMENT`, `AWAITING_VERIFICATION`, `PENDING_CONFIRMATION`,
+  `OVERDUE`, `CONFIRMED`, `COMPLETED`, `CANCELLED`. `OVERDUE` is the mentor-side
+  label for a `MENTOR_PENDING` booking that has passed its meeting-link deadline
+  without a link (§11). It is not a booking status and not a stored value.
 
 ---
 
@@ -341,8 +346,12 @@ RAZORPAY (payment row only, until capture):
 
 ### 10.4 Not implemented in payment
 
-- Refund initiation — the webhook consumes refund events, nothing creates them
 - Partial refunds
+- An admin refund workflow for a **Razorpay** payment — a gateway refund is
+  settled by the gateway's own events and is never marked complete by hand. The
+  admin completion flow in §15c applies to manual UPI/QR payments only.
+- Reconciling `refund_status='PENDING'` automatically. A queued manual refund
+  stays pending until an admin records it.
 - Payment splitting or payouts to mentors
 - Any provider other than Razorpay, and no provider SDK (Razorpay is called
   over plain `fetch`)
@@ -397,8 +406,29 @@ the URL scheme is validated by zod and again by a database CHECK. On the
 manual path, confirmation is preceded by admin approval; on the Razorpay path
 the payment is already verified and the mentor simply confirms.
 
-The recommended deadline for supplying the link is 2 hours before start. It is
-operational guidance and does not block booking.
+The recommended deadline for supplying the link is **5 minutes before start**. It
+is operational guidance: it never blocks booking, never cancels one, and never
+raises a refund.
+
+Missing it does, however, change what the mentor sees. A `MENTOR_PENDING` booking
+whose deadline has passed with no link is **overdue**: it leaves *Pending
+Confirmation* and appears under *Overdue / Action Required*, showing the scheduled
+time, the deadline, and how late it is. It is not cancelled, the seeker has not
+been notified of anything, and no refund has been raised.
+
+- The overdue state is **derived on read**, not stored. `bookings.status` has no
+  `OVERDUE` value and no deadline column exists.
+- It is decided by the **server clock**. A browser clock, rewound or otherwise,
+  cannot move a booking between sections, and the transition reaches the open page
+  without a refresh.
+- The one-tap *Add Meeting Link & Confirm* action is replaced by *Review Booking*
+  on an overdue card, because past the deadline the mentor may reasonably want to
+  add a link, reschedule, or cancel — and silently picking one for them is not the
+  server's call. Adding the link late is still allowed and is recorded as a late
+  confirmation; cancelling is an explicit action that runs the normal refund
+  workflow.
+- Admin and mentor views read the same bucket, so an admin and a mentor can never
+  be looking at two different overdue sets for one booking.
 
 ---
 
@@ -460,8 +490,34 @@ session, enforced by a partial unique index rather than by application logic.
 - If a rescheduled booking is later cancelled, a Razorpay capture that arrives
   afterwards does not revive it; it is recorded as a failed payment.
 - Mentor cancellation is a separate emergency path with its own reason.
-- **No refund is issued by cancellation.** The booking is cancelled; money
-  movement, if any, is manual.
+- **Cancellation queues the refund; it does not move the money itself.** For a
+  Razorpay payment the gateway refund API is called and the refund is confirmed
+  by webhook. For a manual UPI/QR payment the platform cannot move the money at
+  all, so the refund is queued for an admin to transfer externally, and the
+  seeker is told it is **pending admin processing** — never that it was
+  initiated.
+
+### 15c. A manual refund is completed by an admin, from evidence
+
+A manual UPI/QR payment is paid outside the platform, so the platform cannot
+return it. The only honest completion is a human recording that they already did.
+An admin completing a refund supplies, and the system requires:
+
+- the **full** amount (partial refunds are not supported),
+- the **rail** the money was sent on — UPI or bank transfer, nothing else,
+- the **reference / UTR** of that transfer, which the application never generates
+  and never defaults, and
+- a **receipt image** as proof.
+
+The refund is only marked completed if all of that is present and the payment is
+still an unsettled manual refund. Recording it is atomic and happens once: a
+second attempt on the same payment is refused rather than double-settled. The
+receipt is stored privately, visible only to admins, and never as a public link.
+
+The seeker is told the outcome factually. While the refund is queued the message
+says it is **pending admin processing**; it is marked **completed** only once the
+admin has recorded the transfer. It is never described as initiated on the
+seeker-facing path, because for a manual payment nothing was initiated.
 
 ### 15b. Rescheduling is a request, not an edit
 

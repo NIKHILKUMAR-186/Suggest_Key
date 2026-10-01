@@ -59,12 +59,13 @@ PostHog, and any payment-provider SDK. Razorpay is integrated over plain
 | Hold duration | **5 min** | 15 min |
 | Booking cutoff before start | **5 min** | 2 h |
 | Session access window (T−5) | 5 min | unchanged |
-| Meeting-link deadline (mentor guidance) | 2 h | unchanged |
+| Meeting-link deadline (mentor guidance) | **5 min** | 2 h |
 | Normal cancellation / reschedule window | **10 min** | 24 h |
 | Default timezone | `Asia/Kolkata` | unchanged |
 
-> If you find a document quoting 15 min or 2 h for hold or cutoff, it is wrong.
-> If you find 24 h for cancellation, it is wrong.
+> If you find a document quoting 15 min or 2 h for hold, cutoff or the
+> meeting-link deadline, it is wrong. If you find 24 h for cancellation, it is
+> wrong.
 
 ## States
 
@@ -91,8 +92,19 @@ PostHog, and any payment-provider SDK. Razorpay is integrated over plain
 also real booking statuses. The name is `SCHEDULED`, **not** `UPCOMING` —
 `UPCOMING` is only a list-tab label in the UI.
 
-> Three concepts, three vocabularies. `IN_PROGRESS` is not a booking status.
+**Mentor lifecycle bucket** — computed, **not a column**:
+`AWAITING_PAYMENT`, `AWAITING_VERIFICATION`, `PENDING_CONFIRMATION`, `OVERDUE`,
+`CONFIRMED`, `COMPLETED`, `CANCELLED`. `OVERDUE` is the one that surprises
+people: a `MENTOR_PENDING` row that passed its 5-minute meeting-link deadline
+with no link. It is **derived on read** by `resolveBookingLifecycle()`
+(`src/lib/bookingLifecycle.ts`), stamped onto every booking projection by the
+server, and grouped on by the mentor ledger — never persisted, never a
+`bookings.status` value. Crossing the deadline **does not cancel** anything and
+raises no refund; it only relabels the booking and surfaces it for resolution.
+
+> Four concepts, four vocabularies. `IN_PROGRESS` is not a booking status.
 > `FAILED` / `REFUNDED` are payment statuses, not booking statuses.
+> `OVERDUE` is neither a status nor a column.
 
 ## Entities — 28 public tables
 

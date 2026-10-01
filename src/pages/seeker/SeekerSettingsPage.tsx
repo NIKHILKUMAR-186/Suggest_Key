@@ -5,6 +5,7 @@ import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { PageHeading, SegmentedTabs } from '@/src/components/booking/PageHeading';
 import { SectionCard } from '@/src/components/booking/StatePanel';
+import { SupportPage } from '@/src/components/support/SupportPage';
 import { TONE_SURFACE, TONE_TEXT } from '@/src/components/booking/tokens';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
@@ -18,12 +19,13 @@ interface ProfileUpdate {
   avatar_url?: string;
 }
 
-type SettingsTab = 'profile' | 'security' | 'notifications';
+type SettingsTab = 'profile' | 'security' | 'notifications' | 'support';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
   { id: 'notifications', label: 'Alerts' },
+  { id: 'support', label: 'Help & Support' },
 ];
 
 /**
@@ -249,6 +251,12 @@ export const SeekerSettingsPage: React.FC = () => {
               ))}
             </ul>
           </SectionCard>
+        </motion.div>
+      )}
+
+      {activeTab === 'support' && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <SupportPage showHeading={false} />
         </motion.div>
       )}
     </div>

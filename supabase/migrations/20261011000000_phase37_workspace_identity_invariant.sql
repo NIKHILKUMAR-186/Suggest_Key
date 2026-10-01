@@ -275,7 +275,7 @@ BEGIN
       JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public'
        AND t.tgname IN ('trg_bookings_offer_identity', 'trg_session_workspaces_participant_identity')
-       AND NOT t.tgenabled
+       AND t.tgenabled <> 'O'
   ) THEN
     RAISE EXCEPTION
       'phase37 identity enforcement incomplete, a trigger is DISABLED';

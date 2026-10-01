@@ -1215,9 +1215,6 @@ export interface CreateRazorpayRefundValue {
  * No DB transaction is held during the Razorpay HTTP call.
  */
 export async function runCreateRazorpayRefund(input: CreateRazorpayRefundInput): Promise<RazorpayOutcome<CreateRazorpayRefundValue>> {
-  const gate = assertRazorpayUsable();
-  if (gate) return { ok: false, error: gate };
-
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
 
@@ -1243,6 +1240,14 @@ export async function runCreateRazorpayRefund(input: CreateRazorpayRefundInput):
 
   // 4. Handle based on gateway
   if (payment.gateway === RAZORPAY_GATEWAY) {
+    // The gateway gate lives HERE, not at the top of the function. Gating the
+    // whole function would mean a manual UPI/QR cancellation could never even
+    // reach the branch below while Razorpay was switched off, so the refund
+    // would never be queued for an admin and the seeker would be told nothing.
+    // Only the branch that actually calls Razorpay needs Razorpay to be usable.
+    const gate = assertRazorpayUsable();
+    if (gate) return { ok: false, error: gate };
+
     // Razorpay gateway payment - call Razorpay API
     if (!payment.razorpay_payment_id) {
       return { ok: false, error: fail(409, 'NO_GATEWAY_PAYMENT_ID', 'This payment does not have a gateway payment ID.') };

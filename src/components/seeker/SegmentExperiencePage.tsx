@@ -29,7 +29,7 @@ import { useSegmentTopics } from '@/src/hooks/useSegmentTopics';
 import { useSegmentMentorsByTopic } from '@/src/hooks/useSegmentMentorsByTopic';
 import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 import { ALL_TOPICS } from '@/src/lib/segmentTopics';
-import { mentorListPath } from '@/src/lib/mentorNav';
+import { mentorDirectoryPath } from '@/src/lib/mentorNav';
 import { buildSegmentExploreTitle } from '@/src/lib/segmentNaming';
 import type { Segment } from '@/src/types/database';
 
@@ -96,11 +96,18 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
   }, [reload, reloadTopics, reloadMentors]);
 
   /**
-   * The one explicit route into full mentor discovery.
+   * "See all mentors" means ALL mentors, so it opens the GLOBAL directory.
    *
-   * This is a DIFFERENT intent from the Back button, which returns to wherever
-   * the seeker came from. So it is its own primary CTA placed above the topic
-   * chips: the chips narrow a preview, this opens the whole list.
+   * It used to call `mentorListPath`, which is the availability-first route: a
+   * seeker who read this as "show me every mentor" landed on a page that drops
+   * anyone without a free slot on the selected date, and on a busy day that page
+   * reads "0 mentors" while mentors are plainly listed a click away. That was the
+   * bug. The date-scoped list still exists and still does its job; it is simply
+   * no longer what this button promises.
+   *
+   * The segment rides along as a visual filter, so the directory opens already
+   * narrowed to this segment. It is a filter, not a membership condition: every
+   * approved + active mentor of the segment is there, dated or not.
    *
    * The heading is built from the real segment name ("Explore Autism Mentors"),
    * so a segment created tomorrow words itself correctly with no code change.
@@ -111,13 +118,14 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
         <div className="min-w-0">
           <p className="sk-eyebrow">{buildSegmentExploreTitle(segment?.name)}</p>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-[var(--sk-brand-text-muted)]">
-            Browse every verified mentor for this segment, filter by language and experience,
-            and pick the day that works for you.
+            Every verified mentor for this segment, filterable by language and experience.
+            Someone without a free slot on your date is still listed — their profile has
+            the rest of their schedule.
           </p>
         </div>
         <button
           type="button"
-          onClick={() => navigate(mentorListPath({ segmentSlug, topic: selectedTopic, date: selectedDate }))}
+          onClick={() => navigate(mentorDirectoryPath({ segmentSlug }))}
           aria-label={`See all ${segment?.name ? `${segment.name} ` : ''}mentors`}
           className="sk-btn sk-btn-primary shrink-0"
         >

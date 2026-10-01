@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  CalendarClock,
   ChevronDown,
   Filter,
   Search,
@@ -19,13 +20,18 @@ import { MentorCard } from '@/src/components/seeker/MentorCard';
 import { MENTOR_GRID_CLASS, MentorGridSkeleton } from '@/src/components/seeker/MentorGrid';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
+import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 import {
   fetchActiveSegments,
   fetchAllMentors,
   fetchEligibleLanguages,
+  fetchMentorDirectoryAvailability,
   type AllMentorsQuery,
+  type DirectoryMentorAvailability,
 } from '@/src/lib/discoveryService';
-import { getDateStringInTimezone } from '@/src/lib/slotEngine';
+import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngine';
+import { formatShortDate } from '@/src/lib/seekerFormat';
+import { mentorListPath, parseAvailabilityDateParam } from '@/src/lib/mentorNav';
 import { DirectoryMentor, DirectoryPagination, Segment } from '@/src/types/database';
 import { SegmentThemeProvider, useSegmentTheme } from '@/src/context/SegmentThemeContext';
 import { cn } from '@/src/lib/utils';
@@ -151,6 +157,13 @@ export const MentorDirectoryPage: React.FC = () => {
     currentPath.includes('?') ? currentPath.split('?')[1] : ''
   );
   const paramSegmentSlug = searchParams.get('segmentSlug') || '';
+  /**
+   * DISPLAY ONLY. The date whose availability each card describes. It is
+   * deliberately kept out of `loadMentors` below: that query decides which
+   * mentors EXIST, and membership on the platform must never depend on a
+   * calendar day.
+   */
+  const paramDate = parseAvailabilityDateParam(searchParams.get('date'));
 
   const userTimezone = profile?.timezone || 'UTC';
 
@@ -170,6 +183,24 @@ export const MentorDirectoryPage: React.FC = () => {
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [availability, setAvailability] = useState<Map<string, DirectoryMentorAvailability>>(
+    new Map()
+  );
+  const [isAvailabilityLoading, setIsAvailabilityLoading] = useState<boolean>(false);
+
+  const today = useMemo(
+    () => getDateStringInTimezone(new Date(), userTimezone),
+    [userTimezone]
+  );
+
+  const [availabilityDate, setAvailabilityDate] = useState<string>(paramDate || today);
+
+  // A URL that names a different date must win over whatever is on screen,
+  // including on a re-render from a Back navigation.
+  useEffect(() => {
+    setAvailabilityDate(paramDate || today);
+  }, [paramDate, today]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(searchQuery), 300);
@@ -270,9 +301,56 @@ export const MentorDirectoryPage: React.FC = () => {
     setExperienceFilter('all');
   };
 
-  const today = useMemo(
-    () => getDateStringInTimezone(new Date(), userTimezone),
-    [userTimezone]
+  /**
+   * Availability for the displayed date, fetched SEPARATELY from the mentor
+   * list and deliberately after it.
+   *
+   * The ordering is the whole point: membership is decided first, by
+   * `loadMentors`, and availability is only ever added on top. A failure here
+   * leaves an empty map, which renders "Availability … is being refreshed" on
+   * every card — it never shortens the list, because there is no code path here
+   * that can remove a mentor.
+   */
+  const loadAvailability = useCallback(async () => {
+    if (mentors.length === 0) {
+      setAvailability(new Map());
+      return;
+    }
+    setIsAvailabilityLoading(true);
+    try {
+      const result = await fetchMentorDirectoryAvailability(mentors, availabilityDate);
+      setAvailability(result.byMentorId);
+    } catch {
+      // A failed availability read is not a directory failure. Show the
+      // unresolved state rather than claiming anyone is fully booked.
+      setAvailability(new Map());
+    } finally {
+      setIsAvailabilityLoading(false);
+    }
+  }, [mentors, availabilityDate]);
+
+  useEffect(() => {
+    loadAvailability();
+  }, [loadAvailability]);
+
+  /**
+   * The "available on <date>" claim is a slot claim, so another seeker's
+   * booking, a hold expiring or a mentor editing their hours must be able to
+   * change it. Same hook, same watched tables and same 45s fallback as mentor
+   * detail and the segment grid — not a fourth implementation. Not mentor-scoped,
+   * because this page spans every mentor on screen.
+   */
+  useAvailabilitySync({
+    mentorId: null,
+    enabled: mentors.length > 0,
+    onInvalidate: loadAvailability,
+  });
+
+  const stepAvailabilityDate = useCallback(
+    (days: number) => {
+      setAvailabilityDate((current) => addDaysToDateString(current, days));
+    },
+    []
   );
 
   return (
@@ -296,8 +374,8 @@ export const MentorDirectoryPage: React.FC = () => {
               All Mentors
             </h1>
             <p className="mt-1.5 text-sm text-[var(--color-shell-text-muted)]">
-              Every approved and active mentor on the platform. Availability for a specific
-              date is shown on each mentor&apos;s profile.
+              Every approved and active mentor on the platform. Nobody is removed for being
+              busy on a given day — open a mentor&apos;s profile to choose another date.
             </p>
           </div>
         </div>
@@ -466,6 +544,64 @@ export const MentorDirectoryPage: React.FC = () => {
           </div>
         )}
 
+        {/*
+          The availability date stepper.
+
+          It changes which day the cards DESCRIBE, never who appears. Stating
+          that in the copy is the guard against the exact regression this page
+          exists to fix: a date control next to a mentor list invites everyone to
+          read it as a filter, so the label has to say what it actually does —
+          and the parallel link below offers the real availability-first page for
+          anyone who does want the filter.
+        */}
+        <div className="seeker-panel surface-float flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <div className="flex items-center gap-2.5">
+            <CalendarClock
+              className="h-4 w-4 shrink-0 text-[var(--color-shell-text-subtle)]"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-[var(--color-shell-text)]">
+                {`Showing availability for ${formatShortDate(availabilityDate)}`}
+              </p>
+              <p className="mt-0.5 text-[11px] text-[var(--color-shell-text-subtle)]">
+                This changes the date only. Every approved and active mentor stays listed.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => stepAvailabilityDate(-1)}
+              aria-label="Show availability for the previous day"
+              className={cn(triggerBase, 'px-2.5')}
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            <span className="min-w-[104px] text-center text-[13px] font-semibold text-[var(--color-shell-text)]">
+              {isAvailabilityLoading ? (
+                <Skeleton className="mx-auto h-4 w-20" />
+              ) : (
+                formatShortDate(availabilityDate)
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => stepAvailabilityDate(1)}
+              aria-label="Show availability for the next day"
+              className={cn(triggerBase, 'px-2.5')}
+            >
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            {availabilityDate !== today && (
+              <Button variant="outline" size="sm" onClick={() => setAvailabilityDate(today)}>
+                Today
+              </Button>
+            )}
+          </div>
+        </div>
+
         {/* Results header */}
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl font-bold text-[var(--color-shell-text)] sm:text-2xl">
@@ -489,7 +625,7 @@ export const MentorDirectoryPage: React.FC = () => {
             title={
               hasActiveFilters
                 ? 'No mentors match your filters'
-                : 'No mentors are currently available'
+                : 'No mentors are currently listed'
             }
             description={
               hasActiveFilters
@@ -500,19 +636,49 @@ export const MentorDirectoryPage: React.FC = () => {
             onAction={hasActiveFilters ? clearAllFilters : undefined}
           />
         ) : (
-          <div className={MENTOR_GRID_CLASS}>
-            {mentors.map((mentor) => (
-              <MentorCard
-                key={mentor.id}
-                variant="discovery"
-                directoryMentor={mentor}
-                segmentSlug={mentor.segments[0]?.slug || ''}
-                selectedDate={today}
-                today={today}
-                navigate={navigate}
-              />
-            ))}
-          </div>
+          <>
+            <div className={MENTOR_GRID_CLASS}>
+              {mentors.map((mentor) => (
+                <MentorCard
+                  key={mentor.id}
+                  variant="discovery"
+                  directoryMentor={mentor}
+                  directoryAvailability={availability.get(mentor.id) ?? null}
+                  segmentSlug={mentor.segments[0]?.slug || ''}
+                  selectedDate={availabilityDate}
+                  today={today}
+                  navigate={navigate}
+                />
+              ))}
+            </div>
+
+            {/*
+              The honest alternative for a seeker who genuinely wants the
+              filtered view. `/seeker/mentors` is availability-first discovery and
+              MAY be empty on a busy day, which is correct for it and wrong for
+              this page, so the two are reached by two different links rather than
+              one link being made to behave as both.
+            */}
+            <p className="text-center text-xs text-[var(--color-shell-text-muted)]">
+              Only want mentors you can book on {formatShortDate(availabilityDate)}?{' '}
+              <button
+                type="button"
+                onClick={() =>
+                  navigate(
+                    mentorListPath({
+                      segmentSlug: selectedSegmentId
+                        ? segments.find((s) => s.id === selectedSegmentId)?.slug ?? null
+                        : null,
+                      date: availabilityDate,
+                    })
+                  )
+                }
+                className="cursor-pointer font-semibold text-[var(--color-shell-primary)] underline underline-offset-2 hover:opacity-80 focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)]"
+              >
+                See mentors available on that day
+              </button>
+            </p>
+          </>
         )}
 
         {/* Pagination */}

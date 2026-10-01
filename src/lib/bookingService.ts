@@ -19,6 +19,7 @@ import {
   AuthoritativeJoinResult,
 } from './bookingEngine';
 import { bookingMatchesRequestedId } from './workspaceIdentity';
+import { resolveBookingLifecycle, type BookingLifecycle } from './bookingLifecycle';
 
 export type {
   SessionAccessResult,
@@ -994,6 +995,18 @@ export interface EnrichedBookingRecord extends Booking {
     minutesUntilSession: number;
   };
   /**
+   * The server-resolved lifecycle bucket, stamped by `server.ts` from the
+   * request's own clock reading. The mentor ledger groups on THIS and never on
+   * `Date.now()`, so a browser with a rewound clock cannot move a booking back
+   * into Pending Confirmation or push an overdue one out of Overdue.
+   *
+   * The optional type is deliberate rather than lenient: a payload from a server
+   * that predates this field has none, and a consumer must detect that and
+   * refetch rather than silently fall back to browser time. See
+   * `requireLifecycle` in `bookingService.ts`.
+   */
+  lifecycle?: BookingLifecycle;
+  /**
    * Open reschedule request, else the most recent closed one, else absent.
    * Present because the booking detail endpoints project it; a booking that was
    * never rescheduled simply has none.
@@ -1087,6 +1100,12 @@ export async function respondToRescheduleRequest(
 
 /**
  * Enriches a booking with joined seeker, payment, and deadline details.
+ *
+ * Used by the in-memory development path. On the production path the server
+ * stamps `deadlineInfo` AND `lifecycle` from its own clock
+ * (`enrichMentorBookingProjection` in `server.ts`); this local version exists so
+ * an offline dev preview still renders, and it is computed from whatever clock
+ * the caller passes.
  */
 export function enrichBooking(booking: Booking, db: BookingEngineContext): EnrichedBookingRecord {
   const seeker = db.profiles.find((p) => p.id === booking.seeker_id);
@@ -1107,6 +1126,9 @@ export function enrichBooking(booking: Booking, db: BookingEngineContext): Enric
     payment,
     duration_minutes: Number.isFinite(bookedMinutes) && bookedMinutes > 0 ? bookedMinutes : null,
     deadlineInfo,
+    // Same shape the server stamps, so the mentor ledger groups identically in
+    // the offline dev preview and in production.
+    lifecycle: resolveBookingLifecycle(booking),
   };
 }
 
@@ -1122,10 +1144,52 @@ export function enrichBooking(booking: Booking, db: BookingEngineContext): Enric
  * endpoint is reported as a failure instead of being rendered as "No Pending
  * Confirmations" while the booking sits verified in the database.
  */
-export async function fetchMentorBookings(
+export interface MentorBookingsResponse {
+  bookings: EnrichedBookingRecord[];
+  /**
+   * The instant the SERVER judged every `lifecycle` bucket in this response.
+   *
+   * Consuming pages subtract it from `Date.now()` to learn the offset between
+   * the two clocks and drive their display tick from the corrected value. That
+   * is a presentation correction only: no tab ever moves because of it.
+   */
+  serverNowMs: number | null;
+}
+
+/**
+ * Reads one booking's server-resolved lifecycle bucket, failing closed when the
+ * server did not send one.
+ *
+ * The alternative - treating a missing bucket as "not overdue" - is precisely
+ * the bug this whole change exists to fix: it would put an overdue booking back
+ * under Pending Confirmation, labelled "Awaiting your confirmation", purely
+ * because the response lacked a field. A booking the server could not classify
+ * is a booking this page must not guess about, so it is surfaced as an error and
+ * the page offers a retry.
+ */
+export function requireLifecycle(booking: EnrichedBookingRecord): BookingLifecycle {
+  if (!booking.lifecycle) {
+    throw new Error('BOOKING_STATE_UNAVAILABLE');
+  }
+  return booking.lifecycle;
+}
+
+/**
+ * Fetches mentor bookings with optional status filter.
+ *
+ * `GET /api/mentor/bookings` is the only source of truth and it reads the live
+ * `bookings` table for the signed-in mentor. The in-memory seed database is a
+ * development fallback for the case where the API cannot be REACHED at all.
+ *
+ * A response the server actually sent is never downgraded to an empty list: a
+ * non-2xx status (or a body without a `bookings` array) throws, so a failing
+ * endpoint is reported as a failure instead of being rendered as "No Pending
+ * Confirmations" while the booking sits verified in the database.
+ */
+export async function fetchMentorBookingsWithServerNow(
   mentorId: string,
   statusFilter?: string
-): Promise<EnrichedBookingRecord[]> {
+): Promise<MentorBookingsResponse> {
   const params = new URLSearchParams({ mentorId });
   if (statusFilter && statusFilter !== 'ALL') {
     params.append('status', statusFilter);
@@ -1148,7 +1212,11 @@ export async function fetchMentorBookings(
     if (!Array.isArray(data?.bookings)) {
       throw new Error('BOOKINGS_RESPONSE_INVALID');
     }
-    return data.bookings as EnrichedBookingRecord[];
+    const serverNowMs = Date.parse(data?.serverNow);
+    return {
+      bookings: data.bookings as EnrichedBookingRecord[],
+      serverNowMs: Number.isFinite(serverNowMs) ? serverNowMs : null,
+    };
   } catch (err: any) {
     // The request never reached the server (offline preview, network down).
     // Only in that case may the development seed data stand in.
@@ -1161,10 +1229,24 @@ export async function fetchMentorBookings(
         offline = offline.filter((b) => b.status === statusFilter);
       }
       offline.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-      return offline.map((b) => enrichBooking(b, db));
+      return { bookings: offline.map((b) => enrichBooking(b, db)), serverNowMs: null };
     }
     throw err;
   }
+}
+
+/**
+ * Array-only convenience wrapper, kept for callers that do not present
+ * server-derived countdowns (the workspace summary and the mentor home feed).
+ * Anything that renders a deadline must use
+ * `fetchMentorBookingsWithServerNow` instead so it can honour `serverNowMs`.
+ */
+export async function fetchMentorBookings(
+  mentorId: string,
+  statusFilter?: string
+): Promise<EnrichedBookingRecord[]> {
+  const { bookings } = await fetchMentorBookingsWithServerNow(mentorId, statusFilter);
+  return bookings;
 }
 
 /**

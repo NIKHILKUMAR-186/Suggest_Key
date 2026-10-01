@@ -1,13 +1,21 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AlertTriangle, Loader2, Clock } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { AlertTriangle, Loader2, Clock, ShieldAlert } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { MentorBookingCard } from '@/src/components/mentor/MentorBookingCard';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
-import { fetchMentorBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
-import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
+import {
+  fetchMentorBookingsWithServerNow,
+  requireLifecycle,
+  type EnrichedBookingRecord,
+} from '@/src/lib/bookingService';
+import {
+  bucketToMentorTab,
+  type MentorBookingTab,
+} from '@/src/lib/bookingLifecycle';
+import { useMentorBookingSync } from '@/src/hooks/useMentorBookingSync';
 import {
   isBookingUpcoming,
   resolveSessionLifecycle,
@@ -17,29 +25,78 @@ import {
   type SessionLifecycleState,
 } from '@/src/lib/sessionState';
 
+interface TabDescriptor {
+  id: MentorBookingTab;
+  label: string;
+  alert: boolean;
+}
+
+const TABS: readonly TabDescriptor[] = [
+  { id: 'pending', label: 'Pending Confirmation', alert: false },
+  { id: 'upcoming', label: 'Upcoming (Confirmed)', alert: false },
+  { id: 'overdue', label: 'Overdue / Action Required', alert: true },
+  { id: 'completed', label: 'Completed', alert: false },
+  { id: 'cancelled', label: 'Cancelled', alert: false },
+];
+
+const EMPTY_COPY: Record<MentorBookingTab, { title: string; description: string }> = {
+  pending: {
+    title: 'No Pending Confirmations',
+    description:
+      'Sessions appear here once the admin has verified the seeker payment, while you are still inside the meeting-link deadline.',
+  },
+  upcoming: {
+    title: 'No Confirmed Upcoming Sessions',
+    description:
+      'Confirmed sessions move here as soon as you attach a valid HTTPS meeting link.',
+  },
+  overdue: {
+    title: 'Nothing Overdue',
+    description:
+      'Every session waiting on you is still inside its meeting-link deadline. Anything that misses it appears here instead.',
+  },
+  completed: {
+    title: 'No Completed Sessions Yet',
+    description: 'Sessions you have already delivered will appear here with their workspace notes.',
+  },
+  cancelled: {
+    title: 'No Cancelled Sessions',
+    description: 'Cancelled and rejected sessions are listed here for your records.',
+  },
+};
+
 export const MentorBookingsPage: React.FC = () => {
   const { navigate } = useNavigation();
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'pending' | 'upcoming' | 'completed' | 'cancelled'>('pending');
+  const [activeTab, setActiveTab] = useState<MentorBookingTab>('pending');
   const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const mentorId = user?.id;
 
-  // Server clock reference, sampled once when the ledger first arrives. The list
-  // endpoint reconciles expired CONFIRMED rows to COMPLETED and attaches
-  // `isUpcoming` / `sessionState` to every booking, so grouping prefers those
-  // server fields; the sample is only the fallback when they are absent.
-  const serverNowMsRef = useRef<number | null>(null);
-  const serverNowMs = (): number => serverNowMsRef.current ?? Date.now();
+  /**
+   * The offset between this browser's clock and the server's, sampled from the
+   * `serverNow` the ledger response carries.
+   *
+   * The display tick adds this so countdowns and "Access opens in" read against
+   * the server's time rather than a laptop whose clock is minutes out. It is a
+   * presentation correction only: no tab ever moves because of it, and the
+   * original page's `serverNowMsRef` - which was seeded from `Date.now()` and so
+   * corrected nothing - is gone rather than kept as a second unsynced clock.
+   */
+  const clockOffsetMsRef = useRef<number>(0);
+  const serverNowMs = (): number => Date.now() + clockOffsetMsRef.current;
 
-  // Display-only ticking clock so the "Starts in" / "Access opens in" hint and
-  // the IN_PROGRESS live indicator advance without a manual refresh. It never
-  // drives tab grouping, which is server-authoritative.
+  /**
+   * Display-only ticking clock so the "Starts in" / "Access opens in" hint and
+   * the live indicator advance without a manual refresh, and so an overdue
+   * duration keeps counting up while the page is open. It is corrected to the
+   * server clock and it never drives tab grouping, which is server-authoritative.
+   */
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    const id = setInterval(() => setNowMs(Date.now() + clockOffsetMsRef.current), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -56,6 +113,10 @@ export const MentorBookingsPage: React.FC = () => {
   };
 
   const renderSessionHint = (b: EnrichedBookingRecord): React.ReactNode => {
+    // An overdue booking has already missed the deadline, so a countdown to it
+    // would be noise. The card renders the overdue duration instead.
+    if (b.lifecycle?.bucket === 'OVERDUE') return null;
+
     const state = resolveLifecycleLive(b);
     if (state === 'IN_PROGRESS') {
       const endsIn = formatCountdown(Math.max(0, Math.ceil(secondsUntilSessionEnd(b, nowMs))));
@@ -95,79 +156,127 @@ export const MentorBookingsPage: React.FC = () => {
     return null;
   };
 
-  const loadData = useCallback(async () => {
-    if (!mentorId) return;
-    setLoading(true);
-    setLoadError(null);
-    try {
-      // No status filter: every tab is derived from the same live booking rows
-      // so a booking can never be in one tab and missing from another.
-      const data = await fetchMentorBookings(mentorId);
-      if (serverNowMsRef.current === null) serverNowMsRef.current = Date.now();
-      setBookings(data);
-    } catch (err) {
-      // A failed load is NOT an empty ledger. Reporting it as "no bookings"
-      // would hide a real booking that exists in the database.
-      const code = err instanceof Error ? err.message : '';
-      setBookings([]);
-      setLoadError(
-        code === 'AUTH_REQUIRED'
-          ? 'Your session has expired. Sign in again to load your bookings.'
-          : code === 'FORBIDDEN_NOT_BOOKING_OWNER'
-          ? 'This account is not authorised to read mentor bookings.'
-          : 'We could not load your bookings from the server. Please refresh and try again.'
-      );
-      console.error('Failed to load mentor bookings:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [mentorId]);
+  const loadData = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (!mentorId) return;
+      // A background revalidation must never blank the ledger the mentor is
+      // reading; only an explicit first load shows the loading state.
+      if (!options.silent) setLoading(true);
+      setLoadError(null);
+      try {
+        // No status filter: every tab is derived from the same live booking rows
+        // so a booking can never be in one tab and missing from another.
+        const { bookings: data, serverNowMs: serverNowMsValue } =
+          await fetchMentorBookingsWithServerNow(mentorId);
+
+        // Fail closed on an unclassified booking. Guessing "not overdue" here
+        // is exactly the defect this page was rebuilt to remove, so an
+        // unclassifiable row is an error the mentor can retry, not a silent
+        // demotion into Pending Confirmation.
+        for (const booking of data) requireLifecycle(booking);
+
+        if (serverNowMsValue !== null) {
+          clockOffsetMsRef.current = serverNowMsValue - Date.now();
+        }
+        setBookings(data);
+      } catch (err) {
+        // A failed load is NOT an empty ledger. Reporting it as "no bookings"
+        // would hide a real booking that exists in the database.
+        const code = err instanceof Error ? err.message : '';
+        if (options.silent) {
+          // Keep whatever was on screen and log the miss; a transient realtime
+          // or network blip must not destroy the mentor's current view.
+          console.error('Background mentor booking revalidation failed:', err);
+          return;
+        }
+        setBookings([]);
+        setLoadError(
+          code === 'AUTH_REQUIRED'
+            ? 'Your session has expired. Sign in again to load your bookings.'
+            : code === 'FORBIDDEN_NOT_BOOKING_OWNER'
+            ? 'This account is not authorised to read mentor bookings.'
+            : code === 'BOOKING_STATE_UNAVAILABLE'
+            ? 'The server did not return a confirmed lifecycle state for these bookings, so they cannot be grouped safely. Refresh to try again.'
+            : 'We could not load your bookings from the server. Please refresh and try again.'
+        );
+        console.error('Failed to load mentor bookings:', err);
+      } finally {
+        if (!options.silent) setLoading(false);
+      }
+    },
+    [mentorId]
+  );
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Tab filtering. Upcoming/Completed are server-resolved (isUpcoming with the
-  // isBookingUpcoming fallback); an expired CONFIRMED row is never "upcoming".
-  const pendingBookings = bookings.filter((b) => b.status === 'MENTOR_PENDING');
-  const upcomingBookings = bookings.filter((b) => b.status === 'CONFIRMED' && resolveUpcoming(b));
-  const completedBookings = bookings.filter(
-    (b) => b.status === 'COMPLETED' || (b.status === 'CONFIRMED' && !resolveUpcoming(b))
-  );
-  const cancelledBookings = bookings.filter((b) => b.status === 'CANCELLED' || b.status === 'REJECTED');
-
-  const getFilteredBookings = () => {
-    switch (activeTab) {
-      case 'pending':
-        return pendingBookings;
-      case 'upcoming':
-        return upcomingBookings;
-      case 'completed':
-        return completedBookings;
-      case 'cancelled':
-        return cancelledBookings;
-      default:
-        return [];
+  /**
+   * Tab filtering, grouped on the SERVER's lifecycle bucket.
+   *
+   * This is the whole point of the change: nothing here reads `Date.now()` to
+   * decide whether a deadline passed. An overdue booking is absent from Pending
+   * Confirmation because the server put it in OVERDUE, not because this browser
+   * noticed the clock had moved.
+   */
+  const grouped = useMemo(() => {
+    const buckets: Record<MentorBookingTab, EnrichedBookingRecord[]> = {
+      pending: [],
+      upcoming: [],
+      overdue: [],
+      completed: [],
+      cancelled: [],
+    };
+    for (const booking of bookings) {
+      const tab = bucketToMentorTab(requireLifecycle(booking).bucket);
+      if (tab) buckets[tab].push(booking);
     }
-  };
+    return buckets;
+  }, [bookings]);
 
-  const currentList = getFilteredBookings();
+  const overdueBookings = grouped.overdue;
+  const overdueCount = overdueBookings.length;
+
+  /**
+   * Deadlines still ahead of the server clock. Handing these to the sync hook is
+   * what moves a booking from Pending to Overdue on its own, at the exact
+   * instant, with no refresh.
+   */
+  const upcomingDeadlines = useMemo(
+    () =>
+      [...grouped.pending]
+        .map((b) => b.lifecycle?.meetingLinkDeadlineUtc ?? null)
+        .filter((d): d is string => typeof d === 'string'),
+    [grouped.pending]
+  );
+
+  useMentorBookingSync({
+    mentorId: mentorId ?? null,
+    deadlinesUtc: upcomingDeadlines,
+    onInvalidate: useCallback(() => {
+      void loadData({ silent: true });
+    }, [loadData]),
+  });
+
+  const currentList = grouped[activeTab];
+
+  const emptyCopy = EMPTY_COPY[activeTab];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 sm:text-3xl">
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-950 dark:text-[var(--color-shell-text)] sm:text-3xl">
             Mentor Bookings
           </h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <p className="mt-1 text-sm text-zinc-500 dark:text-[var(--color-shell-text-muted)]">
             Confirm sessions the admin has verified, provide secure HTTPS meeting links, and manage
             upcoming schedules.
           </p>
         </div>
 
         <Button
-          onClick={loadData}
+          onClick={() => loadData()}
           variant="outline"
           size="sm"
           className="text-xs self-start"
@@ -178,52 +287,66 @@ export const MentorBookingsPage: React.FC = () => {
         </Button>
       </div>
 
-      {/* Overdue alert banner if any pending bookings are overdue */}
-      {pendingBookings.some((b) => b.deadlineInfo?.isOverdue) && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 flex items-start gap-3 text-xs text-amber-900">
-          <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+      {/* Overdue summary. Warning, not alarm: nothing has been cancelled and the
+          booking is still the mentor's to resolve. */}
+      {overdueCount > 0 && (
+        <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-4 flex items-start gap-3 text-xs text-[var(--color-shell-text)]">
+          <ShieldAlert className="h-5 w-5 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold block text-sm">Action Required: Overdue Meeting Links</span>
+            <span className="font-bold block text-sm">
+              {overdueCount} session{overdueCount === 1 ? '' : 's'} past the meeting-link deadline
+            </span>
             <p>
-              You have session(s) starting within {MEETING_LINK_DEADLINE_MINUTES} minutes without a confirmed meeting link. Missing the recommended deadline does not cancel the session, but prompt submission ensures seeker readiness.
+              These are no longer routine pending confirmations. Missing the deadline does not
+              cancel a booking and nothing has been refunded &mdash; the seeker is still waiting. Add a
+              meeting link to confirm, or cancel the booking to release the slot and start a refund.
             </p>
+            <button
+              type="button"
+              onClick={() => setActiveTab('overdue')}
+              className="font-semibold underline underline-offset-2 cursor-pointer"
+            >
+              Review overdue sessions
+            </button>
           </div>
         </div>
       )}
 
       {/* Tabs */}
-      <div className="flex border-b border-zinc-200 gap-8 text-sm font-medium overflow-x-auto">
-        {[
-          { id: 'pending', label: 'Pending Confirmation', count: pendingBookings.length },
-          { id: 'upcoming', label: 'Upcoming (Confirmed)', count: upcomingBookings.length },
-          { id: 'completed', label: 'Completed (Workspaces)', count: completedBookings.length },
-          { id: 'cancelled', label: 'Cancelled', count: cancelledBookings.length },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            className={`pb-3 capitalize transition-colors whitespace-nowrap cursor-pointer flex items-center gap-2 ${
-              activeTab === tab.id
-                ? 'border-b-2 border-zinc-900 text-zinc-950 font-bold'
-                : 'text-zinc-500 hover:text-zinc-800'
-            }`}
-          >
-            <span>{tab.label}</span>
-            {tab.count > 0 && (
-              <span
-                className={`px-1.5 py-0.5 text-[11px] rounded-full font-semibold ${
-                  activeTab === tab.id
-                    ? tab.id === 'pending'
-                      ? 'bg-amber-100 text-amber-800'
-                      : 'bg-zinc-900 text-white'
-                    : 'bg-zinc-100 text-zinc-600'
-                }`}
-              >
-                {tab.count}
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="flex border-b border-zinc-200 dark:border-[var(--color-shell-border)] gap-8 text-sm font-medium overflow-x-auto">
+        {TABS.map((tab) => {
+          const count = grouped[tab.id].length;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              aria-current={isActive ? 'page' : undefined}
+              className={`pb-3 transition-colors whitespace-nowrap cursor-pointer flex items-center gap-2 ${
+                isActive
+                  ? 'border-b-2 border-[var(--color-shell-text)] text-[var(--color-shell-text)] font-bold'
+                  : 'text-zinc-500 dark:text-[var(--color-shell-text-muted)] hover:text-zinc-800 dark:hover:text-[var(--color-shell-text)]'
+              }`}
+            >
+              <span>{tab.label}</span>
+              {count > 0 && (
+                <span
+                  className={`px-1.5 py-0.5 text-[11px] rounded-full font-semibold ${
+                    isActive
+                      ? tab.alert
+                        ? 'bg-[var(--color-shell-warning)] text-[var(--color-shell-text-contrast)]'
+                        : 'bg-[var(--color-shell-text)] text-[var(--color-shell-surface)]'
+                      : tab.alert
+                        ? 'bg-[var(--color-shell-warning-soft)] text-[var(--color-shell-warning)]'
+                        : 'bg-zinc-100 text-zinc-600 dark:bg-[var(--color-shell-bg-hover)] dark:text-[var(--color-shell-text-muted)]'
+                  }`}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tab Content */}
@@ -239,31 +362,15 @@ export const MentorBookingsPage: React.FC = () => {
             <div className="space-y-2">
               <span className="font-bold block text-sm">Bookings could not be loaded</span>
               <p>{loadError}</p>
-              <Button onClick={loadData} variant="outline" size="sm" className="text-xs">
+              <Button onClick={() => loadData()} variant="outline" size="sm" className="text-xs">
                 Try again
               </Button>
             </div>
           </div>
         ) : currentList.length === 0 ? (
           <EmptyState
-            title={
-              activeTab === 'pending'
-                ? 'No Pending Confirmations'
-                : activeTab === 'upcoming'
-                ? 'No Confirmed Upcoming Sessions'
-                : activeTab === 'completed'
-                ? 'No Completed Sessions Yet'
-                : 'No Cancelled Sessions'
-            }
-            description={
-              activeTab === 'pending'
-                ? 'Sessions appear here once the admin has verified the seeker payment and you still need to attach the meeting link.'
-                : activeTab === 'upcoming'
-                ? 'Confirmed sessions move here as soon as you attach a valid HTTPS meeting link.'
-                : activeTab === 'completed'
-                ? 'Sessions you have already delivered will appear here with their workspace notes.'
-                : 'Cancelled and rejected sessions are listed here for your records.'
-            }
+            title={emptyCopy.title}
+            description={emptyCopy.description}
             actionLabel={activeTab === 'pending' ? 'View Availability' : undefined}
             onAction={activeTab === 'pending' ? () => navigate('/mentor/availability') : undefined}
           />
@@ -280,7 +387,7 @@ export const MentorBookingsPage: React.FC = () => {
                 <MentorBookingCard
                   booking={booking}
                   onAction={(b) => {
-                    if (b.status === 'COMPLETED' || resolveLifecycleLive(b) === 'COMPLETED') {
+                    if (b.lifecycle?.bucket === 'COMPLETED') {
                       navigate(`/mentor/workspace?bookingId=${b.id}`);
                       return;
                     }

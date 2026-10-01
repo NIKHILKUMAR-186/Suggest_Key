@@ -923,3 +923,143 @@ export async function fetchEligibleLanguages(): Promise<{ languages: string[]; e
     return { languages: [], error: err };
   }
 }
+
+// --------------------------------------------------------------------------
+// 7. AVAILABILITY SUMMARY FOR THE DIRECTORY — display only, never a filter
+// --------------------------------------------------------------------------
+
+/**
+ * What the directory knows about one mentor on one date.
+ *
+ * `state` is three-valued on purpose. Collapsing "no slot on this date" and
+ * "we could not reach the availability service" into one `none` value is what
+ * makes a busy day look like a broken mentor, so the two stay apart.
+ */
+export type DirectoryAvailabilityState = 'available' | 'none' | 'unknown';
+
+export interface DirectoryMentorAvailability {
+  mentorId: string;
+  state: DirectoryAvailabilityState;
+  /** Real free slots on the date. Never a computed or estimated number. */
+  availableCount: number;
+  /** The earliest free slot's local start time, e.g. '18:30'. Null when none. */
+  nextLocalStartTime: string | null;
+  /** The segment whose offer the slot belongs to. Null when unknown. */
+  segmentId: string | null;
+  /** The offer the slot belongs to. Null when the mentor has no active offer. */
+  gigId: string | null;
+  /** When the server generated this. Absent on 'unknown'. */
+  generatedAt: string | null;
+}
+
+export interface DirectoryAvailabilityResult {
+  byMentorId: Map<string, DirectoryMentorAvailability>;
+  /** True when at least one segment lookup failed, so the page can say so. */
+  partial: boolean;
+}
+
+/**
+ * Picks which of two availability answers for the SAME mentor should be shown.
+ *
+ * A mentor holds one active gig per segment, so `fetchMentorDirectoryAvailability`
+ * receives them once per segment and this is where those collapse into one. The
+ * ordering encodes the only three facts that matter:
+ *
+ *   1. A real slot beats no slot, always.
+ *   2. Among real slots, the earliest is the one a seeker actually wants.
+ *   3. Any answer beats none, so `first` stands until `second` beats it.
+ *
+ * `'unknown'` is deliberately NOT an input: a segment that failed to answer
+ * never produces a candidate at all, so an unresolved segment can never
+ * overwrite a real answer. "No slot" and "no answer" stay distinct facts all the
+ * way to the card.
+ */
+export function pickBetterDirectoryAvailability(
+  first: DirectoryMentorAvailability | null | undefined,
+  second: DirectoryMentorAvailability | null | undefined
+): DirectoryMentorAvailability | null {
+  if (!first) return second ?? null;
+  if (!second) return first;
+  if (first.state !== 'available' && second.state === 'available') return second;
+  if (first.state === 'available' && second.state === 'available') {
+    const earlier = (second.nextLocalStartTime || '99:99') < (first.nextLocalStartTime || '99:99');
+    return earlier ? second : first;
+  }
+  return first;
+}
+
+/**
+ * Availability for every mentor on a page of the global directory, for ONE
+ * date, used to render "Available on Oct 2" or "No slots on Oct 2".
+ *
+ * The critical property: this function CANNOT remove a mentor. It has no
+ * filtering role at all — it returns a map, and the page decides what to draw
+ * for a mentor that is missing from it. That is why the availability-first
+ * discovery query (`fetchDiscoverableMentors`) and this one are separate: there,
+ * a missing slot removes the mentor; here, a missing slot only changes a label.
+ *
+ * Bookability still comes from the server and never from the browser. Slots are
+ * not generated here, not cached here and not inferred from the client's clock:
+ * every number below is read from `GET /api/mentor-availability/slots`, the same
+ * endpoint mentor detail uses, because RLS scopes `bookings` and `slot_holds` to
+ * the participants of a reservation and a direct client query would only ever
+ * see the caller's own rows.
+ *
+ * Round trips are per DISTINCT SEGMENT on the page, not per mentor: the endpoint
+ * already answers for every mentor of a segment in one response, so a directory
+ * page spanning four segments costs four calls rather than twelve.
+ *
+ * A segment whose lookup fails contributes nothing and leaves its mentors in
+ * the `unknown` state. It is never downgraded to `none`, because "no slot" and
+ * "no answer" are different facts and only one of them is a claim about the
+ * mentor.
+ */
+export async function fetchMentorDirectoryAvailability(
+  mentors: DirectoryMentor[],
+  dateStr: string
+): Promise<DirectoryAvailabilityResult> {
+  const byMentorId = new Map<string, DirectoryMentorAvailability>();
+  if (mentors.length === 0) return { byMentorId, partial: false };
+  if (!isSupabaseConfigured()) return { byMentorId, partial: false };
+
+  // Only segments the mentors on THIS page actually belong to are requested.
+  const segmentIds = Array.from(
+    new Set(mentors.flatMap((m) => (m.segments || []).map((s) => s.id)).filter(Boolean))
+  );
+
+  if (segmentIds.length === 0) return { byMentorId, partial: false };
+
+  let partial = false;
+  const responses = await Promise.all(
+    segmentIds.map((segmentId) => fetchMentorSlots({ segmentId }, dateStr))
+  );
+
+  responses.forEach((response) => {
+    if (response.error || !response.data) {
+      partial = true;
+      return;
+    }
+    for (const result of response.data.byMentorId.values()) {
+      const availableSlots = (result.slots || []).filter((s) => s.is_available);
+      const candidate: DirectoryMentorAvailability = {
+        mentorId: result.mentor_id,
+        state: availableSlots.length > 0 ? 'available' : 'none',
+        availableCount: availableSlots.length,
+        nextLocalStartTime: availableSlots[0]?.local_start_time ?? null,
+        segmentId: result.gig?.segment_id ?? null,
+        gigId: result.gig?.id ?? null,
+        generatedAt: response.data?.generated_at ?? null,
+      };
+
+      const current = byMentorId.get(result.mentor_id);
+      // A mentor may hold one active gig per segment, so they appear once per
+      // segment. Keep the most useful answer rather than whichever segment
+      // happened to be requested last: any real slot beats none, and among real
+      // slots the earliest is the one a seeker actually wants.
+      const best = pickBetterDirectoryAvailability(current, candidate);
+      if (best) byMentorId.set(result.mentor_id, best);
+    }
+  });
+
+  return { byMentorId, partial };
+}
