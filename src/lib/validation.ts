@@ -289,6 +289,25 @@ const suspendedUntilField = isoDateTimeField.optional();
 // Nested availability payloads (shared by the mentor and admin routes)
 // ---------------------------------------------------------------------------
 
+/**
+ * A single availability window longer than this is rejected.
+ *
+ * `startTime < endTime` already forbids wrapping past midnight, so a window
+ * can never legitimately be 12 hours or more in a one-hour-per-session
+ * scheduling product. In practice only a 12-hour clock mistake produces one:
+ * a mentor meaning 13:10 -> 13:15 who typed "1:10" against an AM/PM clock
+ * writes 01:10 -> 13:15, and the engine faithfully expands that 12h05m block
+ * into twelve bookable 60-minute slots starting at 01:10 local time. Catching
+ * it here turns a silent all-day availability into a form error the mentor can
+ * see and fix.
+ */
+const MAX_AVAILABILITY_WINDOW_MINUTES = 12 * 60;
+
+const windowMinutes = (time: string) => {
+  const [hh, mm] = time.split(':').map(Number);
+  return (hh || 0) * 60 + (mm || 0);
+};
+
 const availabilityRuleSchema = z
   .strictObject({
     dayOfWeek: z.int('Day must be a whole number.').min(0, 'Day must be between 0 and 6.').max(6, 'Day must be between 0 and 6.'),
@@ -299,7 +318,15 @@ const availabilityRuleSchema = z
   .refine((rule) => rule.startTime < rule.endTime, {
     message: 'Start time must be earlier than end time.',
     path: ['startTime'],
-  });
+  })
+  .refine(
+    (rule) => windowMinutes(rule.endTime) - windowMinutes(rule.startTime) < MAX_AVAILABILITY_WINDOW_MINUTES,
+    {
+      message:
+        'That time window is 12 hours or longer. Check the start and end times — a window this long is usually a 1:10 PM / 1:10 AM mix-up.',
+      path: ['startTime'],
+    }
+  );
 
 const availabilityExceptionSchema = z
   .strictObject({
@@ -320,6 +347,19 @@ const availabilityExceptionSchema = z
       exception.startTime! < exception.endTime!),
     {
       message: 'An available day needs an end time later than its start time.',
+      path: ['startTime'],
+    }
+  )
+  .refine(
+    (exception) =>
+      !exception.isAvailable ||
+      !exception.startTime ||
+      !exception.endTime ||
+      windowMinutes(exception.endTime) - windowMinutes(exception.startTime) <
+        MAX_AVAILABILITY_WINDOW_MINUTES,
+    {
+      message:
+        'That time window is 12 hours or longer. Check the start and end times — a window this long is usually a 1:10 PM / 1:10 AM mix-up.',
       path: ['startTime'],
     }
   );
@@ -344,11 +384,25 @@ const availabilityExceptionsSchema = z.strictObject({
 const gigTitleField = text({ min: 1, max: MAX_TITLE_LENGTH, label: 'Title' });
 const gigDescriptionField = optionalText({ max: MAX_BIO_LENGTH, label: 'Description', multiline: true });
 
+/**
+ * The pre-discount price, or null when the gig was never reduced.
+ *
+ * Accepted as `null` (or `''`) because "no original price" is the normal state
+ * and an admin must be able to remove a struck-through price by clearing the
+ * field. The `> price` rule is a database CHECK, so the real constraint message
+ * is raised there rather than duplicated here with a second, drifting copy.
+ */
+const gigOriginalPriceField = z.union([priceField, z.literal('').transform(() => null), z.null()]);
+
 const gigCreateShape = {
   title: gigTitleField,
   segmentId: uuidField,
   durationMinutes: gigDurationField,
   priceInr: priceField,
+  // `.optional()` is required, not cosmetic: "no original price" is the normal
+  // state and an omitted key must mean exactly that. Without it every existing
+  // gig-create caller that doesn't send the field is rejected outright.
+  originalPriceInr: gigOriginalPriceField.optional(),
   description: gigDescriptionField,
 };
 
@@ -356,6 +410,7 @@ const gigUpdateShape = {
   title: gigTitleField.optional(),
   durationMinutes: gigDurationField.optional(),
   priceInr: priceField.optional(),
+  originalPriceInr: gigOriginalPriceField.optional(),
   description: optionalText({ max: MAX_BIO_LENGTH, label: 'Description', multiline: true }),
   isActive: z.boolean().optional(),
 };
@@ -537,6 +592,79 @@ export function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>):
   req.body = result.data;
   return result.data;
 }
+
+// ---------------------------------------------------------------------------
+// Route schemas, keyed by the route they belong to
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Coupons
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors the `coupons` CHECK constraints.
+ *
+ * The database is the authority on every rule here; these exist so an admin
+ * gets the rule in a form next to the field rather than as a constraint
+ * violation after the fact.
+ */
+const couponCodeField = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .pipe(
+    z
+      .string()
+      .regex(/^[A-Z0-9_]{4,24}$/, 'Use 4 to 24 letters, numbers or underscores.'),
+  );
+
+const couponDiscountValueField = z
+  .int('Discount must be a whole number.')
+  .min(1, 'Discount must be at least 1.')
+  .max(10_000_000, 'Discount is unrealistically high.');
+
+const couponUseLimitField = z
+  .int('Limit must be a whole number.')
+  .min(1, 'Limit must be at least 1.')
+  .max(1_000_000, 'Limit is unrealistically high.');
+
+/** `null` clears a limit, which is how the admin form expresses "unlimited". */
+const nullablePositiveInt = (label: string) =>
+  z.union([couponUseLimitField, z.literal('').transform(() => null), z.null()]).optional();
+
+const couponShape = {
+  code: couponCodeField,
+  description: optionalText({ max: 300, label: 'Description', multiline: true }),
+  discountType: z.enum(['PERCENTAGE', 'FIXED'], { message: 'Choose a percentage or a fixed amount.' }),
+  discountValue: couponDiscountValueField,
+  maxDiscountInr: z
+    .union([priceField, z.literal('').transform(() => null), z.null()])
+    .optional(),
+  minOrderAmountInr: priceField.optional().default(0),
+  segmentId: z.union([uuidField, z.literal('').transform(() => null), z.null()]).optional(),
+  mentorId: z.union([uuidField, z.literal('').transform(() => null), z.null()]).optional(),
+  maxTotalUses: nullablePositiveInt('Total use limit'),
+  maxUsesPerUser: nullablePositiveInt('Per-user limit'),
+  startsAt: isoDateTimeField.optional(),
+  expiresAt: z.union([isoDateTimeField, z.literal('').transform(() => null), z.null()]).optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).optional().default('ACTIVE'),
+};
+
+const couponUpdateShape: Record<string, z.ZodTypeAny> = {
+  description: optionalText({ max: 300, label: 'Description', multiline: true }),
+  discountType: z.enum(['PERCENTAGE', 'FIXED'], { message: 'Choose a percentage or a fixed amount.' }).optional(),
+  discountValue: couponDiscountValueField.optional(),
+  maxDiscountInr: z
+    .union([priceField, z.literal('').transform(() => null), z.null()])
+    .optional(),
+  minOrderAmountInr: priceField.optional(),
+  segmentId: z.union([uuidField, z.literal('').transform(() => null), z.null()]).optional(),
+  mentorId: z.union([uuidField, z.literal('').transform(() => null), z.null()]).optional(),
+  maxTotalUses: nullablePositiveInt('Total use limit'),
+  maxUsesPerUser: nullablePositiveInt('Per-user limit'),
+  startsAt: isoDateTimeField.optional(),
+  expiresAt: z.union([isoDateTimeField, z.literal('').transform(() => null), z.null()]).optional(),
+};
 
 // ---------------------------------------------------------------------------
 // Route schemas, keyed by the route they belong to
@@ -903,6 +1031,55 @@ export const apiSchemas = {
       .int('Retention must be a whole number of days.')
       .min(1, 'Retention must be at least 1 day.')
       .max(365, 'Retention must be 365 days or fewer.'),
+  }),
+
+  // -- coupons ---------------------------------------------------------------
+  /**
+   * The whole body of `POST /api/seeker/bookings/:id/coupon`.
+   *
+   * A CODE AND NOTHING ELSE. There is deliberately no `amountInr`,
+   * `discountAmountInr`, `originalAmountInr` or `couponId` field, and that
+   * omission is the rule: `apply_coupon_to_booking` is the only writer of the
+   * pricing snapshot and it reads every number from a locked row. Adding such a
+   * field here would be rejected as an unknown key rather than silently
+   * ignored.
+   */
+  couponApply: z.strictObject({
+    code: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .pipe(
+        z
+          .string()
+          .regex(
+            /^[A-Z0-9_]{4,24}$/,
+            'Use 4 to 24 letters, numbers or underscores.',
+          ),
+      ),
+  }),
+
+  // -- admin: coupons --------------------------------------------------------
+  /** Shared by create and update; only requiredness differs. */
+  couponCreate: z.strictObject(couponShape).refine(
+    // A coupon targeted at both a segment and a single mentor is refused by the
+    // database CHECK, so it is refused here where the admin can be told why
+    // rather than getting a constraint violation.
+    (coupon) => !(coupon.segmentId && coupon.mentorId),
+    {
+      message: 'Target a segment or a mentor, not both.',
+      path: ['segmentId'],
+    },
+  ),
+
+  couponUpdate: z
+    .strictObject(couponUpdateShape)
+    .refine(hasAtLeastOneField, { message: 'No editable fields were provided.' }),
+
+  couponStatus: z.strictObject({
+    status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED'], {
+      message: 'Status must be ACTIVE, INACTIVE or ARCHIVED.',
+    }),
   }),
 
   // -- notifications, sessions, workspaces ---------------------------------

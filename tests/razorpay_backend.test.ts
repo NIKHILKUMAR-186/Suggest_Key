@@ -154,6 +154,10 @@ function createFakeStore(): FakeStore {
         failure_reason: null,
         refund_id: null,
         refund_status: null,
+        refund_amount_paise: null,
+        refunded_at: null,
+        refund_reason: null,
+        manual_refund_required: false,
       };
       payments.set(row.id, row);
       return row;
@@ -208,6 +212,52 @@ function createFakeStore(): FakeStore {
       if (p.status !== 'VERIFIED') return false;
       p.status = refundStatus === 'REFUNDED' ? 'REFUNDED' : 'REFUND_FAILED';
       return true;
+    },
+
+    markRefundInitiated: async ({ paymentId, refundId, amountPaise, reason, at }: { paymentId: string; refundId: string; amountPaise: number; reason: string; at: string }) => {
+      const p = payments.get(paymentId);
+      if (!p || p.status !== 'VERIFIED') return null;
+      p.refund_id = refundId;
+      p.refund_status = 'PENDING';
+      p.refund_amount_paise = amountPaise;
+      p.refund_reason = reason;
+      void at;
+      return p;
+    },
+
+    markPaymentRefunded: async ({ paymentId, refundId, amountPaise, reason, at }: { paymentId: string; refundId: string; amountPaise: number; reason: string; at: string }) => {
+      const p = payments.get(paymentId);
+      if (!p || p.status !== 'VERIFIED') return null;
+      p.status = 'REFUNDED';
+      p.refund_id = refundId;
+      p.refund_status = 'REFUNDED';
+      p.refund_amount_paise = amountPaise;
+      p.refund_reason = reason;
+      p.refunded_at = new Date().toISOString();
+      refunds.push({ paymentId, refundId, status: 'REFUNDED' });
+      void at;
+      return p;
+    },
+
+    markPaymentRefundFailed: async ({ paymentId, refundId, reason, at }: { paymentId: string; refundId: string; reason: string; at: string }) => {
+      const p = payments.get(paymentId);
+      if (!p || p.status !== 'VERIFIED') return null;
+      p.status = 'REFUND_FAILED';
+      p.refund_id = refundId;
+      p.refund_status = 'FAILED';
+      p.refund_reason = reason;
+      void at;
+      return p;
+    },
+
+    markManualRefundRequired: async ({ paymentId, reason, at }: { paymentId: string; reason: string; at: string }) => {
+      const p = payments.get(paymentId);
+      if (!p || p.status !== 'VERIFIED' || p.gateway !== 'manual') return null;
+      p.manual_refund_required = true;
+      p.refund_status = 'PENDING';
+      p.refund_reason = reason;
+      void at;
+      return p;
     },
 
     insertPaymentEvent: async (event: PaymentEventInput) => { events.push(event); },
@@ -524,6 +574,7 @@ describe('razorpay: order creation is idempotent', () => {
       status: 'PENDING_VERIFICATION', gateway: 'manual', razorpay_order_id: null,
       razorpay_payment_id: null, razorpay_signature: null, captured_at: null,
       failure_reason: null, refund_id: null, refund_status: null,
+      refund_amount_paise: null, refunded_at: null, refund_reason: null, manual_refund_required: false,
     });
     const result = await runCreateRazorpayOrder({ bookingId: BOOKING_ID, callerId: SEEKER_ID, gateway: createFakeGateway(), store, now: NOW });
     assert.ok(!result.ok && result.error.code === 'PAYMENT_ALREADY_IN_PROGRESS');
@@ -545,6 +596,7 @@ describe('razorpay: order creation is idempotent', () => {
         status: 'PENDING_VERIFICATION', gateway: 'manual', razorpay_order_id: null,
         razorpay_payment_id: null, razorpay_signature: null, captured_at: null,
         failure_reason: null, refund_id: null, refund_status: null,
+        refund_amount_paise: null, refunded_at: null, refund_reason: null, manual_refund_required: false,
       });
       return realAttach(args);
     };

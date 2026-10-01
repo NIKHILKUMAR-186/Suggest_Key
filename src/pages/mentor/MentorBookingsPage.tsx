@@ -7,6 +7,7 @@ import { MentorBookingCard } from '@/src/components/mentor/MentorBookingCard';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchMentorBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import {
   isBookingUpcoming,
   resolveSessionLifecycle,
@@ -184,7 +185,7 @@ export const MentorBookingsPage: React.FC = () => {
           <div className="space-y-1">
             <span className="font-bold block text-sm">Action Required: Overdue Meeting Links</span>
             <p>
-              You have session(s) scheduled in less than 2 hours without a confirmed meeting link. Missing the recommended deadline does not cancel the session, but prompt submission ensures seeker readiness.
+              You have session(s) starting within {MEETING_LINK_DEADLINE_MINUTES} minutes without a confirmed meeting link. Missing the recommended deadline does not cancel the session, but prompt submission ensures seeker readiness.
             </p>
           </div>
         </div>

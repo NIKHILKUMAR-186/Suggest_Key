@@ -235,13 +235,57 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 
 ### Seeker + admin (allowedRoles `['seeker','admin']`)
 
-`/seeker` · `/seeker/mentors` · `/seeker/mentor-detail` ·
-`/seeker/payment` and `/seeker/checkout` · `/seeker/bookings` ·
-`/seeker/booking-detail` · `/seeker/session` · `/seeker/workspace` ·
-`/seeker/notifications` · `/seeker/settings`
+`/seeker` · `/seeker/mentors` · `/seeker/mentor-profile` ·
+`/seeker/mentor-detail` · `/seeker/payment` and `/seeker/checkout` ·
+`/seeker/bookings` · `/seeker/booking-detail` · `/seeker/session` ·
+`/seeker/workspace` · `/seeker/notifications` · `/seeker/settings`
+
+`/seeker/mentor-profile` (`SeekerMentorProfilePage`) is the **read-only**
+public mentor profile, and `/seeker/mentor-detail`
+(`SeekerMentorDetailPage`) is the **transactional** slot-selection and
+booking page. They are separate routes on purpose: the profile never creates a
+hold and never reaches Razorpay. The profile's "Back" is the shared
+`mentorDetailBackPath()` helper, so both pages return to the same contextual
+landing page.
 
 `/mentors` and `/mentors/*` → `MentorDirectoryPage`, allowedRoles
 `['seeker','admin']`.
+
+#### Public read API behind these two routes
+
+| Method | Route | Auth | Role | Purpose |
+|---|---|---|---|---|
+| `GET` | `/api/seeker/segments/:slug/mentors` | none | — | Discovery list for one segment, optionally topic- and date-filtered |
+| `GET` | `/api/seeker/mentors/:id/profile` | none | — | One mentor's public profile and **all** of their active offers |
+
+Both are read-only and unauthenticated, and both apply the same eligibility
+rule in TypeScript, not in SQL: a `profiles` row with a real `full_name`, an
+`approved` + `approved` + `is_active` `mentor_profiles` row,
+`deriveAccountState(...).canPerformOperationalActions` (so a suspended or
+deactivated account is excluded), and at least one segment membership. RLS
+already hides most of these under the anon key, but the predicate is repeated
+because both handlers read through the service-role client, which bypasses RLS.
+
+A mentor who is unapproved, deactivated, suspended or a member of no segment is
+`404` from `/api/seeker/mentors/:id/profile` rather than an empty profile, so
+the endpoint cannot be used to confirm that such a mentor exists.
+
+`/api/seeker/mentors/:id/profile` uses the service role, because `profiles` RLS
+is own-row-or-admin and a seeker is therefore unable to read another mentor's
+profile row with the anon key. It compensates with an **explicit** column
+list — `SELECT *` is never used — and returns only:
+
+- from `mentor_profiles`: `id`, `headline`, `about`, `experience_years`,
+  `languages`, `expertise`, `is_approved`, `is_featured`, `is_active`,
+  `approval_status`
+- from `profiles`: `id`, `full_name`, `avatar_url`, `timezone`,
+  `account_status`, `suspended_until` — of which the last two are read **only**
+  as part of the eligibility gate and are never echoed to the client
+
+It never exposes contact details, notes, verification documents, or any
+transactional table (bookings, slots, holds, payments). The profile page itself
+creates no hold and calls no payment API; it links to `/seeker/mentor-detail`
+with an explicit `gigId` so that booking context is named rather than inferred.
 
 ### Mentor + admin (allowedRoles `['mentor','admin']`)
 
@@ -686,7 +730,7 @@ Authoritative source: `src/config/app.ts` for the server copy and display, and
 | `HOLD_DURATION_MS` | **5 min** | How long a slot is reserved during checkout. DB-enforced via `hold_duration_interval()`. |
 | `BOOKING_CUTOFF_MS` | **5 min** | A slot stays bookable while `slotStart − now >= 5 min`, on absolute instants. Replaces the old 2-hour advance rule, which no longer exists. DB-enforced in `create_booking_with_hold()` via `clock_timestamp()`. |
 | `SESSION_ACCESS_WINDOW_MS` | **5 min (T−5)** | Meeting link becomes readable at `start − 5 min`. |
-| `MEETING_LINK_DEADLINE_MS` | **2 h** | Recommended deadline for the *mentor* to add the link. Operational guidance; it never blocks booking. |
+| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. Audit/overdue only; it never blocks booking and never cancels one. |
 | `NORMAL_CANCELLATION_WINDOW_MINUTES` | **10 min** | Seeker may cancel/reschedule while `start − now >= 10 min`. |
 | `DEFAULT_TIMEZONE` | `Asia/Kolkata` | Default on `profiles.timezone`, `bookings.*_timezone`, `mentor_availability.timezone`. |
 

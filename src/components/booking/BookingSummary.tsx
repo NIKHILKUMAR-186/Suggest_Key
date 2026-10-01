@@ -2,10 +2,77 @@ import React from 'react';
 import { CalendarDays, Clock, Globe, Receipt, Timer } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { getInitials } from '@/src/lib/avatar';
-import { formatInr } from '@/src/lib/seekerFormat';
+import { formatInr, formatOriginalPrice } from '@/src/lib/seekerFormat';
 import { formatClockTime, formatSessionDate, formatZoneLabel } from '@/src/lib/sessionState';
 import { DetailItem, DetailList, TotalRow } from '@/src/components/booking/StatePanel';
 import type { EnrichedBookingRecord } from '@/src/lib/bookingService';
+
+/**
+ * The price rows under a booking summary.
+ *
+ * Shared by the payment page and the booking-detail page so a seeker cannot see
+ * two different breakdowns for one booking.
+ *
+ * Every figure is read from the booking snapshot, never recomputed here. The
+ * discount row and the struck-through original appear only when the booking
+ * actually carries them, so an uncouponed booking shows a single line and never
+ * a "₹0 OFF" that reads as a discount nobody received.
+ */
+export const BookingPriceBreakdown: React.FC<{
+  booking: EnrichedBookingRecord;
+  className?: string;
+}> = ({ booking, className }) => {
+  const base = formatInr(booking.base_amount_inr ?? booking.amount_inr);
+  const original = formatOriginalPrice(
+    booking.amount_inr,
+    // The gig's own original price is the fallback for a booking created before
+    // the snapshot existed, so an older row still shows its true list price.
+    booking.original_amount_inr ?? booking.gig?.original_price_inr,
+  );
+  const discount = formatInr(booking.discount_amount_inr);
+  const total = formatInr(booking.amount_inr ?? booking.gig?.price_inr) || '—';
+  const hasCoupon = Boolean(booking.coupon_code) && (booking.discount_amount_inr ?? 0) > 0;
+
+  // One price means one line. The base and the total are the same number when
+  // there is no coupon, so rendering both would be visual noise.
+  if (!original && !hasCoupon) {
+    return <TotalRow label="Amount due" value={total} />;
+  }
+
+  return (
+    <div className={cn('space-y-2', className)}>
+      {original && (
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="text-[12.5px] text-[var(--color-shell-text-subtle)]">Original price</span>
+          <span className="text-[13px] tabular-nums text-[var(--color-shell-text-subtle)] line-through">
+            {original}
+          </span>
+        </div>
+      )}
+
+      {hasCoupon && (
+        <>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <span className="text-[12.5px] text-[var(--color-shell-text-subtle)]">Session price</span>
+            <span className="text-[13px] font-medium tabular-nums text-[var(--color-shell-text)]">
+              {base || '—'}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <span className="text-[12.5px] font-medium text-[var(--color-shell-text)]">
+              Coupon {booking.coupon_code ? `(${booking.coupon_code})` : ''}
+            </span>
+            <span className="text-[13px] font-semibold tabular-nums text-[var(--color-shell-success)]">
+              −{discount}
+            </span>
+          </div>
+        </>
+      )}
+
+      <TotalRow label="Amount due" value={total} />
+    </div>
+  );
+};
 
 export interface BookingSummaryProps {
   booking: EnrichedBookingRecord;
@@ -33,7 +100,6 @@ export const BookingSummary: React.FC<BookingSummaryProps> = ({
   className,
   durationMinutes,
 }) => {
-  const amount = formatInr(booking.amount_inr ?? booking.gig?.price_inr) || '—';
   const duration =
     durationMinutes ?? booking.duration_minutes ?? booking.gig?.duration_minutes ?? null;
   const durationLabel = duration ? `${duration} minutes` : '—';
@@ -127,7 +193,7 @@ export const BookingSummary: React.FC<BookingSummaryProps> = ({
         </p>
       )}
 
-      <TotalRow label="Amount due" value={amount} />
+      <BookingPriceBreakdown booking={booking} />
     </div>
   );
 };

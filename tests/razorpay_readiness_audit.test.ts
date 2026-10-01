@@ -276,6 +276,7 @@ describe('readiness audit — test-mode gateway behaviour', () => {
     const gateway = {
       createOrder: async () => ({ ok: false as const, reason: 'gateway_status_400' }),
       fetchPayment: async () => ({ ok: false as const, reason: 'gateway_status_400' }),
+      createRefund: async () => ({ ok: false as const, reason: 'gateway_status_400' }),
     };
 
     const result = await runCreateRazorpayOrder({

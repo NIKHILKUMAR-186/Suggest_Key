@@ -82,8 +82,19 @@ export interface TopicMentor {
   gigs: TopicGig[];
   /** The gig that represents this mentor inside this segment. */
   gig: TopicGig;
-  /** Present only when the request was date-scoped. */
-  available_slots?: Array<{ start_time: string; end_time: string; is_available: boolean }>;
+  /**
+   * Present only when the request was date-scoped, and only for mentors that
+   * actually have a free slot on it. The server assigns the generated slots
+   * themselves, so the `date` / `local_start_time` pair a card needs to label
+   * "next available" is real data, not a client-side guess.
+   */
+  available_slots?: Array<{
+    start_time?: string;
+    end_time?: string;
+    date?: string;
+    local_start_time?: string;
+    is_available: boolean;
+  }>;
 }
 // ---------------------------------------------------------------------------
 // Pure helpers (no I/O - directly unit-testable)

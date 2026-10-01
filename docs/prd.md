@@ -126,7 +126,7 @@ Defined once in `src/config/navigation.ts` and rendered by
 |---|---|---|
 | Seeker | Home, My Bookings, Notifications, Settings (4) | top nav |
 | Mentor | Home, My Bookings, Availability, Notifications, Settings (5) | top nav |
-| Admin | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Notifications, System Health, Settings (11) | sidebar |
+| Admin | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Coupons, Notifications, System Health, Settings (12) | sidebar |
 
 Routable but not in the nav config: `/mentor/gigs`, `/mentor/segments`
 (mentor, reached in-page), `/admin/users/create`, `/admin/system-health/logs`
@@ -346,7 +346,46 @@ RAZORPAY (payment row only, until capture):
 - Payment splitting or payouts to mentors
 - Any provider other than Razorpay, and no provider SDK (Razorpay is called
   over plain `fetch`)
-- Saved instruments, coupons, discounts, taxes or invoices
+- Saved instruments, taxes or invoices
+
+(Discount coupons **are** implemented as of phase 39 — see §10.5.)
+
+### 10.5 Coupons and original price — **Implemented (phase 39)**
+
+**Original price.** A gig may carry `original_price_inr` alongside its price.
+It is only shown struck-through when it is **genuinely higher** than the current
+price — a zero-saving "original" is not rendered, because a struck-through
+number that saves nothing is a lie. Original prices are set by mentors/admins
+through the existing gig forms, never derived from a coupon, so a coupon expiring
+never silently rewrites a published price. A booking snapshots the gig's
+original price at hold time, so later edits never move a past booking's history.
+
+**Coupons.** Admins create percentage or fixed-amount discount codes, optionally
+targeting one segment or one mentor (or applying everywhere), with an optional
+ceiling on a percentage discount, a minimum session price, and optional
+per-coupon and per-seeker usage limits over an optional active window.
+
+A seeker enters a code on the payment page. On success the booking's payable
+amount drops immediately and the discount is shown in the price breakdown.
+
+Rules that are enforced in the database, not the UI:
+
+- A coupon reduces the amount but never to zero — the minimum payable is ₹1.
+- The discount is computed from the amount snapshotted at hold time, so editing
+  a gig price mid-checkout cannot move an existing booking's discount.
+- One coupon per booking; applying a second code replaces the first and frees
+  the first coupon's slot.
+- A held slot counts against the coupon's limit while payment is pending, and is
+  released automatically if the booking is cancelled, rejected, or the hold
+  expires — so an abandoned checkout cannot exhaust a limited coupon.
+- The reservation becomes permanent only when payment is verified.
+- Once a payment has started, the amount is frozen and the code can no longer be
+  applied or removed.
+- Applying a code is idempotent, and a code at its limit is refused with a clear
+  message rather than a generic error.
+
+Coupons are managed by admins at **Admin → Coupons**. Every create, edit,
+status change, and every apply/remove is written to the audit log.
 
 ---
 

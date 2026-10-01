@@ -73,9 +73,11 @@ import {
   listUnmatchedCaptures,
   reconcileUnmatchedCapture,
   runCreateRazorpayOrder,
+  runCreateRazorpayRefund,
   runRazorpayWebhook,
   runVerifyRazorpayPayment,
   type RazorpayFailure,
+  type RefundReasonType,
 } from './src/lib/razorpayService';
 import { createSupabaseRazorpayStore } from './src/lib/razorpayStore';
 import {
@@ -458,12 +460,19 @@ async function notifyMentorOfPaymentCaptured(
  * gigs can always tell WHICH gig a booking is for: the gig is never inferred
  * from the segment, from a default gig, or from a hardcoded name. `segment`
  * comes from `bookings.segment_id` the same way.
+ *
+ * `gig.mentor_id` is selected because the workspace identity check compares it
+ * with `bookings.mentor_id`. It was absent from this list, so the joined gig
+ * arrived with `mentor_id === undefined`, the comparison failed for EVERY
+ * booking, and a perfectly consistent booking was reported as "this booking
+ * lists a segment that does not match its own gig". Every select whose result
+ * reaches `evaluateBookingOfferIdentity` must carry `gig.mentor_id`.
  */
 const MENTOR_BOOKING_SELECT = `
   *,
   seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
   mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
-  gig:gigs(id, title, description, duration_minutes, price_inr, segment_id),
+  gig:gigs(id, mentor_id, title, description, duration_minutes, price_inr, segment_id),
   segment:segments(id, name, slug)
 `;
 
@@ -2317,7 +2326,7 @@ async function startServer() {
             *,
             seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
             mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
-            gig:gigs(id, title, duration_minutes, price_inr, segment_id),
+            gig:gigs(id, mentor_id, title, duration_minutes, price_inr, original_price_inr, segment_id),
             segment:segments(id, name, slug)
           `)
           .eq('id', bookingId)
@@ -2430,7 +2439,7 @@ async function startServer() {
             *,
             seeker:profiles!bookings_seeker_id_fkey(id, full_name, email, timezone),
             mentor:profiles!bookings_mentor_id_fkey(id, full_name, email, timezone),
-            gig:gigs(id, title, duration_minutes, price_inr, segment_id),
+            gig:gigs(id, title, duration_minutes, price_inr, original_price_inr, segment_id),
             segment:segments(id, name, slug)
           `)
           .order('start_time', { ascending: false });
@@ -2779,6 +2788,157 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/bookings/:id/payment-proof' });
     }
   });
+
+  // ==========================================================================
+  // COUPONS (seeker checkout)
+  // ==========================================================================
+  //
+  // Both routes are thin. The entire lifecycle - who owns the booking, whether
+  // it is still payable, whether the hold is live, whether the coupon is active,
+  // in window, targeted correctly and under its limits, and the discount
+  // arithmetic - lives in the SECURITY DEFINER RPCs added by phase 39, under
+  // row locks. That is deliberate: doing it here as separate reads and writes
+  // would leave a window in which two seekers both pass a `max_total_uses = 1`
+  // check.
+  //
+  // The handler therefore sends a booking id, a code and the caller's own token
+  // id, and returns whatever the RPC decided. It never computes a price.
+
+  /**
+   * Shared responder for a coupon RPC refusal.
+   *
+   * The RPCs raise `code: X, <reason>`, the same convention
+   * `create_booking_with_hold` uses, so the code is extracted the same way and
+   * mapped to a status that means something: a limit reached or a code that is
+   * not applicable is a 409 the seeker can act on, and an ownership failure is
+   * a 403 rather than a 400.
+   */
+  const respondCouponRefusal = (res: Response, error: { message?: string }) => {
+    const codeMatch = error.message?.match(/code:\s*([A-Z0-9_]+)/i);
+    const code = codeMatch?.[1]?.toUpperCase() || 'COUPON_APPLY_FAILED';
+    const reason = (error.message?.match(/code:\s*[A-Z0-9_]+,\s*(.*)$/i)?.[1] || '').trim();
+
+    const status = code === 'UNAUTHORIZED' || code === 'FORBIDDEN_NOT_BOOKING_OWNER'
+      ? 403
+      : code === 'BOOKING_NOT_FOUND'
+        ? 404
+        : code === 'COUPON_NOT_FOUND'
+          ? 404
+          : code === 'COUPON_LIMIT_REACHED' || code === 'COUPON_HOLD_EXPIRED'
+            || code === 'COUPON_BOOKING_NOT_PAYABLE' || code === 'COUPON_INACTIVE'
+            || code === 'COUPON_EXPIRED' || code === 'COUPON_NOT_STARTED'
+            || code === 'COUPON_NOT_TARGETED' || code === 'COUPON_PAYMENT_IN_FLIGHT'
+            ? 409
+            : 400;
+
+    return res.status(status).json({
+      success: false,
+      error: { code, message: reason || GENERIC_ERROR_MESSAGE },
+    });
+  };
+
+  /** The pricing fields both coupon routes answer with, read from the row itself. */
+  const readBookingPricing = async (admin: SupabaseClient, bookingId: string) => {
+    const { data, error } = await admin
+      .from('bookings')
+      .select('id, booking_code, status, amount_inr, base_amount_inr, discount_amount_inr, original_amount_inr, coupon_id, coupon_code')
+      .eq('id', bookingId)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  };
+
+  // POST /api/seeker/bookings/:id/coupon
+  //
+  // Applies (or replaces) the coupon on a booking. A code that is already
+  // applied is idempotent, and applying a DIFFERENT code releases the previous
+  // reservation inside the same transaction, so a seeker can change their mind
+  // without ever holding two claims on the coupon limit.
+  app.post(
+    '/api/seeker/bookings/:id/coupon',
+    requireAuth,
+    requireRole('seeker'),
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.couponApply),
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' } });
+      }
+
+      const { code } = req.body as { code: string };
+
+      try {
+        const { data, error } = await admin.rpc('apply_coupon_to_booking', {
+          p_booking_id: req.params.id,
+          p_coupon_code: code,
+          // From the verified token, never from the body: this is the value the
+          // RPC checks ownership against.
+          p_seeker_id: req.auth!.user.id,
+        });
+
+        if (error) return respondCouponRefusal(res, error);
+
+        const pricing = await readBookingPricing(admin, req.params.id);
+
+        auditAction(req.auth, 'coupon_applied', {
+          entityType: 'booking',
+          entityId: req.params.id,
+          requestId: req.requestId,
+          metadata: {
+            couponCode: pricing?.coupon_code ?? code,
+            discountAmountInr: pricing?.discount_amount_inr ?? null,
+            amountInr: pricing?.amount_inr ?? null,
+          },
+        });
+
+        return res.json({ success: true, booking: pricing });
+      } catch (err: any) {
+        return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/coupon' });
+      }
+    },
+  );
+
+  // DELETE /api/seeker/bookings/:id/coupon
+  //
+  // Removes the coupon and restores the snapshotted base amount. Kept separate
+  // from apply because removing a code has to work even when the code itself is
+  // no longer valid - a coupon archived after it was reserved must still be
+  // removable.
+  app.delete(
+    '/api/seeker/bookings/:id/coupon',
+    requireAuth,
+    requireRole('seeker'),
+    expensiveRouteLimiter,
+    async (req: AuthRequest, res) => {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Payment service is temporarily unavailable.' } });
+      }
+
+      try {
+        const { error } = await admin.rpc('remove_coupon_from_booking', {
+          p_booking_id: req.params.id,
+          p_seeker_id: req.auth!.user.id,
+        });
+
+        if (error) return respondCouponRefusal(res, error);
+
+        const pricing = await readBookingPricing(admin, req.params.id);
+
+        auditAction(req.auth, 'coupon_removed', {
+          entityType: 'booking',
+          entityId: req.params.id,
+          requestId: req.requestId,
+          metadata: { amountInr: pricing?.amount_inr ?? null },
+        });
+
+        return res.json({ success: true, booking: pricing });
+      } catch (err: any) {
+        return respondWithInternalError({ req, res, error: err, context: 'DELETE /api/seeker/bookings/:id/coupon' });
+      }
+    },
+  );
 
   // ==========================================================================
   // RAZORPAY ONLINE PAYMENT (Phase 2 backend)
@@ -3218,7 +3378,7 @@ async function startServer() {
       // Fetch booking with seeker ownership check
       const { data: booking, error: bookingErr } = await admin
         .from('bookings')
-        .select('id, booking_code, seeker_id, mentor_id, status, start_time, hold_id, cancellation_reason')
+        .select('id, booking_code, seeker_id, mentor_id, status, start_time, hold_id, cancellation_reason, amount_inr')
         .eq('id', bookingId)
         .maybeSingle();
 
@@ -3277,6 +3437,34 @@ async function startServer() {
 
       if (updateErr) throw updateErr;
 
+      // Check for payment and initiate refund if payment was captured
+      const { data: payment } = await admin
+        .from('payments')
+        .select('id, status, gateway, amount_inr')
+        .eq('booking_id', bookingId)
+        .maybeSingle();
+
+      let refundInfo = null;
+      if (payment && payment.status === 'VERIFIED') {
+        // Payment was captured - initiate refund
+        const refundReason: RefundReasonType = 'seeker_cancellation_within_window';
+        const gatewayClient = createRazorpayGatewayClient();
+        const store = createSupabaseRazorpayStore(admin);
+        
+        const refundResult = await runCreateRazorpayRefund({
+          bookingId,
+          callerId,
+          reason: refundReason,
+          gateway: gatewayClient,
+          store,
+          now,
+        });
+
+        if (refundResult.ok) {
+          refundInfo = refundResult.value;
+        }
+      }
+
       // Notify seeker
       await admin.from('notifications').insert({
         user_id: booking.seeker_id,
@@ -3303,14 +3491,34 @@ async function startServer() {
         is_read: false,
       });
 
+      // Send refund notification if applicable
+      if (refundInfo) {
+        await admin.from('notifications').insert({
+          user_id: booking.seeker_id,
+          title: 'Refund Initiated',
+          message: `A refund of ₹${refundInfo.amountInr} has been initiated for booking ${booking.booking_code}. ${refundInfo.message}`,
+          type: 'PAYMENT',
+          event_type: 'REFUND_INITIATED',
+          entity_type: 'payment',
+          entity_id: refundInfo.paymentId,
+          link: '/seeker/bookings',
+          is_read: false,
+        });
+      }
+
       auditAction(req.auth, 'booking_cancelled', {
         entityType: 'booking',
         entityId: booking.id,
         requestId: req.requestId,
-        metadata: { bookingCode: booking.booking_code, reason: reason || 'Cancelled by seeker' },
+        metadata: { bookingCode: booking.booking_code, reason: reason || 'Cancelled by seeker', refund: refundInfo },
       });
 
-      return res.json({ success: true, booking: updatedBooking, message: 'Booking cancelled successfully.' });
+      return res.json({ 
+        success: true, 
+        booking: updatedBooking, 
+        message: 'Booking cancelled successfully.',
+        refund: refundInfo,
+      });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err, context: 'POST /api/seeker/bookings/:id/cancel' });
     }
@@ -3601,6 +3809,155 @@ async function startServer() {
     }
   });
 
+  // POST /api/mentor/bookings/:id/cancel: Mentor cancellation with refund
+  app.post('/api/mentor/bookings/:id/cancel', requireAuth, requireRole('mentor'), validateBody(apiSchemas.bookingCancel), async (req: AuthRequest, res) => {
+    try {
+      const bookingId = req.params.id;
+      const mentorId = req.auth!.user.id;
+      const { reason } = req.body as { reason?: string };
+
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Booking service is temporarily unavailable.' } });
+      }
+
+      const now = new Date();
+
+      // Fetch booking with mentor ownership check
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('id, booking_code, seeker_id, mentor_id, status, start_time, hold_id, cancellation_reason, amount_inr')
+        .eq('id', bookingId)
+        .maybeSingle();
+
+      if (bookingErr) throw bookingErr;
+      if (!booking) {
+        return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+      }
+      if (booking.mentor_id !== mentorId) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN_NOT_BOOKING_OWNER', message: 'You are not authorized to cancel this booking.' } });
+      }
+
+      // Check if booking is in a cancellable state
+      // Mentor can cancel at any time before session ends
+      const cancellableStatuses = ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED'];
+      if (!cancellableStatuses.includes(booking.status)) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'BOOKING_NOT_CANCELLABLE', message: `This booking is ${booking.status.toLowerCase().replace(/_/g, ' ')} and cannot be cancelled.` },
+        });
+      }
+
+      // If PAYMENT_PENDING, also expire the associated hold
+      if (booking.status === 'PAYMENT_PENDING' && booking.hold_id) {
+        await admin
+          .from('slot_holds')
+          .update({ status: 'RELEASED', updated_at: now.toISOString() })
+          .eq('id', booking.hold_id)
+          .eq('status', 'ACTIVE');
+      }
+
+      // Cancel the booking
+      const { data: updatedBooking, error: updateErr } = await admin
+        .from('bookings')
+        .update({
+          status: 'CANCELLED',
+          cancellation_reason: reason || 'Cancelled by mentor',
+          updated_at: now.toISOString(),
+        })
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+
+      // Check for payment and initiate refund if payment was captured
+      const { data: payment } = await admin
+        .from('payments')
+        .select('id, status, gateway, amount_inr')
+        .eq('booking_id', bookingId)
+        .maybeSingle();
+
+      let refundInfo = null;
+      if (payment && payment.status === 'VERIFIED') {
+        // Payment was captured - initiate refund
+        const refundReason: RefundReasonType = 'mentor_cancellation';
+        const gatewayClient = createRazorpayGatewayClient();
+        const store = createSupabaseRazorpayStore(admin);
+        
+        const refundResult = await runCreateRazorpayRefund({
+          bookingId,
+          callerId: mentorId,
+          reason: refundReason,
+          gateway: gatewayClient,
+          store,
+          now,
+        });
+
+        if (refundResult.ok) {
+          refundInfo = refundResult.value;
+        }
+      }
+
+      // Notify seeker
+      await admin.from('notifications').insert({
+        user_id: booking.seeker_id,
+        title: 'Mentor Cancelled Booking',
+        message: `The mentor cancelled booking ${booking.booking_code}.${reason ? ` Reason: ${reason}` : ''}`,
+        type: 'BOOKING',
+        event_type: 'CANCELLATION',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: '/seeker/bookings',
+        is_read: false,
+      });
+
+      // Notify mentor
+      await admin.from('notifications').insert({
+        user_id: booking.mentor_id,
+        title: 'Booking Cancelled',
+        message: `You cancelled booking ${booking.booking_code}. The slot is now available for new bookings.`,
+        type: 'BOOKING',
+        event_type: 'MENTOR_CANCELLATION',
+        entity_type: 'booking',
+        entity_id: booking.id,
+        link: '/mentor/bookings',
+        is_read: false,
+      });
+
+      // Send refund notification if applicable
+      if (refundInfo) {
+        await admin.from('notifications').insert({
+          user_id: booking.seeker_id,
+          title: 'Refund Initiated',
+          message: `A refund of ₹${refundInfo.amountInr} has been initiated for booking ${booking.booking_code}. ${refundInfo.message}`,
+          type: 'PAYMENT',
+          event_type: 'REFUND_INITIATED',
+          entity_type: 'payment',
+          entity_id: refundInfo.paymentId,
+          link: '/seeker/bookings',
+          is_read: false,
+        });
+      }
+
+      auditAction(req.auth, 'booking_cancelled', {
+        entityType: 'booking',
+        entityId: booking.id,
+        requestId: req.requestId,
+        metadata: { bookingCode: booking.booking_code, reason: reason || 'Cancelled by mentor', cancelledBy: 'mentor', refund: refundInfo },
+      });
+
+      return res.json({ 
+        success: true, 
+        booking: updatedBooking, 
+        message: 'Booking cancelled successfully.',
+        refund: refundInfo,
+      });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/mentor/bookings/:id/cancel' });
+    }
+  });
+
   // GET /api/admin/bookings/overdue-links: Admin inspection of overdue meeting links
   app.get('/api/admin/bookings/overdue-links', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
@@ -3640,7 +3997,7 @@ async function startServer() {
         const minutesUntilStart =
           startMs === null ? null : Math.round((startMs - now) / 60000);
         const meetingLinkDeadlineMs =
-          startMs === null ? null : startMs - 2 * 60 * 60 * 1000;
+          startMs === null ? null : startMs - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
         return {
           ...b,
           minutes_until_start: minutesUntilStart,
@@ -3711,7 +4068,7 @@ async function startServer() {
       const enrichedBookings = reconciledBookings.map((booking: any) => {
         const payment = paymentByBooking.get(booking.id);
         const startTime = new Date(booking.start_time);
-        const deadlineMs = startTime.getTime() - 2 * 60 * 60 * 1000; // 2 hours before
+        const deadlineMs = startTime.getTime() - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
         const isOverdue = !booking.meeting_url && now.getTime() > deadlineMs && startTime > now;
         const hoursUntilSession = Math.max(0, Math.round((startTime.getTime() - now.getTime()) / (1000 * 60 * 60)));
 
@@ -3849,11 +4206,12 @@ async function startServer() {
     try {
       // Title and description arrive already trimmed and stripped of markup, so
       // the row can never contain a `<script>` payload typed into the form.
-      const { title, segmentId, durationMinutes, priceInr, description } = req.body as {
+      const { title, segmentId, durationMinutes, priceInr, originalPriceInr, description } = req.body as {
         title: string;
         segmentId: string;
         durationMinutes: number;
         priceInr: number;
+        originalPriceInr?: number | null;
         description?: string;
       };
       const mentorId = req.auth!.user.id;
@@ -3887,6 +4245,10 @@ async function startServer() {
           title,
           duration_minutes: durationMinutes,
           price_inr: priceInr,
+          // `null` clears a struck-through price. The database refuses any value
+          // that is not strictly greater than `price_inr`, so a "was ₹100 / now
+          // ₹100" card cannot be saved.
+          original_price_inr: originalPriceInr ?? null,
           description: description || '',
           is_active: true,
         })
@@ -4112,10 +4474,11 @@ async function startServer() {
   app.patch('/api/mentor/gigs/:id', requireAuth, requireRole('mentor'), requireActiveMentor, validateBody(apiSchemas.gigUpdate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { title, durationMinutes, priceInr, description, isActive } = req.body as {
+      const { title, durationMinutes, priceInr, originalPriceInr, description, isActive } = req.body as {
         title?: string;
         durationMinutes?: number;
         priceInr?: number;
+        originalPriceInr?: number | null;
         description?: string;
         isActive?: boolean;
       };
@@ -4144,6 +4507,7 @@ async function startServer() {
       if (title !== undefined) updates.title = title;
       if (durationMinutes !== undefined) updates.duration_minutes = durationMinutes;
       if (priceInr !== undefined) updates.price_inr = priceInr;
+      if (originalPriceInr !== undefined) updates.original_price_inr = originalPriceInr ?? null;
       if (description !== undefined) updates.description = description;
       if (isActive !== undefined) updates.is_active = isActive;
 
@@ -4497,6 +4861,12 @@ async function startServer() {
   // availability itself and can never render a fake slot.
   // --------------------------------------------------------------------------
   app.get('/api/mentor-availability/slots', requireAuth, async (req: AuthRequest, res) => {
+    // Bookable slots are the most time-sensitive response this service
+    // produces: they change when a hold expires, when the clock crosses a slot
+    // start, and the moment a mentor edits their hours. A cached copy of this
+    // endpoint is a lie about what can be booked right now, so it is never
+    // stored by the browser or by an intermediary.
+    res.set('Cache-Control', 'no-store');
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -5687,11 +6057,12 @@ async function startServer() {
 
       // Title and description arrive trimmed and markup-free; duration is one of
       // the allowed slot lengths and price is non-negative.
-      const { title, segmentId, durationMinutes, priceInr, description } = req.body as {
+      const { title, segmentId, durationMinutes, priceInr, originalPriceInr, description } = req.body as {
         title: string;
         segmentId: string;
         durationMinutes: number;
         priceInr: number;
+        originalPriceInr?: number | null;
         description?: string;
       };
 
@@ -5718,6 +6089,7 @@ async function startServer() {
           description: typeof description === 'string' ? description.trim() : '',
           duration_minutes: durationMinutes,
           price_inr: priceInr,
+          original_price_inr: originalPriceInr ?? null,
           is_active: true,
         })
         .select()
@@ -5765,10 +6137,11 @@ async function startServer() {
       // Already typed, in-range and markup-free. The schema also guarantees at
       // least one editable field, so the "nothing to change" case is a 400
       // before the handler runs.
-      const { title, durationMinutes, priceInr, description, isActive } = req.body as {
+      const { title, durationMinutes, priceInr, originalPriceInr, description, isActive } = req.body as {
         title?: string;
         durationMinutes?: number;
         priceInr?: number;
+        originalPriceInr?: number | null;
         description?: string;
         isActive?: boolean;
       };
@@ -5778,6 +6151,7 @@ async function startServer() {
       if (description !== undefined) updates.description = description;
       if (durationMinutes !== undefined) updates.duration_minutes = durationMinutes;
       if (priceInr !== undefined) updates.price_inr = priceInr;
+      if (originalPriceInr !== undefined) updates.original_price_inr = originalPriceInr ?? null;
       if (isActive !== undefined) updates.is_active = isActive;
 
       const { data: gig, error } = await admin
@@ -6690,12 +7064,13 @@ async function startServer() {
       const { id } = req.params;
       // mentorId, title, duration and price are required and markup-free; the
       // description is bounded and sanitised.
-      const { mentorId, title, description, durationMinutes, priceInr, isActive } = req.body as {
+      const { mentorId, title, description, durationMinutes, priceInr, originalPriceInr, isActive } = req.body as {
         mentorId: string;
         title: string;
         description?: string;
         durationMinutes: number;
         priceInr: number;
+        originalPriceInr?: number | null;
         isActive?: boolean;
       };
       const admin = getSupabaseAdmin();
@@ -6751,6 +7126,7 @@ async function startServer() {
           description: description || '',
           duration_minutes: durationMinutes,
           price_inr: priceInr,
+          original_price_inr: originalPriceInr ?? null,
           is_active: isActive !== false,
         })
         .select()
@@ -7068,7 +7444,7 @@ async function startServer() {
       // An existing topic with no gigs is "no results", never "no filter".
       let gigQuery = admin
         .from('gigs')
-        .select('id, mentor_id, title, description, duration_minutes, price_inr, segment_id')
+        .select('id, mentor_id, title, description, duration_minutes, price_inr, original_price_inr, segment_id')
         .eq('segment_id', segment.id)
         .eq('is_active', true);
 
@@ -7211,6 +7587,190 @@ async function startServer() {
     } catch (err: any) {
       console.error('Failed to fetch topic-filtered mentors:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/segments/:slug/mentors' });
+    }
+  });
+
+  // ------------------------------------------------------------------------
+  // GET /api/seeker/mentors/:id/profile
+  //
+  // The PUBLIC MENTOR PROFILE read model, and the reason the seeker profile page
+  // could not be built from what already existed.
+  //
+  // `/api/seeker/segments/:slug/mentors` is scoped to ONE segment, so it can
+  // only ever answer "this mentor's offers in this segment". A mentor may hold
+  // one ACTIVE gig per segment and may belong to several segments
+  // (`UNIQUE (mentor_id, segment_id)` on `mentor_segments`, partial unique on
+  // `(mentor_id, segment_id) WHERE is_active` on `gigs`), so a profile that
+  // showed every real session offer needs all of them at once. This endpoint is
+  // that read model, and nothing more.
+  //
+  // The privacy posture is deliberately IDENTICAL to the segment route above,
+  // which is the only other place the service-role client reads mentor rows for
+  // an unauthenticated caller:
+  //
+  //   1. The same `deriveAccountState` eligibility predicate, so approved +
+  //      active + not suspended + not deactivated + a real `profiles` row is
+  //      required before anything is returned. A mentor who fails it is a 404,
+  //      never a partial profile, so the endpoint cannot be used to probe for the
+  //      existence of a suspended, deactivated or unapproved mentor.
+  //   2. Only ACTIVE segments and ACTIVE gigs are read, mirroring the
+  //      `segments` / `gigs` RLS SELECT predicates.
+  //   3. An explicit allow-list of columns. `email`, `phone`, `internal_note`,
+  //      `suspended_at` / `suspended_until` / `suspension_reason` / `suspended_by`,
+  //      `deactivated_at`, `account_status`, verification documents and every
+  //      `payments` / `bookings` column are never selected, so they cannot be
+  //      returned even by accident. `is_approved` and `is_featured` are included
+  //      because the existing public UI already renders "Verified" and "Featured"
+  //      from exactly these two values.
+  //   4. No slots, no holds, no bookings and no payment state. Booking stays on
+  //      the mentor-detail route and on `GET /api/mentor-availability/slots`.
+  //
+  // `gigId` is NOT accepted and NOT echoed as a default: the caller is given
+  // every active offer and chooses one, so nothing here can silently resolve a
+  // "first gig" on the mentor's behalf.
+  // ------------------------------------------------------------------------
+  app.get('/api/seeker/mentors/:id/profile', async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Service unavailable.' } });
+      }
+
+      const mentorId = typeof req.params.id === 'string' ? req.params.id : '';
+      if (!UUID_SHAPE_PATTERN.test(mentorId)) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_MENTOR_ID', message: 'Mentor id is invalid.' } });
+      }
+
+      const [profileRes, identityRes, segmentsRes] = await Promise.all([
+        admin
+          .from('mentor_profiles')
+          .select('id, headline, about, experience_years, languages, expertise, is_approved, is_featured, is_active, approval_status')
+          .eq('id', mentorId)
+          .maybeSingle(),
+        admin
+          .from('profiles')
+          .select('id, full_name, avatar_url, timezone, account_status, suspended_until')
+          .eq('id', mentorId)
+          .maybeSingle(),
+        admin
+          .from('mentor_segments')
+          .select('segment_id, is_primary')
+          .eq('mentor_id', mentorId),
+      ]);
+
+      for (const r of [profileRes, identityRes, segmentsRes]) {
+        if (r.error) throw r.error;
+      }
+
+      const mp = profileRes.data as any;
+      const identity = identityRes.data as any;
+      const memberships = (segmentsRes.data || []) as any[];
+
+      // The SAME gate the segment route applies. A failure is a 404, not an
+      // empty profile: this endpoint must not confirm that an unapproved,
+      // inactive, suspended or deactivated mentor exists.
+      const eligible =
+        Boolean(mp) &&
+        Boolean(identity?.full_name) &&
+        Boolean(mp.is_approved) &&
+        Boolean(mp.is_active) &&
+        mp.approval_status === 'approved' &&
+        memberships.length > 0 &&
+        deriveAccountState(
+          {
+            account_status: identity.account_status ?? null,
+            suspended_until: identity.suspended_until ?? null,
+          },
+          new Date(),
+        ).canPerformOperationalActions;
+
+      if (!eligible) {
+        return res.status(404).json({ success: false, error: { code: 'MENTOR_NOT_FOUND', message: 'Mentor not found.' } });
+      }
+
+      // Active segments only, so a retired segment cannot lend its name to an
+      // offer. The same `is_active` filter the `segments` SELECT policy uses.
+      const segmentIds = Array.from(new Set(memberships.map((ms: any) => ms.segment_id as string)));
+      const { data: activeSegments, error: segErr } = await admin
+        .from('segments')
+        .select('id, name, slug')
+        .in('id', segmentIds)
+        .eq('is_active', true);
+      if (segErr) throw segErr;
+
+      const segmentById = new Map<string, { id: string; name: string; slug: string }>(
+        ((activeSegments || []) as any[]).map((s: any) => [s.id, { id: s.id, name: s.name, slug: s.slug }]),
+      );
+
+      // ACTIVE gigs only. Inactive, archived and draft gigs are unreadable
+      // here exactly as they are under the `gigs` SELECT policy.
+      const { data: gigs, error: gigErr } = await admin
+        .from('gigs')
+        .select('id, mentor_id, segment_id, title, description, duration_minutes, price_inr')
+        .eq('mentor_id', mentorId)
+        .eq('is_active', true);
+      if (gigErr) throw gigErr;
+
+      const primaryBySegment = new Map(
+        memberships
+          .filter((ms: any) => ms.is_primary)
+          .map((ms: any) => [ms.segment_id as string, true]),
+      );
+
+      // An offer is only an offer if its segment is active AND the mentor is a
+      // member of it. Dropping the rest means a stale membership row can never
+      // put a gig on a profile under a segment the mentor is not in.
+      const offers = ((gigs || []) as any[])
+        .filter((g: any) => segmentById.has(g.segment_id))
+        .filter((g: any) => memberships.some((ms: any) => ms.segment_id === g.segment_id))
+        .map((g: any) => {
+          const segment = segmentById.get(g.segment_id)!;
+          return {
+            gigId: g.id,
+            mentorId: g.mentor_id,
+            segmentId: g.segment_id,
+            segmentName: segment.name,
+            segmentSlug: segment.slug,
+            isPrimarySegment: Boolean(primaryBySegment.get(g.segment_id)),
+            title: g.title,
+            description: g.description ?? null,
+            durationMinutes: g.duration_minutes,
+            priceInr: g.price_inr,
+          };
+        })
+        .sort(
+          (a, b) =>
+            Number(b.isPrimarySegment) - Number(a.isPrimarySegment) ||
+            a.segmentName.localeCompare(b.segmentName) ||
+            a.gigId.localeCompare(b.gigId),
+        );
+
+      return res.json({
+        success: true,
+        mentor: {
+          id: mp.id,
+          fullName: identity.full_name,
+          avatarUrl: identity.avatar_url ?? null,
+          timezone: identity.timezone || 'Asia/Kolkata',
+          headline: mp.headline ?? '',
+          about: mp.about ?? null,
+          experienceYears: Number(mp.experience_years) || 0,
+          languages: mp.languages || [],
+          expertise: mp.expertise ?? null,
+          isApproved: Boolean(mp.is_approved),
+          isFeatured: Boolean(mp.is_featured),
+          segments: Array.from(segmentById.values()).map((s) => ({
+            id: s.id,
+            name: s.name,
+            slug: s.slug,
+            isPrimary: Boolean(primaryBySegment.get(s.id)),
+          })),
+          offers,
+        },
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch public mentor profile:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/seeker/mentors/:id/profile' });
     }
   });
 
@@ -7641,7 +8201,7 @@ async function startServer() {
   app.patch('/api/admin/gigs/:id', requireAuth, requireAdmin, validateBody(apiSchemas.adminGigUpdate), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
-      const { title, description, durationMinutes, priceInr, isActive } = req.body;
+      const { title, description, durationMinutes, priceInr, originalPriceInr, isActive } = req.body;
       const admin = getSupabaseAdmin();
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
@@ -7678,6 +8238,7 @@ async function startServer() {
       if (description !== undefined) updateData.description = description;
       if (durationMinutes !== undefined) updateData.duration_minutes = durationMinutes;
       if (priceInr !== undefined) updateData.price_inr = priceInr;
+      if (originalPriceInr !== undefined) updateData.original_price_inr = originalPriceInr ?? null;
       if (isActive !== undefined) updateData.is_active = isActive;
 
       const { data, error } = await admin
@@ -8980,6 +9541,276 @@ async function startServer() {
     }
   });
 
+  // ==========================================================================
+  // ADMIN COUPONS
+  // ==========================================================================
+  //
+  // Straight CRUD on `coupons`, which is admin-only under RLS. There is no
+  // preview endpoint and no client-side pricing model: a coupon's effect is
+  // computed by the apply RPC against a real booking at a real price, so an
+  // admin who wants to know what a code does applies it to a booking.
+  //
+  // Every accepted write is audited. `coupons` has no user-facing read path at
+  // all, so this list IS the management surface.
+
+  /** Fields an admin may set, read from a validated body. Never spread the body. */
+  const COUPON_COLUMNS = {
+    code: 'code',
+    description: 'description',
+    discountType: 'discount_type',
+    discountValue: 'discount_value',
+    maxDiscountInr: 'max_discount_inr',
+    minOrderAmountInr: 'min_order_amount_inr',
+    segmentId: 'segment_id',
+    mentorId: 'mentor_id',
+    maxTotalUses: 'max_total_uses',
+    maxUsesPerUser: 'max_uses_per_user',
+    startsAt: 'starts_at',
+    expiresAt: 'expires_at',
+  } as const;
+
+  const toCouponColumnPatch = (body: Record<string, unknown>) => {
+    const patch: Record<string, unknown> = {};
+    for (const [key, column] of Object.entries(COUPON_COLUMNS)) {
+      if (body[key] !== undefined) patch[column] = body[key];
+    }
+    return patch;
+  };
+
+  /**
+   * The admin coupon list.
+   *
+   * Usage counters are counted in a second query and joined in JS rather than
+   * with a view: three counts over `coupon_usage` (which is small and indexed on
+   * `(coupon_id, status)`) is cheaper to reason about than a new database object
+   * that every future migration then has to keep in step.
+   */
+  app.get('/api/admin/coupons', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: coupons, error: couponsErr } = await admin
+        .from('coupons')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (couponsErr) throw couponsErr;
+
+      const ids = (coupons || []).map((c: any) => c.id);
+      const { data: usage, error: usageErr } = ids.length
+        ? await admin
+          .from('coupon_usage')
+          .select('coupon_id, status')
+          .in('coupon_id', ids)
+        : { data: [], error: null };
+      if (usageErr) throw usageErr;
+
+      const counts = new Map<string, { reserved: number; redeemed: number; released: number }>();
+      for (const row of (usage || []) as Array<{ coupon_id: string; status: string }>) {
+        const entry = counts.get(row.coupon_id) ?? { reserved: 0, redeemed: 0, released: 0 };
+        if (row.status === 'RESERVED') entry.reserved += 1;
+        else if (row.status === 'REDEEMED') entry.redeemed += 1;
+        else entry.released += 1;
+        counts.set(row.coupon_id, entry);
+      }
+
+      return res.json({
+        success: true,
+        coupons: (coupons || []).map((c: any) => ({
+          ...c,
+          reserved_count: counts.get(c.id)?.reserved ?? 0,
+          redeemed_count: counts.get(c.id)?.redeemed ?? 0,
+          released_count: counts.get(c.id)?.released ?? 0,
+        })),
+      });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/coupons' });
+    }
+  });
+
+  // POST /api/admin/coupons: create a coupon
+  app.post('/api/admin/coupons', requireAuth, requireAdmin, validateBody(apiSchemas.couponCreate), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const body = req.body as Record<string, unknown>;
+      const patch = toCouponColumnPatch(body);
+      patch.created_by = req.auth!.user.id;
+      patch.starts_at = body.startsAt ?? new Date().toISOString();
+
+      const { data, error } = await admin.from('coupons').insert(patch).select().single();
+
+      if (error) {
+        // A duplicate code is the one conflict an admin genuinely creates by
+        // accident, so it gets the real message; everything else stays generic.
+        const isDuplicate = String(error.code) === '23505';
+        return respondWithServerError({
+          req,
+          res,
+          error,
+          status: isDuplicate ? 409 : 400,
+          code: isDuplicate ? 'COUPON_CODE_EXISTS' : 'COUPON_CREATE_FAILED',
+          clientMessage: isDuplicate
+            ? 'That coupon code is already in use.'
+            : 'The coupon could not be saved. Check the discount and its limits.',
+          context: 'POST /api/admin/coupons',
+        });
+      }
+
+      auditAction(req.auth, 'coupon_created', {
+        entityType: 'coupon',
+        entityId: data.id,
+        requestId: req.requestId,
+        metadata: {
+          code: data.code,
+          discountType: data.discount_type,
+          discountValue: data.discount_value,
+          maxTotalUses: data.max_total_uses,
+        },
+      });
+
+      return res.status(201).json({ success: true, coupon: data });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/admin/coupons' });
+    }
+  });
+
+  // PATCH /api/admin/coupons/:id: edit a coupon
+  //
+  // The `code` is deliberately NOT editable: it is on the booking snapshot, and
+  // renaming a code would make every historical booking reference a code that
+  // no longer appears anywhere. Status is the supported way to retire one.
+  app.patch('/api/admin/coupons/:id', requireAuth, requireAdmin, validateBody(apiSchemas.couponUpdate), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const patch = toCouponColumnPatch(req.body as Record<string, unknown>);
+      delete (patch as Record<string, unknown>).code;
+
+      const { data, error } = await admin
+        .from('coupons')
+        .update(patch)
+        .eq('id', req.params.id)
+        .select()
+        .single();
+
+      if (error) {
+        const isDuplicate = String(error.code) === '23505';
+        return respondWithServerError({
+          req, res, error,
+          status: isDuplicate ? 409 : 400,
+          code: isDuplicate ? 'COUPON_CODE_EXISTS' : 'COUPON_UPDATE_FAILED',
+          clientMessage: isDuplicate ? 'That coupon code is already in use.' : 'The coupon could not be updated.',
+          context: 'PATCH /api/admin/coupons/:id',
+        });
+      }
+
+      auditAction(req.auth, 'coupon_updated', {
+        entityType: 'coupon',
+        entityId: req.params.id,
+        requestId: req.requestId,
+        metadata: { code: data.code, fields: Object.keys(patch) },
+      });
+
+      return res.json({ success: true, coupon: data });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'PATCH /api/admin/coupons/:id' });
+    }
+  });
+
+  // PATCH /api/admin/coupons/:id/status: activate, deactivate or archive.
+  //
+  // Its own route rather than a field on the update route because the three
+  // transitions mean different things operationally and each gets its own audit
+  // event, which is what the audit list reads.
+  //
+  // ARCHIVED is terminal for redemption purposes: an existing RESERVED
+  // reservation is left alone (the seeker already has it) and any booking that
+  // reaches a paid or dead-end state resolves it normally. Only new applications
+  // are refused.
+  app.patch('/api/admin/coupons/:id/status', requireAuth, requireAdmin, validateBody(apiSchemas.couponStatus), async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { status } = req.body as { status: string };
+
+      const { data, error } = await admin
+        .from('coupons')
+        .update({ status })
+        .eq('id', req.params.id)
+        .select()
+        .single();
+
+      if (error) {
+        return respondWithServerError({
+          req, res, error,
+          status: 400,
+          code: 'COUPON_STATUS_UPDATE_FAILED',
+          clientMessage: 'The coupon status could not be changed.',
+          context: 'PATCH /api/admin/coupons/:id/status',
+        });
+      }
+
+      const actionByStatus: Record<string, string> = {
+        ACTIVE: 'coupon_activated',
+        INACTIVE: 'coupon_deactivated',
+        ARCHIVED: 'coupon_archived',
+      };
+
+      auditAction(req.auth, actionByStatus[status] ?? 'coupon_updated', {
+        entityType: 'coupon',
+        entityId: req.params.id,
+        requestId: req.requestId,
+        metadata: { code: data.code, status },
+      });
+
+      return res.json({ success: true, coupon: data });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'PATCH /api/admin/coupons/:id/status' });
+    }
+  });
+
+  // GET /api/admin/coupons/:id/usage: who used a coupon.
+  //
+  // Reads through to the booking so an operator sees which session a redemption
+  // belongs to, not a bare id.
+  app.get('/api/admin/coupons/:id/usage', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { data: usage, error: usageErr } = await admin
+        .from('coupon_usage')
+        .select(`
+          id, coupon_id, booking_id, seeker_id, status, discount_amount_inr,
+          reserved_at, redeemed_at, released_at, release_reason,
+          booking:bookings (id, booking_code, amount_inr, start_time, status)
+        `)
+        .eq('coupon_id', req.params.id)
+        .order('reserved_at', { ascending: false });
+
+      if (usageErr) throw usageErr;
+
+      return res.json({ success: true, usage: usage ?? [] });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/coupons/:id/usage' });
+    }
+  });
+
   // PATCH /api/admin/payments/:id/approve: Approve payment
   app.patch('/api/admin/payments/:id/approve', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
@@ -9066,6 +9897,113 @@ async function startServer() {
     }
   });
 
+  // POST /api/admin/payments/:id/complete-manual-refund: Complete manual refund (admin only)
+  app.post('/api/admin/payments/:id/complete-manual-refund', requireAuth, requireAdmin, validateBody(apiSchemas.bookingCancel), async (req: AuthRequest, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body as { reason?: string };
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const now = new Date();
+
+      // Fetch payment
+      const { data: payment, error: paymentErr } = await admin
+        .from('payments')
+        .select('id, booking_id, seeker_id, amount_inr, status, gateway, manual_refund_required, refund_status, refund_id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (paymentErr) throw paymentErr;
+      if (!payment) {
+        return res.status(404).json({ success: false, error: { code: 'PAYMENT_NOT_FOUND', message: 'Payment not found.' } });
+      }
+
+      if (payment.gateway !== 'manual') {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_GATEWAY', message: 'This endpoint is only for manual payments.' } });
+      }
+
+      if (!payment.manual_refund_required) {
+        return res.status(409).json({ success: false, error: { code: 'NO_MANUAL_REFUND_REQUIRED', message: 'This payment does not require a manual refund.' } });
+      }
+
+      if (payment.refund_status === 'REFUNDED') {
+        return res.status(409).json({ success: false, error: { code: 'ALREADY_REFUNDED', message: 'This payment has already been refunded.' } });
+      }
+
+      // Fetch booking for notifications
+      const { data: booking } = await admin
+        .from('bookings')
+        .select('id, booking_code, seeker_id, mentor_id')
+        .eq('id', payment.booking_id)
+        .maybeSingle();
+
+      // Mark manual refund as completed
+      const { data: updatedPayment, error: updateErr } = await admin
+        .from('payments')
+        .update({
+          status: 'REFUNDED',
+          refund_status: 'REFUNDED',
+          manual_refund_required: false,
+          refunded_at: now.toISOString(),
+          refund_reason: reason || 'manual_payment_refund',
+          updated_at: now.toISOString(),
+        })
+        .eq('id', id)
+        .eq('status', 'VERIFIED')
+        .eq('manual_refund_required', true)
+        .select()
+        .maybeSingle();
+
+      if (updateErr) throw updateErr;
+      if (!updatedPayment) {
+        return res.status(409).json({ success: false, error: { code: 'UPDATE_FAILED', message: 'Payment could not be updated. It may have been modified by another process.' } });
+      }
+
+      // Record payment event
+      await admin.from('payment_events').insert({
+        payment_id: payment.id,
+        status: 'REFUNDED',
+        event_type: 'MANUAL_REFUND_COMPLETED',
+        gateway: 'manual',
+        gateway_payment_id: null,
+        amount_inr: payment.amount_inr,
+        reason: reason || 'Manual refund completed by admin',
+        created_by: req.auth!.user.id,
+        created_at: now.toISOString(),
+      });
+
+      // Notify seeker
+      if (booking) {
+        await admin.from('notifications').insert({
+          user_id: booking.seeker_id,
+          title: 'Refund Completed',
+          message: `Your refund of ₹${payment.amount_inr} for booking ${booking.booking_code} has been processed.`,
+          type: 'PAYMENT',
+          event_type: 'REFUND_COMPLETED',
+          entity_type: 'payment',
+          entity_id: payment.id,
+          link: '/seeker/bookings',
+          is_read: false,
+        });
+      }
+
+      auditAction(req.auth, 'manual_refund_completed', {
+        entityType: 'payment',
+        entityId: payment.id,
+        requestId: req.requestId,
+        metadata: { bookingId: payment.booking_id, amountInr: payment.amount_inr, reason: reason || 'manual_payment_refund' },
+      });
+
+      return res.json({ success: true, payment: updatedPayment, message: 'Manual refund completed successfully.' });
+    } catch (err: any) {
+      console.error('Failed to complete manual refund:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
   // --------------------------------------------------------------------------
   // Admin API: Platform Configuration
   // --------------------------------------------------------------------------
@@ -9115,7 +10053,7 @@ async function startServer() {
         rules: {
           holdDurationMinutes: APP_CONFIG.HOLD_DURATION_MS / 60000,
           sessionAccessWindowMinutes: APP_CONFIG.SESSION_ACCESS_WINDOW_MS / 60000,
-          meetingLinkDeadlineHours: APP_CONFIG.MEETING_LINK_DEADLINE_MS / 3600000,
+          meetingLinkDeadlineMinutes: APP_CONFIG.MEETING_LINK_DEADLINE_MS / 60000,
           bookingCutoffMinutes: APP_CONFIG.BOOKING_CUTOFF_MS / 60000,
           cancellationWindowMinutes: APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES,
           defaultTimezone: APP_CONFIG.DEFAULT_TIMEZONE,

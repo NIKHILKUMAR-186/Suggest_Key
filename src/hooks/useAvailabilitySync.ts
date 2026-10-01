@@ -20,13 +20,15 @@ export interface AvailabilitySyncOptions {
   /**
    * Restricts every subscription to a single mentor. When supplied, the channel
    * carries `mentor_id=eq.<id>` so a change to an unrelated mentor never
-   * triggers a refetch of this page.
+   * triggers a refetch of this page. Omit it for a page that spans many
+   * mentors (discovery), which then reacts to any of them.
    */
   mentorId?: string | null;
   /**
    * Called when a watched row for this mentor changed, or with no argument when
-   * the trigger was a timed/visibility revalidation rather than a database
-   * event. Callers narrow the refresh either way; the source is informational.
+   * the trigger was a timed/visibility/reconnect revalidation rather than a
+   * database event. Callers narrow the refresh either way; the source is
+   * informational.
    */
   onInvalidate: (source?: AvailabilityChangeSource) => void;
   /**
@@ -50,6 +52,21 @@ export interface AvailabilitySyncOptions {
 
 const DEFAULT_INTERVAL_MS = 45_000;
 const MIN_INTERVAL_MS = 15_000;
+/**
+ * One mentor save is a DELETE of every old window followed by an INSERT of the
+ * new set, so a single edit emits a burst of events. Coalescing the burst into
+ * one refetch is the difference between one authoritative round trip and a dozen
+ * racing ones.
+ */
+const BURST_WINDOW_MS = 250;
+
+let channelSequence = 0;
+
+/** Dev-only structured trace. Silent in production, and never logs credentials. */
+function trace(event: string, fields: Record<string, unknown> = {}): void {
+  if (!import.meta.env?.DEV) return;
+  console.debug(`[AvailabilitySync] ${event}`, fields);
+}
 
 /**
  * Keeps one slot/availability view synchronised with the database.
@@ -60,8 +77,9 @@ const MIN_INTERVAL_MS = 15_000;
  *     to `mentor_id`. Immediate, targeted, no polling.
  *  2. A conservative visibility-gated interval, for state changes that emit no
  *     event (an expired hold simply becomes ineligible by time).
- *  3. `visibilitychange` / `focus`, so a tab that was backgrounded through a
- *     change revalidates on return.
+ *  3. `visibilitychange` / `focus` / `online`, plus an authoritative refetch
+ *     every time the channel re-joins, so a websocket that dropped events while
+ *     the machine was asleep cannot leave the page quietly wrong.
  *
  * Exactly one channel and at most one interval exist per hook instance, and both
  * are torn down when the mentor changes, the consumer unmounts, or the user
@@ -102,30 +120,70 @@ export function useAvailabilitySync({
   useEffect(() => {
     if (!enabled) return;
 
-    const notify = () => handlerRef.current();
+    let burstTimer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    /**
+     * `supabase.channel(topic)` REUSES an existing channel with the same topic
+     * and only drops it from the client's registry once the async unsubscribe
+     * has completed. Under React StrictMode the effect therefore mounts, tears
+     * down and remounts in the same tick, and the remount can be handed the
+     * half-torn-down channel — the listeners get re-registered on a channel that
+     * is being unsubscribed, and the resulting subscription never delivers a
+     * single event. A per-instance topic makes reuse impossible.
+     */
+    const topic = `availability:${mentorId || 'all'}:${++channelSequence}`;
+
+    const notify = (source?: AvailabilityChangeSource) => {
+      trace('INVALIDATE', { source: source ?? 'trigger' });
+      if (burstTimer) clearTimeout(burstTimer);
+      burstTimer = setTimeout(() => {
+        burstTimer = null;
+        handlerRef.current();
+      }, BURST_WINDOW_MS);
+    };
 
     // ---- 1. Realtime -------------------------------------------------------
     let channel: RealtimeChannel | null = null;
 
     if (isSupabaseConfigured()) {
-      const topic = `availability:${mentorId || 'all'}`;
       channel = supabase.channel(topic) as RealtimeChannel;
 
       for (const table of WATCHED_TABLES) {
         // A client-side filter keeps unrelated mentors' traffic off this page.
         // REPLICA IDENTITY FULL on these tables is what makes the filter apply
         // to DELETE events as well as inserts and updates.
-        const filter = mentorId
-          ? `mentor_id=eq.${mentorId}`
-          : undefined;
+        const filter = mentorId ? `mentor_id=eq.${mentorId}` : undefined;
         channel.on(
           'postgres_changes',
           { event: '*', schema: 'public', table, ...(filter ? { filter } : {}) },
-          notify as (payload: unknown) => void
+          (payload: any) => {
+            trace('REALTIME_EVENT', {
+              event: payload?.eventType,
+              table,
+              mentorId: payload?.new?.mentor_id ?? payload?.old?.mentor_id ?? null,
+            });
+            notify(table);
+          }
         );
       }
 
-      channel.subscribe();
+      channel.subscribe((status: string) => {
+        // 'SUBSCRIBED' fires on every join, including a reconnect after a
+        // dropped socket. Events published during the gap were never delivered,
+        // so the only safe response is to refetch the authoritative answer.
+        if (status === 'SUBSCRIBED') {
+          if (settled) {
+            trace('RECONNECT', { topic });
+            notify();
+          }
+          settled = true;
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          // Never surfaced to the seeker: the interval and visibility triggers
+          // still cover this page, so a failed socket degrades to polling.
+          trace('CHANNEL_DEGRADED', { topic, status });
+        }
+      });
     }
 
     // ---- 2. Conservative revalidation -------------------------------------
@@ -137,31 +195,34 @@ export function useAvailabilitySync({
       notify();
     }, period);
 
-    // ---- 3. Revalidate when the tab regains focus --------------------------
-    const onVisible = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      notify();
-    };
-    const onFocus = () => {
+    // ---- 3. Revalidate when the tab regains focus or the network returns ----
+    // A machine that slept, a tab that was backgrounded, or a network that
+    // switched all mean the same thing: realtime events were missed.
+    const onResume = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       notify();
     };
 
     if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', onVisible);
-      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onResume);
+      window.addEventListener('focus', onResume);
+      window.addEventListener('online', onResume);
+      window.addEventListener('pageshow', onResume);
     }
 
     return () => {
       if (timer) clearInterval(timer);
+      if (burstTimer) clearTimeout(burstTimer);
       if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onVisible);
-        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onResume);
+        window.removeEventListener('focus', onResume);
+        window.removeEventListener('online', onResume);
+        window.removeEventListener('pageshow', onResume);
       }
       // Removing the channel detaches every listener registered above, so
       // navigating back and forth cannot accumulate duplicate subscriptions.
       if (channel) {
-        supabase.removeChannel(channel);
+        void supabase.removeChannel(channel);
         channel = null;
       }
     };

@@ -563,7 +563,7 @@ export function validateMeetingUrl(url: string | null | undefined): MeetingLinkV
 }
 
 /**
- * Calculates meeting link deadline (recommended 2 hours before session start).
+ * Calculates the meeting-link submission deadline: `scheduledStart - 5 minutes`.
  * Invariant: Missing deadline does NOT automatically cancel the booking.
  */
 export function calculateMeetingLinkDeadline(
@@ -587,7 +587,7 @@ export function calculateMeetingLinkDeadline(
 }
 
 /**
- * Identifies overdue meeting links where status is MENTOR_PENDING and current time is past the 2-hour deadline.
+ * Identifies overdue meeting links where status is MENTOR_PENDING and current time is past the submission deadline.
  */
 export function getOverdueBookings(
   db: BookingEngineContext,

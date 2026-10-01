@@ -166,6 +166,31 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 
 ---
 
+## 8b. Coupons and original price (phase 39)
+
+| # | Rule | Layer | Enforcement |
+|---|---|---|---|
+| C1 | An original price is shown **only** when it is genuinely higher than the current price. There is no struck-through number for a zero saving. | DATABASE | `gigs.original_price_inr > price_inr` CHECK. `formatOriginalPrice()` returns null otherwise. |
+| C2 | `bookings.amount_inr` is the **final payable** amount and is what the gateway is charged. It is written once at hold creation and only ever changed by the two coupon RPCs. | DATABASE | `create_booking_with_hold()`; `apply_coupon_to_booking()`; `remove_coupon_from_booking()`. |
+| C3 | The payable amount always equals base minus discount. | DATABASE | `chk_booking_pricing_arithmetic`. |
+| C4 | A coupon is snapshotted onto the booking: code, discount and base travel with it, so editing or archiving the coupon never rewrites what a past booking was charged. | DATABASE | `bookings.coupon_code` / `discount_amount_inr` / `base_amount_inr`; `coupon_usage.discount_amount_inr`. |
+| C5 | The discount is computed from the **booking's own** snapshotted base, never from the current gig price. | DATABASE | `v_base := v_booking.base_amount_inr`. |
+| C6 | A coupon can never reduce a booking below ₹1. | DATABASE | `chk_booking_discount_floor`; `COUPON_NO_EFFECT`. |
+| C7 | A coupon and a discount are present together or absent together. | DATABASE | `chk_booking_coupon_snapshot_complete`. |
+| C8 | A coupon whose code the seeker supplies carries **no amount, no discount and no limits**. The request is a code and a booking id. | SERVER | `couponApply` schema is a strict object; the RPC reads every number from a locked row. |
+| C9 | Only the seeker who owns the booking may apply or remove a coupon. | DATABASE | `v_booking.seeker_id <> p_seeker_id`, with a NULL guard. |
+| C10 | **A booking cannot be repriced once a payment has started** — not even while its status is still `PAYMENT_PENDING`, because a Razorpay order leaves it there deliberately. | DATABASE | Both RPCs refuse when any non-`FAILED`/`REJECTED` `payments` row exists. |
+| C11 | A held slot in the coupon limit is released if the seeker never pays, so an abandoned checkout cannot exhaust a limited coupon. | DATABASE | Booking-status trigger releases `RESERVED` on `CANCELLED`/`REJECTED`. |
+| C12 | A reservation becomes permanent only when the money actually moved. | DATABASE | Trigger redeems on `MENTOR_PENDING` only, which is reachable only by a verified payment. |
+| C13 | Usage limits count reservations as well as redemptions, so a limited coupon cannot be claimed by every simultaneous checkout. | DATABASE | `status IN ('RESERVED', 'REDEEMED')` in the count. |
+| C14 | Applying a coupon is an **upsert** on the booking's single usage row; switching codes frees the previous coupon's slot and re-entering the same code is idempotent. | DATABASE | `ON CONFLICT (booking_id) DO UPDATE`; `UNIQUE (booking_id)`. |
+| C15 | A coupon cannot be hard-deleted while any booking references it, so a charged booking's provenance survives. | DATABASE | `ON DELETE RESTRICT`; archiving is the retirement path. |
+| C16 | Seekers cannot read or forge coupon data. They learn the outcome from the booking snapshot they already own. | DATABASE | Both tables admin-only under RLS; RPCs revoked from `PUBLIC`/`anon`/`authenticated`. |
+| C17 | Segment and mentor targeting is **OR**, not AND: a segment coupon covers every mentor in that segment. | DATABASE | Two independent guards in the RPC; `chk_coupon_not_fully_scoped` prevents claiming both. |
+| C18 | Every coupon create/edit/status change and every apply/remove is audited. | SERVER | `coupon_created`, `coupon_updated`, `coupon_activated`, `coupon_deactivated`, `coupon_archived`, `coupon_applied`, `coupon_removed`. |
+
+---
+
 ## 9. Mentor confirmation
 
 | # | Rule | Layer | Enforcement |

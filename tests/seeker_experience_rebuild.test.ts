@@ -374,7 +374,13 @@ describe('a mentor card links into the existing booking flow', () => {
 
   it('reuses the existing detail route rather than a booking shortcut', () => {
     const card = code(CARD);
-    assert.match(card, /\/seeker\/mentor-detail\?/);
+    // The route literal moved into the shared nav helper, which both hosts use,
+    // so the assertion follows the single place that owns it.
+    assert.match(
+      code('src/lib/mentorNav.ts'),
+      /MENTOR_DETAIL_ROUTE = '\/seeker\/mentor-detail'/,
+    );
+    assert.match(card, /mentorDetailPath\(/);
     // No availability, hold, slot or payment logic leaks into the card.
     assert.doesNotMatch(card, /slot_holds|createBookingHold|payment/i);
   });

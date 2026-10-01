@@ -219,7 +219,7 @@ async function startWebhookServer(): Promise<TestServer> {
     const result = await runRazorpayWebhook({
       rawBody,
       signature: extractWebhookSignature(req.headers as unknown as Record<string, unknown>),
-      gateway: { createOrder: async () => ({ ok: false as const, reason: 'x' }), fetchPayment: async () => ({ ok: false as const, reason: 'x' }) },
+      gateway: { createOrder: async () => ({ ok: false as const, reason: 'x' }), fetchPayment: async () => ({ ok: false as const, reason: 'x' }), createRefund: async () => ({ ok: false as const, reason: 'x' }) },
       store,
     });
 

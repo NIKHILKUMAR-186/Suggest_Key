@@ -64,7 +64,8 @@ const ROUTE_META: RouteMetaEntry[] = [
   { path: '/auth/callback', meta: privatePage('Signing In') },
 
   // ---- Seeker -------------------------------------------------------------
-  { path: '/seeker/mentor-detail', meta: privatePage('Mentor Profile') },
+  { path: '/seeker/mentor-profile', meta: privatePage('Mentor Profile') },
+  { path: '/seeker/mentor-detail', meta: privatePage('Book a Session') },
   { path: '/seeker/mentors', meta: privatePage('Find a Mentor') },
   { path: '/seeker/booking-detail', meta: privatePage('Booking Details') },
   { path: '/seeker/reschedule', meta: privatePage('Reschedule Session') },

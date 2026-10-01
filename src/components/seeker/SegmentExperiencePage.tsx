@@ -19,7 +19,7 @@
 
 import React from 'react';
 import { useCallback } from 'react';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, ArrowRight } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { SegmentExperienceRenderer } from '@/src/components/seeker/SegmentExperienceRenderer';
 import { SegmentTopicBar } from '@/src/components/seeker/SegmentTopicBar';
@@ -27,7 +27,10 @@ import { SegmentMentorGrid } from '@/src/components/seeker/SegmentMentorGrid';
 import { useSegmentExperience } from '@/src/context/SegmentExperienceContext';
 import { useSegmentTopics } from '@/src/hooks/useSegmentTopics';
 import { useSegmentMentorsByTopic } from '@/src/hooks/useSegmentMentorsByTopic';
+import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 import { ALL_TOPICS } from '@/src/lib/segmentTopics';
+import { mentorListPath } from '@/src/lib/mentorNav';
+import { buildSegmentExploreTitle } from '@/src/lib/segmentNaming';
 import type { Segment } from '@/src/types/database';
 
 export interface SegmentExperiencePageProps {
@@ -73,11 +76,57 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
 
   const activeTopic = topics.find((t) => t.slug === selectedTopic) ?? null;
 
+  /**
+   * The "available on <date>" claim is a slot claim, so a mentor's availability
+   * edit or another seeker's booking has to be able to change this grid. Same
+   * hook and same refetch path as mentor detail and discovery — not a third
+   * implementation. Not mentor-scoped, because this grid spans every mentor in
+   * the segment.
+   */
+  useAvailabilitySync({
+    mentorId: null,
+    enabled: Boolean(segmentSlug),
+    onInvalidate: reloadMentors,
+  });
+
   const handleRetry = useCallback(() => {
     reload();
     reloadTopics();
     reloadMentors();
   }, [reload, reloadTopics, reloadMentors]);
+
+  /**
+   * The one explicit route into full mentor discovery.
+   *
+   * This is a DIFFERENT intent from the Back button, which returns to wherever
+   * the seeker came from. So it is its own primary CTA placed above the topic
+   * chips: the chips narrow a preview, this opens the whole list.
+   *
+   * The heading is built from the real segment name ("Explore Autism Mentors"),
+   * so a segment created tomorrow words itself correctly with no code change.
+   */
+  const discoveryCta = segmentSlug ? (
+    <div className="sk-section">
+      <div className="flex flex-col gap-4 rounded-3xl border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">
+        <div className="min-w-0">
+          <p className="sk-eyebrow">{buildSegmentExploreTitle(segment?.name)}</p>
+          <p className="mt-2 max-w-md text-sm leading-relaxed text-[var(--sk-brand-text-muted)]">
+            Browse every verified mentor for this segment, filter by language and experience,
+            and pick the day that works for you.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate(mentorListPath({ segmentSlug, topic: selectedTopic, date: selectedDate }))}
+          aria-label={`See all ${segment?.name ? `${segment.name} ` : ''}mentors`}
+          className="sk-btn sk-btn-primary shrink-0"
+        >
+          See all mentors
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   // The marketplace block, assembled as a node and handed to the renderer so
   // the renderer stays pure and can position it identically in the preview.
@@ -97,6 +146,8 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
         </div>
       )}
 
+      {discoveryCta}
+
       {hideTopicBar ? (
         <SegmentMentorGrid
           className="sk-section"
@@ -107,6 +158,7 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
           selectedTopicSlug={selectedTopic}
           segmentName={segment?.name ?? null}
           segmentSlug={segmentSlug}
+          selectedDate={selectedDate}
           navigate={navigate}
         />
       ) : (
@@ -128,6 +180,7 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
             selectedTopicSlug={selectedTopic}
             segmentName={segment?.name ?? null}
             segmentSlug={segmentSlug}
+            selectedDate={selectedDate}
             navigate={navigate}
           />
         </>

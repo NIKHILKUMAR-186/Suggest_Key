@@ -28,7 +28,7 @@ import {
   ADMIN_DASHBOARD_SYSTEM_LOG_WINDOW_HOURS,
   ADMIN_DASHBOARD_TIMEZONE,
   ADMIN_DASHBOARD_UPCOMING_LIMIT,
-  MEETING_LINK_DEADLINE_HOURS,
+  MEETING_LINK_DEADLINE_MINUTES,
   buildDashboardExceptions,
   countDistinctUsersByRole,
   dashboardSection,
@@ -587,7 +587,7 @@ export async function getAdminDashboardData(
   return {
     generatedAtUtc: nowIso,
     timezone: timeZone,
-    meetingLinkDeadlineHours: MEETING_LINK_DEADLINE_HOURS,
+    meetingLinkDeadlineMinutes: MEETING_LINK_DEADLINE_MINUTES,
     users: usersSection,
     mentors: mentorsSection,
     segments: segmentsSection,

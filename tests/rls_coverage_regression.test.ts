@@ -65,6 +65,8 @@ const workflowMigration = read(
 const EXPECTED_TABLES: Record<string, string | null> = {
   audit_logs: 'actor_user_id',
   bookings: 'seeker_id+mentor_id',
+  coupons: null, // seekers learn the outcome from the booking snapshot instead
+  coupon_usage: null, // admin-only; counts feed the coupon limits in SQL
   gig_topics: null, // parent-derived via gigs
   gigs: 'mentor_id',
   login_failure_config: null,

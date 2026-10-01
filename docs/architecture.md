@@ -200,6 +200,7 @@ in-page links, not by the top nav.
 | `admin-bookings` | Bookings | `/admin/bookings` |
 | `admin-workspaces` | Workspaces | `/admin/workspaces` |
 | `admin-payments` | Payments | `/admin/payments` |
+| `admin-coupons` | Coupons | `/admin/coupons` |
 | `admin-notifications` | Notifications | `/admin/notifications` |
 | `admin-system-health` | System Health | `/admin/system-health` |
 | `admin-settings` | Settings | `/admin/settings` |
@@ -235,13 +236,57 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 
 ### Seeker + admin (allowedRoles `['seeker','admin']`)
 
-`/seeker` · `/seeker/mentors` · `/seeker/mentor-detail` ·
-`/seeker/payment` and `/seeker/checkout` · `/seeker/bookings` ·
-`/seeker/booking-detail` · `/seeker/session` · `/seeker/workspace` ·
-`/seeker/notifications` · `/seeker/settings`
+`/seeker` · `/seeker/mentors` · `/seeker/mentor-profile` ·
+`/seeker/mentor-detail` · `/seeker/payment` and `/seeker/checkout` ·
+`/seeker/bookings` · `/seeker/booking-detail` · `/seeker/session` ·
+`/seeker/workspace` · `/seeker/notifications` · `/seeker/settings`
+
+`/seeker/mentor-profile` (`SeekerMentorProfilePage`) is the **read-only**
+public mentor profile, and `/seeker/mentor-detail`
+(`SeekerMentorDetailPage`) is the **transactional** slot-selection and
+booking page. They are separate routes on purpose: the profile never creates a
+hold and never reaches Razorpay. The profile's "Back" is the shared
+`mentorDetailBackPath()` helper, so both pages return to the same contextual
+landing page.
 
 `/mentors` and `/mentors/*` → `MentorDirectoryPage`, allowedRoles
 `['seeker','admin']`.
+
+#### Public read API behind these two routes
+
+| Method | Route | Auth | Role | Purpose |
+|---|---|---|---|---|
+| `GET` | `/api/seeker/segments/:slug/mentors` | none | — | Discovery list for one segment, optionally topic- and date-filtered |
+| `GET` | `/api/seeker/mentors/:id/profile` | none | — | One mentor's public profile and **all** of their active offers |
+
+Both are read-only and unauthenticated, and both apply the same eligibility
+rule in TypeScript, not in SQL: a `profiles` row with a real `full_name`, an
+`approved` + `approved` + `is_active` `mentor_profiles` row,
+`deriveAccountState(...).canPerformOperationalActions` (so a suspended or
+deactivated account is excluded), and at least one segment membership. RLS
+already hides most of these under the anon key, but the predicate is repeated
+because both handlers read through the service-role client, which bypasses RLS.
+
+A mentor who is unapproved, deactivated, suspended or a member of no segment is
+`404` from `/api/seeker/mentors/:id/profile` rather than an empty profile, so
+the endpoint cannot be used to confirm that such a mentor exists.
+
+`/api/seeker/mentors/:id/profile` uses the service role, because `profiles` RLS
+is own-row-or-admin and a seeker is therefore unable to read another mentor's
+profile row with the anon key. It compensates with an **explicit** column
+list — `SELECT *` is never used — and returns only:
+
+- from `profiles`: `id`, `full_name`, `avatar_url`, `headline`, `about`,
+  `experience_years`, `languages`, `expertise`, `is_approved`, `is_featured`,
+  `is_active`, `approval_status`
+- from `profiles`: `id`, `full_name`, `avatar_url`, `timezone`,
+  `account_status`, `suspended_until` — of which the last two are read **only**
+  as part of the eligibility gate and are never echoed to the client
+
+It never exposes contact details, notes, verification documents, or any
+transactional table (bookings, slots, holds, payments). The profile page itself
+creates no hold and calls no payment API; it links to `/seeker/mentor-detail`
+with an explicit `gigId` so that booking context is named rather than inferred.
 
 ### Mentor + admin (allowedRoles `['mentor','admin']`)
 
@@ -255,7 +300,8 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 `/admin/mentor-verification` · `/admin/mentor-verification/:id` ·
 `/admin/mentors` · `/admin/mentors/:id` · `/admin/segments` ·
 `/admin/segments/:slug` · `/admin/bookings` · `/admin/workspaces` ·
-`/admin/payments` · `/admin/notifications` · `/admin/system-health` and
+`/admin/payments` · `/admin/coupons` · `/admin/notifications` ·
+`/admin/system-health` and
 `/admin/system-health/logs[/:requestId]` · `/admin/settings`
 
 Segment detail uses the strict regex `^/admin/segments/[^/]+$` so a deeper path
@@ -738,6 +784,13 @@ Key properties, all verified in code:
 | `PATCH` | `/api/admin/payments/:id/approve` | yes | admin | Manual path only |
 | `PATCH` | `/api/admin/payments/:id/reject` | yes | admin | Manual path only, `reason` required |
 | `GET` | `/api/admin/users/:id/payments` | yes | admin | Per-user payment history |
+| `POST` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Apply a code; body is `{ code }` and nothing else |
+| `DELETE` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Remove the coupon and restore the base amount |
+| `GET` | `/api/admin/coupons` | yes | admin | Coupon list with reserved/redeemed counts |
+| `POST` | `/api/admin/coupons` | yes | admin | Create a coupon |
+| `PATCH` | `/api/admin/coupons/:id` | yes | admin | Edit; `code` is immutable once created |
+| `PATCH` | `/api/admin/coupons/:id/status` | yes | admin | Activate / deactivate / archive |
+| `GET` | `/api/admin/coupons/:id/usage` | yes | admin | Who reserved or redeemed a coupon |
 
 The four `PATCH`/admin approve-reject routes remain live and are correct: they
 only act on `gateway = 'manual'` rows, which is the only path that needs a human.
@@ -751,6 +804,77 @@ only act on `gateway = 'manual'` rows, which is the only path that needs a human
   `processed`, `processed_at`, `created_at`. `UNIQUE (gateway, event_id)` is
   the idempotency key. Admin-only RLS; there is no browser read path.
 
+### 11.5 Coupons and the booking price snapshot
+
+Phase 39 (`20261013000000_phase39_coupon_original_price.sql`). A booking's
+payable amount is snapshotted once and never recomputed from a live gig row.
+
+| Column | Meaning |
+|---|---|
+| `bookings.base_amount_inr` | Gig price at hold creation, before any coupon. `NOT NULL`; existing rows backfilled to their own `amount_inr`. |
+| `bookings.discount_amount_inr` | What the coupon took off. `>= 0`. |
+| `bookings.amount_inr` | **The final payable amount.** Still the only column Razorpay order creation reads. |
+| `bookings.original_amount_inr` | `gigs.original_price_inr` at hold time, or NULL. Historical; never recomputed. |
+| `bookings.coupon_id` / `coupon_code` | The reserved coupon. `ON DELETE RESTRICT` — a charged booking's provenance cannot be nulled. |
+
+`CHECK (amount_inr = base_amount_inr - discount_amount_inr)` makes the
+arithmetic a database fact rather than an application convention, so the
+discount Razorpay charges cannot drift from the discount recorded on the
+booking. `chk_booking_coupon_snapshot_complete` additionally requires a
+discount and a code to be present together or absent together, and
+`chk_booking_discount_floor` refuses a coupon that would take the payable amount
+below ₹1 (Razorpay cannot take a ₹0 order, and a ₹0 session is free capacity a
+global coupon could hand out unintentionally).
+
+**Two RPCs are the only writers of the snapshot.** Both are `SECURITY DEFINER`
+so the whole check-and-write runs in one transaction under row locks, and both
+are revoked from `PUBLIC`/`anon`/`authenticated` so only the service role can
+reach them.
+
+- `apply_coupon_to_booking(booking_id, coupon_code, seeker_id)` — the request
+  carries a code and a booking id and **nothing else**: no amount, no discount,
+  no limits. The base comes from the booking's own snapshot, never from the
+  current `gigs.price_inr`, so a price edit between hold and checkout cannot
+  move what an existing booking is discounted from. Locks the booking row, then
+  the coupon row `FOR UPDATE` before counting usage, so `max_total_uses` and
+  `max_uses_per_user` are checked against a committed count and the last writer
+  cannot overshoot.
+- `remove_coupon_from_booking(booking_id, seeker_id)` — restores `amount_inr` to
+  the base. Separate from apply because a coupon archived *after* it was
+  reserved must still be removable.
+
+**Both freeze on a payment.** A booking stays at `PAYMENT_PENDING` while a
+Razorpay order is live (`razorpayService` deliberately does not move it to
+`PAYMENT_PROCESSING`), so the booking status alone cannot express "an amount has
+already been promised". Both RPCs therefore also refuse when any `payments` row
+for the booking exists that is not `FAILED`/`REJECTED`. Without that check a
+seeker could change the amount while a live gateway order, or an admin's
+pending proof, referenced the old one.
+
+**Reservation lifecycle** is one `AFTER UPDATE` trigger on `bookings.status`,
+not scattered calls, so it fires for manual QR, Razorpay browser verification,
+the webhook and the cron sweep alike:
+
+| Transition | `coupon_usage.status` |
+|---|---|
+| → `MENTOR_PENDING` (payment verified/approved) | `RESERVED` → `REDEEMED` |
+| → `CANCELLED` / `REJECTED` | `RESERVED` → `RELEASED` |
+
+`MENTOR_PENDING` is the only state that means the money moved, and it is reached
+by a verified payment and nothing else — so no path can pay out without
+redeeming the coupon. `coupon_usage` has `UNIQUE (booking_id)`: one row per
+booking for its whole life, which is what lets the trigger find the reservation
+without a lookup that could race. Applying is an **upsert** on that key, not a
+release-then-insert (a released row would still occupy the unique key), so
+switching codes frees the previous coupon's slot automatically and re-applying
+the same code is idempotent. Usage counts exclude the applying booking's own row
+for the same reason.
+
+Both tables are admin-only under RLS. There is no client read path: the seeker
+learns the outcome from the booking row's own snapshot, whose RLS already
+scopes it to the two participants. Granting a coupon read would let one seeker
+enumerate every other's discount history.
+
 ---
 
 ## 12. Timing Rules
@@ -763,7 +887,7 @@ Authoritative source: `src/config/app.ts` for the server copy and display, and
 | `HOLD_DURATION_MS` | **5 min** | How long a slot is reserved during checkout. DB-enforced via `hold_duration_interval()`. |
 | `BOOKING_CUTOFF_MS` | **5 min** | A slot stays bookable while `slotStart − now >= 5 min`, on absolute instants. Replaces the old 2-hour advance rule, which no longer exists. DB-enforced in `create_booking_with_hold()` via `clock_timestamp()`. |
 | `SESSION_ACCESS_WINDOW_MS` | **5 min (T−5)** | Meeting link becomes readable at `start − 5 min`. |
-| `MEETING_LINK_DEADLINE_MS` | **2 h** | Recommended deadline for the *mentor* to add the link. Operational guidance; it never blocks booking. |
+| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. Audit/overdue only; it never blocks booking and never cancels one. |
 | `NORMAL_CANCELLATION_WINDOW_MINUTES` | **10 min** | Seeker may cancel/reschedule while `start − now >= 10 min`. |
 | `DEFAULT_TIMEZONE` | `Asia/Kolkata` | Default on `profiles.timezone`, `bookings.*_timezone`, `mentor_availability.timezone`. |
 
@@ -910,11 +1034,14 @@ segments or write availability.
 
 `express-rate-limit`, in-memory, per process instance. Applied to
 `expensiveRouteLimiter` on the demo-login, login-failure, login-success, hold,
-payment-proof, Razorpay order and Razorpay verify routes.
+payment-proof, Razorpay order, Razorpay verify, and seeker coupon apply/remove
+routes.
 
 Per-instance, not global: on serverless or multi-instance deployment the
 effective limit is multiplied by the instance count. This is a known limitation,
-documented in `docs/technical-audit.md`.
+documented in `docs/technical-audit.md`. It is defence in depth here rather than
+the primary control — the coupon limit itself is enforced inside the RPC under a
+row lock, so a distributed limiter failure cannot let a coupon be oversold.
 
 ### 14.5 Login failure alerting
 

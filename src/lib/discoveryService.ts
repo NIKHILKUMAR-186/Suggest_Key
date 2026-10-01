@@ -541,6 +541,135 @@ export async function fetchMentorDetail(
 }
 
 // --------------------------------------------------------------------------
+// 4b. PUBLIC MENTOR PROFILE
+//
+// The seeker-facing profile read model. Deliberately separate from
+// `fetchMentorDetail`, which answers a booking question ("this gig, on this
+// date, which slots are free") and therefore needs a segment and generates
+// slots. A profile asks neither question, and asking it per segment would
+// silently truncate a multi-segment mentor to one offer.
+//
+// `offers` is the whole list, never a single resolved gig: this function must
+// not pick a default, because the database allows one ACTIVE gig per segment
+// and a mentor may hold several. The caller chooses.
+// --------------------------------------------------------------------------
+
+/** One ACTIVE gig, joined to the ACTIVE segment it belongs to. */
+export interface PublicMentorOffer {
+  gigId: string;
+  mentorId: string;
+  segmentId: string;
+  segmentName: string;
+  segmentSlug: string;
+  isPrimarySegment: boolean;
+  title: string;
+  description: string | null;
+  durationMinutes: number;
+  priceInr: number;
+}
+
+export interface PublicMentorSegment {
+  id: string;
+  name: string;
+  slug: string;
+  isPrimary: boolean;
+}
+
+/**
+ * Exactly the fields the public profile is allowed to render.
+ *
+ * There is deliberately no `email`, `phone`, `internalNote`, `accountStatus`,
+ * suspension or deactivation field here, and no verification, booking or payment
+ * data: the server does not select those columns, so this type cannot grow one
+ * by accident.
+ */
+export interface PublicMentorProfile {
+  id: string;
+  fullName: string;
+  avatarUrl: string | null;
+  timezone: string;
+  headline: string;
+  about: string | null;
+  experienceYears: number;
+  languages: string[];
+  expertise: string[] | null;
+  isApproved: boolean;
+  isFeatured: boolean;
+  segments: PublicMentorSegment[];
+  offers: PublicMentorOffer[];
+}
+
+function toPublicMentorProfile(raw: any): PublicMentorProfile | null {
+  if (!raw || typeof raw.id !== 'string' || !raw.id) return null;
+  return {
+    id: raw.id,
+    fullName: raw.fullName ?? '',
+    avatarUrl: raw.avatarUrl ?? null,
+    timezone: raw.timezone || 'Asia/Kolkata',
+    headline: raw.headline ?? '',
+    about: raw.about ?? null,
+    experienceYears: Number(raw.experienceYears) || 0,
+    languages: Array.isArray(raw.languages) ? raw.languages : [],
+    expertise: Array.isArray(raw.expertise) ? raw.expertise : null,
+    isApproved: Boolean(raw.isApproved),
+    isFeatured: Boolean(raw.isFeatured),
+    segments: Array.isArray(raw.segments) ? raw.segments : [],
+    offers: Array.isArray(raw.offers) ? raw.offers : [],
+  };
+}
+
+/**
+ * Loads one mentor's public profile and every active offer they sell.
+ *
+ * There is no fallback and no cached copy: a failure is returned as an error so
+ * the page can render an error state, never a partially invented mentor.
+ *
+ * A 404 means the mentor is not publicly visible (unapproved, inactive,
+ * suspended, deactivated, or in no active segment). It is reported as a null
+ * profile with no error, because that is an absent record rather than a failure
+ * the seeker can retry.
+ */
+export async function fetchPublicMentorProfile(
+  mentorId: string
+): Promise<{ mentor: PublicMentorProfile | null; error: Error | null }> {
+  if (!isSupabaseConfigured()) {
+    return { mentor: null, error: new Error('Supabase is not configured') };
+  }
+  if (!mentorId) {
+    return { mentor: null, error: null };
+  }
+
+  try {
+    const res = await apiFetch(`/api/seeker/mentors/${encodeURIComponent(mentorId)}/profile`);
+
+    let payload: any = null;
+    try {
+      payload = await res.json();
+    } catch {
+      return { mentor: null, error: new Error('Mentor profile returned an unreadable response.') };
+    }
+
+    if (res.status === 404) {
+      return { mentor: null, error: null };
+    }
+    if (!res.ok || !payload?.success) {
+      return {
+        mentor: null,
+        error: new Error(payload?.error?.message || 'Unable to load this mentor.'),
+      };
+    }
+
+    return { mentor: toPublicMentorProfile(payload.mentor), error: null };
+  } catch (err) {
+    console.error('Error fetching public mentor profile:', logSanitizer.safeMessage(err));
+    return {
+      mentor: null,
+      error: err instanceof Error ? err : new Error('Unable to load this mentor.'),
+    };
+  }
+}
+
+// --------------------------------------------------------------------------
 // 5. VIEW ALL MENTORS (directory) - deliberately NOT the same query as
 //    "Available Mentors". Bookability is NOT a requirement here.
 // --------------------------------------------------------------------------

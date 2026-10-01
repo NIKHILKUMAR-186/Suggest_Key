@@ -1012,7 +1012,7 @@ export const AdminSettingsPage: React.FC = () => {
           />
           <RuleItem
             label="Recommended Link Deadline"
-            value={`${rules.meetingLinkDeadlineHours} hours before session`}
+            value={`${rules.meetingLinkDeadlineMinutes} minutes before session`}
             note="An operational rule for mentors adding a meeting URL. It is recorded for audit and never blocks booking."
           />
           <RuleItem

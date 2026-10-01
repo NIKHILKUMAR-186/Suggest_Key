@@ -294,7 +294,7 @@ export const AdminDashboardPage: React.FC = () => {
             icon={Timer}
             title="Overdue meeting links"
             count={actions?.overdueMeetingLinks ?? null}
-            description={`Past the recommended ${data?.meetingLinkDeadlineHours ?? 2}-hour meeting-link deadline.`}
+            description={`Past the recommended ${data?.meetingLinkDeadlineMinutes ?? 5}-minute meeting-link deadline.`}
             emptyDescription="No meeting-link deadline has been missed."
             href="/admin/bookings"
             ctaLabel="View bookings"
@@ -637,7 +637,7 @@ export const AdminDashboardPage: React.FC = () => {
           <SectionCard
             title="Exception centre"
             icon={AlertTriangle}
-            subtitle={`Real deadline evaluation using the ${data?.meetingLinkDeadlineHours ?? 2}-hour meeting-link rule. Missing a deadline never cancels a booking.`}
+            subtitle={`Real deadline evaluation using the ${data?.meetingLinkDeadlineMinutes ?? 5}-minute meeting-link rule. Missing a deadline never cancels a booking.`}
           >
             {sectionError(data?.exceptions) ? (
               <PanelErrorState message={sectionError(data?.exceptions) as string} onRetry={() => void refresh()} />

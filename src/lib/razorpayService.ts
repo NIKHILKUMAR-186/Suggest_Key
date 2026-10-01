@@ -86,6 +86,16 @@ export interface RazorpayPaymentResult {
   error_description?: string | null;
 }
 
+export interface RazorpayRefundResult {
+  id: string;
+  payment_id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  speed_processed?: string;
+  speed_requested?: string;
+}
+
 /**
  * Everything this module needs from Razorpay itself, so tests can substitute a
  * deterministic double instead of reaching the network.
@@ -95,6 +105,8 @@ export interface RazorpayGatewayClient {
     Promise<{ ok: true; order: RazorpayOrderResult } | { ok: false; reason: string }>;
   fetchPayment(paymentId: string):
     Promise<{ ok: true; payment: RazorpayPaymentResult } | { ok: false; reason: string }>;
+  createRefund(input: { paymentId: string; amountPaise: number; notes?: Record<string, string>; receipt?: string }):
+    Promise<{ ok: true; refund: RazorpayRefundResult } | { ok: false; reason: string }>;
 }
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -167,6 +179,22 @@ export function createRazorpayGatewayClient(options: { fetchImpl?: FetchLike } =
         },
       };
     },
+
+    async createRefund(input) {
+      const result = await request<RazorpayRefundResult>(`/payments/${encodeURIComponent(input.paymentId)}/refund`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: input.amountPaise,
+          notes: input.notes ?? {},
+          receipt: input.receipt,
+        }),
+      });
+      if (!result.ok) return result;
+      if (typeof result.data?.id !== 'string' || !result.data.id) {
+        return { ok: false, reason: 'gateway_bad_response' };
+      }
+      return { ok: true, refund: result.data };
+    },
   };
 }
 
@@ -199,6 +227,10 @@ export interface RazorpayPaymentRow {
   failure_reason: string | null;
   refund_id: string | null;
   refund_status: string | null;
+  refund_amount_paise: number | null;
+  refunded_at: string | null;
+  refund_reason: string | null;
+  manual_refund_required: boolean;
 }
 
 export interface RazorpayHoldRow {
@@ -398,6 +430,39 @@ export interface RazorpayStore {
     refundStatus: 'PENDING' | 'REFUNDED' | 'FAILED';
     at: string;
   }): Promise<boolean>;
+
+  /** Marks a refund as initiated (outbound gateway call made). Returns the updated row. */
+  markRefundInitiated(input: {
+    paymentId: string;
+    refundId: string;
+    amountPaise: number;
+    reason: string;
+    at: string;
+  }): Promise<RazorpayPaymentRow | null>;
+
+  /** Conditional VERIFIED -> REFUNDED. Returns the row when it won. */
+  markPaymentRefunded(input: {
+    paymentId: string;
+    refundId: string;
+    amountPaise: number;
+    reason: string;
+    at: string;
+  }): Promise<RazorpayPaymentRow | null>;
+
+  /** Conditional VERIFIED -> REFUND_FAILED. Returns the row when it won. */
+  markPaymentRefundFailed(input: {
+    paymentId: string;
+    refundId: string;
+    reason: string;
+    at: string;
+  }): Promise<RazorpayPaymentRow | null>;
+
+  /** Marks a manual payment as requiring admin refund action. */
+  markManualRefundRequired(input: {
+    paymentId: string;
+    reason: string;
+    at: string;
+  }): Promise<RazorpayPaymentRow | null>;
 
   insertPaymentEvent(event: PaymentEventInput): Promise<void>;
 
@@ -1101,6 +1166,201 @@ export async function runVerifyRazorpayPayment(input: VerifyRazorpayPaymentInput
   }
 }
 
+export type RefundReasonType =
+  | 'seeker_cancellation_within_window'
+  | 'seeker_cancellation_outside_window'
+  | 'mentor_cancellation'
+  | 'mentor_rejection'
+  | 'admin_refund'
+  | 'manual_payment_refund';
+
+export interface CreateRazorpayRefundInput {
+  /** The booking ID associated with the payment to refund. */
+  bookingId: string;
+  /** The caller ID (seeker, mentor, or admin) initiating the refund. */
+  callerId: string;
+  /** The reason for the refund. */
+  reason: RefundReasonType;
+  /** The Razorpay gateway client. */
+  gateway: RazorpayGatewayClient;
+  /** The storage port. */
+  store: RazorpayStore;
+  /** Optional timestamp for testing. */
+  now?: Date;
+}
+
+export interface CreateRazorpayRefundValue {
+  refundId: string;
+  paymentId: string;
+  bookingId: string;
+  amountInr: number;
+  status: 'REFUND_INITIATED' | 'MANUAL_REFUND_REQUIRED';
+  message: string;
+}
+
+/**
+ * Initiates a refund for a captured payment.
+ *
+ * This is the SINGLE entry point for all refunds. It handles:
+ * - Razorpay gateway payments: calls Razorpay API to create refund
+ * - Manual payments: marks payment as MANUAL_REFUND_REQUIRED for admin action
+ *
+ * Preconditions (all must pass):
+ * 1. Booking exists and caller is authorized (seeker, mentor, or admin)
+ * 2. Payment exists, is VERIFIED (captured), and belongs to the booking
+ * 3. Payment has not already been refunded (idempotency)
+ * 4. For Razorpay: payment has a gateway_payment_id
+ *
+ * The refund is FULL (100% of captured amount) per policy.
+ * No DB transaction is held during the Razorpay HTTP call.
+ */
+export async function runCreateRazorpayRefund(input: CreateRazorpayRefundInput): Promise<RazorpayOutcome<CreateRazorpayRefundValue>> {
+  const gate = assertRazorpayUsable();
+  if (gate) return { ok: false, error: gate };
+
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+
+  // 1. Verify booking exists
+  const booking = await input.store.getBooking(input.bookingId);
+  if (!booking) return { ok: false, error: fail(404, 'BOOKING_NOT_FOUND', 'Booking not found.') };
+
+  // 2. Verify payment exists and is VERIFIED (captured)
+  const payment = await input.store.getPaymentByBookingId(booking.id);
+  if (!payment) return { ok: false, error: fail(404, 'PAYMENT_NOT_FOUND', 'No payment found for this booking.') };
+  if (payment.status !== 'VERIFIED') {
+    return { ok: false, error: fail(409, 'PAYMENT_NOT_VERIFIED', 'This payment has not been captured and cannot be refunded.') };
+  }
+
+  // 3. Idempotency: already refunded?
+  if (payment.refund_status === 'REFUNDED') {
+    return { ok: false, error: fail(409, 'ALREADY_REFUNDED', 'This payment has already been refunded.') };
+  }
+  if (payment.refund_status === 'PENDING' && payment.refund_id) {
+    // Refund already initiated, don't create another
+    return { ok: false, error: fail(409, 'REFUND_ALREADY_INITIATED', 'A refund has already been initiated for this payment.') };
+  }
+
+  // 4. Handle based on gateway
+  if (payment.gateway === RAZORPAY_GATEWAY) {
+    // Razorpay gateway payment - call Razorpay API
+    if (!payment.razorpay_payment_id) {
+      return { ok: false, error: fail(409, 'NO_GATEWAY_PAYMENT_ID', 'This payment does not have a gateway payment ID.') };
+    }
+
+    const amountPaise = toPaise(payment.amount_inr);
+    const receipt = `refund_${payment.id.slice(0, 8)}_${Date.now()}`;
+
+    // Call Razorpay to create refund
+    const refundResult = await input.gateway.createRefund({
+      paymentId: payment.razorpay_payment_id,
+      amountPaise,
+      receipt,
+      notes: {
+        booking_id: booking.id,
+        booking_code: booking.booking_code,
+        reason: input.reason,
+        initiated_by: input.callerId,
+      },
+    });
+
+    if (!refundResult.ok) {
+      // Record the failed attempt
+      await input.store.insertPaymentEvent({
+        paymentId: payment.id,
+        status: payment.status,
+        eventType: 'REFUND_FAILED',
+        gateway: RAZORPAY_GATEWAY,
+        gatewayPaymentId: payment.razorpay_payment_id,
+        amountInr: payment.amount_inr,
+        reason: `Refund creation failed: ${refundResult.reason}`,
+        actorId: input.callerId,
+        at: nowIso,
+      });
+      return { ok: false, error: fail(503, 'REFUND_CREATION_FAILED', `Failed to initiate refund: ${refundResult.reason}`) };
+    }
+
+    const refund = refundResult.refund;
+
+    // Mark refund as initiated in DB (non-blocking state)
+    const updatedPayment = await input.store.markRefundInitiated({
+      paymentId: payment.id,
+      refundId: refund.id,
+      amountPaise: refund.amount,
+      reason: input.reason,
+      at: nowIso,
+    });
+
+    if (!updatedPayment) {
+      // Race condition - another request already initiated refund
+      return { ok: false, error: fail(409, 'REFUND_ALREADY_INITIATED', 'A refund has already been initiated for this payment.') };
+    }
+
+    // Record payment event
+    await input.store.insertPaymentEvent({
+      paymentId: payment.id,
+      status: payment.status,
+      eventType: 'REFUND_INITIATED',
+      gateway: RAZORPAY_GATEWAY,
+      gatewayPaymentId: payment.razorpay_payment_id,
+      amountInr: payment.amount_inr,
+      reason: `Refund initiated: ${input.reason}`,
+      actorId: input.callerId,
+      at: nowIso,
+    });
+
+    return {
+      ok: true,
+      value: {
+        refundId: refund.id,
+        paymentId: payment.id,
+        bookingId: booking.id,
+        amountInr: payment.amount_inr,
+        status: 'REFUND_INITIATED',
+        message: 'Refund has been initiated. The amount will be credited back to the original payment method.',
+      },
+    };
+  } else if (payment.gateway === 'manual') {
+    // Manual payment - cannot auto-refund, mark for admin action
+    const updatedPayment = await input.store.markManualRefundRequired({
+      paymentId: payment.id,
+      reason: input.reason,
+      at: nowIso,
+    });
+
+    if (!updatedPayment) {
+      return { ok: false, error: fail(409, 'MANUAL_REFUND_ALREADY_REQUIRED', 'This manual payment is already marked for admin refund.') };
+    }
+
+    // Record payment event
+    await input.store.insertPaymentEvent({
+      paymentId: payment.id,
+      status: payment.status,
+      eventType: 'MANUAL_REFUND_REQUIRED',
+      gateway: 'manual',
+      gatewayPaymentId: null,
+      amountInr: payment.amount_inr,
+      reason: `Manual refund required: ${input.reason}`,
+      actorId: input.callerId,
+      at: nowIso,
+    });
+
+    return {
+      ok: true,
+      value: {
+        refundId: '',
+        paymentId: payment.id,
+        bookingId: booking.id,
+        amountInr: payment.amount_inr,
+        status: 'MANUAL_REFUND_REQUIRED',
+        message: 'This is a manual payment. The refund has been queued for admin processing.',
+      },
+    };
+  }
+
+  return { ok: false, error: fail(400, 'UNSUPPORTED_GATEWAY', 'Refunds are not supported for this payment method.') };
+}
+
 async function recordCaptureMismatch(
   store: RazorpayStore,
   payment: RazorpayPaymentRow,
@@ -1601,11 +1861,78 @@ async function handleRefund(
   const payment = await resolveWebhookPayment(input.store, event);
   if (!payment || !event.refundId) return { handled: 'unmatched', bookingId: null, paymentId: null, mentorNotified: false };
 
-  // Refund bookkeeping only. The Phase 1 schema carries `refund_id` /
-  // `refund_status` so an admin refund flow can be built on top later; nothing
-  // here cancels a booking or moves it backwards, because that policy is not
-  // defined yet and must not be invented.
-  await input.store.recordRefund({ paymentId: payment.id, refundId: event.refundId, refundStatus, at: new Date().toISOString() });
+  const nowIso = new Date().toISOString();
+
+  if (refundStatus === 'PENDING') {
+    // refund.created - refund has been initiated
+    await input.store.recordRefund({ paymentId: payment.id, refundId: event.refundId, refundStatus: 'PENDING', at: nowIso });
+    await input.store.insertPaymentEvent({
+      paymentId: payment.id,
+      status: payment.status,
+      eventType: 'REFUND_CREATED',
+      gateway: RAZORPAY_GATEWAY,
+      gatewayPaymentId: event.gatewayPaymentId,
+      amountInr: payment.amount_inr,
+      reason: 'Refund created by gateway',
+      actorId: null,
+      at: nowIso,
+    });
+    return { handled: 'refund_created', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
+  }
+
+  if (refundStatus === 'REFUNDED') {
+    // refund.processed - refund completed successfully
+    const updatedPayment = await input.store.markPaymentRefunded({
+      paymentId: payment.id,
+      refundId: event.refundId,
+      amountPaise: event.amount ?? toPaise(payment.amount_inr),
+      reason: 'Refund processed by gateway',
+      at: nowIso,
+    });
+
+    if (updatedPayment) {
+      await input.store.insertPaymentEvent({
+        paymentId: payment.id,
+        status: 'REFUNDED',
+        eventType: 'REFUND_PROCESSED',
+        gateway: RAZORPAY_GATEWAY,
+        gatewayPaymentId: event.gatewayPaymentId,
+        amountInr: payment.amount_inr,
+        reason: 'Refund completed successfully',
+        actorId: null,
+        at: nowIso,
+      });
+    }
+
+    return { handled: 'refund_processed', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
+  }
+
+  if (refundStatus === 'FAILED') {
+    // refund.failed - refund failed
+    const updatedPayment = await input.store.markPaymentRefundFailed({
+      paymentId: payment.id,
+      refundId: event.refundId,
+      reason: 'Refund failed at gateway',
+      at: nowIso,
+    });
+
+    if (updatedPayment) {
+      await input.store.insertPaymentEvent({
+        paymentId: payment.id,
+        status: 'REFUND_FAILED',
+        eventType: 'REFUND_FAILED',
+        gateway: RAZORPAY_GATEWAY,
+        gatewayPaymentId: event.gatewayPaymentId,
+        amountInr: payment.amount_inr,
+        reason: 'Refund failed at gateway',
+        actorId: null,
+        at: nowIso,
+      });
+    }
+
+    return { handled: 'refund_failed', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
+  }
+
   return { handled: 'refund_recorded', bookingId: payment.booking_id, paymentId: payment.id, mentorNotified: false };
 }
 

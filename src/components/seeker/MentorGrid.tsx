@@ -4,6 +4,7 @@ import { Star } from 'lucide-react';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { MentorCard } from '@/src/components/seeker/MentorCard';
 import { DiscoverableMentor, Segment } from '@/src/types/database';
+import type { MentorOrigin } from '@/src/lib/mentorNav';
 import { cn } from '@/src/lib/utils';
 
 export interface MentorGridProps {
@@ -13,11 +14,18 @@ export interface MentorGridProps {
   selectedDate: string;
   today: string;
   navigate: (path: string) => void;
+  origin?: MentorOrigin;
   className?: string;
 }
 
+/**
+ * Two columns is the sweet spot for a discovery grid: a mentor card needs room
+ * for a bio, availability, price and two actions, so a third column would
+ * squeeze every card into a cramped column and a single mentor would be left
+ * stranded at half the page width.
+ */
 export const MENTOR_GRID_CLASS =
-  'grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3';
+  'grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6';
 
 export const MentorCardSkeleton: React.FC = () => (
   <div
@@ -76,6 +84,7 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
   selectedDate,
   today,
   navigate,
+  origin = 'mentor-list',
   className,
 }) => {
   if (featuredMentors.length === 0 && regularMentors.length === 0) {
@@ -98,6 +107,7 @@ export const MentorGrid: React.FC<MentorGridProps> = ({
       today={today}
       navigate={navigate}
       isFeatured={featured}
+      origin={origin}
     />
   );
 

@@ -21,6 +21,7 @@ import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
 import { SeekerMentorListPage } from '@/src/pages/seeker/SeekerMentorListPage';
 import { MentorDirectoryPage } from '@/src/pages/seeker/MentorDirectoryPage';
 import { SeekerMentorDetailPage } from '@/src/pages/seeker/SeekerMentorDetailPage';
+import { SeekerMentorProfilePage } from '@/src/pages/seeker/SeekerMentorProfilePage';
 import { SeekerBookingsPage } from '@/src/pages/seeker/SeekerBookingsPage';
 import { SeekerBookingDetailPage } from '@/src/pages/seeker/SeekerBookingDetailPage';
 import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage';
@@ -53,6 +54,7 @@ import { AdminMentorDetailPage } from '@/src/pages/admin/AdminMentorDetailPage';
 import { AdminMentorVerificationPage } from '@/src/pages/admin/AdminMentorVerificationPage';
 import { AdminMentorVerificationDetailPage } from '@/src/pages/admin/AdminMentorVerificationDetailPage';
 import { AdminSegmentsPage } from '@/src/pages/admin/AdminSegmentsPage';
+import { AdminCouponsPage } from '@/src/pages/admin/AdminCouponsPage';
 import { AdminSegmentDetailPage } from '@/src/pages/admin/AdminSegmentDetailPage';
 import { AdminBookingsPage } from '@/src/pages/admin/AdminBookingsPage';
 import { AdminWorkspacesPage } from '@/src/pages/admin/AdminWorkspacesPage';
@@ -125,6 +127,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
           if (pathname === '/admin/workspaces') return <AdminWorkspacesPage />;
           if (pathname === '/admin/payments') return <AdminPaymentsPage />;
+          if (pathname === '/admin/coupons') return <AdminCouponsPage />;
           if (pathname === '/admin/notifications') return <AdminNotificationsPage />;
           if (pathname === '/admin/system-health' || pathname === '/admin/system-health/logs' || pathname.startsWith('/admin/system-health/logs/')) return <AdminSystemHealthPage />;
           if (pathname === '/admin/settings') return <AdminSettingsPage />;
@@ -178,6 +181,11 @@ if (pathname.startsWith('/admin')) {
       <ProtectedRoute allowedRoles={['seeker', 'admin']}>
         {(() => {
           if (pathname === '/seeker/mentors') return <SeekerMentorListPage />;
+          // Two pages, two jobs. `/seeker/mentor-profile` is the read-only
+          // public profile (identity + every active session offer, each with its
+          // own Book a slot). `/seeker/mentor-detail` is the booking experience:
+          // date, slots, the 5-minute hold and the payment hand-off.
+          if (pathname === '/seeker/mentor-profile') return <SeekerMentorProfilePage />;
           if (pathname === '/seeker/mentor-detail') return <SeekerMentorDetailPage />;
 
           if (pathname === '/seeker/payment' || pathname === '/seeker/checkout') {

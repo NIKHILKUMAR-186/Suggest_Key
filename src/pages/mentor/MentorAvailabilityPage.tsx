@@ -82,6 +82,9 @@ const signatureOf = (days: AvailabilityDay[], exceptions: MentorAvailabilityExce
     ]),
   });
 
+/** Matches the server-side cap: a window this long is always a clock mix-up. */
+const MAX_WINDOW_MINUTES = 12 * 60;
+
 function validateDay(day: AvailabilityDay): string[] {
   const errors: string[] = [];
   if (!day.enabled) return errors;
@@ -95,6 +98,12 @@ function validateDay(day: AvailabilityDay): string[] {
     }
     if (start >= end) {
       errors.push(`Time window ${i + 1}: start time must be earlier than end time.`);
+      continue;
+    }
+    // A 12-hour-or-longer window is what a 1:10 PM / 1:10 AM mix-up looks
+    // like once stored, and it silently booktimes the whole day.
+    if (toMinutes(end) - toMinutes(start) >= MAX_WINDOW_MINUTES) {
+      errors.push(`Time window ${i + 1} is 12 hours or longer. Check the start and end times.`);
     }
     const key = `${start}-${end}`;
     if (seen.has(key)) {

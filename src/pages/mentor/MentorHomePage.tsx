@@ -9,6 +9,7 @@ import { fetchMentorBookings } from '@/src/lib/bookingService';
 import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { isBookingUpcoming } from '@/src/lib/sessionState';
+import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 
 interface Booking {
   id: string;
@@ -220,7 +221,7 @@ export const MentorHomePage: React.FC = () => {
 
           <div className="text-[11px] text-[var(--color-shell-warning)]/80 flex items-center gap-1.5 pt-1">
             <AlertCircle className="h-3.5 w-3.5" />
-            <span>Recommended deadline: Add meeting URL at least 2 hours before start. System records missed deadlines for platform audit.</span>
+            <span>Recommended deadline: Add meeting URL at least {MEETING_LINK_DEADLINE_MINUTES} minutes before start. System records missed deadlines for platform audit.</span>
           </div>
         </div>
       )}

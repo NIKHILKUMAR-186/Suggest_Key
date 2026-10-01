@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { ArrowLeft, Shield, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
@@ -21,8 +21,11 @@ import {
   fetchEligibleLanguages,
 } from '@/src/lib/discoveryService';
 import { addDaysToDateString, buildQuickDates, getDateStringInTimezone } from '@/src/lib/slotEngine';
+import { mentorListPath, segmentLandingPath } from '@/src/lib/mentorNav';
+import { pluralizeSegmentName } from '@/src/lib/segmentNaming';
 import { Segment, DiscoverableMentor } from '@/src/types/database';
 import { SegmentThemeProvider } from '@/src/context/SegmentThemeContext';
+import { useAvailabilitySync } from '@/src/hooks/useAvailabilitySync';
 
 type ExperienceFilter = 'all' | '0-2' | '3-5' | '6+';
 
@@ -34,7 +37,7 @@ const EXPERIENCE_OPTIONS: { value: ExperienceFilter; label: string }[] = [
 ];
 
 export const SeekerMentorListPage: React.FC = () => {
-  const { navigate, currentPath } = useNavigation();
+  const { navigate, replace, currentPath } = useNavigation();
   const { profile } = useAuth();
 
   const userTimezone = profile?.timezone || 'UTC';
@@ -50,8 +53,14 @@ export const SeekerMentorListPage: React.FC = () => {
   });
 
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [languageFilter, setLanguageFilter] = useState<string>('all');
-  const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
+  // Filters start from the URL so a shared or revisited discovery link lands on
+  // the same result set the sender saw.
+  const [languageFilter, setLanguageFilter] = useState<string>(
+    () => searchParams.get('language') || 'all'
+  );
+  const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>(
+    () => (searchParams.get('experience') as ExperienceFilter) || 'all'
+  );
   const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
 
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -63,6 +72,26 @@ export const SeekerMentorListPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [mentorError, setMentorError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
+
+  /**
+   * Discovery reads the same server endpoint as mentor detail, and a card's
+   * "available on <date>" claim is a slot claim. A mentor who edits their hours,
+   * or another seeker who takes the only open slot, has to be able to change
+   * what this list says without a refresh.
+   *
+   * The subscription is intentionally NOT mentor-scoped: this page spans every
+   * mentor in the segment, so any of them may change. It is the same hook and
+   * the same refetch path as mentor detail, not a second implementation.
+   */
+  const handleAvailabilityChange = useCallback(() => {
+    setReloadToken((t) => t + 1);
+  }, []);
+
+  useAvailabilitySync({
+    mentorId: null,
+    enabled: Boolean(selectedSegment),
+    onInvalidate: handleAvailabilityChange,
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -135,6 +164,26 @@ export const SeekerMentorListPage: React.FC = () => {
     loadMentors();
     return () => { isMounted = false; };
   }, [selectedSegment, selectedDate, reloadToken]);
+
+  // Discovery state is mirrored into the query string so it survives a refresh,
+  // a shared link, and the trip out to mentor detail and back. `replace` rather
+  // than `navigate`: a filter change must not push a history entry that Back
+  // would then have to walk through one click at a time.
+  const targetPath = useMemo(() => {
+    const [route, existingQuery] = mentorListPath({
+      segmentSlug: selectedSegment?.slug || paramSegmentSlug,
+      date: selectedDate,
+    }).split('?');
+    const params = new URLSearchParams(existingQuery || '');
+    if (languageFilter !== 'all') params.set('language', languageFilter);
+    if (experienceFilter !== 'all') params.set('experience', experienceFilter);
+    const query = params.toString();
+    return query ? `${route}?${query}` : route;
+  }, [selectedSegment?.slug, paramSegmentSlug, selectedDate, languageFilter, experienceFilter]);
+
+  useEffect(() => {
+    if (targetPath !== currentPath) replace(targetPath);
+  }, [targetPath, currentPath, replace]);
 
   const availableLanguages = useMemo(() => {
     const langs = new Set<string>(eligibleLanguages);
@@ -209,25 +258,28 @@ export const SeekerMentorListPage: React.FC = () => {
   return (
     <SegmentThemeProvider initialSegment={selectedSegment}>
     <div className="seeker-page section-container space-y-8">
-      {/* Back to Discovery & Header */}
+      {/* Back to the segment landing page the seeker came from, and the page
+          title. Both are built from the real segment row. */}
+      <div className="mx-auto max-w-[1180px] space-y-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <motion.button
             initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.3 }}
-            onClick={() => navigate('/seeker')}
+            onClick={() => navigate(segmentLandingPath({ segmentSlug: selectedSegment?.slug || paramSegmentSlug, date: selectedDate }))}
+            aria-label="Go back"
             className="-ml-1 inline-flex cursor-pointer items-center gap-1.5 rounded-md p-1 text-xs font-semibold text-[var(--color-shell-text-muted)] transition-colors hover:text-[var(--color-shell-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span>Back to Discovery</span>
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{selectedSegment ? `Back to ${selectedSegment.name}` : 'Back to Discovery'}</span>
           </motion.button>
           <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
-            {selectedSegment ? `${selectedSegment.name} mentors` : 'Mentors'}
+            {selectedSegment ? pluralizeSegmentName(selectedSegment.name) : 'Mentors'}
           </h1>
-          <p className="mt-1.5 text-sm text-[var(--color-shell-text-muted)]">
-            Verified mentors with active gigs and valid bookable slots on{' '}
-            <span className="font-mono font-medium">{selectedDate}</span>.
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[var(--color-shell-text-muted)]">
+            Find a verified mentor for a 1:1 session. Every mentor below has a real,
+            bookable slot on the day you pick.
           </p>
         </div>
       </div>
@@ -338,6 +390,7 @@ export const SeekerMentorListPage: React.FC = () => {
           </div>
         </motion.div>
       )}
+      </div>
     </div>
     </SegmentThemeProvider>
   );

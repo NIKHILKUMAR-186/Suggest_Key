@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MEETING_LINK_DEADLINE_HOURS,
+  MEETING_LINK_DEADLINE_MINUTES,
   buildDashboardExceptions,
   countBookingsByStatus,
   countDistinctUsersByRole,
@@ -124,10 +124,10 @@ describe('Admin dashboard — meeting-link exception centre', () => {
     ...overrides,
   });
 
-  it('flags a booking whose 2-hour deadline has passed but the session is upcoming', () => {
-    // Session at 11:00Z -> deadline 09:00Z, already passed at "now" (10:00Z).
+  it('flags a booking inside the final 5 minutes with no link as overdue', () => {
+    // Session at 10:03Z -> deadline 09:58Z, already passed at "now" (10:00Z).
     const exceptions = buildDashboardExceptions(
-      [candidate({ start_time: '2026-09-26T11:00:00.000Z' })],
+      [candidate({ start_time: '2026-09-26T10:03:00.000Z' })],
       [],
       now,
     );
@@ -138,8 +138,20 @@ describe('Admin dashboard — meeting-link exception centre', () => {
     assert.match(exceptions[0].detail, /NOT auto-cancelled/);
   });
 
+  it('does not flag a booking the old 2-hour rule would have caught', () => {
+    // Session at 11:00Z is 60 minutes out. The 2-hour rule called this overdue;
+    // the 5-minute rule must not.
+    const exceptions = buildDashboardExceptions(
+      [candidate({ start_time: '2026-09-26T11:00:00.000Z' })],
+      [],
+      now,
+    );
+    assert.equal(exceptions[0].kind, 'MEETING_LINK_DUE_SOON');
+    assert.equal(exceptions[0].severity, 'warning');
+  });
+
   it('flags an approaching deadline as a warning, not a critical', () => {
-    // Session at 12:30Z -> deadline 10:30Z, which is still 30 minutes away.
+    // Session at 12:30Z -> far outside the 5-minute window, so not yet overdue.
     const exceptions = buildDashboardExceptions(
       [candidate({ start_time: '2026-09-26T12:30:00.000Z' })],
       [],
@@ -196,8 +208,8 @@ describe('Admin dashboard — meeting-link exception centre', () => {
   it('orders critical exceptions first and caps the list', () => {
     const exceptions = buildDashboardExceptions(
       [
+        candidate({ id: 'b2', start_time: '2026-09-26T10:02:00.000Z' }),
         candidate({ id: 'b1' }),
-        candidate({ id: 'b2', start_time: '2026-09-26T11:30:00.000Z' }),
       ],
       [{ id: 'h1', status: 'ACTIVE', expires_at: '2026-09-26T09:00:00.000Z' }],
       now,
@@ -207,9 +219,10 @@ describe('Admin dashboard — meeting-link exception centre', () => {
     assert.equal(exceptions[0].severity, 'critical');
   });
 
-  it('uses the project meeting-link deadline rule of 2 hours', () => {
-    assert.equal(MEETING_LINK_DEADLINE_HOURS, 2);
-    assert.equal(MEETING_LINK_DEADLINE_HOURS, APP_CONFIG.MEETING_LINK_DEADLINE_MS / 3_600_000);
+  it('uses the project meeting-link deadline rule of 5 minutes', () => {
+    assert.equal(MEETING_LINK_DEADLINE_MINUTES, 5);
+    assert.equal(MEETING_LINK_DEADLINE_MINUTES, APP_CONFIG.MEETING_LINK_DEADLINE_MS / 60_000);
+    assert.notEqual(MEETING_LINK_DEADLINE_MINUTES, 120);
   });
 });
 

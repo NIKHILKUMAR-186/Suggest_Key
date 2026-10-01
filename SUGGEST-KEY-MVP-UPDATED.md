@@ -1211,7 +1211,7 @@ mentor's confirmed list.
 
 The mentor should add the meeting link at least:
 
-**2 hours** before session start.
+**5 minutes** before session start.
 
 Example:
 
@@ -1221,9 +1221,9 @@ Session:
 
 Recommended deadline:
 
-2:00 PM
+3:55 PM
 
-`MEETING_LINK_DEADLINE_MS = 2 * 60 * 60 * 1000`.
+`MEETING_LINK_DEADLINE_MS = 5 * 60 * 1000`.
 
 If the deadline passes:
 

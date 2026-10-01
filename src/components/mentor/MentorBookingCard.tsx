@@ -5,6 +5,7 @@ import { Button } from '@/src/components/ui/Button';
 import { motion } from 'motion/react';
 import { CalendarDays, CheckCircle2, Clock, ShieldCheck, Video } from 'lucide-react';
 import type { EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 
 export interface MentorBookingCardProps {
   booking: EnrichedBookingRecord;
@@ -46,7 +47,7 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
   const isConfirmed = status === 'CONFIRMED';
   const isCompleted = status === 'COMPLETED';
   const isOverdue = booking.deadlineInfo?.isOverdue;
-  const hoursLeft = booking.deadlineInfo?.hoursUntilSession;
+  const minutesLeft = booking.deadlineInfo?.minutesUntilSession;
   const seekerName = booking.seeker?.full_name || 'Seeker';
   const initials = seekerName
     .split(' ')
@@ -152,8 +153,8 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
               </span>
             ) : (
               <span className="text-xs font-medium text-zinc-500">
-                Link deadline: 2h before start
-                {hoursLeft !== undefined && hoursLeft > 0 ? ` (~${hoursLeft}h left)` : ''}
+                Link deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start
+                {minutesLeft !== undefined && minutesLeft > 0 ? ` (~${minutesLeft}m left)` : ''}
               </span>
             )}
           </div>

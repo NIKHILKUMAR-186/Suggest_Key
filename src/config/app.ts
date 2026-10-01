@@ -12,7 +12,12 @@ export const APP_CONFIG = {
   // This is NOT the mentor meeting-link deadline below: that is an operational
   // rule for mentors adding a meeting URL and must never block booking.
   BOOKING_CUTOFF_MS: 5 * 60 * 1000,
-  MEETING_LINK_DEADLINE_MS: 2 * 60 * 60 * 1000,
+  // Mentor meeting-link submission deadline. The mentor may provide or update
+  // the meeting link until `scheduledStart - MEETING_LINK_DEADLINE_MS`. Missing
+  // the deadline is recorded as an audit exception only; it never cancels the
+  // booking. This is a separate rule from `SESSION_ACCESS_WINDOW_MS`, which is
+  // when the seeker's copy of the link becomes visible.
+  MEETING_LINK_DEADLINE_MS: 5 * 60 * 1000,
   NORMAL_CANCELLATION_WINDOW_MINUTES: 10,
   MVP_PAYMENT_METHOD: 'manual_qr',
   DEFAULT_TIMEZONE: 'Asia/Kolkata',
@@ -21,6 +26,7 @@ export const APP_CONFIG = {
 export const HOLDOUT_MINUTES = (APP_CONFIG.HOLD_DURATION_MS / (60 * 1000)) | 0;
 export const SESSION_ACCESS_WINDOW_MINUTES = (APP_CONFIG.SESSION_ACCESS_WINDOW_MS / (60 * 1000)) | 0;
 export const BOOKING_CUTOFF_MINUTES = (APP_CONFIG.BOOKING_CUTOFF_MS / (60 * 1000)) | 0;
+export const MEETING_LINK_DEADLINE_MINUTES = (APP_CONFIG.MEETING_LINK_DEADLINE_MS / (60 * 1000)) | 0;
 export const CANCELLATION_WINDOW_MINUTES = APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES;
 export const CANCELLATION_WINDOW_MS = APP_CONFIG.NORMAL_CANCELLATION_WINDOW_MINUTES * 60 * 1000;
 

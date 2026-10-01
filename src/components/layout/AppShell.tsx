@@ -45,7 +45,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#05060f]">
         <div className="text-center space-y-3">
-          <div className="h-8 w-8 rounded-full border-2 border-[#663af3] border-t-transparent animate-spin mx-auto" />
+          <div className="h-8 w-8 rounded-full border-2 border-[#663af3] border-t-transparent animate-spin mx-auto text-[var(--color-shell-text-subtle)]" />
           <p className="text-xs text-[#9da7ba]">Loading session...</p>
         </div>
       </div>

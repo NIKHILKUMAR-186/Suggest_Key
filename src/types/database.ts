@@ -75,6 +75,17 @@ export interface Gig {
   description: string;
   duration_minutes: GigDuration;
   price_inr: number;
+  /**
+   * Pre-discount price, or null/undefined when the gig was never reduced or the
+   * caller's select did not ask for the column.
+   *
+   * The database constrains this to be strictly greater than `price_inr`, so a
+   * non-null value always describes a genuine saving and a card may show it
+   * struck through. There is no code path that derives it. Optional in the type
+   * only because several read paths still select a narrower column list;
+   * `formatOriginalPrice` treats undefined exactly as it treats null.
+   */
+  original_price_inr?: number | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -153,7 +164,28 @@ export interface Booking {
   end_time: string; // UTC ISO string
   seeker_timezone: string;
   mentor_timezone: string;
+  /** Final payable amount. This is what the gateway is asked to charge. */
   amount_inr: number;
+  /**
+   * The full price snapshot, written by phase 39.
+   *
+   * Optional in the client type on purpose: a payload served by a database the
+   * migration has not reached has none of these, and every reader already falls
+   * back (`base_amount_inr ?? amount_inr`, `discount_amount_inr ?? 0`). Making
+   * them required would encode a deployment state rather than a rule.
+   *
+   * Where they DO exist they are authoritative: `amount_inr` is the final
+   * payable amount the gateway is charged, and
+   * `amount_inr === base_amount_inr - discount_amount_inr` is enforced by a
+   * CHECK constraint, not by this type.
+   */
+  base_amount_inr?: number;
+  discount_amount_inr?: number;
+  /** Gig `original_price_inr` at hold time, or null if it had no reduction. */
+  original_amount_inr?: number | null;
+  /** Set while a coupon is reserved on this booking. Cleared on removal. */
+  coupon_id?: string | null;
+  coupon_code?: string | null;
    status: BookingStatus;
   meeting_url: string | null;
   actual_ended_at: string | null;
@@ -220,6 +252,14 @@ export type PaymentStatus =
 
 export type PaymentGateway = 'manual' | 'razorpay';
 
+export type RefundReason =
+  | 'seeker_cancellation_within_window'
+  | 'seeker_cancellation_outside_window'
+  | 'mentor_cancellation'
+  | 'mentor_rejection'
+  | 'admin_refund'
+  | 'manual_payment_refund';
+
 export interface Payment {
   id: string;
   booking_id: string;
@@ -238,8 +278,12 @@ export interface Payment {
   captured_at: string | null;
   refund_id: string | null;
   refund_status: string | null;
+  refund_amount_paise: number | null;
+  refunded_at: string | null;
+  refund_reason: RefundReason | string | null;
   failure_reason: string | null;
   gateway_payload: Record<string, unknown> | null;
+  manual_refund_required: boolean;
   created_at: string;
   updated_at: string;
   // Joined fields
@@ -278,6 +322,69 @@ export interface WebhookEvent {
 }
 
 // ----------------------------------------------------------------------
+// 10d. COUPONS
+// ----------------------------------------------------------------------
+export type CouponDiscountType = 'PERCENTAGE' | 'FIXED';
+
+/** `ACTIVE` can be redeemed; `INACTIVE` and `ARCHIVED` cannot. */
+export type CouponStatus = 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
+
+export interface Coupon {
+  id: string;
+  /** Upper-case `[A-Z0-9_]{4,24}`, enforced by a CHECK constraint. */
+  code: string;
+  description: string | null;
+  discount_type: CouponDiscountType;
+  /** Whole percent for PERCENTAGE, whole rupees for FIXED. */
+  discount_value: number;
+  /** Ceiling on a PERCENTAGE discount. Null for FIXED and uncapped. */
+  max_discount_inr: number | null;
+  min_order_amount_inr: number;
+  /** Targeting is OR: null on both is a platform-wide coupon. */
+  segment_id: string | null;
+  mentor_id: string | null;
+  /** Null is unlimited. */
+  max_total_uses: number | null;
+  max_uses_per_user: number | null;
+  starts_at: string;
+  expires_at: string | null;
+  status: CouponStatus;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * One row per booking that touches a coupon.
+ *
+ * `RESERVED` holds a place in the coupon's limit until the money moves;
+ * `REDEEMED` is permanent. Only the seeker who owns the booking ever sees this,
+ * and they see it through the booking's own snapshot, not this table, which is
+ * admin-only.
+ */
+export type CouponUsageStatus = 'RESERVED' | 'REDEEMED' | 'RELEASED';
+
+export interface CouponUsage {
+  id: string;
+  coupon_id: string;
+  booking_id: string;
+  seeker_id: string;
+  status: CouponUsageStatus;
+  discount_amount_inr: number;
+  reserved_at: string;
+  redeemed_at: string | null;
+  released_at: string | null;
+  release_reason: string | null;
+}
+
+/** A coupon row plus the counters the admin list needs, computed in SQL. */
+export interface AdminCoupon extends Coupon {
+  reserved_count: number;
+  redeemed_count: number;
+  released_count: number;
+}
+
+// ----------------------------------------------------------------------
 // 11. NOTIFICATIONS
 // ----------------------------------------------------------------------
 export type NotificationType = 'BOOKING' | 'PAYMENT' | 'SESSION' | 'WORKSPACE' | 'SYSTEM' | 'REMINDER' | 'ADMIN';
@@ -312,7 +419,12 @@ export type NotificationEventType =
   | 'ADMIN_PAYMENT_PROOF_SUBMITTED'
   | 'ADMIN_OVERDUE_MENTOR_LINK'
   | 'ADMIN_MENTOR_CANCELLATION'
-  | 'ADMIN_BOOKING_INTERVENTION';
+  | 'ADMIN_BOOKING_INTERVENTION'
+  // Refund events
+  | 'REFUND_INITIATED'
+  | 'REFUND_COMPLETED'
+  | 'REFUND_FAILED'
+  | 'MANUAL_REFUND_REQUIRED';
 
 export interface Notification {
   id: string;
@@ -410,6 +522,7 @@ export interface PlatformConfig {
   currency: string | null;
   payment_account_name: string | null;
   hold_duration_minutes: number;
+  normal_cancellation_window_minutes: number;
   updated_at: string;
 }
 

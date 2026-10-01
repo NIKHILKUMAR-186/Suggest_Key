@@ -7,7 +7,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ShortId } from '@/src/components/shared/ShortId';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { apiFetch } from '@/src/lib/apiClient';
-import { APP_CONFIG } from '@/src/config/app';
+import { APP_CONFIG, MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 
 interface EnrichedBookingRecord {
   id: string;
@@ -168,7 +168,7 @@ export const AdminBookingsPage: React.FC = () => {
                   {overdueCount} Overdue Mentor Meeting Link(s) Identified
                 </span>
                 <p className="mt-0.5 text-[var(--color-shell-text-muted)] leading-relaxed">
-                  Platform Rule: Recommended deadline is 2 hours before session. Missing the deadline does <strong>not</strong> automatically cancel the session. Admins can audit and send mentor reminders.
+                  Platform Rule: Recommended deadline is {MEETING_LINK_DEADLINE_MINUTES} minutes before session. Missing the deadline does <strong>not</strong> automatically cancel the session. Admins can audit and send mentor reminders.
                 </p>
               </div>
             </div>
@@ -228,7 +228,7 @@ export const AdminBookingsPage: React.FC = () => {
                 ) : (
                   filtered.map((b) => {
                 const isOverdue = b.status === 'MENTOR_PENDING' && b.deadlineInfo?.isOverdue;
-                const hoursLeft = b.deadlineInfo?.hoursUntilSession;
+                 const minutesLeft = b.deadlineInfo?.minutesUntilSession;
 
                 return (
                   <tr
@@ -287,11 +287,11 @@ export const AdminBookingsPage: React.FC = () => {
                       ) : isOverdue ? (
                         <span className="inline-flex items-center gap-1 text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[11px] border border-amber-300">
                           <AlertTriangle className="h-3 w-3 text-amber-700" />
-                          OVERDUE LINK (&lt;2h)
+                          OVERDUE LINK (&lt;{MEETING_LINK_DEADLINE_MINUTES}m)
                         </span>
                       ) : b.status === 'MENTOR_PENDING' ? (
                         <span className="text-zinc-500 text-[11px]">
-                          Due 2h before ({hoursLeft !== undefined && hoursLeft > 0 ? `~${hoursLeft}h left` : 'Pending'})
+                          Due {MEETING_LINK_DEADLINE_MINUTES}m before ({minutesLeft !== undefined && minutesLeft > 0 ? `~${minutesLeft}m left` : 'Pending'})
                         </span>
                       ) : (
                         <span className="text-zinc-400 italic text-[11px]">N/A</span>
@@ -409,11 +409,11 @@ export const AdminBookingsPage: React.FC = () => {
                   <strong>Deadline Status: </strong>
                   {selectedBooking.deadlineInfo?.isOverdue ? (
                     <span className="text-amber-800 font-bold">
-                      OVERDUE (&lt; 5min  before session). Session remains active.
+                      OVERDUE (&lt; {MEETING_LINK_DEADLINE_MINUTES}min before session). Session remains active.
                     </span>
                   ) : (
                     <span className="text-zinc-600">
-                      Recommended 5 min  before session start.
+                      Recommended {MEETING_LINK_DEADLINE_MINUTES} min before session start.
                     </span>
                   )}
                 </div>

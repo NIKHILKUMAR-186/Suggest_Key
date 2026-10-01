@@ -17,6 +17,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { SegmentMentorCard } from '@/src/components/seeker/SegmentMentorCard';
 import type { SegmentTopicView, TopicMentor } from '@/src/lib/segmentTopics';
 import { ALL_TOPICS } from '@/src/lib/segmentTopics';
+import { mentorListPath } from '@/src/lib/mentorNav';
 import { cn } from '@/src/lib/utils';
 
 export const SEGMENT_MENTOR_GRID_CLASS =
@@ -31,24 +32,26 @@ export interface SegmentMentorGridProps {
   selectedTopicSlug: string;
   segmentName: string | null;
   segmentSlug: string | null;
+  /** The landing page's date scope, forwarded so Back restores it. */
+  selectedDate?: string | null;
   navigate: (path: string) => void;
   className?: string;
 }
 
 const CardSkeleton: React.FC = () => (
   <div className="sk-card flex flex-col overflow-hidden p-0" aria-hidden="true">
-    <div className="flex-1 p-5 sm:p-6">
-      <div className="flex items-start gap-4">
-        <Skeleton variant="circular" className="h-14 w-14 shrink-0" />
+    <div className="flex-1">
+      <div className="flex items-start gap-3.5 p-4 sm:p-5">
+        <Skeleton variant="circular" className="h-12 w-12 shrink-0" />
         <div className="flex-1 space-y-2">
           <Skeleton className="h-4 w-2/3" />
           <Skeleton className="h-3 w-1/2" />
         </div>
       </div>
-      <Skeleton className="mt-4 h-16 w-full rounded-xl" />
-      <Skeleton className="mt-5 h-11 w-full rounded-xl" />
+      <Skeleton className="mx-4 h-20 w-auto rounded-xl sm:mx-5" />
+      <Skeleton className="mx-4 mt-3 h-3 w-1/3 sm:mx-5" />
     </div>
-    <div className="flex items-center gap-2 border-t border-[var(--sk-brand-border)] px-5 py-4 sm:px-6">
+    <div className="flex flex-col-reverse gap-2 border-t border-[var(--sk-brand-border)] p-4 sm:flex-row sm:p-5">
       <Skeleton className="h-12 flex-1 rounded-[14px]" />
       <Skeleton className="h-12 flex-1 rounded-[14px]" />
     </div>
@@ -63,6 +66,7 @@ export const SegmentMentorGrid: React.FC<SegmentMentorGridProps> = ({
   selectedTopicSlug,
   segmentName,
   segmentSlug,
+  selectedDate = null,
   navigate,
   className,
 }) => {
@@ -151,9 +155,7 @@ export const SegmentMentorGrid: React.FC<SegmentMentorGridProps> = ({
               variant="outline"
               size="sm"
               className="mt-5"
-              onClick={() =>
-                navigate(segmentSlug ? `/mentors?segmentSlug=${encodeURIComponent(segmentSlug)}` : '/mentors')
-              }
+              onClick={() => navigate(mentorListPath({ segmentSlug, date: selectedDate }))}
             >
               View all mentors
             </Button>
@@ -168,7 +170,13 @@ export const SegmentMentorGrid: React.FC<SegmentMentorGridProps> = ({
       {heading}
       <div className={cn(SEGMENT_MENTOR_GRID_CLASS, 'mt-6')}>
         {mentors.map((mentor) => (
-          <SegmentMentorCard key={mentor.id} mentor={mentor} navigate={navigate} />
+          <SegmentMentorCard
+            key={mentor.id}
+            mentor={mentor}
+            navigate={navigate}
+            selectedDate={selectedDate}
+            selectedTopic={selectedTopicSlug}
+          />
         ))}
       </div>
     </div>

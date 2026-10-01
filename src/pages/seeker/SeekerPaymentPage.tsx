@@ -47,6 +47,7 @@ import { StatusPill } from '@/src/components/booking/StatusPill';
 import { InlineNotice, SectionCard, StatePanel } from '@/src/components/booking/StatePanel';
 import { HoldCountdown } from '@/src/components/booking/HoldCountdown';
 import { BookingSummary } from '@/src/components/booking/BookingSummary';
+import { CouponBox } from '@/src/components/seeker/CouponBox';
 import { TONE_SURFACE, TONE_TEXT } from '@/src/components/booking/tokens';
 import { describeBookingStatus, describePaymentStatus } from '@/src/components/booking/statusTone';
 import { cn } from '@/src/lib/utils';
@@ -114,6 +115,31 @@ export const SeekerPaymentPage: React.FC = () => {
   const countdownRef = useRef<number | null>(null);
   const [countdownSeconds, setCountdownSeconds] = useState<number>(0);
   const [isExpired, setIsExpired] = useState(false);
+
+  /**
+   * Writes the server's own pricing back into the page state.
+   *
+   * Deliberately a re-read of the fields the server returned rather than an
+   * optimistic local calculation: the amount Razorpay and the UPI request will
+   * use must be the amount the database decided, and this is the only way that
+   * stays true.
+   */
+  const handlePricingChange = useCallback(
+    (pricing: { amount_inr: number; discount_amount_inr: number; coupon_code: string | null }) => {
+      setBooking((current) =>
+        current
+          ? {
+            ...current,
+            amount_inr: pricing.amount_inr,
+            discount_amount_inr: pricing.discount_amount_inr,
+            coupon_code: pricing.coupon_code,
+            coupon_id: pricing.coupon_code ? current.coupon_id : null,
+          }
+          : current,
+      );
+    },
+    [],
+  );
 
   const loadBooking = useCallback(async () => {
     if (!bookingId) {
@@ -441,6 +467,20 @@ export const SeekerPaymentPage: React.FC = () => {
             >
               <BookingSummary booking={booking} />
             </SectionCard>
+
+            {/* Only before payment starts: past that the server refuses, and a
+                permanently visible input that always fails is worse than none. */}
+            {!payment && isPaymentPending && (
+              <CouponBox
+                bookingId={booking.id}
+                bookingCode={booking.booking_code}
+                couponCode={booking.coupon_code ?? null}
+                discountAmountInr={booking.discount_amount_inr ?? 0}
+                amountInr={booking.amount_inr ?? booking.gig?.price_inr ?? 0}
+                editable={!isExpired}
+                onPricingChange={handlePricingChange}
+              />
+            )}
 
             <InlineNotice tone="neutral" icon={ShieldCheck} title="How verification works">
               <p>

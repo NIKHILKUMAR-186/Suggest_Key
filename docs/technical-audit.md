@@ -106,6 +106,10 @@ consistency or cost.
 
 ### P1 — `payment-qr` storage bucket is referenced by code but never created
 
+- **Status:** RESOLVED by
+  `supabase/migrations/20261002000000_phase27_payment_qr_bucket_and_config_audit.sql`.
+  Kept here so the earlier reasoning is not re-derived; the evidence and impact
+  below describe the state **before** that migration.
 - **Severity:** High
 - **Area:** Admin platform configuration — UPI QR upload
 - **Evidence:** `PAYMENT_QR_BUCKET = 'payment-qr'` is declared in
@@ -129,6 +133,10 @@ consistency or cost.
   insert/select/delete restricted to the `platform/` folder prefix. The
   `PAYMENT_QR_MAX_BYTES = 2 * 1024 * 1024` constant in `paymentProof.ts` should
   match the bucket limit.
+- **Resolution:** phase 27 creates the bucket with exactly those properties
+  (`public = false`, 2 MB cap, png/jpeg/webp) and installs the admin-only
+  `platform/`-prefixed policies. The `paymentProof.ts` constant already matched.
+  Do not re-create this bucket in a later migration.
 
 ### T1 — `BookingStatus` in TypeScript omits `PAYMENT_PROCESSING`
 

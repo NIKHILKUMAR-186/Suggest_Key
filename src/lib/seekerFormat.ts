@@ -33,6 +33,50 @@ export function formatTimeRange(startTime: string, endTime: string): string {
 }
 
 /**
+ * Whether an original price is real enough to show struck through.
+ *
+ * The single gate every price surface goes through, so a card, a checkout
+ * summary and a booking receipt cannot disagree about whether a saving exists.
+ *
+ * Requires an original that is genuinely HIGHER than the current price. The
+ * database already enforces that on `gigs.original_price_inr` and on the booking
+ * snapshot, but a client rendering a payload should not depend on that having
+ * been true at write time, and `null`/`undefined`/zero must never render as
+ * "was ₹0".
+ *
+ * Returns null when there is nothing genuine to show, so callers omit the
+ * element rather than rendering an empty or fabricated strikethrough.
+ */
+export function genuineOriginalPrice(
+  price: number | null | undefined,
+  original: number | null | undefined,
+): number | null {
+  const current = Number(price);
+  const was = Number(original);
+  if (!Number.isFinite(current) || !Number.isFinite(was)) return null;
+  if (current <= 0 || was <= current) return null;
+  return was;
+}
+
+/** Formatted struck-through original, or '' when there is no genuine one. */
+export function formatOriginalPrice(
+  price: number | null | undefined,
+  original: number | null | undefined,
+): string {
+  const genuine = genuineOriginalPrice(price, original);
+  return genuine === null ? '' : formatInr(genuine);
+}
+
+/** The saving in rupees, or null when there is no genuine one. */
+export function savingsInr(
+  price: number | null | undefined,
+  original: number | null | undefined,
+): number | null {
+  const genuine = genuineOriginalPrice(price, original);
+  return genuine === null ? null : genuine - Number(price);
+}
+
+/**
  * Renders a calendar date as a short, unambiguous label, e.g. "Sat, 26 Sep".
  * Built from the 'YYYY-MM-DD' string with pure calendar arithmetic so no UTC
  * offset can shift the day.

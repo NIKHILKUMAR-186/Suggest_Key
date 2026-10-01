@@ -36,7 +36,7 @@ export const ADMIN_DASHBOARD_UPCOMING_LIMIT = 6;
 export const ADMIN_DASHBOARD_RECENT_BOOKING_LIMIT = 5;
 export const ADMIN_DASHBOARD_EXCEPTION_LIMIT = 8;
 export const ADMIN_DASHBOARD_SYSTEM_LOG_WINDOW_HOURS = 24;
-export const MEETING_LINK_DEADLINE_HOURS = APP_CONFIG.MEETING_LINK_DEADLINE_MS / (60 * 60 * 1000);
+export const MEETING_LINK_DEADLINE_MINUTES = (APP_CONFIG.MEETING_LINK_DEADLINE_MS / (60 * 1000)) | 0;
 
 interface ZonedParts {
   year: number;
@@ -329,8 +329,8 @@ export interface StaleHoldCandidate {
 /**
  * Derives real meeting-link exceptions from MENTOR_PENDING bookings.
  *
- * The deadline is the project's existing rule (2 hours before session start,
- * `APP_CONFIG.MEETING_LINK_DEADLINE_MS`, applied through
+ * The deadline is the project's existing rule (`MEETING_LINK_DEADLINE_MINUTES`
+ * before session start, `APP_CONFIG.MEETING_LINK_DEADLINE_MS`, applied through
  * `calculateMeetingLinkDeadline`). IMPORTANT: missing the deadline is reported
  * as an exception ONLY — it never implies cancellation, which is the existing
  * business rule and is left untouched.
@@ -352,7 +352,7 @@ export const buildDashboardExceptions = (
     if (booking.status !== 'MENTOR_PENDING') continue;
     if (booking.meeting_url) continue;
 
-    const { deadlineUtc, isOverdue, hoursUntilSession } = calculateMeetingLinkDeadline(
+    const { deadlineUtc, isOverdue, minutesUntilSession } = calculateMeetingLinkDeadline(
       booking.start_time,
       nowUtc,
     );
@@ -368,7 +368,7 @@ export const buildDashboardExceptions = (
           ? 'Meeting link deadline missed'
           : 'Session reached without a meeting link',
         detail: sessionStillUpcoming
-          ? `No meeting link ${hoursUntilSession}h before session start. The booking is NOT auto-cancelled — mentor follow-up is required.`
+          ? `No meeting link ${minutesUntilSession}m before session start. The booking is NOT auto-cancelled — mentor follow-up is required.`
           : 'The session start time has passed while the booking is still MENTOR_PENDING with no meeting link.',
         bookingCode: code,
         bookingId: booking.id,
@@ -384,7 +384,7 @@ export const buildDashboardExceptions = (
       kind: 'MEETING_LINK_DUE_SOON',
       severity: 'warning',
       title: 'Meeting link deadline approaching',
-      detail: `Due in ${hoursUntilSession}h before session start (recommended 2h).`,
+      detail: `Due in ${minutesUntilSession}m before session start (recommended ${MEETING_LINK_DEADLINE_MINUTES}m).`,
       bookingCode: code,
       bookingId: booking.id,
       startTimeUtc: booking.start_time,
@@ -583,8 +583,8 @@ export interface AdminDashboardPayload {
   generatedAtUtc: string;
   /** Display timezone used for every "today" bucket and rendered time. */
   timezone: string;
-  /** Meeting-link deadline rule in force, in hours (existing business rule). */
-  meetingLinkDeadlineHours: number;
+  /** Meeting-link deadline rule in force, in minutes (existing business rule). */
+  meetingLinkDeadlineMinutes: number;
   users: DashboardSection<AdminDashboardUserMetrics>;
   mentors: DashboardSection<AdminDashboardMentorMetrics>;
   segments: DashboardSection<AdminDashboardSegmentMetrics>;

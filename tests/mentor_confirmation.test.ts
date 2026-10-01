@@ -65,7 +65,7 @@ function createTestContext(): BookingEngineContext {
     updated_at: '2026-01-01T00:00:00Z',
   };
 
-  // Booking 1: MENTOR_PENDING, scheduled in 4 hours (> 2h deadline)
+  // Booking 1: MENTOR_PENDING, scheduled in 4 hours (well before the 5m deadline)
   const bookingValid: Booking = {
     id: 'bk-valid-01',
     booking_code: 'BK-1001',
@@ -89,7 +89,7 @@ function createTestContext(): BookingEngineContext {
     updated_at: new Date().toISOString(),
   };
 
-  // Booking 2: MENTOR_PENDING, scheduled in 1 hour (< 2h deadline, overdue link!)
+  // Booking 2: MENTOR_PENDING, starting in 3 minutes (inside the 5m deadline)
   const bookingOverdue: Booking = {
     id: 'bk-overdue-02',
     booking_code: 'BK-1002',
@@ -98,8 +98,8 @@ function createTestContext(): BookingEngineContext {
     gig_id: 'gig-01',
     segment_id: 'seg-rel-01',
     hold_id: 'hold-02',
-    start_time: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    end_time: new Date(Date.now() + 120 * 60 * 1000).toISOString(),
+    start_time: new Date(Date.now() + 3 * 60 * 1000).toISOString(),
+    end_time: new Date(Date.now() + 63 * 60 * 1000).toISOString(),
     seeker_timezone: 'Asia/Kolkata',
     mentor_timezone: 'Asia/Kolkata',
     amount_inr: 999,
@@ -171,8 +171,12 @@ function createTestContext(): BookingEngineContext {
         captured_at: null,
         refund_id: null,
         refund_status: null,
+        refund_amount_paise: null,
+        refunded_at: null,
+        refund_reason: null,
         failure_reason: null,
         gateway_payload: null,
+        manual_refund_required: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -194,8 +198,12 @@ function createTestContext(): BookingEngineContext {
         captured_at: null,
         refund_id: null,
         refund_status: null,
+        refund_amount_paise: null,
+        refunded_at: null,
+        refund_reason: null,
         failure_reason: null,
         gateway_payload: null,
+        manual_refund_required: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -229,26 +237,29 @@ describe('Phase 8: Mentor Confirmation & Meeting Link Rules', () => {
   });
 
   describe('Deadline Calculation (calculateMeetingLinkDeadline)', () => {
-    it('calculates deadline as exactly 2 hours before session start', () => {
+    it('calculates the deadline as exactly 5 minutes before session start', () => {
       const startTime = '2026-03-25T14:00:00.000Z';
       const deadline = calculateMeetingLinkDeadline(startTime);
-      assert.equal(deadline.deadlineUtc, '2026-03-25T12:00:00.000Z');
+      assert.equal(deadline.deadlineUtc, '2026-03-25T13:55:00.000Z');
     });
 
-    it('flags sessions < 2 hours away as overdue, while leaving > 2h as not overdue', () => {
-      const now = new Date('2026-03-25T10:00:00.000Z');
+    it('flags only sessions inside the final 5 minutes as overdue', () => {
+      const now = new Date('2026-03-25T14:00:00.000Z');
 
-      // 3 hours away -> not overdue
-      const in3Hours = '2026-03-25T13:00:00.000Z';
-      const res3 = calculateMeetingLinkDeadline(in3Hours, now);
-      assert.equal(res3.isOverdue, false);
-      assert.equal(res3.hoursUntilSession, 3);
+      // 10 minutes away -> still inside the window, not overdue.
+      const in10Minutes = '2026-03-25T14:10:00.000Z';
+      assert.equal(calculateMeetingLinkDeadline(in10Minutes, now).isOverdue, false);
 
-      // 1 hour away -> overdue
-      const in1Hour = '2026-03-25T11:00:00.000Z';
-      const res1 = calculateMeetingLinkDeadline(in1Hour, now);
-      assert.equal(res1.isOverdue, true);
-      assert.equal(res1.hoursUntilSession, 1);
+      // 1 minute away -> past the deadline, overdue.
+      const in1Minute = '2026-03-25T14:01:00.000Z';
+      assert.equal(calculateMeetingLinkDeadline(in1Minute, now).isOverdue, true);
+    });
+
+    it('does not apply the old 2-hour rule: a session two hours out is not overdue', () => {
+      const now = new Date('2026-03-25T14:00:00.000Z');
+      const twoHoursOut = calculateMeetingLinkDeadline('2026-03-25T16:00:00.000Z', now);
+      assert.equal(twoHoursOut.isOverdue, false);
+      assert.equal(twoHoursOut.hoursUntilSession, 2);
     });
   });
 

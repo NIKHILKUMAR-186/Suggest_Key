@@ -106,6 +106,10 @@ export type FakeStore = RazorpayStore & {
   unmatched: Map<string, UnmatchedCaptureRow>;
   seedBooking(overrides?: Partial<RazorpayBookingRow>): RazorpayBookingRow;
   seedHold(overrides?: Partial<RazorpayHoldRow>): RazorpayHoldRow;
+  markRefundInitiated(input: { paymentId: string; refundId: string; amountPaise: number; reason: string; at: string }): Promise<RazorpayPaymentRow | null>;
+  markPaymentRefunded(input: { paymentId: string; refundId: string; amountPaise: number; reason: string; at: string }): Promise<RazorpayPaymentRow | null>;
+  markPaymentRefundFailed(input: { paymentId: string; refundId: string; reason: string; at: string }): Promise<RazorpayPaymentRow | null>;
+  markManualRefundRequired(input: { paymentId: string; reason: string; at: string }): Promise<RazorpayPaymentRow | null>;
 };
 
 export function createFakeStore(): FakeStore {
@@ -199,6 +203,10 @@ export function createFakeStore(): FakeStore {
         failure_reason: null,
         refund_id: null,
         refund_status: null,
+        refund_amount_paise: null,
+        refunded_at: null,
+        refund_reason: null,
+        manual_refund_required: false,
       };
       payments.set(row.id, row);
       return row;
@@ -218,6 +226,9 @@ export function createFakeStore(): FakeStore {
       row.failure_reason = null;
       row.refund_id = null;
       row.refund_status = null;
+      row.refund_amount_paise = null;
+      row.refunded_at = null;
+      row.refund_reason = null;
       return row;
     },
 
@@ -279,6 +290,48 @@ export function createFakeStore(): FakeStore {
       if (row.status !== 'VERIFIED') return false;
       row.status = refundStatus === 'REFUNDED' ? 'REFUNDED' : 'REFUND_FAILED';
       return true;
+    },
+
+    async markRefundInitiated({ paymentId, refundId, amountPaise, reason }) {
+      const row = payments.get(paymentId);
+      if (!row || row.status !== 'VERIFIED') return null;
+      row.refund_id = refundId;
+      row.refund_status = 'PENDING';
+      row.refund_amount_paise = amountPaise;
+      row.refund_reason = reason;
+      return row;
+    },
+
+    async markPaymentRefunded({ paymentId, refundId, amountPaise, reason }) {
+      const row = payments.get(paymentId);
+      if (!row || row.status !== 'VERIFIED') return null;
+      row.status = 'REFUNDED';
+      row.refund_id = refundId;
+      row.refund_status = 'REFUNDED';
+      row.refund_amount_paise = amountPaise;
+      row.refund_reason = reason;
+      row.refunded_at = new Date().toISOString();
+      refunds.push({ paymentId, refundId, status: 'REFUNDED' });
+      return row;
+    },
+
+    async markPaymentRefundFailed({ paymentId, refundId, reason }) {
+      const row = payments.get(paymentId);
+      if (!row || row.status !== 'VERIFIED') return null;
+      row.status = 'REFUND_FAILED';
+      row.refund_id = refundId;
+      row.refund_status = 'FAILED';
+      row.refund_reason = reason;
+      return row;
+    },
+
+    async markManualRefundRequired({ paymentId, reason }) {
+      const row = payments.get(paymentId);
+      if (!row || row.status !== 'VERIFIED' || row.gateway !== 'manual') return null;
+      row.manual_refund_required = true;
+      row.refund_status = 'PENDING';
+      row.refund_reason = reason;
+      return row;
     },
 
     async insertPaymentEvent(event) {
@@ -410,6 +463,19 @@ export function createFakeGateway(
         },
       };
     },
+    async createRefund(input) {
+      state.calls += 1;
+      return {
+        ok: true,
+        refund: {
+          id: `rfnd_${Date.now()}`,
+          payment_id: input.paymentId,
+          amount: input.amountPaise,
+          currency: 'INR',
+          status: 'processed',
+        },
+      };
+    },
   };
 }
 
@@ -420,6 +486,9 @@ export function createUnreachableGateway(): RazorpayGatewayClient {
       return { ok: false, reason: 'gateway_unreachable' };
     },
     async fetchPayment() {
+      return { ok: false, reason: 'gateway_unreachable' };
+    },
+    async createRefund() {
       return { ok: false, reason: 'gateway_unreachable' };
     },
   };
@@ -469,6 +538,19 @@ export function createSequencedGateway(orderIds: string[]): SequencedGateway {
           currency: 'INR',
           status: 'captured',
           captured: true,
+        },
+      };
+    },
+    async createRefund(input) {
+      state.calls += 1;
+      return {
+        ok: true,
+        refund: {
+          id: `rfnd_${Date.now()}`,
+          payment_id: input.paymentId,
+          amount: input.amountPaise,
+          currency: 'INR',
+          status: 'processed',
         },
       };
     },

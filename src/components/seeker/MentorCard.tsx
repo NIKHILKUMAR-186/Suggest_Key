@@ -10,8 +10,9 @@ import {
   Star,
 } from 'lucide-react';
 import { formatLocalTimeLabel } from '@/src/lib/slotEngine';
-import { formatInr, formatNextAvailableLabel } from '@/src/lib/seekerFormat';
+import { formatInr, formatNextAvailableLabel, formatOriginalPrice } from '@/src/lib/seekerFormat';
 import { getInitials } from '@/src/lib/avatar';
+import { mentorDetailPath, mentorProfilePath, type MentorOrigin } from '@/src/lib/mentorNav';
 import type { DiscoverableMentor, DirectoryMentor, GeneratedSlot } from '@/src/types/database';
 import { cn } from '@/src/lib/utils';
 
@@ -28,6 +29,12 @@ export interface MentorCardProps {
   availableMentor?: DiscoverableMentor;
   directoryMentor?: DirectoryMentor;
   isFeatured?: boolean;
+  /**
+   * Where this card was opened from. Defaults to the mentor list, which is the
+   * only host that renders this card today. Carrying the origin in the URL is
+   * what lets mentor detail send Back to the right discovery page.
+   */
+  origin?: MentorOrigin;
   className?: string;
 }
 
@@ -122,6 +129,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
   availableMentor,
   directoryMentor,
   isFeatured = false,
+  origin = 'mentor-list',
   className,
 }) => {
   const mentor = variant === 'availability' ? availableMentor : directoryMentor;
@@ -149,7 +157,37 @@ export const MentorCard: React.FC<MentorCardProps> = ({
   const expertiseList = (expertise || []).filter(Boolean);
   const languageList = (languages || []).filter(Boolean);
 
-  const detailPath = `/seeker/mentor-detail?mentorId=${id}&segmentSlug=${segmentSlug}&date=${selectedDate}`;
+  // Two DIFFERENT destinations, for the same reason the segment card has two:
+  // "View profile" asks who this mentor is, "Book a session" asks when they are
+  // free. Sharing one path made them byte-identical navigations.
+  //
+  // The gig travels only when this card KNOWS which one it means. The
+  // availability card has exactly one gig, so it forwards it. The directory card
+  // may be summarising several, and a mentor holds one ACTIVE gig PER SEGMENT,
+  // so "the first one" is not a fact about the mentor - it forwards nothing and
+  // the booking page resolves the gig from the segment the seeker is in.
+  const onlyKnownGigId =
+    variant === 'availability'
+      ? ((mentor as DiscoverableMentor).gig?.id ?? null)
+      : (mentor as DirectoryMentor).gigs.length === 1
+        ? (mentor as DirectoryMentor).gigs[0].id
+        : null;
+
+  const bookPath = mentorDetailPath({
+    mentorId: String(id),
+    segmentSlug,
+    gigId: onlyKnownGigId,
+    date: selectedDate,
+    origin,
+    intent: 'book',
+  });
+
+  const profilePath = mentorProfilePath({
+    mentorId: String(id),
+    segmentSlug,
+    date: selectedDate,
+    origin,
+  });
 
   const hasRating = Number(rating) > 0 && (reviewCount || 0) > 0;
 
@@ -165,13 +203,25 @@ export const MentorCard: React.FC<MentorCardProps> = ({
       )
     : null;
 
+  // Both figures come from the gig row itself and are only rendered when the
+  // original is genuinely higher; a gig with no real reduction shows one price,
+  // never a struck-through one that reads as a saving.
   const sessionPrice = gig ? formatInr(gig.price_inr) : '';
+  const sessionWasPrice = gig ? formatOriginalPrice(gig.price_inr, gig.original_price_inr) : '';
   const sessionDuration = gig?.duration_minutes ?? 0;
 
   const directoryGigs = variant === 'discovery' ? (mentor as DirectoryMentor).gigs : [];
-  const directoryStartingPrice = formatInr(
-    variant === 'discovery' ? (mentor as DirectoryMentor).starting_price_inr : null
-  );
+  const startingPrice = variant === 'discovery' ? (mentor as DirectoryMentor).starting_price_inr : null;
+  const directoryStartingPrice = formatInr(startingPrice);
+  // The "from" price is the cheapest gig on the mentor, so the strike-through is
+  // the cheapest gig's own original - never a maximum across gigs, which would
+  // show a saving on a price the seeker is not being quoted.
+  const cheapestGig = startingPrice === null
+    ? null
+    : directoryGigs.find((g) => g.price_inr === startingPrice) ?? directoryGigs[0] ?? null;
+  const directoryWasPrice = cheapestGig
+    ? formatOriginalPrice(cheapestGig.price_inr, cheapestGig.original_price_inr)
+    : '';
   const directoryDuration = directoryGigs[0]?.duration_minutes ?? 0;
 
   return (
@@ -319,6 +369,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
                 {sessionPrice && (
                   <p className="price-display mt-1">
                     <span className="price-label">From </span>
+                    {sessionWasPrice && <span className="price-original">{sessionWasPrice}</span>}
                     <span className="price-amount">{sessionPrice}</span>
                   </p>
                 )}
@@ -343,6 +394,7 @@ export const MentorCard: React.FC<MentorCardProps> = ({
               {directoryStartingPrice && (
                 <p className="price-display shrink-0 text-right">
                   <span className="price-label">From </span>
+                  {directoryWasPrice && <span className="price-original">{directoryWasPrice}</span>}
                   <span className="price-amount">{directoryStartingPrice}</span>
                 </p>
               )}
@@ -353,14 +405,16 @@ export const MentorCard: React.FC<MentorCardProps> = ({
           <div className="mt-4 flex flex-col gap-2.5 sm:flex-row">
             <button
               type="button"
-              onClick={() => navigate(detailPath)}
+              onClick={() => navigate(profilePath)}
+              aria-label={`View ${fullName}'s full profile`}
               className="btn-secondary flex-1"
             >
               <span>View profile</span>
             </button>
             <button
               type="button"
-              onClick={() => navigate(detailPath)}
+              onClick={() => navigate(bookPath)}
+              aria-label={`Book a session with ${fullName}`}
               className="btn-primary-segment flex-1"
             >
               <span>Book session</span>

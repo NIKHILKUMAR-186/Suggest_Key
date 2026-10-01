@@ -31,7 +31,7 @@ import {
 /** Supabase returns snake_case columns; these selects keep the mapping explicit. */
 const BOOKING_COLUMNS = 'id, booking_code, seeker_id, mentor_id, amount_inr, status, start_time, hold_id';
 const PAYMENT_COLUMNS =
-  'id, booking_id, seeker_id, amount_inr, status, gateway, razorpay_order_id, razorpay_payment_id, razorpay_signature, captured_at, failure_reason, refund_id, refund_status';
+  'id, booking_id, seeker_id, amount_inr, status, gateway, razorpay_order_id, razorpay_payment_id, razorpay_signature, captured_at, failure_reason, refund_id, refund_status, refund_amount_paise, refunded_at, refund_reason, manual_refund_required';
 
 const readBooking = (row: Record<string, unknown> | null): RazorpayBookingRow | null => {
   if (!row || typeof row.id !== 'string') return null;
@@ -63,6 +63,10 @@ const readPayment = (row: Record<string, unknown> | null): RazorpayPaymentRow | 
     failure_reason: (row.failure_reason as string | null) ?? null,
     refund_id: (row.refund_id as string | null) ?? null,
     refund_status: (row.refund_status as string | null) ?? null,
+    refund_amount_paise: row.refund_amount_paise === null || row.refund_amount_paise === undefined ? null : Number(row.refund_amount_paise),
+    refunded_at: (row.refunded_at as string | null) ?? null,
+    refund_reason: (row.refund_reason as string | null) ?? null,
+    manual_refund_required: row.manual_refund_required === true,
   };
 };
 
@@ -397,6 +401,89 @@ export function createSupabaseRazorpayStore(admin: SupabaseClient): RazorpayStor
         .maybeSingle();
       if (error) throw error;
       return !!data;
+    },
+
+    async markRefundInitiated({ paymentId, refundId, amountPaise, reason, at }) {
+      // Record that a refund has been initiated with the gateway.
+      // This is a transitional state - the payment stays VERIFIED until
+      // the gateway confirms the refund.
+      const { data, error } = await admin
+        .from('payments')
+        .update({
+          refund_id: refundId,
+          refund_status: 'PENDING',
+          refund_amount_paise: amountPaise,
+          refund_reason: reason,
+          updated_at: at,
+        })
+        .eq('id', paymentId)
+        .eq('status', 'VERIFIED')
+        .select(PAYMENT_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      return readPayment(data as Record<string, unknown> | null);
+    },
+
+    async markPaymentRefunded({ paymentId, refundId, amountPaise, reason, at }) {
+      // Conditional VERIFIED -> REFUNDED. Only the payment that was genuinely
+      // captured can be refunded.
+      const { data, error } = await admin
+        .from('payments')
+        .update({
+          status: 'REFUNDED',
+          refund_id: refundId,
+          refund_status: 'REFUNDED',
+          refund_amount_paise: amountPaise,
+          refund_reason: reason,
+          refunded_at: at,
+          updated_at: at,
+        })
+        .eq('id', paymentId)
+        .eq('status', 'VERIFIED')
+        .select(PAYMENT_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      return readPayment(data as Record<string, unknown> | null);
+    },
+
+    async markPaymentRefundFailed({ paymentId, refundId, reason, at }) {
+      // Conditional VERIFIED -> REFUND_FAILED. The payment was captured but
+      // the refund failed.
+      const { data, error } = await admin
+        .from('payments')
+        .update({
+          status: 'REFUND_FAILED',
+          refund_id: refundId,
+          refund_status: 'FAILED',
+          refund_reason: reason,
+          updated_at: at,
+        })
+        .eq('id', paymentId)
+        .eq('status', 'VERIFIED')
+        .select(PAYMENT_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      return readPayment(data as Record<string, unknown> | null);
+    },
+
+    async markManualRefundRequired({ paymentId, reason, at }) {
+      // Marks a manual payment as requiring admin refund action.
+      // The payment status remains VERIFIED but manual_refund_required is set.
+      const { data, error } = await admin
+        .from('payments')
+        .update({
+          manual_refund_required: true,
+          refund_reason: reason,
+          refund_status: 'PENDING',
+          updated_at: at,
+        })
+        .eq('id', paymentId)
+        .eq('status', 'VERIFIED')
+        .eq('gateway', 'manual')
+        .select(PAYMENT_COLUMNS)
+        .maybeSingle();
+      if (error) throw error;
+      return readPayment(data as Record<string, unknown> | null);
     },
 
     async insertPaymentEvent(event: PaymentEventInput) {

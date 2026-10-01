@@ -6,6 +6,14 @@ interface NavigationContextType {
   currentPath: string;
   currentRole: UserRole | null;
   navigate: (path: string) => void;
+  /**
+   * Writes the path into the URL WITHOUT adding a history entry.
+   *
+   * Used to mirror live discovery state (selected date, filters) into the query
+   * string. `navigate` would push an entry per keystroke, so Back would walk
+   * through every filter change instead of leaving the page.
+   */
+  replace: (path: string) => void;
 }
 
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
@@ -31,6 +39,13 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   };
 
+  const replace = (path: string) => {
+    setCurrentPath(path);
+    if (typeof window !== 'undefined') {
+      window.history.replaceState({}, '', path);
+    }
+  };
+
   useEffect(() => {
     const handlePopState = () => {
       const p = `${window.location.pathname || '/seeker'}${window.location.search}`;
@@ -42,7 +57,7 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   }, []);
 
   return (
-    <NavigationContext.Provider value={{ currentPath, currentRole: activeRole, navigate }}>
+    <NavigationContext.Provider value={{ currentPath, currentRole: activeRole, navigate, replace }}>
       {children}
     </NavigationContext.Provider>
   );

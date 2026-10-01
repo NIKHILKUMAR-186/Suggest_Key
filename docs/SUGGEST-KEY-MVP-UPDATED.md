@@ -138,8 +138,10 @@ A seeker can:
 - view mentor profiles
 - view mentor gigs
 - view pricing
+- see a genuine original (struck-through) price when a gig is reduced
 - select a slot
 - hold a slot
+- enter a coupon code at checkout and see the discount in the price breakdown
 - pay using QR
 - upload payment proof
 - view payment status
@@ -211,6 +213,9 @@ Admin can:
 - view payment submissions
 - approve payments
 - reject payments
+- create, edit, activate, deactivate and archive coupons
+- set a coupon's discount, targeting, usage limits and active window
+- view how much of a coupon's allowance is claimed
 - cancel bookings where required
 - intervene in booking issues
 - view session information
@@ -336,6 +341,7 @@ Recommended sidebar navigation:
 - Segments
 - Bookings
 - Payments
+- Coupons
 - Notifications
 - Settings
 
@@ -1211,7 +1217,7 @@ mentor's confirmed list.
 
 The mentor should add the meeting link at least:
 
-**2 hours** before session start.
+**5 minutes** before session start.
 
 Example:
 
@@ -1221,9 +1227,9 @@ Session:
 
 Recommended deadline:
 
-2:00 PM
+3:55 PM
 
-`MEETING_LINK_DEADLINE_MS = 2 * 60 * 60 * 1000`.
+`MEETING_LINK_DEADLINE_MS = 5 * 60 * 1000`.
 
 If the deadline passes:
 

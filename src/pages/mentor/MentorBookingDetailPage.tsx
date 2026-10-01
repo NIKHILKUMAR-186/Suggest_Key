@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import {
   ArrowLeft,
   Video,
@@ -336,7 +337,7 @@ export const MentorBookingDetailPage: React.FC = () => {
   const gigTitle = booking?.gig?.title || 'Gig no longer listed';
   const segmentName = booking?.segment?.name || 'Not recorded';
   const sessionDurationLabel = booking ? formatDuration(booking) : 'Not recorded';
-  const hoursLeft = booking?.deadlineInfo?.hoursUntilSession;
+  const minutesLeft = booking?.deadlineInfo?.minutesUntilSession;
 
   // Session lifecycle timing.
   const startMs = booking ? new Date(booking.start_time).getTime() : 0;
@@ -528,9 +529,9 @@ export const MentorBookingDetailPage: React.FC = () => {
         <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-900/20 p-4 flex items-start gap-3 text-xs text-amber-900 dark:text-amber-100">
           <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold block text-sm">Overdue Meeting Link Notice (&lt;2h)</span>
+            <span className="font-bold block text-sm">Overdue Meeting Link Notice (&lt;{MEETING_LINK_DEADLINE_MINUTES}m)</span>
             <p>
-              This session begins in less than 2 hours. While missing the recommended 2-hour deadline does not cancel your session, prompt submission is required so the seeker can prepare.
+              This session begins in less than {MEETING_LINK_DEADLINE_MINUTES} minutes. While missing the recommended {MEETING_LINK_DEADLINE_MINUTES}-minute deadline does not cancel your session, prompt submission is required so the seeker can prepare.
             </p>
           </div>
         </div>
@@ -766,7 +767,7 @@ export const MentorBookingDetailPage: React.FC = () => {
                   }`}
                 >
                   <Clock className="h-3 w-3" />
-                  Deadline: 2h before start ({isOverdue ? 'Overdue' : `~${hoursLeft}h remaining`})
+                  Deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start ({isOverdue ? 'Overdue' : `~${minutesLeft}m remaining`})
                 </span>
               )}
             </div>

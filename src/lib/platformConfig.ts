@@ -34,7 +34,7 @@ export interface PublicPaymentConfiguration {
 export interface EnforcedPlatformRules {
   holdDurationMinutes: number;
   sessionAccessWindowMinutes: number;
-  meetingLinkDeadlineHours: number;
+  meetingLinkDeadlineMinutes: number;
   bookingCutoffMinutes: number;
   cancellationWindowMinutes: number;
   defaultTimezone: string;
@@ -75,7 +75,7 @@ function readRules(raw: unknown): EnforcedPlatformRules | null {
 
   const holdDurationMinutes = num('holdDurationMinutes');
   const sessionAccessWindowMinutes = num('sessionAccessWindowMinutes');
-  const meetingLinkDeadlineHours = num('meetingLinkDeadlineHours');
+  const meetingLinkDeadlineMinutes = num('meetingLinkDeadlineMinutes');
   const bookingCutoffMinutes = num('bookingCutoffMinutes');
   const cancellationWindowMinutes = num('cancellationWindowMinutes');
   const defaultTimezone = str('defaultTimezone');
@@ -86,7 +86,7 @@ function readRules(raw: unknown): EnforcedPlatformRules | null {
   if (
     !Number.isFinite(holdDurationMinutes) ||
     !Number.isFinite(sessionAccessWindowMinutes) ||
-    !Number.isFinite(meetingLinkDeadlineHours) ||
+    !Number.isFinite(meetingLinkDeadlineMinutes) ||
     !Number.isFinite(bookingCutoffMinutes) ||
     !Number.isFinite(cancellationWindowMinutes) ||
     !defaultTimezone
@@ -97,7 +97,7 @@ function readRules(raw: unknown): EnforcedPlatformRules | null {
   return {
     holdDurationMinutes,
     sessionAccessWindowMinutes,
-    meetingLinkDeadlineHours,
+    meetingLinkDeadlineMinutes,
     bookingCutoffMinutes,
     cancellationWindowMinutes,
     defaultTimezone,
