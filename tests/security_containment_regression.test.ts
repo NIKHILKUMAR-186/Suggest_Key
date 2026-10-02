@@ -182,20 +182,24 @@ test('the SPA fallback rewrite still exists for non-API routes', () => {
 
 test('the server bundle is built outside the published output directory', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-  // The bundle must stay inside api/ so Vercel packages it as the function's
-  // file, and out of dist/, which Vercel publishes as static output. Assert the
-  // intent rather than one hardcoded path so a future move cannot silently
-  // reintroduce the published-source or missing-bundle outages.
-  assert.match(pkg.scripts['build:server'], /--outfile=api\/_build\/server\.cjs/);
+  // The bundle must land on api/index.cjs, which is both the Vercel function
+  // entrypoint and inside the function package, and must never land in dist/,
+  // which Vercel publishes as static output.
+  assert.match(pkg.scripts['build:server'], /--outfile=api\/index\.cjs/);
   assert.doesNotMatch(pkg.scripts['build:server'], /--outfile=dist\//);
+  // No source map: api/ is packaged into the deployed function, and shipping
+  // one reintroduces the backend-source exposure this suite exists to prevent.
+  assert.doesNotMatch(pkg.scripts['build:server'], /--sourcemap/);
 });
 
-test('a serverless entrypoint re-exports the Express app', () => {
+test('the serverless entrypoint is the self-contained Express bundle', () => {
   const entry = read('api/index.cjs');
-  // Relative to api/index.cjs: the bundle has to resolve INSIDE the function
-  // directory. A ../ reference reaches outside the function package, and Vercel's
-  // require tracer drops it, which emits no function at all.
-  assert.match(entry, /module\.exports\s*=\s*require\('\.\/_build\/server\.cjs'\)/);
+  // api/index.cjs IS the esbuild output, not a wrapper that requires a bundle
+  // from somewhere else. A wrapper adds a second file for Vercel to trace and
+  // ignore-filter, and that indirection is what silently produced a project
+  // with zero functions when the referenced path was not packaged.
+  assert.doesNotMatch(entry, /require\('\.\/_build\//);
+  assert.doesNotMatch(entry, /require\('\.\.\/\.build\//);
 });
 
 test('server.ts exports the app synchronously so Vercel receives a real handler', () => {
