@@ -1,22 +1,21 @@
 /**
- * Regression tests for the Vercel deployment architecture.
+* Regression tests for the Vercel deployment architecture.
  *
  * Production served the Vite SPA shell for every /api/* request, so the client
- * called response.json() on `text/html` and failed with
- * `Unexpected token '<'`. Two independent defects combined to produce that:
+ * called response.json() on `text/html` and failed with `Unexpected token '<'`.
  *
- *   1. vercel.json set "framework": "vite". Under a framework preset Vercel
- *      uses the preset's static builder, and the preset never emits functions
- *      for the project's api/ directory. Vercel only scans api/ for functions
- *      when no framework preset applies. Removing the key is not enough -
- *      Vercel auto-detects Vite from package.json - so it is explicitly nulled.
+ * A preview deployment then proved what was actually wrong. The remote build log
+ * showed `build:server` writing api/index.cjs (693.8 kB) and build:verify
+ * passing, the deployment going Ready, and /api/* still returning a Vercel
+ * NOT_FOUND while /admin returned the SPA. The build never ran a function
+ * builder at all: nothing created a route from api/. It also falsified the
+ * earlier theory that the Vite framework preset was suppressing discovery -
+ * nulling it changed nothing.
  *
- *   2. api/index.cjs was a two-line wrapper requiring ./_build/server.cjs. The
- *      function then depended on a second file being traced and packaged into
- *      the function directory. When that file is not packaged, no function is
- *      emitted at all and the deployment looks healthy while serving nothing.
- *      esbuild now writes the bundle straight to api/index.cjs, so the function
- *      is one file with no require graph to resolve.
+ * The fix is to stop depending on automatic api/ discovery entirely and name
+ * the builders in vercel.json. api/index.cjs is compiled by @vercel/node, so
+ * the function exists by declaration rather than by convention. The frontend is
+ * built by @vercel/static-build into dist, which is unchanged.
  *
  * The second half of this file boots the built entrypoint exactly as Vercel's
  * Node runtime does (require the module, hand it to a Node http server) and
@@ -34,9 +33,10 @@ const root = process.cwd();
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
 const config = () =>
   JSON.parse(read('vercel.json').replace(/^\s*\/\/[^\n]*\n/gm, '')) as {
-    framework: string | null;
-    buildCommand: string;
-    outputDirectory: string;
+    framework?: string | null;
+    buildCommand?: string;
+    outputDirectory?: string;
+    builds: { src: string; use: string; config?: Record<string, string> }[];
     rewrites: { source: string; destination: string }[];
   };
 
@@ -44,16 +44,31 @@ const config = () =>
 // Function discovery
 // ---------------------------------------------------------------------------
 
-test('no framework preset, so Vercel scans api/ for functions', () => {
-  // Must be null, not absent: omitting the key lets Vercel auto-detect Vite
-  // from the vite dependency and reinstate the preset that drops api/.
-  assert.equal(config().framework, null);
+test('api/index.cjs is explicitly built as a Vercel Node Function', () => {
+  // Automatic api/ discovery produced a deployment with zero functions: the
+  // build log showed the bundle being written and no function builder ever
+  // running. Declaring the builder removes the discovery step entirely.
+  const node = config().builds.find(b => b.use === '@vercel/node');
+  assert.ok(node, 'expected an @vercel/node build entry');
+  assert.equal(node.src, 'api/index.cjs');
+});
+
+test('no framework preset is relied on for function discovery', () => {
+  // `builds` overrides framework detection. A leftover preset or an
+  // outputDirectory would make the config internally inconsistent: static-build
+  // publishes distDir, so outputDirectory is meaningless and must not be set.
+  const v = config();
+  assert.equal(v.builds.some(b => b.use === '@vercel/static-build'), true);
+  assert.equal(v.outputDirectory, undefined);
+  assert.ok(v.framework === undefined || v.framework === null);
 });
 
 test('the frontend still builds to dist', () => {
-  const v = config();
-  assert.match(v.buildCommand, /npm run build/);
-  assert.equal(v.outputDirectory, 'dist');
+  const staticBuild = config().builds.find(b => b.use === '@vercel/static-build');
+  assert.ok(staticBuild, 'expected a static-build entry');
+  assert.equal(staticBuild.src, 'package.json');
+  assert.equal(staticBuild.config?.distDir, 'dist');
+  assert.equal(staticBuild.config?.buildCommand, 'npm run build');
 });
 
 test('api/index.cjs exists and is the whole function', () => {
