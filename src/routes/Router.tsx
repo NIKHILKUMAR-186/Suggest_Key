@@ -1,73 +1,96 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { ProtectedRoute } from '@/src/components/auth/ProtectedRoute';
 
-// Auth Pages
-import { LoginPage } from '@/src/pages/auth/LoginPage';
-import { SignUpPage } from '@/src/pages/auth/SignUpPage';
-import { UnauthorizedPage } from '@/src/pages/auth/UnauthorizedPage';
-import { ForgotPasswordPage } from '@/src/pages/auth/ForgotPasswordPage';
-import { ResetPasswordPage } from '@/src/pages/auth/ResetPasswordPage';
-import { VerifyPage } from '@/src/pages/auth/VerifyPage';
-import { AuthCallback } from '@/src/pages/auth/AuthCallback';
-
-// Landing Page
+// --- Critical, above-the-fold entry points ---------------------------
+// These stay in the initial chunk. The landing page IS the first paint for
+// every anonymous visitor, and login/signup are the entry point for every
+// returning user, so deferring them would trade a larger download for a worse
+// first meaningful paint. Everything else is lazy.
 import { LandingPage } from '@/src/pages/public/LandingPage';
 import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
+import { LoginPage } from '@/src/pages/auth/LoginPage';
+import { SignUpPage } from '@/src/pages/auth/SignUpPage';
+import { AuthCallback } from '@/src/pages/auth/AuthCallback';
+
+// --- Lazily loaded ---------------------------------------------------
+// Every seeker, mentor, admin and support screen is behind an authenticated
+// route guard, so no visitor needs any of it in the first paint. Splitting them
+// keeps a visitor's landing-page load off the ~470 KB of admin screens alone.
+const UnauthorizedPage = lazy(() => import('@/src/pages/auth/UnauthorizedPage').then((m) => ({ default: m.UnauthorizedPage })));
+const ForgotPasswordPage = lazy(() => import('@/src/pages/auth/ForgotPasswordPage').then((m) => ({ default: m.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import('@/src/pages/auth/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })));
+const VerifyPage = lazy(() => import('@/src/pages/auth/VerifyPage').then((m) => ({ default: m.VerifyPage })));
 
 // Support Center (seeker + mentor share one page; admin gets the queue)
-import { SupportPage } from '@/src/components/support/SupportPage';
+const SupportPage = lazy(() => import('@/src/components/support/SupportPage').then((m) => ({ default: m.SupportPage })));
 
 // Seeker Pages
-import { SeekerHomePage } from '@/src/pages/seeker/SeekerHomePage';
-import { SeekerMentorListPage } from '@/src/pages/seeker/SeekerMentorListPage';
-import { MentorDirectoryPage } from '@/src/pages/seeker/MentorDirectoryPage';
-import { SeekerMentorDetailPage } from '@/src/pages/seeker/SeekerMentorDetailPage';
-import { SeekerMentorProfilePage } from '@/src/pages/seeker/SeekerMentorProfilePage';
-import { SeekerBookingsPage } from '@/src/pages/seeker/SeekerBookingsPage';
-import { SeekerBookingDetailPage } from '@/src/pages/seeker/SeekerBookingDetailPage';
-import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage';
-import { SeekerPaymentPage } from '@/src/pages/seeker/SeekerPaymentPage';
-import { SeekerNotificationsPage } from '@/src/pages/seeker/SeekerNotificationsPage';
-import { SeekerSettingsPage } from '@/src/pages/seeker/SeekerSettingsPage';
-import { SeekerSessionPage } from '@/src/pages/seeker/SeekerSessionPage';
-import { SeekerWorkspacePage } from '@/src/pages/seeker/SeekerWorkspacePage';
+const SeekerHomePage = lazy(() => import('@/src/pages/seeker/SeekerHomePage').then((m) => ({ default: m.SeekerHomePage })));
+const SeekerMentorListPage = lazy(() => import('@/src/pages/seeker/SeekerMentorListPage').then((m) => ({ default: m.SeekerMentorListPage })));
+const MentorDirectoryPage = lazy(() => import('@/src/pages/seeker/MentorDirectoryPage').then((m) => ({ default: m.MentorDirectoryPage })));
+const SeekerMentorDetailPage = lazy(() => import('@/src/pages/seeker/SeekerMentorDetailPage').then((m) => ({ default: m.SeekerMentorDetailPage })));
+const SeekerMentorProfilePage = lazy(() => import('@/src/pages/seeker/SeekerMentorProfilePage').then((m) => ({ default: m.SeekerMentorProfilePage })));
+const SeekerBookingsPage = lazy(() => import('@/src/pages/seeker/SeekerBookingsPage').then((m) => ({ default: m.SeekerBookingsPage })));
+const SeekerBookingDetailPage = lazy(() => import('@/src/pages/seeker/SeekerBookingDetailPage').then((m) => ({ default: m.SeekerBookingDetailPage })));
+const SeekerReschedulePage = lazy(() => import('@/src/pages/seeker/SeekerReschedulePage').then((m) => ({ default: m.SeekerReschedulePage })));
+const SeekerPaymentPage = lazy(() => import('@/src/pages/seeker/SeekerPaymentPage').then((m) => ({ default: m.SeekerPaymentPage })));
+const SeekerNotificationsPage = lazy(() => import('@/src/pages/seeker/SeekerNotificationsPage').then((m) => ({ default: m.SeekerNotificationsPage })));
+const SeekerSettingsPage = lazy(() => import('@/src/pages/seeker/SeekerSettingsPage').then((m) => ({ default: m.SeekerSettingsPage })));
+const SeekerSessionPage = lazy(() => import('@/src/pages/seeker/SeekerSessionPage').then((m) => ({ default: m.SeekerSessionPage })));
+const SeekerWorkspacePage = lazy(() => import('@/src/pages/seeker/SeekerWorkspacePage').then((m) => ({ default: m.SeekerWorkspacePage })));
 
 // Mentor Pages
-import { MentorSignupPage } from '@/src/pages/mentor/MentorSignupPage';
-import { MentorVerificationPage } from '@/src/pages/mentor/MentorVerificationPage';
-import { MentorHomePage } from '@/src/pages/mentor/MentorHomePage';
-import { MentorBookingsPage } from '@/src/pages/mentor/MentorBookingsPage';
-import { MentorBookingDetailPage } from '@/src/pages/mentor/MentorBookingDetailPage';
-import { MentorAvailabilityPage } from '@/src/pages/mentor/MentorAvailabilityPage';
-import { MentorNotificationsPage } from '@/src/pages/mentor/MentorNotificationsPage';
-import { MentorSettingsPage } from '@/src/pages/mentor/MentorSettingsPage';
-import { MentorGigsPage } from '@/src/pages/mentor/MentorGigsPage';
-import { MentorSegmentsPage } from '@/src/pages/mentor/MentorSegmentsPage';
-import { MentorWorkspacePage } from '@/src/pages/mentor/MentorWorkspacePage';
+const MentorSignupPage = lazy(() => import('@/src/pages/mentor/MentorSignupPage').then((m) => ({ default: m.MentorSignupPage })));
+const MentorVerificationPage = lazy(() => import('@/src/pages/mentor/MentorVerificationPage').then((m) => ({ default: m.MentorVerificationPage })));
+const MentorHomePage = lazy(() => import('@/src/pages/mentor/MentorHomePage').then((m) => ({ default: m.MentorHomePage })));
+const MentorBookingsPage = lazy(() => import('@/src/pages/mentor/MentorBookingsPage').then((m) => ({ default: m.MentorBookingsPage })));
+const MentorBookingDetailPage = lazy(() => import('@/src/pages/mentor/MentorBookingDetailPage').then((m) => ({ default: m.MentorBookingDetailPage })));
+const MentorAvailabilityPage = lazy(() => import('@/src/pages/mentor/MentorAvailabilityPage').then((m) => ({ default: m.MentorAvailabilityPage })));
+const MentorNotificationsPage = lazy(() => import('@/src/pages/mentor/MentorNotificationsPage').then((m) => ({ default: m.MentorNotificationsPage })));
+const MentorSettingsPage = lazy(() => import('@/src/pages/mentor/MentorSettingsPage').then((m) => ({ default: m.MentorSettingsPage })));
+const MentorGigsPage = lazy(() => import('@/src/pages/mentor/MentorGigsPage').then((m) => ({ default: m.MentorGigsPage })));
+const MentorSegmentsPage = lazy(() => import('@/src/pages/mentor/MentorSegmentsPage').then((m) => ({ default: m.MentorSegmentsPage })));
+const MentorWorkspacePage = lazy(() => import('@/src/pages/mentor/MentorWorkspacePage').then((m) => ({ default: m.MentorWorkspacePage })));
 
 // Admin Pages
-import { AdminDashboardPage } from '@/src/pages/admin/AdminDashboardPage';
-import { AdminUsersPage } from '@/src/pages/admin/AdminUsersPage';
-import { AdminUserDetailPage } from '@/src/pages/admin/AdminUserDetailPage';
-import { AdminCreateUserPage } from '@/src/pages/admin/AdminCreateUserPage';
-import { AdminMentorsPage } from '@/src/pages/admin/AdminMentorsPage';
-import { AdminMentorDetailPage } from '@/src/pages/admin/AdminMentorDetailPage';
-import { AdminMentorVerificationPage } from '@/src/pages/admin/AdminMentorVerificationPage';
-import { AdminMentorVerificationDetailPage } from '@/src/pages/admin/AdminMentorVerificationDetailPage';
-import { AdminSegmentsPage } from '@/src/pages/admin/AdminSegmentsPage';
-import { AdminCouponsPage } from '@/src/pages/admin/AdminCouponsPage';
-import { AdminSegmentDetailPage } from '@/src/pages/admin/AdminSegmentDetailPage';
-import { AdminBookingsPage } from '@/src/pages/admin/AdminBookingsPage';
-import { AdminWorkspacesPage } from '@/src/pages/admin/AdminWorkspacesPage';
-import { AdminPaymentsPage } from '@/src/pages/admin/AdminPaymentsPage';
-import { AdminNotificationsPage } from '@/src/pages/admin/AdminNotificationsPage';
-import { AdminSystemHealthPage } from '@/src/pages/admin/AdminSystemHealthPage';
-import { AdminSettingsPage } from '@/src/pages/admin/AdminSettingsPage';
-import { AdminSupportPage } from '@/src/pages/admin/AdminSupportPage';
+const AdminDashboardPage = lazy(() => import('@/src/pages/admin/AdminDashboardPage').then((m) => ({ default: m.AdminDashboardPage })));
+const AdminUsersPage = lazy(() => import('@/src/pages/admin/AdminUsersPage').then((m) => ({ default: m.AdminUsersPage })));
+const AdminUserDetailPage = lazy(() => import('@/src/pages/admin/AdminUserDetailPage').then((m) => ({ default: m.AdminUserDetailPage })));
+const AdminCreateUserPage = lazy(() => import('@/src/pages/admin/AdminCreateUserPage').then((m) => ({ default: m.AdminCreateUserPage })));
+const AdminMentorsPage = lazy(() => import('@/src/pages/admin/AdminMentorsPage').then((m) => ({ default: m.AdminMentorsPage })));
+const AdminMentorDetailPage = lazy(() => import('@/src/pages/admin/AdminMentorDetailPage').then((m) => ({ default: m.AdminMentorDetailPage })));
+const AdminMentorVerificationPage = lazy(() => import('@/src/pages/admin/AdminMentorVerificationPage').then((m) => ({ default: m.AdminMentorVerificationPage })));
+const AdminMentorVerificationDetailPage = lazy(() => import('@/src/pages/admin/AdminMentorVerificationDetailPage').then((m) => ({ default: m.AdminMentorVerificationDetailPage })));
+const AdminSegmentsPage = lazy(() => import('@/src/pages/admin/AdminSegmentsPage').then((m) => ({ default: m.AdminSegmentsPage })));
+const AdminCouponsPage = lazy(() => import('@/src/pages/admin/AdminCouponsPage').then((m) => ({ default: m.AdminCouponsPage })));
+const AdminSegmentDetailPage = lazy(() => import('@/src/pages/admin/AdminSegmentDetailPage').then((m) => ({ default: m.AdminSegmentDetailPage })));
+const AdminBookingsPage = lazy(() => import('@/src/pages/admin/AdminBookingsPage').then((m) => ({ default: m.AdminBookingsPage })));
+const AdminWorkspacesPage = lazy(() => import('@/src/pages/admin/AdminWorkspacesPage').then((m) => ({ default: m.AdminWorkspacesPage })));
+const AdminPaymentsPage = lazy(() => import('@/src/pages/admin/AdminPaymentsPage').then((m) => ({ default: m.AdminPaymentsPage })));
+const AdminNotificationsPage = lazy(() => import('@/src/pages/admin/AdminNotificationsPage').then((m) => ({ default: m.AdminNotificationsPage })));
+const AdminSystemHealthPage = lazy(() => import('@/src/pages/admin/AdminSystemHealthPage').then((m) => ({ default: m.AdminSystemHealthPage })));
+const AdminSettingsPage = lazy(() => import('@/src/pages/admin/AdminSettingsPage').then((m) => ({ default: m.AdminSettingsPage })));
+const AdminSupportPage = lazy(() => import('@/src/pages/admin/AdminSupportPage').then((m) => ({ default: m.AdminSupportPage })));
 
-export const Router: React.FC = () => {
+/**
+ * One fallback for every deferred screen.
+ *
+ * Deliberately matches the session-resolving spinner in `AppShell` so a route
+ * chunk arriving mid-navigation looks like the app is still settling, rather
+ * than flashing a different loading treatment.
+ */
+const RouteFallback: React.FC = () => (
+  <div className="min-h-screen flex items-center justify-center bg-[#05060f]">
+    <div className="text-center space-y-3">
+      <div className="h-8 w-8 rounded-full border-2 border-[#663af3] border-t-transparent animate-spin mx-auto text-[var(--color-shell-text-subtle)]" />
+      <p className="text-xs text-[#9da7ba]">Loading...</p>
+    </div>
+  </div>
+);
+
+const RouterRoutes: React.FC = () => {
   const { currentPath } = useNavigation();
   const { activeRole, isAuthenticated } = useAuth();
   const pathname = currentPath.split('?')[0];
@@ -215,3 +238,16 @@ if (pathname.startsWith('/admin')) {
   // the landing page, so a mistyped or outdated link never looks like success.
   return <NotFoundPage />;
 };
+
+/**
+ * Route resolution is wrapped in a single Suspense boundary.
+ *
+ * The boundary sits here rather than per-route so that navigating between two
+ * deferred screens does not tear down and rebuild a fallback, and so the
+ * already-loaded landing/login pages keep rendering without interruption.
+ */
+export const Router: React.FC = () => (
+  <Suspense fallback={<RouteFallback />}>
+    <RouterRoutes />
+  </Suspense>
+);

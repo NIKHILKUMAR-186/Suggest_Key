@@ -4,26 +4,53 @@
 **Audit type:** Read-only forensic review. No code, schema, configuration or data was modified.
 **Scope:** Manual UPI/QR path, Razorpay path, payment state machines, hold interaction, storage, RLS, money integrity, concurrency, notifications, realtime, admin/seeker UI, tests, migrations, deployment posture.
 
-> **Addendum (2026-10-01) — findings superseded since this audit.**
-> The body below is preserved as written on the audit date. Three of its claims no
-> longer describe the code, and the remediation it recommends has since landed:
->
-> - **P1-2 / "no refund initiation, anywhere" (§Summary, §Table, §Priorities) is
->   stale.** `RazorpayGatewayClient` now implements a third method,
->   `createRefund`, and `runCreateRazorpayRefund` calls it for Razorpay payments.
->   A seeker-facing notification no longer claims a manual refund was initiated —
->   a manual refund is described as **pending** until an admin records it.
-> - **Manual refund completion now exists.** Phase 40 adds
->   `POST /api/admin/payments/:id/complete-manual-refund`: admin-only, full
->   amount, external reference and receipt required, atomic and once-only, with
->   the proof in the existing private bucket. See `docs/prd.md` §15c and
->   `docs/architecture.md` §11.3a.
-> - **The "two methods" claim (§Table) is wrong for the current code.** See
->   `src/lib/razorpayService.ts` for the actual gateway surface.
->
-> Findings that are unaffected, notably **P0-1** (an unresolvable capture is
-> silently discarded) and **P1-1** (the `payment-qr` bucket is created by no
-> migration), still stand.
+> **This document is a historical record, preserved as written on 2026-09-29.**
+> Do not read it as a statement of current state. Every section below describes
+> the payment system as it stood on the audit date. Current state lives in
+> `docs/architecture.md` §11, `docs/prd.md` §10, `docs/rules.md` §8 and
+> `docs/technical-audit.md`.
+
+## Addendum (2026-10-02) — status of every finding in this audit
+
+The body below is preserved verbatim. Its remediation has since landed in full,
+including for the two findings the earlier 2026-10-01 addendum still listed as
+open. Do not act on the body without reading this table first.
+
+### Resolved
+
+| Finding | What the body claims | Current reality |
+|---|---|---|
+| **P0-1** — "A captured payment can be silently discarded" | `handleCaptured` returns `handled: 'unmatched'`, **writes nothing**, and the webhook route still returns `200`. "The only path in the entire payment system where money can vanish without a trace." | **CLOSED** by `20261003000000_phase28_unmatched_capture_ledger.sql`. The capture is now made **durable before** the handler reports failure: it is inserted into `razorpay_unmatched_captures` under `UNIQUE (gateway, razorpay_payment_id)`, and only then does the route return **non-2xx**, so Razorpay keeps redelivering. A duplicate delivery updates the same row and increments `delivery_count` rather than creating a second one. The reason code and gateway payment id are audited as `razorpay_capture_unmatched` — never the payload, never the signature. Reconciliation exists: `GET /api/admin/unmatched-captures` and `POST /api/admin/unmatched-captures/:id/reconcile`. See `docs/architecture.md` §11.4a. |
+| **P1-1** — "The `payment-qr` bucket is never created by any migration" | "A fresh database built purely from `supabase/migrations/` cannot accept a QR upload… the single most important operational fact in this report." | **CLOSED** by `20261002000000_phase27_payment_qr_bucket_and_config_audit.sql`, which creates the bucket with exactly the properties the audit recommended (2 MB cap, png/jpeg/webp, admin-only `platform/`-prefixed policies) plus public read so the checkout page can render it. Verified present in the live project. |
+| **P1-2** — "No refund initiation, anywhere" | Refunds are observed but never initiated. | **CLOSED.** `RazorpayGatewayClient` implements a third method, `createRefund`, and `runCreateRazorpayRefund` calls it for Razorpay payments. Phase 40 adds `POST /api/admin/payments/:id/complete-manual-refund` for the manual path: admin-only, full amount, external reference and receipt required, atomic and once-only. A manual refund is described to the seeker as **pending**, never as initiated. See `docs/prd.md` §15c. |
+| **"The gateway has two methods" (§Table)** | — | Wrong for current code. See the actual gateway surface in `src/lib/razorpayService.ts`. |
+| **Coupons / discounts "not implemented"** | — | **CLOSED** by phase 39. Server-side price snapshotting with `CHECK (amount_inr = base_amount_inr - discount_amount_inr)`. |
+| **P2-5** — "The admin API projects away every gateway field" | The admin payment view cannot see gateway identifiers or refund state. | **CLOSED.** `GET /api/admin/payments` exposes `gateway`, `razorpay_order_id`, `razorpay_payment_id`, `refund_status`, `refund_id` and `failure_reason`, still without ever projecting the signature. Guarded by `tests/admin_payment_view.test.ts`. |
+
+### Still open, and unchanged in substance
+
+| Finding | Status |
+|---|---|
+| **P2-1** — proof-document retention policy | Still an operational policy decision, not an engineering one. |
+| **P2-3** — an orphan Razorpay order is possible if the gateway response is lost | Still latent. Both orders expire uncharged, so there is no direct loss. Note this is now the *only* remaining member of P0-1's class: the capture side is durable, the order-creation side is not. |
+| **P2-4**, and the manual-path weaknesses in §3 | Unchanged. |
+
+### Two new findings this audit did not have
+
+- **An unmatched capture now has a backend but no operator UI.** The two
+  reconcile routes are `requireAdmin` and fully functional, but nothing in
+  `src/` calls them — `razorpay_unmatched_captures` appears only in
+  `src/lib/razorpayService.ts` and `src/lib/razorpayStore.ts`. An operator must
+  use the API or read `audit_logs`. P0-1's backend half is closed; the
+  operator-facing half is not. See `docs/technical-audit.md` §12.
+- **There is no sweep over `refund_status='PENDING'`.** Now that manual refund
+  completion exists, a forgotten manual refund stays pending until a human looks
+  at the payment queue.
+
+### And one correction to the 2026-10-01 addendum
+
+That addendum stated that **P0-1 and P1-1 "still stand"**. That is no longer
+true. Both are closed as of 2026-10-02, as set out above.
 
 ## Evidence Basis and Confidence Legend
 

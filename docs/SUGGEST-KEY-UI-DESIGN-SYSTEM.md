@@ -1,8 +1,8 @@
 # Suggest Key — UI Design System & Frontend Design Bible
 
-**Version:** 3.1
+**Version:** 3.2
 **Status:** As-built / Current
-**Last verified:** 2026-09-29
+**Last verified:** 2026-10-02
 **Scope:** Frontend UI/UX only
 
 > Version 1.0 of this document was a pre-implementation proposal. It listed
@@ -11,6 +11,25 @@
 > the segment-experience theme layer, both of which were built after version 2.
 > Anything not present in the repository is marked
 > **Not currently implemented.**
+
+> **What changed in 3.2 (re-verified 2026-10-02).** Six claims in version 3.1
+> were stale and are corrected below:
+>
+> 1. **Admin navigation has 13 items, not 11.** `Coupons` and `Support` were
+>    added by phases 39 and 41. See §3 and §19.
+> 2. **`ToastContext` has 21 consumer files, not two.** The toast host is now
+>    the dominant feedback mechanism in admin pages. See §10.4.
+> 3. **`src/index.css` is 2,644 lines / 98,957 bytes**, not 2,844 / 97,738.
+> 4. **Support, coupons and rescheduling surfaces exist** and are documented in
+>    the new §10.7 and §10.8.
+> 5. **Notification freshness is not uniform across roles.** Admin subscribes
+>    to realtime; seeker and mentor still poll on a 30 s interval. See the new
+>    §19.1.
+> 6. **The `PAYMENT_PROCESSING` gap in §15 is still real**, but its stated cause
+>    needed tightening — see §15.
+>
+> The `ui/` primitive inventory (10 files) is unchanged, and no `Select`,
+> `Checkbox`, `Switch`, `Tabs`, `Table` or `Dropdown` primitive was added.
 
 ---
 
@@ -61,7 +80,8 @@ Discover → Book → Attend → Review outcome
 ```
 
 Clean, focused, discovery-oriented, low cognitive load, strong booking CTA.
-Top navigation shell: Home, My Bookings, Notifications, Settings.
+Top navigation shell: Home, My Bookings, Notifications, Settings (4).
+**Help & Support is reached from Settings, not from the top nav.**
 
 ### Mentor
 
@@ -70,7 +90,8 @@ Manage availability → Manage bookings → Conduct session → Document outcome
 ```
 
 Clean, operational, action-oriented, clear session states.
-Top navigation shell: Home, My Bookings, Availability, Notifications, Settings.
+Top navigation shell: Home, My Bookings, Availability, Notifications, Settings (5).
+**Help & Support is reached from Settings, not from the top nav.**
 
 ### Admin
 
@@ -79,8 +100,9 @@ Monitor → Verify → Control → Resolve
 ```
 
 Operational, information-dense, efficient, clear queues and actions.
-Sidebar shell: Dashboard, Users, Mentors, Mentor Verification, Segments,
-Bookings, Workspaces, Payments, Notifications, System Health, Settings.
+Sidebar shell (13 items): Dashboard, Users, Mentors, Mentor Verification,
+Segments, Bookings, Workspaces, Payments, **Coupons**, Notifications, System
+Health, **Support**, Settings.
 
 ---
 
@@ -133,7 +155,7 @@ third-party component kit.
 Light and dark are both intentionally designed, not inversions. The `.dark`
 class on a root ancestor switches the token block.
 
-`src/index.css` is **2,844 lines** (97,738 bytes) and defines the tokens in
+`src/index.css` is **2,644 lines** (98,957 bytes) and defines the tokens in
 `@layer base`. It is the **single live source of visual truth**.
 
 ### 6.1 Semantic token groups (live)
@@ -304,8 +326,19 @@ reasonable refactor, but do not document one as existing.
 A **toast system does exist** — `src/context/ToastContext.tsx` provides
 `ToastProvider` with `success` / `error` / `info` variants, an auto-dismiss
 timer, a max-visible cap, and a `useToast` hook. It is a context + host, not a
-`ui/` primitive, which is why it is not in the table above. It has only two
-consumers, so most of the app still uses inline or status-transition feedback.
+`ui/` primitive, which is why it is not in the table above.
+
+> **Corrected in 3.2.** Version 3.1 said the toast host "has only two consumers,
+> so most of the app still uses inline or status-transition feedback." That is
+> no longer true. `useToast` is imported by **21 files**: 11 admin pages, 6
+> mentor pages, and 4 seeker pages. The toast host is now the primary
+> user-facing feedback mechanism in the admin console in particular
+> (`AdminPaymentsPage`, `AdminSegmentsPage`, `AdminWorkspacesPage`,
+> `AdminSystemHealthPage`, `AdminSettingsPage`).
+>
+> This does **not** relax the rule in §18 that the toast host is a message bus
+> rather than a source of truth. A toast still must not report a success the
+> server did not confirm.
 
 ---
 
@@ -315,6 +348,7 @@ consumers, so most of the app still uses inline or status-transition feedback.
 |---|---|
 | `src/pages/seeker/SeekerPaymentPage.tsx` | The checkout screen. Serves **both** gateways from one route: `/seeker/payment` and `/seeker/checkout` |
 | `src/components/seeker/RazorpayCheckoutCard.tsx` | Razorpay Checkout launcher. Rendered only when `GET /api/payments/razorpay/config` reports `enabled: true` |
+| `src/components/seeker/CouponBox.tsx` | Coupon entry and discount display on the payment screen (added phase 39) |
 | `src/components/booking/HoldCountdown.tsx` | The live 5-minute hold countdown shown during checkout |
 | `src/components/booking/BookingSummary.tsx` | Booking summary on the payment screen |
 | `src/components/booking/StatePanel.tsx` | Status panel on booking detail |
@@ -324,8 +358,13 @@ consumers, so most of the app still uses inline or status-transition feedback.
 **The manual and Razorpay paths are one screen with two branches**, not two
 pages. The UPI id, QR image, payment instructions, account name and currency all
 come from `GET /api/platform-config` and are **never hardcoded**. When Razorpay
-is disabled (the default) the Razorpay card is not rendered at all and the
-screen is manual-only.
+is disabled (the default, and the current production state) the Razorpay card is
+not rendered at all and the screen is manual-only.
+
+The coupon box writes `coupon_id` and `coupon_code` onto the booking; the
+discount itself is computed and validated **server-side**. The client never
+computes a discounted total for display purposes and must never treat a client
+discount as authoritative.
 
 UX requirements for payment states:
 
@@ -336,6 +375,11 @@ UX requirements for payment states:
 - A `PAYMENT_PROCESSING` booking has no tone today — see §15. Latent: the
   booking never enters that state, so the gap is in the type/tone tables, not in
   anything a user can currently see.
+- **There is no seeker-facing "refund pending" state.** `payments.status`
+  `REFUND_FAILED` renders with the label "Refund pending"
+  (`PAYMENT_STATUS_COPY` in `statusTone.ts`), but a booking whose refund is
+  merely *awaiting an admin action* has no booking-level or UI-level
+  representation. `REFUND_PENDING` appears nowhere in `src/`.
 
 ---
 
@@ -362,6 +406,65 @@ produce values that do not follow the shell palette. That is intentional — it 
 a per-brand surface — but it means segment themes must be validated in the
 admin editor with a live preview (`AdminExperiencePreview.tsx`), because there
 is no shell-level QA matrix for them.
+
+---
+
+## 10.7 Support surfaces (added in 3.2)
+
+Phase 41 added a support domain spanning three surfaces, one of which is
+deliberately shared:
+
+| Surface | Component | Route | Notes |
+|---|---|---|---|
+| Seeker / mentor | `src/components/support/SupportPage.tsx` | `/seeker/support`, `/mentor/support` | **One component, two routes.** Seeker and mentor get the same page. |
+| Seeker / mentor | `src/components/support/SupportBadges.tsx` | — | Status and category badge rendering |
+| Admin | `src/pages/admin/AdminSupportPage.tsx` | `/admin/support` | The operator queue |
+
+The shared page is a deliberate simplification, not an oversight: the seeker and
+mentor support experiences are the same shape (raise a ticket, track it, read
+its status), and splitting them would have duplicated state handling for no gain.
+
+`src/lib/supportDomain.ts` owns the status, priority and category vocabularies
+and the legal transitions. The UI must render those vocabularies rather than
+inventing labels, and it must never offer a transition the domain does not
+allow — the same rule as §15 for bookings.
+
+Both participant and admin surfaces revalidate on a **20 s interval** rather
+than a realtime subscription.
+
+### Design rules for this domain
+
+- Support is reached **from Settings**, not from the top nav. This is a
+  deliberate navigation choice: support is a fallback path, not a primary task.
+- Status must be legible without colour (§23), and a ticket the seeker has
+  submitted must never appear to have vanished on refresh.
+- A rejected or closed ticket must state its reason in text. A ticket marked
+  "closed" with no explanation is the same failure mode as §17's blank error
+  state.
+
+---
+
+## 10.8 Coupons and rescheduling surfaces (added in 3.2)
+
+| Surface | Component | Route |
+|---|---|---|
+| Seeker checkout | `src/components/seeker/CouponBox.tsx` | `/seeker/payment`, `/seeker/checkout` |
+| Admin coupons | `src/pages/admin/AdminCouponsPage.tsx` | `/admin/coupons` |
+| Seeker reschedule | `src/pages/seeker/SeekerReschedulePage.tsx` | `/seeker/reschedule` |
+
+`AdminCouponsPage` is a full admin page and sits in the sidebar between
+**Payments** and **Notifications**. It is the only coupon surface — there is no
+mentor-facing or seeker-facing coupon management page.
+
+The coupon box writes the code to the booking; validation, the discount amount
+and the `base_amount_inr` / `discount_amount_inr` split are all server-side,
+enforced by `CHECK (amount_inr = base_amount_inr - discount_amount_inr)`. The
+client displays the server's returned pricing object and computes nothing.
+
+`/seeker/reschedule` exists as a **seeker**-only route today. The reschedule
+request flow is asymmetric — a seeker can request a change, but there is no
+mentor-facing or admin-facing reschedule page in `src/pages/`. Do not assume
+the reverse direction is built.
 
 ---
 
@@ -466,12 +569,19 @@ Tone mapping lives in `src/components/booking/statusTone.ts` and is rendered by
 `StatusPill`. Map statuses onto `Badge` variants (`success`, `warning`,
 `destructive`, `secondary`, `outline`) consistently across every page.
 
-> **Known gap:** `PAYMENT_PROCESSING` is permitted by `bookings_status_check`
-> but is **not** in the `BookingStatus` union in `src/types/database.ts`, so
-> `statusTone.ts` `BOOKING_LIFECYCLE` (5 entries) has no entry for it and would
-> render it with no stepper position. Impact is currently low: no code path
+> **Known gap (re-confirmed 2026-10-02):** `PAYMENT_PROCESSING` is permitted by
+> `bookings_status_check` but is **not** in the `BookingStatus` union in
+> `src/types/database.ts`, which has exactly 7 members. Consequently
+> `BOOKING_STATUS_COPY` has no entry for it, `BOOKING_LIFECYCLE` (5 entries) has
+> no position for it, and it would render via the unknown-status fallback with a
+> neutral tone and no stepper position. Impact is currently low: no code path
 > writes that value to a booking, so it cannot be observed today. It becomes
 > live if a future change starts using it. See `docs/technical-audit.md` T1.
+>
+> The unknown-status fallback is itself the mitigation: a status the server adds
+> before this file is updated renders visibly as its raw value rather than being
+> silently coerced to "Confirmed". Do not remove that fallback when adding a
+> status.
 
 ---
 
@@ -516,11 +626,11 @@ today — apply consistent classes at the call site.
 
 **Success feedback is usually inline or a status transition.** A toast host
 does exist (`ToastContext.tsx` → `ToastProvider`, `useToast`, variants
-`success` / `error` / `info`, auto-dismiss, max-visible cap), but it has only
-two consumers. Do not reach for a toast where a status transition or an
-`ErrorState` is the honest representation of what happened — a toast that
-reports a success the server did not confirm is a bug, and the toast host is
-explicitly documented as a message bus rather than a source of truth.
+`success` / `error` / `info`, auto-dismiss, max-visible cap) and is now widely
+used (21 consumer files — see §10.4). Do not reach for a toast where a status
+transition or an `ErrorState` is the honest representation of what happened — a
+toast that reports a success the server did not confirm is a bug, and the toast
+host is explicitly documented as a message bus rather than a source of truth.
 
 ---
 
@@ -530,15 +640,34 @@ Centralized and role-aware in `src/config/navigation.ts`
 (`ROLE_NAVIGATION`), consumed by `TopNavigation.tsx` (seeker, mentor) and
 `AdminSidebar.tsx` (admin). Do not build ad-hoc navigation inside pages.
 
-| Role | Shell | Items |
-|---|---|---|
-| Seeker | top nav | Home, My Bookings, Notifications, Settings (4) |
-| Mentor | top nav | Home, My Bookings, Availability, Notifications, Settings (5) |
-| Admin | sidebar | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Notifications, System Health, Settings (11) |
+| Role | Shell | Items | Count |
+|---|---|---|---|
+| Seeker | top nav | Home, My Bookings, Notifications, Settings | 4 |
+| Mentor | top nav | Home, My Bookings, Availability, Notifications, Settings | 5 |
+| Admin | sidebar | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Coupons, Notifications, System Health, Support, Settings | **13** |
+
+> **Corrected in 3.2.** Version 3.1 listed 11 admin items. `Coupons` (phase 39)
+> and `Support` (phase 41) were added after that document was written.
+>
+> **Undocumented source drift.** The header comment inside
+> `src/config/navigation.ts` describes the admin list as *"Dashboard, Users,
+> Mentors, Segments, Bookings, Payments, Notifications, Settings, Support"* —
+> 9 items, and it omits Mentor Verification, Workspaces, Coupons and System
+> Health. The `navItems` array below it is authoritative and correct; the
+> comment is stale. Treat the array, not the comment, as the source of truth,
+> and fix the comment when touching that file.
+
+Help & Support is deliberately **absent** from the seeker and mentor nav and is
+reached from Settings instead (`/seeker/support`, `/mentor/support`).
 
 Routable but deliberately **not** in the nav config, reached in-page instead:
-`/mentor/gigs`, `/mentor/segments` (mentor); `/admin/users/create`,
-`/admin/system-health/logs` (admin).
+
+| Role | Routes |
+|---|---|
+| Mentor | `/mentor/gigs`, `/mentor/segments`, `/mentor/signup`, `/mentor/verification`, `/mentor/booking-detail`, `/mentor/workspace` |
+| Seeker | `/seeker/reschedule`, `/seeker/booking-detail`, `/seeker/session`, `/seeker/workspace`, `/seeker/checkout` (alias of `/seeker/payment`), `/seeker/mentor-detail`, `/seeker/mentor-profile`, `/seeker/mentors` |
+| Admin | `/admin/users/create`, `/admin/system-health/logs` |
+| Public | `/mentors` (public mentor directory), `/seeker/support`, `/mentor/support` |
 
 Desktop: horizontal top nav for seeker/mentor; persistent sidebar for admin.
 Mobile: compact header with a collapsible menu for seeker/mentor; collapsible
@@ -547,6 +676,33 @@ drawer for admin.
 Changing the navigation UI is not authorization. Role access is enforced by
 `ProtectedRoute` in the client and by `requireAuth` / `requireRole` /
 `requireAdmin` / `requireActiveMentor` on the server, with RLS underneath.
+
+---
+
+## 19.1 Notification freshness differs by role
+
+This is an inconsistency in the current build, recorded here so it is not
+mistaken for a design decision:
+
+| Surface | Mechanism | Interval |
+|---|---|---|
+| `AdminNotificationsPage` | `useNotificationSync` — realtime channel **plus** interval and focus revalidation | 20 s fallback |
+| Seeker / mentor notification pages | `NotificationContext`, mounted app-wide in `App.tsx` | **30 s polling** |
+
+`useNotificationSync` (`src/hooks/useNotificationSync.ts`) has exactly **one**
+consumer: `AdminNotificationsPage`. Its own comment is explicit that the
+interval and focus revalidation "cover environments without realtime" — the
+admin path was built to degrade safely, and it does.
+
+The seeker and mentor path has no realtime subscription at all, so a seeker can
+wait up to 30 seconds to see a notification. Whether that closes depends on
+`notifications` being in the database's `supabase_realtime` publication — it is
+in the live project, but **no migration adds it**, so a migration-only rebuild
+would not reproduce it. See `docs/architecture.md` §8 and
+`docs/technical-audit.md`.
+
+If notification latency on the participant side ever matters, the fix is to
+adopt `useNotificationSync` there too rather than to build a second mechanism.
 
 ---
 

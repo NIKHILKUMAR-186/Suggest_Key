@@ -4,6 +4,16 @@ Captured: 2026-09-29 (UTC) against the live Supabase project
 Project ref: `ojbxycchsajqpwhwdkll`
 Scope: every `SECURITY DEFINER` function in schema `public`
 
+> **This file is a historical record of a pre-containment database state. It is
+> not a description of the current system.** The database it describes had 80
+> `SECURITY DEFINER` functions, 78 of them executable by `anon`. That condition
+> was contained on the same day. The current state is re-verified in
+> "Re-verification (2026-10-02)" at the end of this file, and the finding is
+> **CONTAINED**.
+>
+> Read the historical sections for the *reasoning* and the *evidence*; read the
+> re-verification section for the current numbers.
+
 ## Method
 
 Inventory taken from `pg_proc` (`prosecdef = true`, `pronamespace = 'public'`) joined to
@@ -206,3 +216,56 @@ invoked at any point.
 3. **Authenticated-path runtime test not performed.** The `authenticated` grants and the
    service-role paths were verified in the catalog only. End-to-end confirmation needs a
    real signed-in session and was deliberately not fabricated.
+
+---
+
+# Re-verification (2026-10-02)
+
+Run directly against the live catalog. This supersedes the counts above for
+current-state purposes; the historical sections are left intact.
+
+## Finding status
+
+**CRITICAL-01: still CONTAINED.** Nothing has regressed.
+
+| Metric | Pre-containment (2026-09-29) | Containment (2026-09-29) | Re-verified (2026-10-02) |
+|---|---|---|---|
+| `SECURITY DEFINER` functions in `public` | 80 | 81 | **100** |
+| Executable by `anon` | 78 | **0** | **0** |
+| Executable by `authenticated` | 78 | 4 (RLS predicates only) | **5** — see below |
+| Executable by `service_role` | — | all | **all 100** |
+
+The function count grew from 81 to 100 because phases 30–41 added roughly twenty
+functions: reschedule-request handling, the coupon RPCs, manual refund
+completion, and the support-centre RPCs. Each of those revoked `EXECUTE` from
+`PUBLIC`, `anon` and `authenticated` in its own migration — the phase 29
+containment was **not** a one-time event that later work silently undid, and
+`anon`-executable count is still **0**.
+
+## The fifth `authenticated` grant
+
+Post-containment, the audit claimed the `authenticated` grants were "**exactly**
+the set of `SECURITY DEFINER` functions referenced by any RLS `USING` or
+`WITH CHECK` expression". That claim is **no longer exact**. There are now five:
+
+| Function | Why it is granted to `authenticated` |
+|---|---|
+| `is_admin()` | RLS predicate |
+| `has_role(uuid, text)` | RLS predicate |
+| `is_account_suspended(uuid)` | RLS predicate |
+| `mentor_is_publicly_visible(uuid)` | RLS predicate |
+| `create_booking_with_hold(...)` | **Deliberate, not an RLS predicate.** Granted by `20260920000003_phase6_atomic_booking.sql` and re-granted by phase 31 and phase 39. |
+
+`create_booking_with_hold` is callable by a signed-in client **by design**. It is
+the atomic booking RPC, and it performs the full server-side validation itself —
+ownership, role, mentor approval, segment and gig activity, duration match, past
+slot, recurring availability, date exceptions, existing bookings and active
+holds. Moving that logic into the database is precisely what makes the booking
+atomic and makes the validation unbypassable; hiding the function would not add
+security, it would only make the same rules unreachable.
+
+Note that this contradicts an adjacent claim in the same post-containment
+section: "the browser client issues **no** `.rpc()` calls at all". The browser
+still issues none today — all booking traffic goes through `POST
+/api/bookings/hold` with the service-role key. The grant is defensive depth for
+the database contract, not a description of current traffic.

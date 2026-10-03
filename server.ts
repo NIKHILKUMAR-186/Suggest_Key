@@ -65,9 +65,6 @@ import {
   PAYMENT_PROOF_MAX_BYTES,
   PAYMENT_STATUS_PENDING,
   PAYMENT_QR_BUCKET,
-  PAYMENT_QR_MIME_TYPES,
-  PAYMENT_QR_MAX_BYTES,
-  PAYMENT_QR_MAX_LABEL,
   type PaymentQrMimeType,
   isPayableBookingStatus,
   normaliseTransactionReference,
@@ -1926,10 +1923,13 @@ async function startServer() {
   // happens in the browser, so the server never observes the failed attempt
   // itself and the client reports it here. Rate limited per IP so the reporting
   // path cannot itself be used to flood the tracker table.
-  app.post('/api/auth/login-failure', expensiveRouteLimiter, async (req: AuthRequest, res) => {
+  app.post(
+    '/api/auth/login-failure',
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.loginFailureReport),
+    async (req: AuthRequest, res) => {
     try {
-      const body = (req.body || {}) as { email?: unknown; reason?: unknown };
-      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const { email = '', reason } = (req.body ?? {}) as { email?: string; reason?: string };
       const ip = typeof req.ip === 'string' ? req.ip : '';
 
       if (!email && !ip) {
@@ -1939,7 +1939,7 @@ async function startServer() {
         });
       }
 
-      const tracked = await recordLoginFailure({ email, ip, reason: body.reason });
+      const tracked = await recordLoginFailure({ email, ip, reason });
 
       logger.auth('login_failure', {
         requestId: req.requestId,
@@ -1947,7 +1947,7 @@ async function startServer() {
         method: 'POST',
         statusCode: 401,
         result: 'failure',
-        reason: typeof body.reason === 'string' ? body.reason.slice(0, 60) : 'INVALID_CREDENTIALS',
+        reason: typeof reason === 'string' ? reason.slice(0, 60) : 'INVALID_CREDENTIALS',
       });
 
       return res.json({
@@ -1969,10 +1969,13 @@ async function startServer() {
   // POST /api/auth/login-success
   // A correct password breaks the streak, so only genuinely consecutive failures
   // ever reach the threshold.
-  app.post('/api/auth/login-success', expensiveRouteLimiter, async (req: AuthRequest, res) => {
+  app.post(
+    '/api/auth/login-success',
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.loginSuccessReport),
+    async (req: AuthRequest, res) => {
     try {
-      const body = (req.body || {}) as { email?: unknown };
-      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const { email = '' } = (req.body ?? {}) as { email?: string };
       const ip = typeof req.ip === 'string' ? req.ip : '';
 
       const cleared = await resetLoginFailures({ email, ip });
@@ -2687,7 +2690,13 @@ async function startServer() {
   // Nothing about the payment is taken from the request except the UTR and the
   // image itself. The amount, the seeker, the booking and the storage key are
   // all derived server-side, so a client cannot pay ₹1 for a ₹499 session.
-  app.post('/api/seeker/bookings/:id/payment-proof', requireAuth, requireRole('seeker'), expensiveRouteLimiter, async (req: AuthRequest, res) => {
+  app.post(
+    '/api/seeker/bookings/:id/payment-proof',
+    requireAuth,
+    requireRole('seeker'),
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.paymentProofSubmit),
+    async (req: AuthRequest, res) => {
     const bookingId = req.params.id;
     const callerId = req.auth!.user.id;
 
@@ -2703,7 +2712,19 @@ async function startServer() {
     // path here. That keeps this request a few hundred bytes instead of a
     // base64 image ~33% larger than the file, which is what previously blew
     // past the platform request-size limit and returned 413.
-    const { transactionReference, fileName, mimeType, fileSize, storagePath } = req.body ?? {};
+    //
+    // The shape, the MIME allow-list and the size ceiling are already enforced
+    // by `apiSchemas.paymentProofSubmit`, which also strips markup out of the
+    // transaction reference. `normaliseTransactionReference` is still applied
+    // because it owns the provider-issued character set, which the schema
+    // deliberately does not restate.
+    const { transactionReference, fileName, mimeType, fileSize, storagePath } = req.body as {
+      transactionReference: string;
+      fileName: string;
+      mimeType: string;
+      fileSize: number;
+      storagePath: string;
+    };
 
     const reference = normaliseTransactionReference(transactionReference);
     if (!reference.ok) {
@@ -2711,15 +2732,15 @@ async function startServer() {
     }
 
     const proof = validateProofFile({
-      name: typeof fileName === 'string' ? fileName : '',
-      type: typeof mimeType === 'string' ? mimeType : '',
-      size: typeof fileSize === 'number' ? fileSize : PAYMENT_PROOF_MAX_BYTES + 1,
+      name: fileName,
+      type: mimeType,
+      size: fileSize,
     });
     if (!proof.ok) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: proof.message } });
     }
 
-    if (typeof storagePath !== 'string' || !storagePath) {
+    if (!storagePath) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'Select your payment screenshot.' } });
     }
 
@@ -3221,6 +3242,7 @@ async function startServer() {
     requireAuth,
     requireRole('seeker'),
     expensiveRouteLimiter,
+    validateBody(apiSchemas.razorpayVerify),
     async (req: AuthRequest, res) => {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -3231,13 +3253,17 @@ async function startServer() {
       }
 
       try {
-        const body = (req.body ?? {}) as Record<string, unknown>;
+        const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body as {
+          razorpayOrderId: string;
+          razorpayPaymentId: string;
+          razorpaySignature: string;
+        };
         const result = await runVerifyRazorpayPayment({
           bookingId: req.params.id,
           callerId: req.auth!.user.id,
-          razorpayOrderId: body.razorpayOrderId,
-          razorpayPaymentId: body.razorpayPaymentId,
-          razorpaySignature: body.razorpaySignature,
+          razorpayOrderId,
+          razorpayPaymentId,
+          razorpaySignature,
           gateway: createRazorpayGatewayClient(),
           store: createSupabaseRazorpayStore(admin),
         });
@@ -10478,68 +10504,49 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = parseBody(req, res, apiSchemas.platformConfigUpdate);
+      if (body === null) return;
 
-      // The QR object key must be one the server minted. A client cannot point
-      // the seeker payment page at an arbitrary object in the bucket.
-      const QR_PATH_PATTERN = /^platform\/payment-qr-[0-9]{13}-[a-z0-9]{6}\.(png|jpe?g|webp)$/i;
-
-      const optionalText = (maxLength: number) => (value: unknown, field: string) => {
-        if (value === undefined) return undefined;
-        if (value === null) return null;
-        if (typeof value !== 'string') throw new HttpError(400, 'VALIDATION_ERROR', `${field} must be a string.`);
-        const trimmed = value.trim();
-        if (trimmed.length > maxLength) {
-          throw new HttpError(400, 'VALIDATION_ERROR', `${field} must be ${maxLength} characters or fewer.`);
-        }
-        return trimmed === '' ? null : trimmed;
-      };
-
+      // The shape, the per-field lengths, the QR object-key pattern and the
+      // markup stripping all happened in `apiSchemas.platformConfigUpdate`, so
+      // what arrives here is already bounded and tag-free. What is left is the
+      // one rule that is a format check rather than a shape check: a UPI handle
+      // is `local-part@provider`, and a client must not be able to store a value
+      // a seeker could never pay to.
       const updates: Record<string, unknown> = {};
       const changedFields: string[] = [];
 
-      const upiId = optionalText(120)(body.upiId, 'UPI ID');
-      if (upiId !== undefined) {
-        if (upiId !== null && !/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(upiId)) {
+      if (body.upiId !== undefined) {
+        if (body.upiId !== null && !/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(body.upiId)) {
           throw new HttpError(400, 'VALIDATION_ERROR', 'Enter a valid UPI ID, for example name@bank.');
         }
-        updates.upi_id = upiId;
+        updates.upi_id = body.upiId;
         changedFields.push('upi_id');
       }
 
-      const accountName = optionalText(120)(body.accountName, 'Account name');
-      if (accountName !== undefined) {
-        updates.payment_account_name = accountName;
+      if (body.accountName !== undefined) {
+        updates.payment_account_name = body.accountName;
         changedFields.push('payment_account_name');
       }
 
-      const instructions = optionalText(1000)(body.instructions, 'Payment instructions');
-      if (instructions !== undefined) {
-        updates.payment_instructions = instructions;
+      if (body.instructions !== undefined) {
+        updates.payment_instructions = body.instructions;
         changedFields.push('payment_instructions');
       }
 
       if (body.currency !== undefined) {
-        if (body.currency !== null && body.currency !== 'INR') {
-          // Every amount column in the product is an `*_inr` integer, so INR is
-          // the only currency the payment architecture actually supports.
-          throw new HttpError(400, 'VALIDATION_ERROR', 'Currency is fixed to INR: all amounts are stored in rupees.');
-        }
         updates.currency = 'INR';
         changedFields.push('currency');
       }
 
       if (body.qrImageStoragePath !== undefined) {
-        if (body.qrImageStoragePath === null) {
-          updates.qr_image_storage_path = null;
-        } else if (typeof body.qrImageStoragePath === 'string' && QR_PATH_PATTERN.test(body.qrImageStoragePath)) {
-          updates.qr_image_storage_path = body.qrImageStoragePath;
-        } else {
-          throw new HttpError(400, 'VALIDATION_ERROR', 'Unknown payment QR reference.');
-        }
+        updates.qr_image_storage_path = body.qrImageStoragePath;
         changedFields.push('qr_image_storage_path');
       }
 
+      // The schema already refuses a patch that names no field. This is a
+      // belt-and-braces guard for the case where every named field is somehow
+      // absent, so the handler can never issue an upsert that writes no column.
       if (changedFields.length === 0) {
         return res.status(400).json({
           success: false,
@@ -10600,7 +10607,12 @@ async function startServer() {
   // the binary is never written into a database column and never lands in a
   // request body. Only the resulting object key is persisted, by the PATCH
   // above.
-  app.post('/api/admin/platform-config/qr-upload-url', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post(
+    '/api/admin/platform-config/qr-upload-url',
+    requireAuth,
+    requireAdmin,
+    validateBody(apiSchemas.platformQrUploadRequest),
+    async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -10609,23 +10621,16 @@ async function startServer() {
 
       // The filename is deliberately not part of this contract. It is not needed
       // to build the object key, and accepting it would mean a client-supplied
-      // name reaches the public QR bucket.
-      const body = (req.body ?? {}) as { fileType?: unknown; fileSize?: unknown };
-      const type = typeof body.fileType === 'string' ? body.fileType : '';
-      const size = typeof body.fileSize === 'number' ? body.fileSize : Number.NaN;
-
-      // The bucket is the real authority, but the same ceiling is enforced here
-      // so an oversized or wrong-type file is refused with a clear message
-      // instead of a generic upload failure.
-      if (!PAYMENT_QR_MIME_TYPES.includes(type as PaymentQrMimeType)) {
-        throw new HttpError(400, 'VALIDATION_ERROR', 'Upload a PNG, JPEG or WebP image.');
-      }
-      if (!Number.isFinite(size) || size <= 0) {
-        throw new HttpError(400, 'VALIDATION_ERROR', 'That file is empty.');
-      }
-      if (size > PAYMENT_QR_MAX_BYTES) {
-        throw new HttpError(400, 'VALIDATION_ERROR', `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`);
-      }
+      // name reaches the public QR bucket. `strictObject` means a client that
+      // sends one gets a 400 rather than having the field quietly dropped.
+      //
+      // The bucket is the real authority, but the same allow-list and ceiling are
+      // enforced here so an oversized or wrong-type file is refused with a clear
+      // message instead of a generic upload failure.
+      const { fileType: type, fileSize: size } = req.body as {
+        fileType: PaymentQrMimeType;
+        fileSize: number;
+      };
 
       // The extension is derived from the validated MIME type, never from the
       // client-supplied filename. Taking it from the name would let a file called

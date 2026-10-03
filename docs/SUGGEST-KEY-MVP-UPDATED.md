@@ -1,8 +1,8 @@
 # SUGGEST KEY — MVP PRODUCT & TECHNICAL SPECIFICATION
 
-Version: 3.1
+Version: 3.2
 Status: As-built / Current
-Last verified: 2026-09-29
+Last verified: 2026-10-02
 Product: Suggest Key
 Document Type: Product + Technical Specification
 
@@ -333,19 +333,32 @@ Mentor profile, segments and gigs are managed from Settings, while Availability 
 
 Admin uses a dedicated sidebar because the Admin application has substantially more operational content than the seeker/mentor applications.
 
-Recommended sidebar navigation:
+Sidebar navigation, as implemented in `src/config/navigation.ts` — **13 items**
+in this order:
 
-- Dashboard
-- Users
-- Mentors
-- Segments
-- Bookings
-- Payments
-- Coupons
-- Notifications
-- Settings
+1. Dashboard
+2. Users
+3. Mentors
+4. Mentor Verification
+5. Segments
+6. Bookings
+7. Workspaces
+8. Payments
+9. Coupons
+10. Notifications
+11. System Health
+12. Support
+13. Settings
 
-The admin sidebar may also contain a bottom account area for:
+`/admin/users/create` and `/admin/system-health/logs` are routable but are not
+separate sidebar entries; they are reached in-page.
+
+Support is an admin sidebar item, between System Health and Settings. It is
+**not** a seeker or mentor top-nav item — both reach it from Settings →
+Help & Support (`/seeker/support`, `/mentor/support`), which keeps their
+top-nav shape unchanged.
+
+The sidebar may also contain a bottom account area for:
 
 - Admin profile
 - Logout
@@ -966,14 +979,19 @@ locking, booking, session and mentor confirmation are all gateway-agnostic.
 
 None are `VITE_`-prefixed, so none can be bundled into the client.
 
-### 23.2 Known gap
+### 23.2 Storage buckets
 
-The `payment-qr` storage bucket is referenced by the admin QR upload
-(`PAYMENT_QR_BUCKET` in `src/lib/paymentProof.ts`, used at `server.ts:205`,
-`:8786`, `:8845`) but is **not created by any migration**. Against a database
-built purely from `supabase/migrations/`, the admin cannot upload a payment QR.
-Because the manual UPI/QR path is the default payment route, this blocks the
-primary revenue path. See `docs/technical-audit.md` P1.
+Five buckets exist. `payment-qr` — `PAYMENT_QR_BUCKET` in
+`src/lib/paymentProof.ts` — is created by
+`20261002000000_phase27_payment_qr_bucket_and_config_audit.sql` (public, 2 MB,
+png/jpeg/webp), so the admin UPI QR upload works against a database built purely
+from `supabase/migrations/`.
+
+Earlier revisions of this document described this as an open gap. It is closed,
+and it is kept here because the failure mode was worth recording: the bucket
+existed in code and not in schema, so the default payment path broke on a fresh
+environment with a raw storage error rather than a validated 4xx. See
+`docs/technical-audit.md` P1 for the full history.
 
 ---
 
@@ -1876,10 +1894,23 @@ RAZORPAY (payment row only; the booking row is untouched until capture)
              MENTOR_PENDING)     row written)       row written,
                                 (booking unchanged)  refund_status PENDING)
 
-REFUND (event-driven only; nothing initiates a refund)
-VERIFIED ──refund event──► REFUNDED | REFUND_FAILED
-                        (a PENDING refund records bookkeeping columns only;
-                         it never advances the payment's own status)
+REFUND (two shapes; both implemented)
+VERIFIED ──Razorpay refund via gateway──► refund_status REFUND_PROCESSING
+                                              │
+                                    webhook:  REFUNDED | REFUND_FAILED
+
+VERIFIED ──cancel a MANUAL payment──► refund_status PENDING,
+                                     manual_refund_required = true,
+                                     payment.status UNCHANGED
+                        │
+            admin transfers money outside the app, then:
+            POST /api/admin/payments/:id/complete-manual-refund
+                        │
+                        ▼
+                refund_status REFUNDED
+        (a PENDING refund records bookkeeping columns only; it never
+         advances the payment's own status, and the seeker is told the
+         refund is PENDING ADMIN PROCESSING — never "initiated")
 ```
 
 > **Historical:** `PENDING` / `APPROVED` / `REJECTED`. `APPROVED` became
@@ -2052,10 +2083,25 @@ API: `GET /api/notifications`, `GET /api/notifications/unread-count`,
 rows in the database via `mark_notification_as_read(p_id, p_user_id)` and
 `mark_all_notifications_as_read(p_user_id)`.
 
-**Freshness is polling-only.** `notifications` is **not** in the
-`supabase_realtime` publication, so updates arrive within up to ~30 s
-(`NotificationContext` polls every 30 s; `useNotificationSync` uses a
-visibility-gated 60 s interval, floor 30 s). See `docs/technical-audit.md` R1.
+**Freshness is realtime for admins, polling for participants.**
+`notifications` **is** in the `supabase_realtime` publication, and
+`useNotificationSync` subscribes to it with the filter `user_id = eq.<uid>` —
+the same predicate the `notifications` RLS policy enforces, so a subscription
+cannot widen a user's reads. It keeps a visibility-gated 60 s interval (floor
+30 s) as a fallback, revalidates on `focus` and `visibilitychange`, and removes
+the channel on unmount.
+
+`AdminNotificationsPage` consumes that hook. The **seeker and mentor**
+notification pages do not: they still read through `NotificationContext`, which
+polls every 30 s with **no** visibility gate, so their latency is up to ~30 s and
+a backgrounded tab keeps polling. The server-side capability exists and works;
+those two pages have simply not been migrated to it. See
+`docs/technical-audit.md` R1.
+
+**One caveat that matters for a fresh environment:** no migration adds
+`notifications` to the publication. It was added out of band, so a database
+built purely from `supabase/migrations/` would have polling-only notifications.
+See `docs/technical-audit.md` R2.
 
 ---
 
@@ -2119,18 +2165,23 @@ Never perform business logic using browser-local time alone.
 
 # 53. DATABASE ARCHITECTURE
 
-`supabase/migrations/` is the schema of record: **38 files**, applied in
+`supabase/migrations/` is the schema of record: **53 files**, applied in
 timestamp order. `supabase/schema.sql` is a 968-byte stub and must not be used.
 
-**28 tables exist in `public`:**
+**36 tables exist in `public`** (verified against the live catalog):
 
 ```text
 identity      profiles, user_roles
 catalog       segments, segment_topics, gig_topics
 profiles      mentor_profiles, mentor_segments, seeker_profiles, gigs
 availability  mentor_availability, mentor_availability_exceptions
-booking       slot_holds, bookings, payments, payment_events, webhook_events
+booking       slot_holds, bookings, reschedule_requests
+payment       payments, payment_events, webhook_events,
+              razorpay_unmatched_captures
+promotions    coupons, coupon_usage
 content       session_workspaces
+support       support_tickets, support_messages, support_attachments,
+              support_audit_events
 onboarding    mentor_applications, mentor_verification_documents,
               mentor_document_types, mentor_application_audit
 operations    platform_config, audit_logs, system_logs, system_log_retention,
@@ -2142,24 +2193,32 @@ operations    platform_config, audit_logs, system_logs, system_log_retention,
 > `mentor_document_types`, `mentor_application_audit`, `platform_config`,
 > `audit_logs`, `system_logs`, `system_log_retention`, `login_failure_config`
 > and `login_failure_trackers`. All of them exist.
+>
+> **Correction to v3.1:** this list has since grown again. `reschedule_requests`,
+> `razorpay_unmatched_captures`, `coupons`, `coupon_usage` and the four support
+> tables were added in phases 26–41.
 
 **No slot table and no `generate_slots` RPC exist.** Slots are computed at read
 time by `src/lib/slotEngine.ts` from recurring availability minus exceptions
 minus bookings minus active holds minus the past minus the 5-minute cutoff.
 
-**Three storage buckets are created by migrations:** `payment-proofs` (private),
-`mentor-verification-documents` (private), `segment-hero` (public read, admin
-write).
+**Five storage buckets**, verified against the live catalog:
 
-**A fourth bucket, `payment-qr`, is referenced by application code but is never
-created by any migration.** It is used by the admin UPI QR upload
-(`PAYMENT_QR_BUCKET` in `src/lib/paymentProof.ts`; `server.ts:205`, `:8786`,
-`:8845`). Against a database built purely from `supabase/migrations/`, that
-upload fails. See `docs/technical-audit.md` P1.
+| Bucket | Public | Limit | Mimes |
+|---|---|---|---|
+| `payment-proofs` | no | 5 MB | jpeg/png/webp/pdf |
+| `mentor-verification-documents` | no | 5 MB | jpeg/png/webp/pdf |
+| `support-attachments` | no | 5 MB | png/jpeg/webp/pdf |
+| `payment-qr` | **yes** | 2 MB | png/jpeg/webp |
+| `segment-hero` | **yes** | 5 MB | png/jpeg/webp/gif |
 
-RLS is enabled on **27 of the 28** tables; `platform_config` is the exception
-(protected by grant scoping and the service-role client). `pg_cron` runs
-`expire_stale_holds()` and `complete_expired_sessions()` every minute.
+RLS is enabled on **all 36 tables**. `platform_config` was the last exception; it
+is now admin-only via `20261009000000_phase35_platform_config_rls.sql`
+(`FOR ALL`, `USING (is_admin()) WITH CHECK (is_admin())`).
+
+`pg_cron` runs **three** jobs, all `* * * * *`:
+`expire-stale-holds-every-minute`, `complete-expired-sessions-every-minute` and
+`expire-stale-reschedule-requests-every-minute`.
 
 ---
 

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import type { User, Session } from '@supabase/supabase-js';
 import type { Profile, UserRole, AuthContextType } from '@/src/types/auth';
 import { logSanitizer } from '@/src/lib/logSanitizer';

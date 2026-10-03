@@ -100,11 +100,31 @@ GRANT EXECUTE ON FUNCTION public.handle_new_user() TO service_role;
 -- ---------------------------------------------------------------------------
 -- 5. Pin search_path on the two SECURITY DEFINER functions that were missing
 --    it, matching every other function in the schema.
+--
+--    Guarded, because PostgreSQL has no `ALTER FUNCTION ... IF EXISTS`.
+--    `get_user_role` is a LEGACY function that no migration in this repo
+--    creates: it exists only on the original database (see
+--    docs/audit/CRITICAL-01-security-definer-inventory.md, which observed it
+--    among the 80 SECURITY DEFINER functions there) and nowhere in
+--    supabase/migrations. On any database built from this directory the
+--    unguarded ALTER aborted the whole migration with
+--    "function public.get_user_role(uuid) does not exist", which skipped both
+--    this pinning and the fail-closed post-condition in section 6 - so the
+--    migration reported failure while its security-critical sections 1-4 had
+--    already applied. Each ALTER now runs only when its target exists.
 -- ---------------------------------------------------------------------------
-ALTER FUNCTION public.create_booking_with_hold(uuid, uuid, uuid, uuid, timestamptz, timestamptz)
-  SET search_path = public;
-ALTER FUNCTION public.get_user_role(uuid)
-  SET search_path = public;
+DO $$
+BEGIN
+  IF to_regprocedure('public.create_booking_with_hold(uuid,uuid,uuid,uuid,timestamptz,timestamptz)') IS NOT NULL THEN
+    ALTER FUNCTION public.create_booking_with_hold(uuid, uuid, uuid, uuid, timestamptz, timestamptz)
+      SET search_path = public;
+  END IF;
+
+  IF to_regprocedure('public.get_user_role(uuid)') IS NOT NULL THEN
+    ALTER FUNCTION public.get_user_role(uuid)
+      SET search_path = public;
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 6. Post-conditions. These must hold after this migration runs; if any row

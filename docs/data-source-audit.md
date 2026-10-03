@@ -1,8 +1,8 @@
 # Suggest Key — Data Source Audit
 
-Version: 3.1
+Version: 3.2
 Status: As-built / Current
-Last verified: 2026-09-29
+Last verified: 2026-10-02
 
 Classification of every hardcoded, fixture or fallback data source found in the
 repository, with the current verified status. The v1 audit of this file
@@ -25,60 +25,44 @@ exist. That content is replaced below.
 
 ## 1. Summary
 
+**The headline result: there are now zero Class-3 findings.** The single one this
+audit existed to document — the fixture-backed admin overdue-links route — has
+been fixed. Every hardcoded value in the repository is now either a gated
+development fixture, a UI string, or genuinely dead code.
+
 | Class | Count | Risk |
 |---|---|---|
 | 1 — Intentional dev/test data | 4 | None |
-| 2 — Harmless UI copy | 3 | None |
-| 3 — Production business-data fallback | **1** | **High** |
+| 2 — Harmless UI copy | 4 | None |
+| 3 — Production business-data fallback | **0** | **None. Was 1; F1 is fixed.** |
 | 4 — Obsolete / dead code | 3 | Low |
-| 5 — Bug / risk | 3 | See §7 |
+| 5 — Bug / risk | 2 | See §7. Both are Medium/Low, neither is a data-integrity leak. |
 
-**Bottom line:** exactly one item in the repository is a production
-business-data fallback, and it is a single admin-only route. Every other
-hardcoded value is either a development fixture that is properly gated, a
-string, or unreachable code.
+**Bottom line (2026-10-02):** no hardcoded business data can reach a real user
+response. The residual risks are unearned ratings (**F3**) and two dead files
+(**F4**, **O1**) — quality issues, not correctness ones.
 
 ---
 
-## 2. The One Class-3 Finding
+## 2. The Former Class-3 Finding — now fixed
 
-### 🔴 F1 — `GET /api/admin/bookings/overdue-links` serves in-memory fixtures
+### ✅ F1 — `GET /api/admin/bookings/overdue-links` served in-memory fixtures — **FIXED**
 
-- **Class:** 3 — production business-data fallback
-- **Severity:** High
-- **Location:** `server.ts:3138-3152`
-- **Source of the data:** `getLocalBookingEngineContext()`,
-  `src/lib/bookingService.ts:134-943`
+- **Class:** was 3 — production business-data fallback. **Now none.**
+- **Was located at:** the former synchronous handler, which never called
+  `getSupabaseAdmin()` and always returned
+  `getOverdueBookings(getLocalBookingEngineContext())`
+- **Now at:** `server.ts:4201`, `async`
 
-```ts
-app.get('/api/admin/bookings/overdue-links', requireAuth, requireAdmin, (req, res) => {
-  try {
-    const db = getLocalBookingEngineContext();
-    const overdue = getOverdueBookings(db);
-    const enriched = overdue.map((b) => enrichBooking(b, db));
-    return res.json({ success: true, count: overdue.length, bookings: enriched });
-  } catch (err) { ... }
-});
-```
+What it was serving, for the record — the fixture context in
+`src/lib/bookingService.ts` contains hardcoded mentors (`Aman Kumar`,
+`Rahul Sharma`, `Ananya Patel`, `Dr. Vikram Joshi`), hardcoded prices
+(999/1200/1299/1500), and demo notification copy such as
+`"Mentor Rahul Sharma has not provided meeting URL for BK-9022 starting in 75 minutes."`
 
-The handler is synchronous, never calls `getSupabaseAdmin()`, and therefore has
-no database read and no `503` path. The context it serves contains:
-
-| Fixture | Location |
-|---|---|
-| `Aman Kumar` | `bookingService.ts:141` |
-| `Rahul Sharma` | `bookingService.ts:159`, `:168` |
-| `Ananya Patel` | `bookingService.ts:177` |
-| `Dr. Vikram Joshi` | `bookingService.ts:186` |
-| `price_inr: 999` | `bookingService.ts:307`, `:401`, `:445`, `:468`, `:491`, `:514`, `:537`, `:554`, `:600` |
-| `price_inr: 1299` | `bookingService.ts:319`, `:423`, `:577` |
-| Demo notification copy, e.g. `"Mentor Rahul Sharma has not provided meeting URL for BK-9022 starting in 75 minutes."` | `bookingService.ts:626`, `:639`, `:678`, `:704`, `:769`, `:797`, `:890`, `:903`, `:916` |
-
-**Why this one and not the others:** `server.ts` imports
-`getLocalBookingEngineContext` at `server.ts:25` and **calls it 16 times**
-(verified: `server.ts` lines 923, 1816, 1903, 1976, 2092, 2184, 3100, 3140,
-8919, 8970, 9013, 9058, 9170, 9235, 9348 — plus the import itself). Fifteen of
-those call sites are inside the pattern:
+**Why it was the only one.** `server.ts` imports `getLocalBookingEngineContext`
+and calls it at many sites, but every other site sits behind a real-database
+branch that returns first:
 
 ```ts
 const admin = getSupabaseAdmin();
@@ -90,17 +74,23 @@ const db = getLocalBookingEngineContext();   // unreachable in production
 ```
 
 In a correctly configured production deployment the service-role client always
-exists, so the fallback branch is dead. F1 has no such guard — it is the only
-site where the fixture path is the *only* path.
+exists, so that fallback branch is dead. F1 was the only site where the fixture
+path was the *only* path — and it was the one that reached an admin screen.
 
-**Impact.** This is the operational endpoint for chasing mentors who have not
-added a meeting link. An admin using it during an incident sees fabricated
-mentors, fabricated bookings and fabricated times. It is also the only route
-where hardcoded business data reaches an authenticated response.
+**What the fix changed beyond adding a database read.** The route now calls the
+shared `resolveBookingLifecycle()` instead of carrying its own deadline
+predicate. Its previous local test was `deadlineMs <= now`, which disagreed with
+the canonical strict `>` at the exact boundary instant — so an admin tool and the
+mentor's own tab could classify the same booking differently inside one
+millisecond. That second defect was only visible because the route was rewritten
+rather than patched.
 
-**Fix (not applied — documentation-only task).** Make the handler `async`,
-resolve `getSupabaseAdmin()`, `503` if absent, and query
-`bookings WHERE status = 'CONFIRMED' AND meeting_url IS NULL AND start_time > now()`.
+**Residual:** the fixture context still exists in `src/lib/bookingService.ts` for
+local development. It is no longer reachable from any route, and
+`tests/booking_overdue_lifecycle.test.ts` now asserts this route agrees with the
+canonical resolver at the boundary. What is still missing is a test that asserts
+*no* protected route can serve fixtures at all — see `docs/technical-audit.md`
+**N2**.
 
 ---
 
@@ -111,7 +101,7 @@ response. They are **not** defects.
 
 ### D1 — Demo personas
 
-- **Location:** `server.ts:1283+` (`demoAccounts`), `POST /api/auth/demo-login`
+- **Location:** `server.ts` (`demoAccounts`), `POST /api/auth/demo-login`
 - **Content:** `Aman Kumar` (seeker), `Rahul Sharma` (mentor),
   `admin@suggestkey.local` (admin)
 - **Gate:** `isDemoAuthEnabled()` requires `ENABLE_DEMO_PERSONAS === 'true'`
@@ -155,7 +145,7 @@ Inserted by migrations, therefore present in any database built from
 ### D3 — Test harness data
 
 `tests/helpers/razorpayHarness.ts`, `tests/helpers/demoAuthEnv.ts`, and the
-inline fixtures in the 43 `tests/*.test.ts` files. Never bundled.
+inline fixtures in the 68 `tests/*.test.ts` files. Never bundled.
 
 ### D4 — `VITE_SUPABASE_*` config in `.env.example`
 
@@ -170,10 +160,11 @@ Not business data. Listed so the audit is complete.
 
 | Item | Location | Why it is harmless |
 |---|---|---|
-| `'999px'`, `'9999px'` in `radius` | `src/config/design-tokens.ts:100-110` | Pixel values, not prices. A grep for `999` for pricing hits these; they are false positives. |
-| `z.int().min(0).max(9999)` for segment priority | `src/lib/validation.ts:739` | A validation bound, not a price. |
-| `00000000-0000-0000-0000-000000000000` | `src/lib/sessionAccess.ts:21` | Appears in a **comment** explaining the filter-injection attack it defends against. Not data. |
+| `'999px'`, `'9999px'` in `radius` | `src/config/design-tokens.ts` | Pixel values, not prices. A grep for `999` for pricing hits these; they are false positives. |
+| `z.int().min(0).max(9999)` for segment priority | `src/lib/validation.ts` | A validation bound, not a price. |
+| `00000000-0000-0000-0000-000000000000` | `src/lib/sessionAccess.ts` | Appears in a **comment** explaining the filter-injection attack it defends against. Not data. |
 | Marketing and empty-state copy across `src/pages/**` and `src/components/**` | many | Strings. |
+| `SK-` ticket-code prefix in support UI examples | `src/lib/supportDomain.ts` | A format string. Real codes are minted by a database sequence; see `docs/rules.md` K6. |
 
 ---
 
@@ -184,9 +175,9 @@ removal.
 
 | # | Item | Evidence |
 |---|---|---|
-| O1 | `src/lib/logger.ts.tmp` | A 15,475-byte temporary file sitting next to the 20,547-byte `logger.ts`. Not imported by anything. Almost certainly a leftover editor swap file. |
-| O2 | `src/lib/mentorTopics.ts` — `fetchMentorTopics` (line 25) has no importer; only `topicsForSegment` is imported, and only by `tests/seeker_experience_topics.test.ts`. The parallel live module is `src/lib/segmentTopics.ts`, consumed by `useSegmentTopics`, `useSegmentMentorsByTopic` and three test files. | Verified by cross-repo reference search: `fetchMentorTopics` appears only in its own definition. |
-| O3 | `mentor_profiles.is_approved` is a **live** column, not a legacy mirror. It co-exists with `approval_status`/`is_active` and both are checked. | Verified: `discoveryService.ts:264`, `:584`, `:721` filter `.eq('is_approved', true)`; `server.ts:6542` requires `is_approved && is_active && approval_status === 'approved'`; `bookingEngine.ts:134` refuses a booking when `!mentorProfile.is_approved`; `server.ts:4268`/`:4298` set it on approve/reject; `supabaseServer.ts:417` reads it in `requireActiveMentor`. Two parallel approval flags is mild redundancy, not dead code. |
+| O1 | `src/lib/logger.ts.tmp` | A ~15 KB temporary file sitting next to the ~20 KB `logger.ts`. Not imported by anything. Almost certainly a leftover editor swap file. |
+| O2 | `src/lib/mentorTopics.ts` — `fetchMentorTopics` has no importer; only `topicsForSegment` is imported, and only by `tests/seeker_experience_topics.test.ts`. The parallel live module is `src/lib/segmentTopics.ts`, consumed by `useSegmentTopics`, `useSegmentMentorsByTopic` and test files. | Verified by cross-repo reference search: `fetchMentorTopics` appears only in its own definition. |
+| O3 | `mentor_profiles.is_approved` is a **live** column, not a legacy mirror. It co-exists with `approval_status`/`is_active` and both are checked. | `discoveryService` filters `.eq('is_approved', true)`; `server.ts` requires `is_approved && is_active && approval_status === 'approved'`; `bookingEngine` refuses a booking when `!mentorProfile.is_approved`; the approve/reject handlers set it; `requireActiveMentor` reads it. Two parallel approval flags is mild redundancy, not dead code. |
 
 ### Dead code NOT found
 
@@ -239,10 +230,11 @@ stale cached value over a live server value.
 
 | # | Item | Class | Severity | Status |
 |---|---|---|---|---|
-| F1 | Overdue-links route serves fixtures | 3 | High | Open. See §2. |
-| F2 | `payment-qr` storage bucket never created by any migration, yet `PAYMENT_QR_BUCKET` is used at `server.ts:205`, `:8786`, `:8845` and by `POST /api/admin/platform-config/qr-upload-url` and `DELETE /api/admin/platform-config/qr` | 5 | High | Open. The admin cannot upload a payment QR against a database built purely from `supabase/migrations/`. Since manual UPI/QR is the **default** payment path, this breaks the primary revenue route. |
-| F3 | `mentor_profiles.rating` and `review_count` are stored columns with `CHECK` bounds but **no computation behind them**. There is no `reviews` table, no review entity in any migration, and no review feature in the UI. | 5 | Medium | Open. A mentor's rating of 5.00 with 0 reviews is the schema default for every mentor. Any UI that presents a rating is presenting an unearned number. Either implement reviews or stop displaying the value. |
-| F4 | `src/lib/logger.ts.tmp` | 4 | Low | See §5 O1. |
+| F1 | Overdue-links route served fixtures | was 3 | was High | **Fixed.** The route now reads real `bookings` through `getSupabaseAdmin()`. See §2. |
+| F2 | `payment-qr` storage bucket never created by any migration | 5 | was High | **Fixed** by `20261002000000_phase27_payment_qr_bucket_and_config_audit.sql`. Verified present in the live project: public, 2 MB, png/jpeg/webp. The admin QR upload — on the **default** payment path — works. |
+| F3 | `mentor_profiles.rating` and `review_count` are stored columns with `CHECK` bounds but **no computation behind them**. No `reviews` table, no review entity in any migration, no review feature in the UI. | 5 | Medium | **Open.** A mentor's rating of 5.00 with 0 reviews is the schema default for every mentor. Any UI that presents a rating is presenting an unearned number. Either implement reviews or stop displaying the value. |
+| F4 | `src/lib/logger.ts.tmp` | 4 | Low | See §5 O1. Still present as of 2026-10-02. |
+| F5 | `notifications` is in the live `supabase_realtime` publication but **no migration adds it** | 5 | Medium | **Open.** Not a hardcoded-data problem, but the same class as F2: the code depends on a database object that no migration creates. An environment built purely from `supabase/migrations/` would have no notification realtime. See `docs/technical-audit.md` R2. |
 
 ---
 
@@ -260,19 +252,25 @@ stale cached value over a live server value.
 | Mentors | `mentor_profiles` via `mentor_is_publicly_visible()` | No |
 | Mentor rating / review count | `mentor_profiles.rating` / `review_count` | No — but see **F3**: no computation exists |
 | Mentor↔segment | `mentor_segments` | No |
-| Gigs and prices | `gigs.price_inr` | No |
+| Gigs and prices | `gigs.price_inr` | No — plus `original_price_inr` for the struck-through display |
 | Seeker profile | `seeker_profiles` | No |
 | Recurring availability | `mentor_availability` | No |
 | Availability exceptions | `mentor_availability_exceptions` | No |
 | Generated slots | Computed server-side in `slotEngine.ts` from the four rows above | No — no slot table, no slot RPC |
 | Slot holds | `slot_holds` | No |
-| Bookings | `bookings` | No — except **F1** |
+| Bookings | `bookings` | No |
+| Reschedule requests | `reschedule_requests` | No |
+| Booking price | `bookings.base_amount_inr` / `discount_amount_inr` / `amount_inr` / `original_amount_inr`, snapshotted at hold creation | No — the browser is never authoritative for the payable amount |
+| Coupons | `coupons`, `coupon_usage` | No — admin-only tables; seekers learn the outcome from the booking snapshot they already own |
 | Payments | `payments`, `payment_events`, `webhook_events` | No |
+| Unmatched gateway captures | `razorpay_unmatched_captures` | No — durable before the webhook returns non-2xx, reconciled by admin |
 | Manual proof files | `payment-proofs` bucket | No |
-| UPI / QR / instructions | `platform_config` | No — all nullable, admin-managed |
-| Notifications | `notifications` | No (rows only; the channel is polling — see `technical-audit.md` R1) |
+| UPI / QR / instructions | `platform_config` | No — admin-managed; reaches the browser through `GET /api/platform-config` |
+| Notifications | `notifications` | No (rows only; realtime for admin, polling for participants — see **F5** and `technical-audit.md` R1) |
 | Session workspaces | `session_workspaces` | No |
 | Mentor applications / documents | `mentor_applications`, `mentor_verification_documents` | No |
+| Support tickets / messages / attachments | `support_tickets`, `support_messages`, `support_attachments`, `support_audit_events` | No — internal notes filtered out of every non-admin read |
+| Mentor applications audit | `mentor_application_audit` | No |
 | Platform config | `platform_config` | No |
 | Audit / system logs | `audit_logs`, `system_logs` | No |
 | Hold duration | `platform_config.hold_duration_minutes` (DB) mirrored by `APP_CONFIG.HOLD_DURATION_MS` (TS) | No — intentionally mirrored, both 5 min |
@@ -281,9 +279,15 @@ stale cached value over a live server value.
 
 ## 9. RLS Coverage Checklist — Current State
 
-Every table is RLS-enabled except `platform_config`, which is protected by grant
-scoping instead. See `docs/rules.md` §15 and `docs/architecture.md` §15 for the
-full per-table policy list.
+**All 36 tables in `public` have RLS enabled.** This was verified directly
+against `pg_class.relrowsecurity` on 2026-10-02, not inferred from migrations.
+
+`platform_config` was the last holdout and is now admin-only:
+`20261009000000_phase35_platform_config_rls.sql` enables RLS with one `FOR ALL`
+policy `USING (is_admin()) WITH CHECK (is_admin())`. That is deliberately
+**stricter** than a public-read policy would be — the UPI id and QR reach the
+browser through `GET /api/platform-config`, which reads with the service role,
+so no public RLS grant was needed.
 
 | Table | RLS | Note |
 |---|---|---|
@@ -294,16 +298,25 @@ full per-table policy list.
 | `gig_topics` | yes | All three parents active |
 | `mentor_profiles` | yes | `mentor_is_publicly_visible()` |
 | `mentor_segments` | yes | Visibility predicate |
+| `seeker_profiles` | yes | Own |
 | `gigs` | yes | Active + visible mentor |
 | `mentor_availability` | yes | Visibility predicate |
 | `mentor_availability_exceptions` | yes | Visibility predicate |
 | `slot_holds` | yes | Participants + admin |
 | `bookings` | yes | Participants + admin; `authenticated` UPDATE column-reduced to `cancellation_reason`, `updated_at` |
+| `reschedule_requests` | yes | Participants + admin |
 | `payments` | yes | Browser write **disabled**; admin only |
 | `payment_events` | yes | Read own payment or admin |
 | `webhook_events` | yes | Admin only |
+| `razorpay_unmatched_captures` | yes | Admin only |
+| `coupons` | yes | Admin only |
+| `coupon_usage` | yes | Admin only — no seeker can read or forge usage |
 | `notifications` | yes | Own + admin |
-| `session_workspaces` | yes | Seeker only when `PUBLISHED` |
+| `session_workspaces` | yes | Mentor always; seeker only when `PUBLISHED`; delete admin only |
+| `support_tickets` | yes | Own + admin; client write grants revoked |
+| `support_messages` | yes | Own ticket + admin, **excluding `is_internal`** for non-admins |
+| `support_attachments` | yes | Own ticket + admin |
+| `support_audit_events` | yes | Admin only |
 | `mentor_applications` | yes | Own + admin |
 | `mentor_verification_documents` | yes | Own draft docs + admin |
 | `mentor_application_audit` | yes | Own application + admin |
@@ -313,8 +326,18 @@ full per-table policy list.
 | `system_log_retention` | yes | Admin only |
 | `login_failure_config` | yes | Admin only |
 | `login_failure_trackers` | yes | Admin read; writes via RPC |
-| **`platform_config`** | **no** | `technical-audit.md` **S1** |
+| `platform_config` | yes | **Admin only.** `technical-audit.md` S1, fixed by phase 35. |
 
-Storage buckets: `payment-proofs` (private), `mentor-verification-documents`
-(private), `segment-hero` (**public**), and `payment-qr` — **referenced by code
-but never created by a migration** (**F2**).
+### Storage buckets — 5
+
+| Bucket | Public | Limit | Mimes |
+|---|---|---|---|
+| `payment-proofs` | no | 5 MB | jpeg/png/webp/pdf |
+| `mentor-verification-documents` | no | 5 MB | jpeg/png/webp/pdf |
+| `support-attachments` | no | 5 MB | png/jpeg/webp/pdf |
+| `payment-qr` | **yes** | 2 MB | png/jpeg/webp |
+| `segment-hero` | **yes** | 5 MB | png/jpeg/webp/gif |
+
+Two are public by intent: `segment-hero` is CMS media, and `payment-qr` must
+render on the checkout page. Both were verified directly against
+`storage.buckets` on 2026-10-02.

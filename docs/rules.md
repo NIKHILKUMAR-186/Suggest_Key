@@ -1,8 +1,8 @@
 # Suggest Key — Rules
 
-Version: 3.1
+Version: 3.2
 Status: As-built / Current
-Last verified: 2026-09-29
+Last verified: 2026-10-02
 
 Every rule below is traced to the code that enforces it. Each is tagged with the
 layer that owns it, because the layer determines what happens when the rule is
@@ -35,7 +35,7 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 
 | # | Rule | Layer | Enforcement |
 |---|---|---|---|
-| A1 | Every `/api/*` route requires a Supabase session, except `GET /api/health` and `POST /api/webhooks/razorpay`. | SERVER | `requireAuth` middleware, `server.ts`. |
+| A1 | Every `/api/*` route requires a Supabase session, **except nine**, each of which is public for a stated reason. | SERVER | `requireAuth` middleware. The nine: `GET /api/health`; `POST /api/auth/demo-login` (gated by `ENABLE_DEMO_PERSONAS` + a ≥32-char secret); `POST /api/auth/login-failure` and `POST /api/auth/login-success` (bounded telemetry that can only move a counter); `POST /api/webhooks/razorpay` (HMAC only); `GET /api/seeker/segments/:slug/experience`, `…/topics`, `…/mentors` and `GET /api/seeker/mentors/:id/profile` (public catalog and public mentor profile, the last with an explicit column list and a `404` for an ineligible mentor). 151 of 160 routes sit behind `requireAuth`. |
 | A2 | The webhook is unauthenticated by necessity and authorised **only** by its HMAC signature over the raw body. | SERVER | `POST /api/webhooks/razorpay` verifies `RAZORPAY_WEBHOOK_SECRET`; `req.body` is never used for verification. |
 | A3 | Roles come from `user_roles`, not from client state. | DATABASE | `CHECK (role IN ('seeker','mentor','admin'))`; `has_role()`/`is_admin()` are `SECURITY DEFINER` functions over the table. |
 | A4 | A user may hold more than one role. | DATABASE | `UNIQUE (user_id, role)` — uniqueness is per pair, not per user. |
@@ -270,6 +270,9 @@ A rule tagged **FRONTEND-ONLY** is presentation guidance, not a control.
 A reschedule is a **request**, not an edit. The booking does not move until the
 mentor accepts.
 
+> These rules are `R1`–`R9`. The realtime rules in §16 are `RT1`–`RT8` for
+> exactly this reason — do not flatten the prefix when cross-referencing.
+
 | # | Rule | Layer | Enforcement |
 |---|---|---|---|
 | R1 | A reschedule changes **time only**. `mentor_id`, `segment_id` and `gig_id` are immutable across it. | DATABASE | `create_reschedule_request` takes no gig, segment or mentor argument, and reads all three from the booking row. `respond_to_reschedule_request`'s `UPDATE public.bookings` sets only `start_time`, `end_time`, `hold_id`, `updated_at`. |
@@ -308,7 +311,7 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 | N10 | Mark-read and mark-all-read are scoped to the caller's own rows. | DATABASE | `mark_notification_as_read(p_id, p_user_id)` and `mark_all_notifications_as_read(p_user_id)` compare `user_id` to `auth.uid()`. |
 | N11 | `notifications.type` is **unconstrained TEXT**. The phase4 CHECK was dropped and never restored. | DATABASE | `src/types/database.ts` `NotificationType` is stricter than the database. |
 | N12 | Notifications are in-app only. No email, SMS or push is sent. | — | No provider is integrated. |
-| N13 | `notifications` is **not** in the realtime publication, so freshness is polling-only. | — | Publication has 10 tables; `notifications` is not one of them. |
+| N13 | `notifications` **is** in the realtime publication, and admin notification freshness is realtime. Seeker and mentor freshness is not: those pages still poll through `NotificationContext`. | FRONTEND-ONLY | `useNotificationSync` (channel + visibility-gated fallback); consumed by `AdminNotificationsPage` only. |
 | N14 | Every booking-scoped notification carries `entity_type` and `entity_id` so it links to the right row for each role. | SERVER | Rewritten in `phase20`, `phase20b`, `phase24d`. |
 
 ---
@@ -317,7 +320,7 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 
 | # | Rule | Layer | Enforcement |
 |---|---|---|---|
-| G1 | Every admin route requires `requireAuth` + `requireAdmin`. | SERVER | 79 of the 131 `/api/*` registrations are admin routes. |
+| G1 | Every admin route requires `requireAuth` + `requireAdmin`. | SERVER | 88 of the 160 `/api/*` routes are admin routes. |
 | G2 | Account status is one of `active`, `suspended`, `deactivated`. | DATABASE | `CHECK` on `profiles.account_status`. |
 | G3 | Suspension records who, when, until when and why. | DATABASE | `suspended_at`, `suspended_until`, `suspended_reason`, `suspended_by`, `internal_note`, `deactivated_at`. |
 | G4 | Mentor approval status is one of `draft`, `pending_review`, `approved`, `rejected`. | DATABASE | `CHECK` on `mentor_profiles.approval_status`. |
@@ -333,16 +336,45 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 
 ---
 
-## 16. Realtime and freshness
+## 15b. Support (phase 41)
 
 | # | Rule | Layer | Enforcement |
 |---|---|---|---|
-| R1 | The `supabase_realtime` publication contains exactly 10 tables: `mentor_availability`, `mentor_availability_exceptions`, `slot_holds`, `bookings`, `gigs`, `segments`, `segment_topics`, `payments`, `payment_events`, `webhook_events`. | DATABASE | Publication membership across four migrations. |
-| R2 | `notifications` is not published. Notification freshness is polling only. | — | Verified against the publication. |
-| R3 | Availability and payment hooks poll as a realtime fallback, gated on tab visibility, floored at 15 s / 30 s respectively. | FRONTEND-ONLY | `useAvailabilitySync`, `usePaymentSync`. |
-| R4 | `NotificationContext` polls every 30 s with **no** visibility gate. | FRONTEND-ONLY | `NotificationContext.tsx:48`. Inconsistent with R3. |
-| R5 | Session countdown revalidates every 20 s and samples the server offset on every revalidation. | SERVER + FRONTEND-ONLY | `useSessionSync`, `REVALIDATE_MS = 20_000`. |
-| R6 | A backgrounded tab must not drive polling traffic. | FRONTEND-ONLY | Honoured by `useAvailabilitySync` and `usePaymentSync`; **violated** by `NotificationContext`. |
+| K1 | A ticket status is one of `OPEN`, `IN_PROGRESS`, `WAITING_FOR_USER`, `RESOLVED`, `CLOSED`. | DATABASE | `support_tickets_status_check`. |
+| K2 | A priority is one of `LOW`, `NORMAL`, `HIGH`, `URGENT`. | DATABASE | `support_tickets_priority_check`. |
+| K3 | A status transition is legal or it does not happen. | DATABASE | `is_valid_support_transition(p_from, p_to)`, called by the update/resolve/reopen RPCs. The same vocabulary is mirrored in `src/lib/supportDomain.ts` for the UI. |
+| K4 | A `RESOLVED` ticket must carry a resolution body. | DATABASE | `chk_support_resolution_presence`. "Resolved" cannot be a bare state change. |
+| K5 | Categories are role-specific, and a request may not choose a category its role may not use. | SERVER + DATABASE | The per-role set lives in `src/lib/supportDomain.ts` and is validated before the RPC; the column itself is constrained to the closed union. |
+| K6 | A ticket code is minted by the database and is not chosen by a client. | DATABASE | `next_support_ticket_code()` + `CHECK (ticket_code ~ '^SK-[0-9]{8}-[0-9]{6}$')`. Sequence-backed, so codes cannot collide. |
+| K7 | A requester sees only their own tickets; an admin sees all. | DATABASE | RLS policy `Participants can view their own support tickets`; admins via `is_admin()`. |
+| K8 | **Internal notes are never returned to a requester.** | DATABASE | Notes share `support_messages` with `is_internal`, and the `Participants can view public support messages` policy filters them out. Every non-admin read therefore shares one path, which is why there is no separate code path to forget the filter. |
+| K9 | Only admins may write an internal note. | SERVER + DATABASE | `add_support_internal_note` is admin-only; the RPCs are revoked from `PUBLIC`/`anon`/`authenticated` and granted to `service_role` only. |
+| K10 | Client roles cannot write support tables at all. | DATABASE | `REVOKE INSERT, UPDATE, DELETE` on all four tables from `authenticated`; every write goes through a `SECURITY DEFINER` RPC that re-checks the caller's identity and role. |
+| K11 | An attachment is PNG, JPEG, WebP or PDF, at most 5 MB. | DATABASE | `support_attachments_mime_type_check`, `support_attachments_file_size_check`, and the matching bucket limits. |
+| K12 | An attachment path is server-minted and traversal-proof. | DATABASE | `CHECK (storage_path ~ '^support/[0-9a-f-]{36}/[0-9A-Za-z._-]+$')` plus a second CHECK rejecting `..` and backslashes. The client never names its own object key. |
+| K13 | Support attachments are private. | DATABASE | `support-attachments` bucket `public = false`; participants read only their own ticket's prefix, admins read all. |
+| K14 | Every ticket state change is recorded. | DATABASE | `support_audit_events`, append-only, admin-readable only. |
+| K15 | A ticket does not update live in the browser. | — | Not a rule, a known absence: no realtime support thread. A reply in another tab appears on reload. |
+
+---
+
+## 16. Realtime and freshness
+
+> **Rule IDs in this section are `RT*`, not `R*`.** §13b (reschedule requests)
+> already uses `R1`–`R7` for rescheduling rules. Both sets are live at the same
+> time, so a bare "R4" is ambiguous across this document. Every rule below is
+> `RT`-prefixed to keep them distinguishable.
+
+| # | Rule | Layer | Enforcement |
+|---|---|---|---|
+| RT1 | The `supabase_realtime` publication contains exactly 11 tables: `mentor_availability`, `mentor_availability_exceptions`, `slot_holds`, `bookings`, `gigs`, `segments`, `segment_topics`, `payments`, `payment_events`, `webhook_events`, `notifications`. | DATABASE | Ten are added by migrations; `notifications` was added **out of band**. See RT7. |
+| RT2 | A realtime subscription must never widen what a user may read. | DATABASE + FRONTEND-ONLY | The `notifications` channel is filtered `user_id = eq.<uid>`, which is the same predicate the `notifications` RLS policy enforces. |
+| RT3 | Availability, payment and notification hooks poll as a realtime fallback, gated on tab visibility, floored at 15 s / 30 s / 30 s respectively. | FRONTEND-ONLY | `useAvailabilitySync`, `usePaymentSync`, `useNotificationSync`. |
+| RT4 | `NotificationContext` polls every 30 s with **no** visibility gate. | FRONTEND-ONLY | Inconsistent with RT3. It is the remaining user of that pattern. |
+| RT5 | Session countdown revalidates every 20 s and samples the server offset on every revalidation. | SERVER + FRONTEND-ONLY | `useSessionSync`, `REVALIDATE_MS = 20_000`. |
+| RT6 | A backgrounded tab must not drive polling traffic. | FRONTEND-ONLY | Honoured by `useAvailabilitySync`, `usePaymentSync` and `useNotificationSync`; **violated** by `NotificationContext`. |
+| RT7 | Every published table must be published by a migration. | — | **Currently violated.** `notifications` is in the live publication with no migration adding it, so a rebuild from `supabase/migrations/` alone loses notification realtime. Same class of defect as the `payment-qr` bucket. |
+| RT8 | A notification user must be the same on the realtime channel as on the read path. | FRONTEND-ONLY | Channel topic is `notifications:<uid>` — per-user, never shared. |
 
 ---
 
@@ -351,15 +383,16 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 | # | Rule | Layer | Enforcement |
 |---|---|---|---|
 | E1 | `anon` holds no grants on `public`, `storage` or `realtime`. | DATABASE | `phase19_security_lockdown` `REVOKE ALL … FROM anon`. |
-| E2 | Storage buckets are private by default. | DATABASE | `UPDATE storage.buckets SET public = FALSE`; only `segment-hero` is public. |
+| E2 | Storage buckets are private by default. | DATABASE | `UPDATE storage.buckets SET public = FALSE`. Two are public by intent: `segment-hero` and `payment-qr` (the checkout page must render the QR). The other three — `payment-proofs`, `mentor-verification-documents`, `support-attachments` — are private. |
 | E3 | Error responses never leak raw SQL, driver messages or internal paths. | SERVER | `logSanitizer.safeMessage`, `supabaseErrors`, `respondWithInternalError`. |
-| E4 | Payloads and signatures are never logged. | SERVER | Webhook and verify paths log only the error code. |
+| E4 | Payloads and signatures are never logged. | SERVER | Webhook and verify paths log only the error code. The unmatched-capture ledger keeps the payload for audit but never the signature, and the ledger's payload is not copied into the payment row. |
 | E5 | Secrets are read lazily and never prefixed with `VITE_`. | — | `razorpayConfig.ts`, `.env.example`. |
 | E6 | Service-role access is server-only, via `getSupabaseAdmin()`. | SERVER | `supabaseServer.ts`. Absent → `503`, never a silent downgrade to a weaker client. |
 | E7 | Log and audit payloads are sanitised before write. | SERVER | `logSanitizer` tests. |
 | E8 | The client never receives the Supabase service-role key. | — | Not present in any `VITE_` variable. |
 | E9 | A booking id or code reaching a PostgREST filter must pass a shape check first. | SERVER | `isSafeBookingIdentifier`. |
-| E10 | `platform_config` has **no RLS enabled**; it is protected by grant scoping and the service-role client, not by policy. | DATABASE | No `ENABLE ROW LEVEL SECURITY` for it in any migration. |
+| E10 | **Every table has RLS enabled.** | DATABASE | All 36 tables. `platform_config` was the last holdout and is now admin-only: `phase35` enables RLS with one `FOR ALL` policy `USING (is_admin()) WITH CHECK (is_admin())`. It is deliberately **stricter** than a public-read policy — the UPI id and QR reach the browser through `GET /api/platform-config`, which reads with the service role. |
+| E11 | A support attachment path is server-minted and constrained in the database. | DATABASE | `CHECK (storage_path ~ '^support/[0-9a-f-]{36}/[0-9A-Za-z._-]+$')` plus a second CHECK rejecting `..` and backslashes. |
 
 ---
 
@@ -368,8 +401,8 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 | # | Rule | Layer |
 |---|---|---|
 | V-A | Lint is `tsc --noEmit`. There is no ESLint configuration in this repository. | — |
-| V-B | Tests are `tsx --test tests/**/*.test.ts`. | — |
-| V-C | `scripts/*.mjs` operational scripts need a live Supabase project and a running server; they are not part of `npm test`. | — |
+| V-B | Tests are `tsx --test --test-force-exit "tests/**/*.test.ts"` (68 files). **Currently 1783 of 1785 pass**; the two failures are recorded in `docs/technical-audit.md` N1 and are false alarms. | — |
+| V-C | `scripts/*` operational scripts need a live Supabase project and/or a running server; they are not part of `npm test`. `verify-dist` is the exception — it runs inside `npm run build`. | — |
 | V-D | Never reference a seed UUID in application code. | — |
 | V-E | `supabase/schema.sql` is a stub; edit migrations, not that file. | — |
 
@@ -377,20 +410,33 @@ Rescheduling is a time change; the gig, the segment and the mentor are fixed.
 
 ## 19. Current Known Rule Violations
 
-Rules the current implementation does not fully honour. Full analysis in
-`docs/technical-audit.md`.
+Rules the current implementation does not fully honour, as of 2026-10-02. Full
+analysis in `docs/technical-audit.md`.
+
+Violations that were open in v3.1 of this document and have since been **closed**
+are listed separately underneath, so nobody re-investigates them.
+
+### Open
 
 | Rule | Violation | Severity |
 |---|---|---|
-| R4, R6 | `NotificationContext` polls every 30 s regardless of visibility, unlike every other sync hook. | Low |
-| R2 | Notification freshness cannot be realtime; `notifications` is not published. | Low |
-| E10 | `platform_config` is not RLS-protected. | Medium |
-| P1 | The `payment-qr` bucket referenced by the admin QR upload is never created by a migration. | High |
+| RT4, RT6 | `NotificationContext` polls every 30 s regardless of visibility, unlike every other sync hook. | Low |
+| N13 | Seeker and mentor notification pages have no realtime channel; only admin does. | Low |
+| RT7 | `notifications` is in the realtime publication but **no migration adds it**. A rebuild from `supabase/migrations/` alone loses it. | Medium |
 | B1 | `src/types/database.ts` `BookingStatus` and `statusTone.ts` `BOOKING_LIFECYCLE` both omit `'PAYMENT_PROCESSING'`. Latent — no code writes it to a booking. | Low |
 | A12 | Rate limiting is per-process; the effective limit multiplies with instance count. | Low |
 | N11 | `notifications.type` is free TEXT; the CHECK was dropped and not restored. | Low |
-| — | `mentor_application_audit.action` is unconstrained TEXT. | Low |
-| — | `GET /api/admin/bookings/overdue-links` serves in-memory fixtures with no Supabase read at all. | High |
+| — | `mentor_application_audit`'s table shape depends on migration order: phase12 and phase13 declare `admin_user_id` and `metadata` differently. The `action` CHECK **is** enforced. | Low |
+| V-B | `npm test` currently fails 2 of 1785 tests. Both are text-based assertions, not behaviour defects. See `docs/technical-audit.md` N1. | Low |
+
+### Closed since v3.1
+
+| Was | Closed by |
+|---|---|
+| The `payment-qr` bucket referenced by the admin QR upload was never created by a migration. | `20261002000000_phase27_payment_qr_bucket_and_config_audit.sql`. |
+| `platform_config` had no RLS. | `20261009000000_phase35_platform_config_rls.sql` — admin-only `FOR ALL` policy. |
+| Notification freshness could not be realtime. | `notifications` added to the publication (out of band) and `useNotificationSync` built with a filtered channel. The participant pages are the remaining work. |
+| `GET /api/admin/bookings/overdue-links` served in-memory fixtures with no Supabase read at all. | Rewritten to read real `bookings` through `getSupabaseAdmin()` and to share the canonical `resolveBookingLifecycle()` resolver. |
 
 ---
 
@@ -399,7 +445,9 @@ Rules the current implementation does not fully honour. Full analysis in
 A change is complete when:
 
 1. `npm run lint` (`tsc --noEmit`) is clean.
-2. `npm test` passes, and any new behaviour has a test in `tests/`.
+2. `npm test` passes, and any new behaviour has a test in `tests/`. *(This is a
+   rule the repository currently does not satisfy: see `docs/technical-audit.md`
+   N1. It remains the rule.)*
 3. If it changes a rule in this document, the rule and its layer tag are updated
    here and in `docs/architecture.md` in the same change.
 4. If it changes schema, a new migration is added to `supabase/migrations/` and

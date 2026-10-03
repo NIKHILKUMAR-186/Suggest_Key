@@ -38,6 +38,28 @@
 -- ==============================================================================
 
 -- ------------------------------------------------------------------------------
+-- 0. PREREQUISITE
+-- ------------------------------------------------------------------------------
+-- set_updated_at() is created by phase 13
+-- (20260925000000_phase13_mentor_onboarding_admin_control.sql) and by nothing
+-- else in this directory. On a database where phase 13 was never applied, the
+-- updated_at trigger below aborted this file at that line with a bare
+-- "function public.set_updated_at() does not exist" - AFTER section 1 had
+-- already inserted the platform_config row and section 2 had already created
+-- the table, policy and indexes. The failure looked like a phase 30 defect and
+-- pointed at no remedy.
+--
+-- Checked before anything is applied, so a missing prerequisite fails the whole
+-- file atomically and names the file to run.
+DO $$
+BEGIN
+  IF to_regprocedure('public.set_updated_at()') IS NULL THEN
+    RAISE EXCEPTION
+      'phase 30 requires phase 13, which creates public.set_updated_at(). Apply 20260924000000_phase12_mentor_onboarding.sql then 20260925000000_phase13_mentor_onboarding_admin_control.sql in filename order, then re-run this file. Nothing in phase 30 has been applied.';
+  END IF;
+END $$;
+
+-- ------------------------------------------------------------------------------
 -- 1. CANONICAL CONFIG
 -- ------------------------------------------------------------------------------
 -- Two numbers this feature needs, kept next to the existing

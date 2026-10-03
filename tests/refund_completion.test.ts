@@ -23,6 +23,25 @@ import { apiSchemas } from '../src/lib/validation';
 
 const root = join(import.meta.dirname, '..');
 const serverSrc = readFileSync(join(root, 'server.ts'), 'utf8');
+
+/**
+ * The source of one route, from its registration up to the next registration of
+ * any method.
+ *
+ * Anchoring on the path rather than on the literal call means this keeps working
+ * when a route's middleware list grows or its arguments wrap onto several lines.
+ * A missing route is a hard failure rather than a silent `-1` offset, because a
+ * `slice` from `-1` returns the entire file and turns every `doesNotMatch`
+ * assertion in these tests into a coin flip.
+ */
+function sliceRoute(src: string, method: string, path: string): string {
+  const start = src.search(new RegExp(`app\\.${method}\\(\\s*'${path.replace(/[/:]/g, (c) => `\\${c}`)}'`));
+  assert.notEqual(start, -1, `no app.${method}('${path}') registration in server.ts`);
+
+  const rest = src.slice(start + 1);
+  const next = rest.search(/\n\s*app\.(get|post|put|patch|delete)\(/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
 const adminPageSrc = readFileSync(join(root, 'src', 'pages', 'admin', 'AdminPaymentsPage.tsx'), 'utf8');
 const migrationSrc = readFileSync(
   join(root, 'supabase', 'migrations', '20261014000000_phase40_manual_refund_completion.sql'),
@@ -684,10 +703,7 @@ describe('Razorpay safety', () => {
 describe('existing flows are untouched', () => {
   it('S. payment approval still runs through the review_payment RPC', () => {
     assert.match(serverSrc, /admin\.rpc\('review_payment', \{/);
-    const approve = serverSrc.slice(
-      serverSrc.indexOf("app.patch('/api/admin/payments/:id/approve'"),
-      serverSrc.indexOf("app.patch('/api/admin/payments/:id/reject'"),
-    );
+    const approve = sliceRoute(serverSrc, 'patch', '/api/admin/payments/:id/approve');
     assert.doesNotMatch(approve, /complete_manual_refund/);
   });
 
@@ -696,11 +712,14 @@ describe('existing flows are untouched', () => {
   });
 
   it('U. the seeker payment-proof flow is unchanged', () => {
-    assert.match(serverSrc, /app\.post\('\/api\/seeker\/bookings\/:id\/payment-proof'/);
-    const proof = serverSrc.slice(
-      serverSrc.indexOf("app.post('/api/seeker/bookings/:id/payment-proof'"),
-      serverSrc.indexOf("app.get('/api/seeker/bookings/:id/payment-proof'"),
-    );
+    // Anchored on the route PATH, not on the exact call formatting. A route
+    // gains middlewares (or gets wrapped across lines) without its contract
+    // changing, and a slice anchored on `app.post('/api/…'` silently starts
+    // matching index -1 — which makes `slice` return the whole file and turns
+    // this into a test that either always passes or always fails for reasons
+    // that have nothing to do with refunds.
+    const proof = sliceRoute(serverSrc, "post", '/api/seeker/bookings/:id/payment-proof');
+    assert.match(proof, /paymentProofSubmit|payment-proof/);
     assert.doesNotMatch(proof, /complete_manual_refund|refund_reference|refundReference/);
   });
 

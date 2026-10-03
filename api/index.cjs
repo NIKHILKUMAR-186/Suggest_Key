@@ -6465,6 +6465,12 @@ function text(options) {
 function optionalText(options) {
   return import_zod.z.union([text({ ...options, min: 0 }), import_zod.z.literal("").transform(() => "")]).optional();
 }
+function nullableText(options) {
+  return import_zod.z.preprocess(
+    (value) => typeof value === "string" && stripHtmlTags(value).trim() === "" ? null : value,
+    import_zod.z.union([text(options), import_zod.z.null()])
+  );
+}
 var emailField = import_zod.z.string().trim().toLowerCase().pipe(import_zod.z.email("Enter a valid email address."));
 var blankToUndefined = (value) => typeof value === "string" && value.trim() === "" ? void 0 : value;
 var httpUrlField = import_zod.z.string().trim().pipe(import_zod.z.url("Enter a valid URL.")).refine((value) => /^https?:\/\//i.test(value), "Only http and https links are allowed.");
@@ -6486,6 +6492,9 @@ function isValidTimezone2(value) {
   } catch {
     return false;
   }
+}
+function gatewayToken(label) {
+  return import_zod.z.string().min(1, `${label} is required.`).max(200, `${label} is too long.`);
 }
 var timezoneField = import_zod.z.preprocess(
   blankToUndefined,
@@ -6726,6 +6735,36 @@ var apiSchemas = {
       import_zod.z.string().min(1, "Password is required.").max(200, "Password is too long.").optional()
     )
   }),
+  /**
+   * Body of `POST /api/auth/login-failure` — the brute-force alert telemetry.
+   *
+   * Supabase password sign-in happens in the browser, so the server never sees
+   * the failed attempt and the client reports it here. Both fields are
+   * deliberately optional: the tracker keys on `email` OR `ip`, and a client
+   * that could not resolve the email it tried must still be able to report the
+   * attempt by IP alone rather than have its telemetry silently dropped.
+   *
+   * `reason` is free text from an unauthenticated caller, so it is markup-
+   * stripped and bounded here rather than being handed to the tracker as an
+   * arbitrary `unknown`. It is only ever used for alerting, never for auth.
+   */
+  loginFailureReport: import_zod.z.strictObject({
+    email: import_zod.z.preprocess(blankToUndefined, emailField.optional()),
+    reason: optionalText({ max: 200, label: "Reason" })
+  }),
+  /**
+   * Body of `POST /api/auth/login-success`.
+   *
+   * Reports a correct password to break the consecutive-failure streak. There is
+   * deliberately no way to clear another account's streak: the tracker key is
+   * derived from the reported email AND the caller's IP, and this route takes no
+   * user id, so a caller can only ever clear their own streak. `email` is
+   * optional for the same reason it is on the failure report — a client that
+   * knows only its IP still resets the streak it just broke.
+   */
+  loginSuccessReport: import_zod.z.strictObject({
+    email: import_zod.z.preprocess(blankToUndefined, emailField.optional())
+  }),
   // -- seeker booking -------------------------------------------------------
   bookingHold: import_zod.z.strictObject({
     mentorId: uuidField,
@@ -6733,6 +6772,109 @@ var apiSchemas = {
     gigId: uuidField,
     startTime: isoDateTimeField,
     endTime: isoDateTimeField
+  }),
+  /**
+   * Body of `POST /api/seeker/bookings/:id/payment-proof`.
+   *
+   * The image bytes are NOT in this request. The browser PUTs them to the
+   * private bucket through a signed URL and sends only the resulting object key,
+   * which is what keeps a request at a few hundred bytes instead of a base64
+   * image ~33% larger than the file.
+   *
+   * There is deliberately no `status` field: a submitted proof always lands in
+   * `PENDING_VERIFICATION`, and because the object is strict a client that tried
+   * to assert a status would get a 400 rather than silently have the field
+   * dropped. There is no `bookingId` either — the booking comes from the path
+   * segment, and `storagePath` must sit inside that booking's own folder, which
+   * the handler re-checks against the verified caller.
+   *
+   * `transactionReference` is markup-stripped here and then re-normalised by
+   * `normaliseTransactionReference`, which owns the provider-issued character
+   * set. Both layers are kept: this one bounds the length before anything is
+   * stored, that one owns the exact format.
+   */
+  paymentProofSubmit: import_zod.z.strictObject({
+    transactionReference: text({ min: 1, max: 64, label: "Transaction reference" }),
+    fileName: import_zod.z.string().trim().min(1, "File name is required.").max(255, "File name is too long."),
+    mimeType: import_zod.z.enum(PAYMENT_PROOF_MIME_TYPES, {
+      message: "Upload a PNG or JPG screenshot of your payment."
+    }),
+    fileSize: import_zod.z.int("File size must be a whole number of bytes.").positive("That file is empty.").max(PAYMENT_PROOF_MAX_BYTES, `Payment screenshots must be ${PAYMENT_PROOF_MAX_LABEL} or smaller.`),
+    storagePath: idField
+  }),
+  /**
+   * Body of `POST /api/seeker/bookings/:id/razorpay/verify`.
+   *
+   * Exactly the three gateway values the checkout hands back, all required, all
+   * bounded. There is deliberately no `amount`, no `currency`, no `bookingId`
+   * and no `status`: the amount and currency are read from the STORED payment
+   * row and compared against the gateway response, so a body that could state
+   * them would be a body that could lie about what was paid. `strictObject` turns
+   * such an attempt into a 400 instead of a silently ignored field.
+   *
+   * The signature is bounded rather than trimmed, because the value is compared
+   * byte-for-byte against an HMAC — a leading or trailing space is a real
+   * mismatch, not something to be tidied away.
+   */
+  razorpayVerify: import_zod.z.strictObject({
+    razorpayOrderId: gatewayToken("Order ID"),
+    razorpayPaymentId: gatewayToken("Payment ID"),
+    razorpaySignature: gatewayToken("Signature")
+  }),
+  // -- admin: platform payment configuration ---------------------------------
+  /**
+   * Body of `PATCH /api/admin/platform-config`.
+   *
+   * Every field is optional (an admin may change one setting at a time) but at
+   * least one must be present: an empty patch is a no-op that should read as a
+   * mistake, not as a success.
+   *
+   * The free-text settings are markup-stripped. `payment_instructions` and
+   * `payment_account_name` are rendered back to seekers on the payment page, so
+   * storing raw markup there would put a script payload into a page every seeker
+   * with an unpaid booking loads. A blank value maps to `null` so an admin can
+   * CLEAR a setting — that is a distinct outcome from omitting the field, which
+   * leaves the stored value alone.
+   *
+   * `qrImageStoragePath` is pattern-constrained to the exact key shape this
+   * server mints in `POST /api/admin/platform-config/qr-upload-url`. A client
+   * cannot point the seeker payment page at an arbitrary object in the bucket.
+   */
+  platformConfigUpdate: import_zod.z.strictObject({
+    upiId: nullableText({ max: 120, label: "UPI ID" }).optional(),
+    accountName: nullableText({ max: 120, label: "Account name" }).optional(),
+    instructions: nullableText({ max: 1e3, label: "Payment instructions", multiline: true }).optional(),
+    // Every amount column is an `*_inr` integer, so INR is the only currency
+    // the payment architecture supports. Anything else is refused here rather
+    // than written and reinterpreted downstream.
+    currency: import_zod.z.enum(["INR"], {
+      message: "Currency is fixed to INR: all amounts are stored in rupees."
+    }).nullable().optional(),
+    qrImageStoragePath: import_zod.z.union([
+      import_zod.z.string().trim().regex(
+        /^platform\/payment-qr-[0-9]{13}-[a-z0-9]{6}\.(png|jpe?g|webp)$/i,
+        "Unknown payment QR reference."
+      ),
+      import_zod.z.null()
+    ]).optional()
+  }).refine(
+    (body) => body.upiId !== void 0 || body.accountName !== void 0 || body.instructions !== void 0 || body.currency !== void 0 || body.qrImageStoragePath !== void 0,
+    { message: "Change at least one setting." }
+  ),
+  /**
+   * Body of `POST /api/admin/platform-config/qr-upload-url`.
+   *
+   * A TYPE AND A SIZE, and nothing else. There is deliberately no `fileName`
+   * field: the object key is built from a server timestamp and a server random
+   * suffix, and the extension is derived from the validated MIME type. Accepting
+   * a client-supplied name would let a file called `payload.exe` be uploaded to
+   * the public QR bucket under an `.exe` key.
+   */
+  platformQrUploadRequest: import_zod.z.strictObject({
+    fileType: import_zod.z.enum(PAYMENT_QR_MIME_TYPES, {
+      message: "Upload a PNG, JPEG or WebP image."
+    }),
+    fileSize: import_zod.z.int("File size must be a whole number of bytes.").positive("That file is empty.").max(PAYMENT_QR_MAX_BYTES, `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`)
   }),
   bookingCancel: import_zod.z.strictObject({
     reason: optionalText({ max: MAX_REASON_LENGTH, label: "Reason", multiline: true })
@@ -8117,58 +8259,66 @@ async function startServer() {
     await resetLoginFailures({ email: account.email, ip: req.ip });
     return res.json({ success: true, ...demoAuthResponse(account) });
   });
-  app.post("/api/auth/login-failure", expensiveRouteLimiter, async (req, res) => {
-    try {
-      const body = req.body || {};
-      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-      const ip = typeof req.ip === "string" ? req.ip : "";
-      if (!email && !ip) {
-        return res.status(400).json({
-          success: false,
-          error: { code: "VALIDATION_ERROR", message: "email is required." }
+  app.post(
+    "/api/auth/login-failure",
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.loginFailureReport),
+    async (req, res) => {
+      try {
+        const { email = "", reason } = req.body ?? {};
+        const ip = typeof req.ip === "string" ? req.ip : "";
+        if (!email && !ip) {
+          return res.status(400).json({
+            success: false,
+            error: { code: "VALIDATION_ERROR", message: "email is required." }
+          });
+        }
+        const tracked = await recordLoginFailure({ email, ip, reason });
+        logger.auth("login_failure", {
+          requestId: req.requestId,
+          path: "/api/auth/login-failure",
+          method: "POST",
+          statusCode: 401,
+          result: "failure",
+          reason: typeof reason === "string" ? reason.slice(0, 60) : "INVALID_CREDENTIALS"
+        });
+        return res.json({
+          success: true,
+          consecutiveFailures: tracked.consecutiveFailures,
+          shouldAlert: tracked.shouldAlert
+        });
+      } catch (err) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: "POST /api/auth/login-failure",
+          clientMessage: "Unable to record login attempt."
         });
       }
-      const tracked = await recordLoginFailure({ email, ip, reason: body.reason });
-      logger.auth("login_failure", {
-        requestId: req.requestId,
-        path: "/api/auth/login-failure",
-        method: "POST",
-        statusCode: 401,
-        result: "failure",
-        reason: typeof body.reason === "string" ? body.reason.slice(0, 60) : "INVALID_CREDENTIALS"
-      });
-      return res.json({
-        success: true,
-        consecutiveFailures: tracked.consecutiveFailures,
-        shouldAlert: tracked.shouldAlert
-      });
-    } catch (err) {
-      return respondWithServerError({
-        req,
-        res,
-        error: err,
-        context: "POST /api/auth/login-failure",
-        clientMessage: "Unable to record login attempt."
-      });
     }
-  });
-  app.post("/api/auth/login-success", expensiveRouteLimiter, async (req, res) => {
-    try {
-      const body = req.body || {};
-      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-      const ip = typeof req.ip === "string" ? req.ip : "";
-      const cleared = await resetLoginFailures({ email, ip });
-      return res.json({ success: true, clearedFailures: cleared });
-    } catch (err) {
-      return respondWithServerError({
-        req,
-        res,
-        error: err,
-        context: "POST /api/auth/login-success",
-        clientMessage: "Unable to record login attempt."
-      });
+  );
+  app.post(
+    "/api/auth/login-success",
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.loginSuccessReport),
+    async (req, res) => {
+      try {
+        const { email = "" } = req.body ?? {};
+        const ip = typeof req.ip === "string" ? req.ip : "";
+        const cleared = await resetLoginFailures({ email, ip });
+        return res.json({ success: true, clearedFailures: cleared });
+      } catch (err) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: "POST /api/auth/login-success",
+          clientMessage: "Unable to record login attempt."
+        });
+      }
     }
-  });
+  );
   app.post("/api/bookings/hold", requireAuth, requireRole("seeker"), expensiveRouteLimiter, validateBody(apiSchemas.bookingHold), async (req, res) => {
     try {
       const { mentorId, segmentId, gigId, startTime, endTime } = req.body;
@@ -8612,160 +8762,167 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err });
     }
   });
-  app.post("/api/seeker/bookings/:id/payment-proof", requireAuth, requireRole("seeker"), expensiveRouteLimiter, async (req, res) => {
-    const bookingId = req.params.id;
-    const callerId = req.auth.user.id;
-    const admin = getSupabaseAdmin();
-    if (!admin) {
-      return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Payment service is temporarily unavailable." } });
-    }
-    const { transactionReference, fileName, mimeType, fileSize, storagePath } = req.body ?? {};
-    const reference = normaliseTransactionReference(transactionReference);
-    if (!reference.ok) {
-      return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "transactionReference", message: reference.message } });
-    }
-    const proof = validateProofFile({
-      name: typeof fileName === "string" ? fileName : "",
-      type: typeof mimeType === "string" ? mimeType : "",
-      size: typeof fileSize === "number" ? fileSize : PAYMENT_PROOF_MAX_BYTES + 1
-    });
-    if (!proof.ok) {
-      return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: proof.message } });
-    }
-    if (typeof storagePath !== "string" || !storagePath) {
-      return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: "Select your payment screenshot." } });
-    }
-    const { data: booking, error: bookingErr } = await admin.from("bookings").select("id, booking_code, seeker_id, mentor_id, gig_id, amount_inr, status, start_time").eq("id", bookingId).maybeSingle();
-    if (bookingErr) {
-      return respondWithInternalError({ req, res, error: bookingErr, context: "POST /api/seeker/bookings/:id/payment-proof" });
-    }
-    if (!booking) {
-      return res.status(404).json({ success: false, error: { code: "BOOKING_NOT_FOUND", message: "Booking not found." } });
-    }
-    if (booking.seeker_id !== callerId) {
-      return res.status(403).json({ success: false, error: { code: "FORBIDDEN_NOT_BOOKING_OWNER", message: "You are not authorized to pay for this booking." } });
-    }
-    if (!storagePath.startsWith(`${callerId}/${bookingId}/`)) {
-      return res.status(403).json({ success: false, error: { code: "FORBIDDEN_STORAGE_PATH", message: "That file does not belong to this booking." } });
-    }
-    if (!isPayableBookingStatus(booking.status)) {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: "BOOKING_NOT_PAYABLE",
-          message: `This booking is ${String(booking.status).replace(/_/g, " ").toLowerCase()} and no longer accepts a payment proof.`
-        }
+  app.post(
+    "/api/seeker/bookings/:id/payment-proof",
+    requireAuth,
+    requireRole("seeker"),
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.paymentProofSubmit),
+    async (req, res) => {
+      const bookingId = req.params.id;
+      const callerId = req.auth.user.id;
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Payment service is temporarily unavailable." } });
+      }
+      const { transactionReference, fileName, mimeType, fileSize, storagePath } = req.body;
+      const reference = normaliseTransactionReference(transactionReference);
+      if (!reference.ok) {
+        return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "transactionReference", message: reference.message } });
+      }
+      const proof = validateProofFile({
+        name: fileName,
+        type: mimeType,
+        size: fileSize
       });
-    }
-    const { data: existingPayment, error: existingErr } = await admin.from("payments").select("*").eq("booking_id", bookingId).maybeSingle();
-    if (existingErr) {
-      return respondWithInternalError({ req, res, error: existingErr, context: "POST /api/seeker/bookings/:id/payment-proof (lookup)" });
-    }
-    if (existingPayment?.status === "VERIFIED") {
-      return res.status(409).json({
-        success: false,
-        error: { code: "PAYMENT_ALREADY_VERIFIED", message: "This payment has already been verified." },
-        payment: existingPayment
-      });
-    }
-    const { data: storedFile, error: statErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).list(`${callerId}/${bookingId}`, { search: storagePath.split("/").pop(), limit: 10 });
-    if (statErr) {
-      console.error("Payment proof lookup failed:", statErr.message);
-      return respondWithInternalError({ req, res, error: statErr, context: "POST /api/seeker/bookings/:id/payment-proof (storage lookup)" });
-    }
-    const storedObject = (storedFile || []).find((f) => f.name === storagePath.split("/").pop());
-    if (!storedObject) {
-      return res.status(400).json({ success: false, error: { code: "PROOF_NOT_STORED", message: "We could not find that screenshot. Please select it again." } });
-    }
-    const storedBytes = storedObject.metadata?.size;
-    if (typeof storedBytes === "number" && storedBytes > PAYMENT_PROOF_MAX_BYTES) {
-      await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
-      return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: "That image is too large. Please upload a screenshot under 5 MB." } });
-    }
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    const paymentRow = {
-      booking_id: booking.id,
-      seeker_id: booking.seeker_id,
-      // Server-derived: never the client-supplied amount.
-      amount_inr: booking.amount_inr,
-      status: PAYMENT_STATUS_PENDING,
-      proof_storage_path: storagePath,
-      transaction_reference: reference.value,
-      // A fresh submission clears a previous rejection and any stale verifier.
-      rejection_reason: null,
-      verified_by: null,
-      verified_at: null,
-      updated_at: nowIso
-    };
-    const { data: payment, error: paymentErr } = await admin.from("payments").upsert(paymentRow, { onConflict: "booking_id" }).select().single();
-    if (paymentErr) {
-      console.error("Failed to persist payment record:", paymentErr.message);
-      try {
+      if (!proof.ok) {
+        return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: proof.message } });
+      }
+      if (!storagePath) {
+        return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: "Select your payment screenshot." } });
+      }
+      const { data: booking, error: bookingErr } = await admin.from("bookings").select("id, booking_code, seeker_id, mentor_id, gig_id, amount_inr, status, start_time").eq("id", bookingId).maybeSingle();
+      if (bookingErr) {
+        return respondWithInternalError({ req, res, error: bookingErr, context: "POST /api/seeker/bookings/:id/payment-proof" });
+      }
+      if (!booking) {
+        return res.status(404).json({ success: false, error: { code: "BOOKING_NOT_FOUND", message: "Booking not found." } });
+      }
+      if (booking.seeker_id !== callerId) {
+        return res.status(403).json({ success: false, error: { code: "FORBIDDEN_NOT_BOOKING_OWNER", message: "You are not authorized to pay for this booking." } });
+      }
+      if (!storagePath.startsWith(`${callerId}/${bookingId}/`)) {
+        return res.status(403).json({ success: false, error: { code: "FORBIDDEN_STORAGE_PATH", message: "That file does not belong to this booking." } });
+      }
+      if (!isPayableBookingStatus(booking.status)) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: "BOOKING_NOT_PAYABLE",
+            message: `This booking is ${String(booking.status).replace(/_/g, " ").toLowerCase()} and no longer accepts a payment proof.`
+          }
+        });
+      }
+      const { data: existingPayment, error: existingErr } = await admin.from("payments").select("*").eq("booking_id", bookingId).maybeSingle();
+      if (existingErr) {
+        return respondWithInternalError({ req, res, error: existingErr, context: "POST /api/seeker/bookings/:id/payment-proof (lookup)" });
+      }
+      if (existingPayment?.status === "VERIFIED") {
+        return res.status(409).json({
+          success: false,
+          error: { code: "PAYMENT_ALREADY_VERIFIED", message: "This payment has already been verified." },
+          payment: existingPayment
+        });
+      }
+      const { data: storedFile, error: statErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).list(`${callerId}/${bookingId}`, { search: storagePath.split("/").pop(), limit: 10 });
+      if (statErr) {
+        console.error("Payment proof lookup failed:", statErr.message);
+        return respondWithInternalError({ req, res, error: statErr, context: "POST /api/seeker/bookings/:id/payment-proof (storage lookup)" });
+      }
+      const storedObject = (storedFile || []).find((f) => f.name === storagePath.split("/").pop());
+      if (!storedObject) {
+        return res.status(400).json({ success: false, error: { code: "PROOF_NOT_STORED", message: "We could not find that screenshot. Please select it again." } });
+      }
+      const storedBytes = storedObject.metadata?.size;
+      if (typeof storedBytes === "number" && storedBytes > PAYMENT_PROOF_MAX_BYTES) {
         await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
-      } catch (cleanupErr) {
-        console.error("Failed to clean up orphaned proof upload:", logSanitizer.safeMessage(cleanupErr));
+        return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: "That image is too large. Please upload a screenshot under 5 MB." } });
       }
-      return respondWithInternalError({ req, res, error: paymentErr, context: "POST /api/seeker/bookings/:id/payment-proof (persist)" });
-    }
-    if (booking.status === "PAYMENT_PENDING") {
-      const { error: advanceErr } = await admin.from("bookings").update({ status: "PENDING_VERIFICATION", updated_at: nowIso }).eq("id", booking.id).eq("status", "PAYMENT_PENDING");
-      if (advanceErr) {
-        console.error("Failed to advance booking to PENDING_VERIFICATION:", advanceErr.message);
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const paymentRow = {
+        booking_id: booking.id,
+        seeker_id: booking.seeker_id,
+        // Server-derived: never the client-supplied amount.
+        amount_inr: booking.amount_inr,
+        status: PAYMENT_STATUS_PENDING,
+        proof_storage_path: storagePath,
+        transaction_reference: reference.value,
+        // A fresh submission clears a previous rejection and any stale verifier.
+        rejection_reason: null,
+        verified_by: null,
+        verified_at: null,
+        updated_at: nowIso
+      };
+      const { data: payment, error: paymentErr } = await admin.from("payments").upsert(paymentRow, { onConflict: "booking_id" }).select().single();
+      if (paymentErr) {
+        console.error("Failed to persist payment record:", paymentErr.message);
+        try {
+          await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
+        } catch (cleanupErr) {
+          console.error("Failed to clean up orphaned proof upload:", logSanitizer.safeMessage(cleanupErr));
+        }
+        return respondWithInternalError({ req, res, error: paymentErr, context: "POST /api/seeker/bookings/:id/payment-proof (persist)" });
       }
-    }
-    const isNewReviewRequest = !existingPayment || existingPayment.status === "REJECTED";
-    const amountLabel = `\u20B9${Number(booking.amount_inr ?? 0).toLocaleString("en-IN")}`;
-    const notificationMetadata = {
-      bookingId: booking.id,
-      bookingCode: booking.booking_code,
-      paymentId: payment.id,
-      amountInr: booking.amount_inr,
-      transactionReference: reference.value
-    };
-    if (isNewReviewRequest) {
-      await insertPaymentNotifications(admin, {
-        userIds: [booking.seeker_id],
-        title: "Payment proof submitted",
-        message: `We received your payment reference and screenshot for booking ${booking.booking_code} (${amountLabel}). An admin will verify it shortly.`,
-        type: "PAYMENT",
-        eventType: "PAYMENT_SUBMITTED",
-        entityType: "payment",
-        entityId: payment.id,
-        link: "/seeker/bookings",
-        metadata: notificationMetadata
-      });
-      try {
-        const adminIds = await resolveActiveAdminIds(admin);
+      if (booking.status === "PAYMENT_PENDING") {
+        const { error: advanceErr } = await admin.from("bookings").update({ status: "PENDING_VERIFICATION", updated_at: nowIso }).eq("id", booking.id).eq("status", "PAYMENT_PENDING");
+        if (advanceErr) {
+          console.error("Failed to advance booking to PENDING_VERIFICATION:", advanceErr.message);
+        }
+      }
+      const isNewReviewRequest = !existingPayment || existingPayment.status === "REJECTED";
+      const amountLabel = `\u20B9${Number(booking.amount_inr ?? 0).toLocaleString("en-IN")}`;
+      const notificationMetadata = {
+        bookingId: booking.id,
+        bookingCode: booking.booking_code,
+        paymentId: payment.id,
+        amountInr: booking.amount_inr,
+        transactionReference: reference.value
+      };
+      if (isNewReviewRequest) {
         await insertPaymentNotifications(admin, {
-          userIds: adminIds,
-          title: "Payment verification required",
-          message: `Payment proof submitted for booking ${booking.booking_code} (${amountLabel}). Reference ${reference.value}. Awaiting verification.`,
+          userIds: [booking.seeker_id],
+          title: "Payment proof submitted",
+          message: `We received your payment reference and screenshot for booking ${booking.booking_code} (${amountLabel}). An admin will verify it shortly.`,
           type: "PAYMENT",
-          eventType: "ADMIN_PAYMENT_PROOF_SUBMITTED",
+          eventType: "PAYMENT_SUBMITTED",
           entityType: "payment",
           entityId: payment.id,
-          link: "/admin/payments",
+          link: "/seeker/bookings",
           metadata: notificationMetadata
         });
-      } catch (adminNotifErr) {
-        console.error("Failed to raise admin payment verification alert:", logSanitizer.safeMessage(adminNotifErr));
+        try {
+          const adminIds = await resolveActiveAdminIds(admin);
+          await insertPaymentNotifications(admin, {
+            userIds: adminIds,
+            title: "Payment verification required",
+            message: `Payment proof submitted for booking ${booking.booking_code} (${amountLabel}). Reference ${reference.value}. Awaiting verification.`,
+            type: "PAYMENT",
+            eventType: "ADMIN_PAYMENT_PROOF_SUBMITTED",
+            entityType: "payment",
+            entityId: payment.id,
+            link: "/admin/payments",
+            metadata: notificationMetadata
+          });
+        } catch (adminNotifErr) {
+          console.error("Failed to raise admin payment verification alert:", logSanitizer.safeMessage(adminNotifErr));
+        }
       }
+      auditAction(req.auth, "payment_proof_submitted", {
+        entityType: "payment",
+        entityId: payment.id,
+        requestId: req.requestId,
+        metadata: { bookingId: booking.id, bookingCode: booking.booking_code, amountInr: booking.amount_inr }
+      });
+      return res.status(201).json({
+        success: true,
+        // The status is PENDING_VERIFICATION, never "paid": the money is not
+        // verified until an admin says so.
+        message: "Payment proof submitted for verification.",
+        payment,
+        booking: { id: booking.id, booking_code: booking.booking_code, status: "PENDING_VERIFICATION", amount_inr: booking.amount_inr }
+      });
     }
-    auditAction(req.auth, "payment_proof_submitted", {
-      entityType: "payment",
-      entityId: payment.id,
-      requestId: req.requestId,
-      metadata: { bookingId: booking.id, bookingCode: booking.booking_code, amountInr: booking.amount_inr }
-    });
-    return res.status(201).json({
-      success: true,
-      // The status is PENDING_VERIFICATION, never "paid": the money is not
-      // verified until an admin says so.
-      message: "Payment proof submitted for verification.",
-      payment,
-      booking: { id: booking.id, booking_code: booking.booking_code, status: "PENDING_VERIFICATION", amount_inr: booking.amount_inr }
-    });
-  });
+  );
   app.get("/api/seeker/bookings/:id/payment-proof", requireAuth, requireRole("seeker"), async (req, res) => {
     try {
       const callerId = req.auth.user.id;
@@ -8933,6 +9090,7 @@ async function startServer() {
     requireAuth,
     requireRole("seeker"),
     expensiveRouteLimiter,
+    validateBody(apiSchemas.razorpayVerify),
     async (req, res) => {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -8942,13 +9100,13 @@ async function startServer() {
         });
       }
       try {
-        const body = req.body ?? {};
+        const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
         const result = await runVerifyRazorpayPayment({
           bookingId: req.params.id,
           callerId: req.auth.user.id,
-          razorpayOrderId: body.razorpayOrderId,
-          razorpayPaymentId: body.razorpayPaymentId,
-          razorpaySignature: body.razorpaySignature,
+          razorpayOrderId,
+          razorpayPaymentId,
+          razorpaySignature,
           gateway: createRazorpayGatewayClient(),
           store: createSupabaseRazorpayStore(admin)
         });
@@ -13623,53 +13781,31 @@ async function startServer() {
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
       }
-      const body = req.body ?? {};
-      const QR_PATH_PATTERN = /^platform\/payment-qr-[0-9]{13}-[a-z0-9]{6}\.(png|jpe?g|webp)$/i;
-      const optionalText2 = (maxLength) => (value, field) => {
-        if (value === void 0) return void 0;
-        if (value === null) return null;
-        if (typeof value !== "string") throw new HttpError(400, "VALIDATION_ERROR", `${field} must be a string.`);
-        const trimmed = value.trim();
-        if (trimmed.length > maxLength) {
-          throw new HttpError(400, "VALIDATION_ERROR", `${field} must be ${maxLength} characters or fewer.`);
-        }
-        return trimmed === "" ? null : trimmed;
-      };
+      const body = parseBody(req, res, apiSchemas.platformConfigUpdate);
+      if (body === null) return;
       const updates = {};
       const changedFields = [];
-      const upiId = optionalText2(120)(body.upiId, "UPI ID");
-      if (upiId !== void 0) {
-        if (upiId !== null && !/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(upiId)) {
+      if (body.upiId !== void 0) {
+        if (body.upiId !== null && !/^[A-Za-z0-9._-]{2,}@[A-Za-z0-9-]{1,}$/.test(body.upiId)) {
           throw new HttpError(400, "VALIDATION_ERROR", "Enter a valid UPI ID, for example name@bank.");
         }
-        updates.upi_id = upiId;
+        updates.upi_id = body.upiId;
         changedFields.push("upi_id");
       }
-      const accountName = optionalText2(120)(body.accountName, "Account name");
-      if (accountName !== void 0) {
-        updates.payment_account_name = accountName;
+      if (body.accountName !== void 0) {
+        updates.payment_account_name = body.accountName;
         changedFields.push("payment_account_name");
       }
-      const instructions = optionalText2(1e3)(body.instructions, "Payment instructions");
-      if (instructions !== void 0) {
-        updates.payment_instructions = instructions;
+      if (body.instructions !== void 0) {
+        updates.payment_instructions = body.instructions;
         changedFields.push("payment_instructions");
       }
       if (body.currency !== void 0) {
-        if (body.currency !== null && body.currency !== "INR") {
-          throw new HttpError(400, "VALIDATION_ERROR", "Currency is fixed to INR: all amounts are stored in rupees.");
-        }
         updates.currency = "INR";
         changedFields.push("currency");
       }
       if (body.qrImageStoragePath !== void 0) {
-        if (body.qrImageStoragePath === null) {
-          updates.qr_image_storage_path = null;
-        } else if (typeof body.qrImageStoragePath === "string" && QR_PATH_PATTERN.test(body.qrImageStoragePath)) {
-          updates.qr_image_storage_path = body.qrImageStoragePath;
-        } else {
-          throw new HttpError(400, "VALIDATION_ERROR", "Unknown payment QR reference.");
-        }
+        updates.qr_image_storage_path = body.qrImageStoragePath;
         changedFields.push("qr_image_storage_path");
       }
       if (changedFields.length === 0) {
@@ -13716,51 +13852,46 @@ async function startServer() {
       });
     }
   });
-  app.post("/api/admin/platform-config/qr-upload-url", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const admin = getSupabaseAdmin();
-      if (!admin) {
-        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+  app.post(
+    "/api/admin/platform-config/qr-upload-url",
+    requireAuth,
+    requireAdmin,
+    validateBody(apiSchemas.platformQrUploadRequest),
+    async (req, res) => {
+      try {
+        const admin = getSupabaseAdmin();
+        if (!admin) {
+          return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+        }
+        const { fileType: type, fileSize: size } = req.body;
+        const extensionByMimeType = {
+          "image/png": "png",
+          "image/jpeg": "jpg",
+          "image/webp": "webp"
+        };
+        const storagePath = `platform/payment-qr-${Date.now()}-${(0, import_crypto5.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
+        const { data, error } = await admin.storage.from(PAYMENT_QR_BUCKET).createSignedUploadUrl(storagePath);
+        if (error) throw error;
+        return res.json({
+          success: true,
+          uploadUrl: data.signedUrl,
+          token: data.token,
+          path: storagePath
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
+        }
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: "POST /api/admin/platform-config/qr-upload-url",
+          clientMessage: "Unable to prepare the payment QR upload."
+        });
       }
-      const body = req.body ?? {};
-      const type = typeof body.fileType === "string" ? body.fileType : "";
-      const size = typeof body.fileSize === "number" ? body.fileSize : Number.NaN;
-      if (!PAYMENT_QR_MIME_TYPES.includes(type)) {
-        throw new HttpError(400, "VALIDATION_ERROR", "Upload a PNG, JPEG or WebP image.");
-      }
-      if (!Number.isFinite(size) || size <= 0) {
-        throw new HttpError(400, "VALIDATION_ERROR", "That file is empty.");
-      }
-      if (size > PAYMENT_QR_MAX_BYTES) {
-        throw new HttpError(400, "VALIDATION_ERROR", `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`);
-      }
-      const extensionByMimeType = {
-        "image/png": "png",
-        "image/jpeg": "jpg",
-        "image/webp": "webp"
-      };
-      const storagePath = `platform/payment-qr-${Date.now()}-${(0, import_crypto5.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
-      const { data, error } = await admin.storage.from(PAYMENT_QR_BUCKET).createSignedUploadUrl(storagePath);
-      if (error) throw error;
-      return res.json({
-        success: true,
-        uploadUrl: data.signedUrl,
-        token: data.token,
-        path: storagePath
-      });
-    } catch (err) {
-      if (err instanceof HttpError) {
-        return res.status(err.status).json({ success: false, error: { code: err.code, message: err.message } });
-      }
-      return respondWithServerError({
-        req,
-        res,
-        error: err,
-        context: "POST /api/admin/platform-config/qr-upload-url",
-        clientMessage: "Unable to prepare the payment QR upload."
-      });
     }
-  });
+  );
   app.delete("/api/admin/platform-config/qr", requireAuth, requireAdmin, async (req, res) => {
     try {
       const admin = getSupabaseAdmin();

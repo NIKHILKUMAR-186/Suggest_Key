@@ -1,15 +1,15 @@
 # Suggest Key — Architecture
 
-Version: 3.1
+Version: 3.2
 Status: As-built / Current
-Last verified: 2026-09-29
+Last verified: 2026-10-02
 
 Authoritative technical description of the repository as it exists today.
 Source of truth, in order:
 
 1. `server.ts` and `src/`
-2. `supabase/migrations/` (38 files, applied in timestamp order)
-3. `tests/` (43 test files)
+2. `supabase/migrations/` (53 files, applied in timestamp order)
+3. `tests/` (68 test files + 2 helpers)
 4. `package.json`, `vercel.json`, `.env.example`
 5. Everything else in `docs/`
 
@@ -34,46 +34,64 @@ explicitly. Nothing in this document is aspirational.
 ## 2. Runtime Topology
 
 ```text
-                      ┌──────────────────────────────┐
-   Browser  ────────► │  Vercel edge                 │
-                      │  rewrites                    │
-                      │   /api/(.*)  → /server.cjs   │
-                      │   /(.*)      → /index.html   │
-                      └───────┬──────────────┬───────┘
-                              │              │
-                    static assets        Express 4 API
-                    (immutable, 1y)      (dist/server.cjs)
-                                             │
-                        ┌────────────────────┼────────────────────┐
-                        ▼                    ▼                    ▼
-                Supabase Auth        Supabase Postgres      Supabase Storage
-                (JWT)                (PostgREST + RPCs)     (3 buckets)
-                                          │
-                                          ▼
-                                   Supabase Realtime
-                                   (publication, 10 tables)
+                       ┌──────────────────────────────────────┐
+   Browser  ─────────► │  Vercel                                │
+                       │  builds[]                              │
+                       │   api/index.cjs → @vercel/node         │
+                       │   package.json   → @vercel/static-build│
+                       │                                       │
+                       │  rewrites                             │
+                       │   /api/:path*     → /api               │
+                       │   /((?!api).*)    → /index.html        │
+                       └────────┬──────────────────┬────────────┘
+                                │                  │
+                     static assets          single Express 4 function
+                     (immutable, 1y)        (api/index.cjs, from
+                                             `npm run build:server`)
+                                                │
+                        ┌───────────────────────┼───────────────────────┐
+                        ▼                       ▼                       ▼
+                Supabase Auth          Supabase Postgres        Supabase Storage
+                (JWT)                  (PostgREST + RPCs)       (5 buckets)
+                                                │
+                                                ▼
+                                         Supabase Realtime
+                                         (publication, 11 tables)
 ```
 
 Local development is a different topology: `npm run dev` runs `tsx server.ts`
 and Vite separately; the dev server proxies `/api` to the Express process.
 
+`server.ts` exports the Express `app` and guards its own `app.listen()` on
+`process.env.VERCEL` and `process.env.NODE_ENV !== 'production'`, so the same
+module serves three ways: `npm run dev`, `npm start` (also `tsx server.ts`), and
+the Vercel Node runtime, which `require()`s the bundle and calls it as a
+`(req, res)` handler. `tests/vercel_deployment_architecture.test.ts` boots the
+built entrypoint exactly as the Vercel runtime does, so this contract is
+pinned.
+
 ### Key files
 
 | File | Role |
 |---|---|
-| `server.ts` | 12,042-line Express app. 131 `/api/*` routes + 1 SPA catch-all. Owns auth middleware, validation, booking/payment/session orchestration, logging. |
+| `server.ts` | ~14,570-line Express app. 160 `/api/*` routes (88 admin, 72 non-admin) + 1 SPA catch-all. Owns auth middleware, validation, booking/payment/session/support orchestration, logging. |
+| `api/index.cjs` | **Build artefact.** The single Vercel function entrypoint, written by `npm run build:server`. Exactly one file in `api/` by design. Not committed source. |
 | `src/main.tsx` | React entry. |
 | `src/App.tsx` | Provider composition (Theme, Auth, Navigation, PageMeta, Toast, Notification, SegmentTheme, SegmentExperience). |
 | `src/routes/Router.tsx` | Hand-rolled path matcher. No React Router. |
 | `src/lib/bookingEngine.ts` | Server-side booking rules: session access, join authority, mentor confirmation, completion reconciliation. |
 | `src/lib/bookingService.ts` | Browser-side booking client + the local development `BookingEngineContext`. |
 | `src/lib/slotEngine.ts` | Slot generation from recurring availability + exceptions. |
-| `src/lib/razorpayService.ts` | Razorpay order/verify/webhook orchestration. Gateway-agnostic via a `RazorpayGatewayClient` interface. |
+| `src/lib/razorpayService.ts` | Razorpay order/verify/refund/webhook orchestration. Gateway-agnostic via a `RazorpayGatewayClient` interface. |
 | `src/lib/razorpayStore.ts` | Supabase adapter satisfying the `RazorpayStore` persistence port. |
+| `src/lib/couponService.ts` | Browser client for apply/remove coupon on a booking. |
+| `src/lib/supportDomain.ts` | Shared, framework-free support rules (statuses, transitions, categories, limits). |
+| `src/lib/supportService.ts` | The only module the browser uses for `/api/support/*`. |
+| `src/lib/refundCompletion.ts` | Refund vocabulary, notice wording and refund-completion validation. |
 | `src/lib/paymentProof.ts` | Manual UPI/QR proof validation, status constants, storage paths. |
 | `src/lib/validation.ts` | Zod schemas for every validated request body. |
 | `src/lib/supabaseServer.ts` | Service-role client factory, role resolution, `requireAuth`/`requireAdmin`/`requireRole`/`requireActiveMentor`. |
-| `supabase/migrations/` | 38 SQL files. The schema of record. |
+| `supabase/migrations/` | 53 SQL files. The schema of record. |
 | `supabase/schema.sql` | **Stub.** 968 bytes, `\i`-includes only a subset of migrations. Not the source of truth. Do not use. |
 
 ---
@@ -114,10 +132,13 @@ Storage, Realtime, `pg_cron`, `pgcrypto`/`uuid-ossp` for ids.
 | Command | Definition |
 |---|---|
 | `npm run dev` | `tsx server.ts` |
-| `npm run build` | `vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs` |
-| `npm start` | `node dist/server.cjs` |
+| `npm run build` | `npm run build:web && npm run build:server && npm run build:verify` |
+| `npm run build:web` | `vite build` → `dist/` |
+| `npm run build:server` | `esbuild server.ts --bundle --platform=node --format=cjs --packages=external --log-override:commonjs-variable-in-esm=silent --outfile=api/index.cjs` |
+| `npm run build:verify` | `node scripts/verify-dist.mjs` |
+| `npm start` | `tsx server.ts` |
 | `npm run lint` | `tsc --noEmit` |
-| `npm test` | `tsx --test tests/**/*.test.ts` |
+| `npm test` | `tsx --test --test-force-exit "tests/**/*.test.ts"` |
 
 Node engine: `22.x`.
 
@@ -131,17 +152,20 @@ Razorpay is integrated over plain `fetch` — there is deliberately no vendor SD
 
 ## 4. Scripts and Build
 
-`vercel.json`:
+`vercel.json` (current):
 
 ```json
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
+  "version": 2,
   "installCommand": "npm install",
+  "builds": [
+    { "src": "api/index.cjs", "use": "@vercel/node" },
+    { "src": "package.json", "use": "@vercel/static-build",
+      "config": { "distDir": "dist", "buildCommand": "npm run build" } }
+  ],
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/server.cjs" },
-    { "source": "/(.*)",      "destination": "/index.html"   }
+    { "source": "/api/:path*", "destination": "/api" },
+    { "source": "/((?!api).*)", "destination": "/index.html" }
   ],
   "headers": [
     { "source": "/assets/(.*)",
@@ -151,7 +175,25 @@ Razorpay is integrated over plain `fetch` — there is deliberately no vendor SD
 }
 ```
 
-The rewrite is order-sensitive: `/api/(.*)` must precede `/(.*)`.
+Three properties are load-bearing, and all three are pinned by
+`tests/vercel_deployment_architecture.test.ts`:
+
+1. **The function is declared, not discovered.** Vercel's automatic `api/`
+   discovery produced a deployment with **zero functions** — the build log
+   showed the bundle written and no function builder ever running — so every
+   `/api/*` request fell through to the SPA shell and the client failed with
+   `Unexpected token '<'`. Naming `@vercel/node` explicitly with
+   `src: api/index.cjs` makes the function exist by declaration.
+2. **One rewrite serves the whole API.** `/api/:path*` → `/api`; the
+   destination only selects the function, because `req.url` keeps the original
+   path and that is what Express routes on. Endpoints are not enumerated.
+3. **The SPA fallback cannot serve `/api/*`.** The negative lookahead
+   `((?!api).*)` is required, or an unreachable function turns back into
+   `200 text/html` — the exact original symptom.
+
+The server bundle is written to **`api/index.cjs`**, not into `dist/`, and
+carries **no source map**: `api/` is packaged into the deployed function, so a
+`.map` beside the entrypoint would ship backend source in the artefact.
 
 There is no `vercel-build` step, no `prisma migrate`, and no migration runner
 in the deploy pipeline. Migrations are applied out of band via the Supabase CLI
@@ -192,7 +234,7 @@ Support is deliberately **not** a seeker or mentor navigation item. It is reache
 from inside Settings → Help & Support (`/seeker/support`,
 `/mentor/support`), because seeker and mentor keep their existing top-nav shape.
 
-### Admin — sidebar (12 items)
+### Admin — sidebar (13 items)
 
 | id | Label | Href |
 |---|---|---|
@@ -210,7 +252,8 @@ from inside Settings → Help & Support (`/seeker/support`,
 | `admin-support` | Support | `/admin/support` |
 | `admin-settings` | Settings | `/admin/settings` |
 
-Support is inserted between System Health and Settings; no existing item moved.
+Coupons was inserted before Notifications and Support before Settings; no
+existing item moved.
 
 `/admin/users/create` and `/admin/system-health/logs` are routable but not
 separate nav entries.
@@ -240,6 +283,49 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 | anything else | `NotFoundPage` |
 
 `/mentor/verification` is **not** wrapped in `ProtectedRoute`.
+
+### The landing page (`/`) is segment-database-driven
+
+`LandingPage` is a composition only. It owns two decisions — where "Find a
+Mentor" goes given the auth state, and the single href dispatcher — and every
+section owns its own markup, data and loading/empty/error states.
+
+**The hero's floating area bubbles and the section below it read the SAME
+catalogue.** Both are handed the `segments` value from one
+`useActiveSegments()` call in `LandingPage`, so the two can never disagree about
+which areas are live, and there is no second segment fetch.
+
+- **No production segment name is hardcoded anywhere in landing-page code.**
+  Areas come from `public.segments` via `fetchActiveSegments()`.
+- **Order is the database's.** `fetchActiveSegments()` already orders by
+  `segments.priority` ascending (priority 1 = highest), and
+  `HeroSegmentBubbles` takes a *prefix* of that list rather than re-sorting. The
+  first area is the primary bubble; the rest step down in size. Fewer real
+  areas than the cap renders fewer bubbles — a missing area is never padded with
+  a placeholder.
+- **Realtime** is catalogue-level `postgres_changes` on `segments` in
+  `useActiveSegments`, covering INSERT/UPDATE/DELETE. `public.segments` is
+  already in the `supabase_realtime` publication
+  (migration `20261001000000_phase8a_segments_realtime.sql`) and RLS limits
+  public SELECT to `is_active = TRUE`, so an anonymous subscriber only ever
+  receives publicly visible segments. **No migration, grant or policy was
+  changed, and no service-role client exists in the browser.**
+- An event is treated as a **signal, not as data**: it re-reads through the
+  same public query, so the active-only filter and the priority ordering are
+  rebuilt by exactly one code path. There is no polling. A dropped subscription
+  or a failed re-read leaves the last valid list on screen.
+- This is deliberately **separate** from `useSegmentExperienceRealtime`, which
+  is scoped to a single `slug` and reads that one row's payload. The landing
+  page needs the whole catalogue, including creates and deactivations.
+
+The hero's human visual is a drawn, deliberately **faceless** illustration. The
+project ships no mentor photography, and the page must not imply a real,
+bookable individual who does not exist — so it is abstract light and two
+featureless figures, not a stock "counsellor" photo.
+
+Ratings, review counts, session counts and testimonials are **not rendered
+anywhere on the page**: `mentor_profiles.rating` / `review_count` are columns
+with no review system behind them. See `tests/landing_hero_segments.test.ts`.
 
 ### Seeker + admin (allowedRoles `['seeker','admin']`)
 
@@ -324,8 +410,23 @@ sub-routes** handled inside `AdminSegmentDetailPage`; they are not separate
 
 ## 7. Data Model
 
-28 tables in `public` after all 38 migrations. Reconstruction below is from
-`supabase/migrations/`, cross-checked against `src/types/database.ts`.
+**36 tables in `public`** after all 53 migrations. Verified by enumerating
+`CREATE TABLE` across `supabase/migrations/` and cross-checked against the live
+catalog and against `src/types/database.ts`.
+
+| Group | Tables |
+|---|---|
+| Identity | `profiles`, `user_roles` |
+| Catalog | `segments`, `segment_topics`, `gig_topics` |
+| Profiles and offering | `mentor_profiles`, `mentor_segments`, `seeker_profiles`, `gigs` |
+| Availability | `mentor_availability`, `mentor_availability_exceptions` |
+| Booking | `slot_holds`, `bookings`, `reschedule_requests` |
+| Payment | `payments`, `payment_events`, `webhook_events`, `razorpay_unmatched_captures` |
+| Promotions | `coupons`, `coupon_usage` |
+| Content | `session_workspaces` |
+| Support | `support_tickets`, `support_messages`, `support_attachments`, `support_audit_events` |
+| Mentor onboarding | `mentor_applications`, `mentor_verification_documents`, `mentor_document_types`, `mentor_application_audit` |
+| Operations | `platform_config`, `audit_logs`, `system_logs`, `system_log_retention`, `login_failure_config`, `login_failure_trackers` |
 
 ### Identity and roles
 
@@ -353,26 +454,43 @@ availability in one go.
 | `mentor_profiles` | `id` PK→`profiles` CASCADE, `headline` NOT NULL default `''`, `about`, `experience_years` NOT NULL default 0, `languages` text[] NOT NULL default `['English','Hindi']`, `expertise` text[], `rating` NUMERIC(3,2) NOT NULL default 5.00, `review_count` NOT NULL default 0, `session_count` NOT NULL default 0, `is_approved` NOT NULL default true, `is_featured` NOT NULL default false, `approval_status` NOT NULL default `'draft'`, `is_active` NOT NULL default false, `created_via`, `created_at`, `updated_at` | `CHECK (experience_years >= 0)`; `CHECK (rating >= 0 AND rating <= 5.00)`; `CHECK (review_count >= 0)`; `CHECK (session_count >= 0)`; `CHECK (approval_status IN ('draft','pending_review','approved','rejected'))`; `CHECK (created_via IS NULL OR created_via IN ('public_signup','admin_direct'))` |
 | `mentor_segments` | `mentor_id` FK→`profiles` CASCADE, `segment_id` FK→`segments` CASCADE, `is_primary` default false | `UNIQUE (mentor_id, segment_id)` |
 | `seeker_profiles` | `id` PK→`profiles` CASCADE, `preferred_language` NOT NULL default `'English'`, `notes` | — |
-| `gigs` | `mentor_id` FK→`profiles` CASCADE, `segment_id` FK→`segments` RESTRICT, `title`, `description`, `duration_minutes`, `price_inr`, `is_active` default true | `CHECK (duration_minutes IN (30,45,60,90,120))`; `CHECK (price_inr >= 0)`; **partial unique** on `(mentor_id, segment_id) WHERE is_active` |
+| `gigs` | `mentor_id` FK→`profiles` CASCADE, `segment_id` FK→`segments` RESTRICT, `title`, `description`, `duration_minutes`, `price_inr`, `original_price_inr` (nullable, phase 39), `is_active` default true | `CHECK (duration_minutes IN (30,45,60,90,120))`; `CHECK (price_inr >= 0)`; `CHECK (original_price_inr IS NULL OR (original_price_inr > price_inr AND original_price_inr <= 10000000))`; **partial unique** on `(mentor_id, segment_id) WHERE is_active` |
 | `mentor_availability` | `mentor_id` FK→`profiles` CASCADE, `day_of_week` SMALLINT, `start_time` TIME, `end_time` TIME, `timezone` NOT NULL default `'Asia/Kolkata'`, `is_enabled` default true | `CHECK (day_of_week BETWEEN 0 AND 6)`; `CHECK (start_time < end_time)`; `UNIQUE (mentor_id, day_of_week, start_time, end_time)` |
 | `mentor_availability_exceptions` | `mentor_id` FK→`profiles` CASCADE, `exception_date` DATE, `is_available` default false, `start_time` TIME, `end_time` TIME, `reason` | `CHECK (is_available = FALSE OR (start_time IS NOT NULL AND end_time IS NOT NULL AND start_time < end_time))`; `UNIQUE (mentor_id, exception_date)` |
 
 `mentor_availability` is **global to the mentor**, not per gig. A mentor's
 weekly windows gate every gig they sell.
 
-### Booking and payment
+### Booking, rescheduling, payment and promotions
 
-See §10 and §11.
+See §9, §10, §11 and §11.5 for the full shape. The tables added after phase 25
+are:
+
+| Table | Purpose |
+|---|---|
+| `reschedule_requests` | A seeker's **request** to move a booking. `booking_id`, `seeker_id`, `mentor_id`, `original_start_time`/`original_end_time` (snapshot, `CHECK original_start_time < original_end_time`), `requested_start_time`/`requested_end_time` (`CHECK requested_start_time < requested_end_time`), `hold_id`, `status` `CHECK IN ('PENDING','APPROVED','REJECTED','EXPIRED','CANCELLED')` default `'PENDING'`, `mentor_response` `CHECK IN ('ACCEPTED','REJECTED')`, `mentor_responded_at`, `rejection_reason`, `expires_at` `CHECK (expires_at > created_at)`. `chk_reschedule_mentor_responded` ties the timestamp to the status: a `PENDING` request must have no response timestamp, and any other status must have one. Partial unique `uq_reschedule_requests_pending_booking (booking_id) WHERE status = 'PENDING'`. |
+| `razorpay_unmatched_captures` | Exception ledger for a capture that could not be matched to a local `payments` row. `gateway`, `event_id`, `last_event_id`, `event_type`, `razorpay_payment_id` (unique), `razorpay_order_id`, `amount_paise`, `currency`, `received_at`, `reason`, `payload` JSONB, `reconciliation_status` default `'PENDING'`, `delivery_count` default 1, `last_received_at`, `resolved_payment_id`, `resolved_at`, `resolved_by`, `resolution_note`. A row here means **money moved and the platform has no confirmed payment for it**; it is never a confirmed payment and never advances a booking. |
+| `coupons` | Admin-authored discount codes. `code` `CHECK ~ '^[A-Z0-9_]{4,24}$'`, `description` `CHECK (<= 300 chars)`, `discount_type` `CHECK IN ('PERCENTAGE','FIXED')`, `discount_value` `CHECK (> 0 AND (FIXED OR <= 100))`, `max_discount_inr` `CHECK (NULL, or > 0 and PERCENTAGE only)`, `min_order_amount_inr` `CHECK (>= 0)` default 0, `segment_id` / `mentor_id` targeting with `chk_coupon_not_fully_scoped` forbidding **both** being set (a coupon is global, segment-scoped, or mentor-scoped — never simultaneously segment and mentor), `max_total_uses` / `max_uses_per_user` `CHECK (NULL or > 0)`, `starts_at`, `expires_at` `CHECK (NULL or expires_at > starts_at)`, `status` `CHECK IN ('ACTIVE','INACTIVE','ARCHIVED')` default `'ACTIVE'`, `created_by`. |
+| `coupon_usage` | One row per booking for its whole life. `coupon_id` FK RESTRICT, `booking_id` **UNIQUE**, `seeker_id`, `status` `CHECK IN ('RESERVED','REDEEMED','RELEASED')` default `'RESERVED'`, `discount_amount_inr` `CHECK (> 0)`, `reserved_at`, `redeemed_at`, `released_at`, `release_reason`. |
 
 ### Content
 
 | Table | Purpose |
 |---|---|
-| `session_workspaces` | Post-session artifact. `booking_id` (1:1, `UNIQUE`), `mentor_id`/`seeker_id`, `status` NOT NULL default `'PENDING'` `CHECK (status IN ('PENDING','PUBLISHED'))`, `mentor_notes`, `summary`, `takeaways` JSONB, `suggestions` JSONB, `next_steps` JSONB, `action_items` JSONB, `resources` JSONB, `follow_up_recommendation` JSONB, `published_at`. |
+| `session_workspaces` | Post-session artifact. `booking_id` (1:1, `UNIQUE`), `mentor_id`/`seeker_id`, `status` NOT NULL default `'PENDING'` `CHECK (status IN ('PENDING','PUBLISHED'))`, `mentor_notes`, `summary`, `takeaways` JSONB, `suggestions` JSONB, `next_steps` JSONB, `action_items` JSONB, `resources` JSONB, `follow_up_recommendation` JSONB, `published_at`. Phase 37 adds `trg_session_workspaces_participant_identity`, so `mentor_id`/`seeker_id` cannot diverge from the booking they belong to — the columns RLS reads are guaranteed to describe the same two people. |
 
 `segments.experience_config` JSONB is the seeker-facing CMS payload (hero,
 quickHelp, journeySteps, benefits, faq, cta) rendered by
 `SegmentExperienceRenderer.tsx`.
+
+### Support
+
+| Table | Purpose |
+|---|---|
+| `support_tickets` | One thread per requester issue. `ticket_code` `CHECK ~ '^SK-[0-9]{8}-[0-9]{6}$'` (database-generated, sequence-backed), `requester_id` FK, `requester_role` `CHECK IN ('seeker','mentor','admin')`, `category` `CHECK IN ('BOOKING','PAYMENT','SESSION','MENTOR','AVAILABILITY','PROFILE','ACCOUNT','USER','SYSTEM','TECHNICAL','OTHER')`, `subject` `CHECK (4–140 chars after trim)`, `status` `CHECK IN ('OPEN','IN_PROGRESS','WAITING_FOR_USER','RESOLVED','CLOSED')` default `'OPEN'`, `priority` `CHECK IN ('LOW','NORMAL','HIGH','URGENT')` default `'NORMAL'`, `booking_id`, `payment_id`, `assigned_admin_id`, `resolution` `CHECK (<= 4000)`, `resolved_at`/`resolved_by`/`closed_at`/`closed_by`, `last_message_at`. `chk_support_resolution_presence` requires a resolution body whenever `status = 'RESOLVED'`. |
+| `support_messages` | Public replies **and** internal notes in one table. `ticket_id` FK CASCADE, `sender_id`, `sender_role`, `message`, `is_internal` `NOT NULL default false`, `created_at`, `updated_at`. Internal notes are filtered out of every non-admin read. |
+| `support_attachments` | `ticket_id` FK CASCADE, `message_id` FK (nullable), `uploaded_by`, `storage_path` `CHECK (storage_path ~ '^support/[0-9a-f-]{36}/[0-9A-Za-z._-]+$')` plus a second CHECK rejecting `..` and backslashes (traversal), `file_name` `CHECK (1–255 chars after trim)`, `mime_type` `CHECK IN ('image/png','image/jpeg','image/webp','application/pdf')`, `file_size` `CHECK (> 0 AND <= 5242880)`, `created_at`. |
+| `support_audit_events` | Append-only. `ticket_id` FK CASCADE, `actor_id`, `event_type`, `metadata` JSONB default `{}`, `created_at`. |
 
 ### Mentor onboarding
 
@@ -381,13 +499,23 @@ quickHelp, journeySteps, benefits, faq, cta) rendered by
 | `mentor_applications` | One per user. `status` `CHECK IN ('draft','pending_review','approved','rejected')`, `full_name`, `headline`, `bio`, `years_of_experience` `CHECK (IS NULL OR BETWEEN 0 AND 80)`, `timezone`, `requested_segment_ids` UUID[], `submitted_at`, `reviewed_at`, `reviewed_by` FK→`profiles` SET NULL, `rejection_reason`. `UNIQUE (user_id)`. |
 | `mentor_verification_documents` | `application_id` FK CASCADE, `document_type` FK→`mentor_document_types(code)` RESTRICT, `storage_path`, `original_filename`, `mime_type`, `size_bytes` `CHECK (> 0 AND <= 5242880)`, `status` `CHECK IN ('pending','approved','rejected')`, `admin_note`, `uploaded_at`, `reviewed_at`, `reviewed_by`. `UNIQUE (application_id, document_type)`. |
 | `mentor_document_types` | Config table. Seeded with `identity_proof` and `qualification_proof`. |
-| `mentor_application_audit` | Append-only. `application_id` FK CASCADE, `action` (**unconstrained TEXT** — the phase12 CHECK was not carried forward), `admin_user_id` FK→`profiles` SET NULL, `rejection_reason`, `metadata`. |
+| `mentor_application_audit` | Append-only. `application_id` FK CASCADE, `action` `CHECK (action IN ('created','updated','submitted','approved','rejected','resubmitted','document_uploaded','document_reviewed'))`, `admin_user_id` FK→`profiles` SET NULL, `rejection_reason`, `metadata`. |
+
+> **Correction to v3.1 of this document:** `mentor_application_audit.action` **is**
+> constrained. `20260924000000_phase12` creates the table with the CHECK and
+> `20260925000000_phase13`'s `CREATE TABLE IF NOT EXISTS` is a no-op on an
+> existing table, so an in-order build keeps the constraint. It was verified
+> present in the live catalog as `mentor_application_audit_action_check`. The two
+> migration bodies still declare the table differently (phase12 adds the FK on
+> `admin_user_id` and a nullable `metadata`; phase13 drops the FK and makes
+> `metadata` `NOT NULL`), which is order-dependent — but it is **not** an
+> unconstrained column. See `docs/technical-audit.md` T4.
 
 ### Operations and security
 
 | Table | Purpose |
 |---|---|
-| `platform_config` | Single-row (`id = 1`). `upi_id`, `qr_image_storage_path`, `payment_instructions`, `currency`, `payment_account_name`, `hold_duration_minutes` NOT NULL default 5. **No CHECK constraints and no RLS enabled** — reads go through `hold_duration_interval()`; writes go through the service-role client in `server.ts`. |
+| `platform_config` | Single row (`CHECK (id = 1)`). `upi_id`, `qr_image_storage_path`, `payment_instructions`, `currency` `CHECK (currency IS NULL OR currency = 'INR')`, `payment_account_name`, `hold_duration_minutes` NOT NULL default 5, `normal_cancellation_window_minutes` NOT NULL default 10, `reschedule_window_minutes`, `reschedule_request_expiry_hours`. **RLS enabled** since `20261009000000_phase35` — one `FOR ALL` policy `USING (is_admin()) WITH CHECK (is_admin())`, so reads and writes are admin-only. Reads still go through `hold_duration_interval()` for the DB-enforced hold window; all HTTP access goes through the service-role client in `server.ts`. |
 | `audit_logs` | `actor_user_id`, `actor_role`, `action`, `entity_type`, `entity_id`, `request_id`, `metadata`. No CHECKs. |
 | `system_logs` | `request_id`, `level` `CHECK IN ('debug','info','warn','error')`, `category` `CHECK IN ('api_request','api_error','auth','db','business','system')`, `method`, `path`, `status_code`, `duration_ms`, `user_id`, `role`, `error_code`, `message`, `metadata`. |
 | `system_log_retention` | Single row. `CHECK (id = 1)`, `retention_days` `CHECK BETWEEN 1 AND 365`, default 30. |
@@ -410,8 +538,8 @@ computed at read time by `src/lib/slotEngine.ts` from:
 4. `minus` `ACTIVE` `slot_holds` for that mentor
 5. `minus` the past and the booking cutoff
 
-`GET /api/mentor-availability/slots` (`server.ts:3977`) is the single read path;
-`GET /api/admin/mentors/:id/slots` (`server.ts:7375`) is the admin equivalent.
+`GET /api/mentor-availability/slots` (`server.ts:5117`) is the single read path;
+`GET /api/admin/mentors/:id/slots` (`server.ts:8770`) is the admin equivalent.
 The browser never invents a time.
 
 Timezone: availability is stored with an IANA `timezone` and interpreted in the
@@ -888,6 +1016,8 @@ Key properties, all verified in code:
 | `POST` | `/api/webhooks/razorpay` | **none** | — | Gateway callback; authorised by HMAC only |
 | `GET` | `/api/payments/razorpay/config` | yes | any | Non-secret availability probe (`{enabled, currency, razorpayKeyId}`) |
 | `GET` | `/api/admin/payments` | yes | admin | Payment queue |
+| `GET` | `/api/admin/unmatched-captures` | yes | admin | Captured-at-the-gateway exceptions (see §11.4a) |
+| `POST` | `/api/admin/unmatched-captures/:id/reconcile` | yes | admin | Attach one exception to its payment |
 | `PATCH` | `/api/admin/payments/:id/approve` | yes | admin | Manual path only |
 | `PATCH` | `/api/admin/payments/:id/reject` | yes | admin | Manual path only, `reason` required |
 | `POST` | `/api/admin/payments/:id/complete-manual-refund` | yes | admin | Record a completed external refund transfer (see §11.3a) |
@@ -952,6 +1082,61 @@ POST /api/admin/payments/:id/complete-manual-refund
 - `webhook_events` — `gateway`, `event_id`, `event_type`, `payload` JSONB,
   `processed`, `processed_at`, `created_at`. `UNIQUE (gateway, event_id)` is
   the idempotency key. Admin-only RLS; there is no browser read path.
+
+### 11.4a Unmatched Razorpay captures (audit P0-1, phase 28)
+
+The one failure mode a payment webhook cannot fix by itself: **Razorpay captured
+money, and no local `payments` row claimed it.** Previously the handler returned
+`handled: 'unmatched'` and wrote nothing, so the money was real, the platform
+had no record of it, and Razorpay's redelivery met the same dead end.
+
+Now the capture is made **durable before** the handler reports failure:
+
+| Step | Behaviour |
+|---|---|
+| 1 | The HMAC-verified `payment.captured` event with no matching payment is inserted into `razorpay_unmatched_captures` (`UNIQUE (gateway, razorpay_payment_id)`), together with `event_id`, `last_event_id`, `event_type`, `razorpay_order_id`, `amount_paise`, `currency`, `received_at`, `reason`, and the raw `payload` for audit. |
+| 2 | A **duplicate** delivery is not a second row: the existing row is updated (`last_event_id`, `last_received_at`, `delivery_count + 1`). Delivery count is observable, so "Razorpay retried 7 times" is a fact rather than an inference. |
+| 3 | Only then does the route return **non-2xx**, so Razorpay keeps redelivering, and the response reason code and gateway payment id are written to `audit_logs` as `razorpay_capture_unmatched` — never the payload, never the signature. |
+
+An operator resolves it, and only it, through two admin routes:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/unmatched-captures` | Operator queue, newest 100, with `recorded`, `deliveryCount` and `resolved` |
+| `POST` | `/api/admin/unmatched-captures/:id/reconcile` | Attempt to attach one capture to its payment |
+
+**There is no admin screen for this yet.** Both routes are `requireAdmin` and
+fully functional, but nothing in `src/` calls them: `razorpay_unmatched_captures`
+appears only in `src/lib/razorpayService.ts` and `src/lib/razorpayStore.ts`. An
+operator currently has to use the API directly, or an admin has to notice the
+`razorpay_capture_unmatched` entry in `audit_logs`. The backend half of the
+finding is closed; the operator-facing half is not.
+
+`reconcileUnmatchedCapture` resolves **only** through the gateway identifiers
+captured at record time, and every check is a refusal, not a correction:
+
+| Outcome | Condition |
+|---|---|
+| `NOT_FOUND` / `ALREADY_RESOLVED` | No such row / already resolved (idempotent, no side effect) |
+| `STILL_UNMATCHED` | No local payment claims it **yet** — stays `PENDING`, gateway keeps retrying |
+| `CONFLICT` → `PAYMENT_NOT_RAZORPAY` | The matched payment is not a Razorpay payment |
+| `CONFLICT` → `PAYMENT_NOT_CAPTURABLE` | Its status is neither `PAYMENT_PROCESSING` nor `PAYMENT_PENDING` |
+| `CONFLICT` → `PAYMENT_ALREADY_CAPTURED_ELSEWHERE` | It already records a different captured gateway payment — attaching would double-count one booking |
+| `CONFLICT` → `AMOUNT_MISMATCH` | Capture paise ≠ server-derived paise for that payment |
+| `CONFLICT` → `CURRENCY_MISMATCH` | Captured in something other than `INR` |
+| `CONFLICT` → `CAPTURE_PATH_CONFLICT` | The normal capture path itself refused |
+| `RESOLVED` | All checks passed; `applyCapturedPayment` ran, so the payment, booking and mentor notification move through **exactly** the same guarded transitions a normal webhook uses |
+
+Two deliberate choices inside a successful reconciliation: the ledger keeps the
+signature nowhere, so `signature: null` is passed on replay — safe because the
+capture was HMAC-verified when recorded and the amount was re-derived from the
+server, not from the ledger; and the raw `payload` is **not** copied into the
+payment's `gateway_payload`, so it stays an audit record in one place instead of
+being duplicated into a second table.
+
+`reconciliation_status` is `PENDING` / `RESOLVED` / `CONFLICT` and never
+overlaps the payment state machine — the row is an exception record, never a
+payment, and it never by itself marks a booking paid.
 
 ### 11.5 Coupons and the booking price snapshot
 
@@ -1171,9 +1356,24 @@ requireAuth  →  requireAdmin | requireRole('seeker'|'mentor') | requireActiveM
              →  handler
 ```
 
-All 131 routes except `/api/health` and `/api/webhooks/razorpay` sit behind
-`requireAuth`. The webhook is unauthenticated by necessity; it is authorised
-solely by its HMAC signature.
+**160 `/api/*` routes** — 88 admin, 72 non-admin — plus one SPA catch-all
+(`app.get('*')`), which is the only `app.<verb>(` registration in the file that
+is not an API route.
+
+151 of the 160 sit behind `requireAuth`. The nine that do not, and why each is
+safe:
+
+| Route | Why it is public |
+|---|---|
+| `GET /api/health` | Liveness probe. Returns no data about the deployment. |
+| `POST /api/auth/demo-login` | Gated by `ENABLE_DEMO_AUTH` plus a ≥32-character signing secret; unset means "off", never "open" (§14.2). |
+| `POST /api/auth/login-failure` | Telemetry. Accepts an email that is hashed into an opaque `identifier_key`; it can only increment a counter, never touch an account. |
+| `POST /api/auth/login-success` | Same. Bounded body; cannot clear an arbitrary account (there is a test for exactly that). |
+| `POST /api/webhooks/razorpay` | Authorised solely by its HMAC signature against the webhook secret. |
+| `GET /api/seeker/segments/:slug/experience` | Public CMS payload. |
+| `GET /api/seeker/segments/:slug/topics` | Public catalog. |
+| `GET /api/seeker/segments/:slug/mentors` | Public discovery; read through the service role, so it re-implements the eligibility rule in TypeScript (§6). |
+| `GET /api/seeker/mentors/:id/profile` | Public mentor profile with an explicit column list; an ineligible mentor is `404`, never an empty profile (§6). |
 
 `requireActiveMentor` additionally checks `mentor_profiles.is_active` and
 `approval_status`, so a draft or rejected mentor cannot create gigs, apply to
@@ -1295,10 +1495,17 @@ ownership is checked per role (a seeker's ticket must reference the seeker's own
 booking). The ticket records the payment id, amount and refund **status** for the
 support agent to read. It exposes no gateway payload, order id or signature.
 
-**No money moves here.** There is deliberately no refund endpoint and no amount
+**No money moves here.** There is no refund endpoint and no amount
 parameter: the refund lifecycle lives on `payments` and is settled by
 `complete_manual_refund` or a Razorpay refund event. A ticket only reports that
 state.
+
+> **Corrected 2026-10-02.** The first sentence above is stale. `POST
+> /api/admin/payments/:id/complete-manual-refund` (phase 40) **is** a refund
+> endpoint, and it is admin-only, full-amount, once-only, and requires an
+> external reference and receipt. It settles the `refund_status='PENDING'`
+> rows that a manual UPI/QR payment leaves behind. The second sentence stands:
+> a support ticket still never touches money.
 
 ---
 
@@ -1335,24 +1542,38 @@ Posture: participants read their own rows; admins have full access via
 | `mentor_document_types` | active or admin | admin all |
 | `system_logs`, `audit_logs`, `system_log_retention`, `login_failure_config` | admin only | admin only |
 | `login_failure_trackers` | admin only | via RPC |
-| `platform_config` | **RLS not enabled** | service-role client only |
+| `platform_config` | admin only | admin only — RLS enabled in phase 35 |
 
 Migration `20260927000000_phase19_security_lockdown.sql` revoked `ALL` from
 `anon` on `public`, `storage` and `realtime` schemas, set
 `storage.buckets.public = FALSE`, and re-granted `authenticated`/`service_role`.
 
+`platform_config` was the last read path still served with RLS **disabled**:
+`20261009000000_phase35_platform_config_rls.sql` enabled RLS and installed one
+`FOR ALL` policy `USING (is_admin()) WITH CHECK (is_admin())`. The table is
+still read through `hold_duration_interval()` for the DB-enforced hold window,
+and every HTTP access still goes through the service-role client — but a stray
+`authenticated` PostgREST read can no longer reach the UPI id, QR path or
+payment instructions.
+
 ### Storage
+
+Five buckets. Four are created by migrations; `payment-qr` was created later by
+phase 27 and is now a first-class bucket.
 
 | Bucket | Public | Limit | Mimes | Policies |
 |---|---|---|---|---|
 | `payment-proofs` | no | 5 MB | jpeg/png/webp/pdf | folder `[1] = auth.uid()::text` or admin; admin all |
 | `mentor-verification-documents` | no | 5 MB | jpeg/png/webp/pdf | path `<user_id>/<application_id>/…`; applicant may write only while the application is `draft` or `rejected`; admin all |
+| `payment-qr` | **yes** | 2 MB | png/jpeg/webp | public SELECT (the checkout page must render it before auth-free display); admin write |
 | `segment-hero` | **yes** | 5 MB | png/jpeg/webp/gif | public SELECT; admin all |
+| `support-attachments` | no | 5 MB | png/jpeg/webp/pdf | `support/<ticket-uuid>/…`; requester read on own ticket, admin all |
 
-A fourth bucket, `payment-qr` (`PAYMENT_QR_BUCKET` in
-`src/lib/paymentProof.ts`, used by `server.ts:205`, `:8786`, `:8845` for the
-admin UPI QR upload), is referenced by code but is **not created by any
-migration**. See `docs/technical-audit.md`.
+`payment-qr` (`PAYMENT_QR_BUCKET` in `src/lib/paymentProof.ts`) is created by
+`20261002000000_phase27_payment_qr_bucket_and_config_audit.sql`. It was
+previously referenced by code with no migration creating it, so the admin QR
+upload failed at runtime on a database that had not been touched out of band;
+that is resolved. `support-attachments` arrives with phase 41.
 
 ---
 
@@ -1360,7 +1581,8 @@ migration**. See `docs/technical-audit.md`.
 
 ### 16.1 Publication
 
-`supabase_realtime` contains exactly these 10 tables:
+`supabase_realtime` contains exactly these **11** tables (verified against the
+live catalog):
 
 | Table | Added by |
 |---|---|
@@ -1374,13 +1596,18 @@ migration**. See `docs/technical-audit.md`.
 | `payments` | `20260927110000_phase25_payment_foundation.sql` |
 | `payment_events` | same |
 | `webhook_events` | same |
+| `notifications` | **no migration** — added out of band to the publication |
+
+That last row is a real inconsistency, not a documented decision: `notifications`
+**is** in the live publication and `useNotificationSync` subscribes to it, but no
+file in `supabase/migrations/` adds it. A rebuild-from-zero would therefore not
+reproduce it. The fix is a one-line `ALTER PUBLICATION supabase_realtime ADD
+TABLE public.notifications;` migration, not a code change.
 
 `REPLICA IDENTITY FULL` is set on `mentor_availability`,
 `mentor_availability_exceptions`, `slot_holds`, `bookings`, `gigs`, `segments`.
 It is **not** set on `payments`, `payment_events`, `webhook_events` or
 `segment_topics`, so those deliver key-only updates.
-
-**`notifications` is not published.** Notification freshness is polling-only.
 
 ### 16.2 Hooks
 
@@ -1390,12 +1617,25 @@ It is **not** set on `payments`, `payment_events`, `webhook_events` or
 | `useSegmentExperienceRealtime` | `segments`, `segment_topics` | yes | none |
 | `useSessionSync` | `bookings` | lifecycle-event driven | `REVALIDATE_MS = 20_000`, plus `TICK_MS = 1_000` render-only tick |
 | `usePaymentSync` | `payments`, `bookings` | yes | `DEFAULT_INTERVAL_MS = 60_000`, floor 30_000, visibility-gated |
-| `useNotificationSync` | none | **no** | `DEFAULT_INTERVAL_MS = 60_000`, floor 30_000, visibility-gated |
+| `useNotificationSync` | `notifications`, filtered `user_id=eq.<uid>` | **yes** | `DEFAULT_INTERVAL_MS = 60_000`, floor 30_000, visibility-gated |
 | `NotificationContext` | none | **no** | hard-coded `setInterval(refreshNotifications, 30000)`, **not** visibility-gated |
 
-`useAvailabilitySync` and `usePaymentSync` skip their interval when
-`document.visibilityState !== 'visible'`, so a backgrounded tab costs nothing.
-`NotificationContext` does not — see `docs/technical-audit.md`.
+`useAvailabilitySync`, `usePaymentSync` and `useNotificationSync` skip their
+interval when `document.visibilityState !== 'visible'`, so a backgrounded tab
+costs nothing. Each also revalidates on `visibilitychange` and `focus`, and
+removes its channel on unmount. `NotificationContext` does none of this — see
+`docs/technical-audit.md`.
+
+The channel filter is `user_id=eq.<uid>`, which is the same predicate the
+`notifications` RLS policy enforces, so a subscription cannot widen what a user
+is allowed to read. It also means each user gets a private channel named
+`notifications:<uid>`, not a shared one.
+
+**Admin notification freshness is realtime; seeker and mentor freshness is not.**
+`AdminNotificationsPage` consumes `useNotificationSync`. The seeker and mentor
+notification pages still read through `NotificationContext`, whose 30-second
+interval is not visibility-gated. The server-side support for realtime delivery
+exists and works; the seeker/mentor pages have not been migrated to it.
 
 The last four browser-side sync paths in the table above coexist with the
 published `payments` table: the hook has both a realtime channel and a polling
@@ -1428,84 +1668,112 @@ Beyond zod, the codebase performs:
 
 ## 18. Testing
 
-43 test files under `tests/`, run with the Node test runner via
-`tsx --test tests/**/*.test.ts` (`npm test`). Helpers live in `tests/helpers/`
-(`razorpayHarness.ts`, `demoAuthEnv.ts`).
+68 test files under `tests/`, run with the Node test runner via
+`tsx --test --test-force-exit "tests/**/*.test.ts"` (`npm test`). Helpers live in
+`tests/helpers/` (`razorpayHarness.ts`, `demoAuthEnv.ts`).
 
 Coverage clusters:
 
 | Cluster | Files |
 |---|---|
-| Payment / Razorpay | `razorpay_backend`, `razorpay_client`, `razorpay_signature`, `razorpay_state_machine`, `razorpay_store`, `razorpay_webhook_idempotency`, `razorpay_payment_safety`, `razorpay_frontend_review`, `payment_proof` |
-| Booking / availability | `booking_concurrency`, `bookingCutoff`, `holdDuration`, `availability`, `availability_sync`, `booking_ui_invariants`, `booking_status_tone`, `mentor_confirmation` |
+| Payment / Razorpay | `razorpay_backend`, `razorpay_client`, `razorpay_signature`, `razorpay_state_machine`, `razorpay_store`, `razorpay_webhook_idempotency`, `razorpay_payment_safety`, `razorpay_frontend_review`, `razorpay_readiness_audit`, `razorpay_unmatched_capture`, `payment_proof`, `refund_completion` |
+| Booking / availability | `booking_concurrency`, `booking_overdue_lifecycle`, `bookingCutoff`, `holdDuration`, `meetingLinkDeadline`, `availability`, `availability_sync`, `availability_realtime_sync`, `thursday_slot_timezone`, `booking_ui_invariants`, `booking_status_tone`, `mentor_confirmation`, `reschedule_request` |
 | Session | `session_access` |
 | Auth | `auth_flow`, `rate_limit` |
-| Admin control | `admin_account_control`, `admin_create_user`, `admin_dashboard`, `admin_mentor_control`, `mentor_applications`, `mentor_creation_source`, `admin_notification_routing` |
-| Segment experience | `segment_experience`, `segment_experience_normalization`, `segment_experience_renderer`, `segment_dynamic_content`, `segment_hero_upload`, `seeker_experience_topics`, `seeker_experience_rebuild` |
+| Admin control | `admin_account_control`, `admin_create_user`, `admin_dashboard`, `admin_mentor_control`, `admin_payment_view`, `mentor_applications`, `mentor_creation_source`, `admin_notification_routing` |
+| Promotions | `coupon_system` |
+| Support | `support_center` |
+| Segment experience | `segment_experience`, `segment_experience_normalization`, `segment_experience_renderer`, `segment_dynamic_content`, `segment_hero_upload`, `segment_gig_context`, `segment_mentor_card_intent`, `seeker_experience_topics`, `seeker_experience_rebuild` |
+| Workspaces | `workspace_publish`, `workspace_publish_regression`, `workspace_identity_regression`, `workspace_offer_resolution` |
+| Security regressions | `rls_coverage_regression`, `security_containment_regression`, `route_contract`, `api_validation_coverage` |
 | Observability | `system_health`, `system_health_dashboard`, `system_logs`, `audit_logger` |
 | Sanitisation | `logSanitizer`, `error_sanitisation`, `api_validation` |
-| Discovery / navigation | `seeker_discovery_dates`, `seeker_header_navigation` |
+| Deployment | `vercel_deployment_architecture` |
+| Discovery / navigation | `seeker_discovery_dates`, `seeker_header_navigation`, `mentor_discovery_navigation`, `mentor_directory_scope`, `public_mentor_profile` |
 
-`npm run lint` (`tsc --noEmit`) is clean as of 2026-09-29.
+Three of these are **regression guards written against findings that have since
+been fixed**, and they are the reason those fixes cannot silently regress:
+`security_containment_regression`, `rls_coverage_regression` and
+`vercel_deployment_architecture`.
 
-Eight operational scripts in `scripts/` (`db-probe`, `e2e-mentor-bookings`,
-`e2e-payment`, `probe-storage-rls`, `purge-e2e`, `security-audit`,
-`verify-live-mentor-bookings`, `verify-system-health`) require a live Supabase
-project and a running server. They are **not** part of `npm test`.
+`npm run lint` (`tsc --noEmit`) is clean as of 2026-10-02.
+
+**`npm test` is not green as of 2026-10-02: 1785 tests, 1783 pass, 2 fail.** Both
+failures are in tests that assert on the *text* of a file, and both are
+false alarms rather than product defects — but they are real red tests and must
+not be described as passing:
+
+| Failing test | Assertion | Reality |
+|---|---|---|
+| `refund_completion.test.ts` → "U. the seeker payment-proof flow is unchanged" | `server.ts` matches `/app\.post\('\/api\/seeker\/bookings\/:id\/payment-proof'/` | The route exists and is correct; it is registered across multiple lines (`app.post(` then the path on the next line), so a same-line regex misses it. Brittle assertion. |
+| `workspace_identity_regression.test.ts` → "fails loudly if either trigger did not install" | the phase 37 migration matches `/NOT t\.tgenabled/` | The migration guards disabled triggers with `tgenabled <> 'O'`, which is the correct Postgres enum comparison. Equivalent, different text. Brittle assertion. |
+
+Neither is a behaviour defect: the seeker payment-proof flow is unchanged and
+both phase 37 identity triggers are installed and enabled. The fix is to relax
+the two assertions, not to change product code.
+
+Ten files in `scripts/`. Nine require a live Supabase project and/or a running
+server — `db-probe`, `e2e-mentor-bookings`, `e2e-payment`, `probe-storage-rls`,
+`purge-e2e`, `security-audit`, `verify-live-mentor-bookings`,
+`verify-system-health`, `verify-realtime` — and `verify-dist` runs as part of
+`npm run build`. None of them are part of `npm test`.
 
 ---
 
 ## 19. Known Gaps and Defects
 
-Verified open as of 2026-09-29. Full detail, severity and evidence in
+Verified open as of 2026-10-02. Full detail, severity and evidence in
 `docs/technical-audit.md`.
 
-1. **`payment-qr` storage bucket is never created.** Code references
-   `PAYMENT_QR_BUCKET` (`server.ts:205`, `:8786`, `:8845`); no migration creates
-   it. The admin UPI QR upload cannot succeed against a database built purely
-   from `supabase/migrations/`.
-2. **`GET /api/admin/bookings/overdue-links` serves hardcoded fixtures
-   unconditionally.** `server.ts:3138-3152` is a synchronous handler that never
-   calls `getSupabaseAdmin()`. It always returns
-   `getOverdueBookings(getLocalBookingEngineContext())`, i.e. the in-memory
-   fixture set built in `src/lib/bookingService.ts:134-943` with hardcoded
-   mentors (`Rahul Sharma`, `Ananya Patel`, `Dr. Vikram Joshi`, `Aman Kumar`),
-   gig prices (999/1200/1299/1500) and demo notification copy. The other 15
-   `getLocalBookingEngineContext()` call sites in `server.ts` sit behind a
-   real-database branch that returns first, and are therefore unreachable in a
-   correctly configured production deployment; this one is not.
-3. **`bookings.status` type drift.** `src/types/database.ts:135` `BookingStatus`
-   and `src/components/booking/statusTone.ts:43` `BOOKING_LIFECYCLE` both omit
+**Closed since v3.1 of this document.** Listed so a reader who remembers the old
+list does not go looking for them: the `payment-qr` bucket (phase 27), the
+`overdue-links` fixture route (now reads real rows), RLS on `platform_config`
+(phase 35), the missing unmatched-capture ledger (phase 28), notification
+realtime, Razorpay refund initiation, and manual refund completion (phase 40).
+
+Still open:
+
+1. **`npm test` has 2 failing tests** (§18). Both assert on file text rather than
+   behaviour and both are false alarms, but the suite is red.
+2. **`bookings.status` type drift.** `src/types/database.ts` `BookingStatus`
+   and `src/components/booking/statusTone.ts` `BOOKING_LIFECYCLE` both omit
    `'PAYMENT_PROCESSING'`, which `bookings_status_check` permits. Currently
    latent — no code path writes the value (§10).
-4. **`notifications.type` has no CHECK.** The phase4 constraint was dropped in
+3. **`notifications.type` has no CHECK.** The phase4 constraint was dropped in
    `phase11` and never re-added, so the column is free `TEXT` while
    `NotificationType` in TypeScript enumerates 7 values.
-5. **`platform_config` has no RLS.** Reads are mediated by
-   `hold_duration_interval()`, but the table itself is unprotected from direct
-   PostgREST access by any role holding a grant.
+4. **`mentor_application_audit` migration definitions disagree.** The `action`
+   CHECK **is** enforced (phase12 creates it; phase13's
+   `CREATE TABLE IF NOT EXISTS` is a no-op), but phase12 and phase13 declare
+   `admin_user_id` and `metadata` differently, so a rebuild that applies them out
+   of order, or a future edit to either file, would produce a different table.
+5. **`notifications` is in the realtime publication with no migration adding
+   it.** A rebuild from `supabase/migrations/` alone would not reproduce the
+   live publication (§16.1).
 6. **Rate limiting is per-process**, so limits multiply with instance count on
    serverless.
-7. **`NotificationContext` polls every 30 s regardless of tab visibility**,
-   unlike the other sync hooks.
-8. **`mentor_application_audit.action` is unconstrained** `TEXT`; the phase12
-   CHECK was not carried into the phase13 table definition.
-9. **Manual refunds still need a human outside the app.** A Razorpay refund is
+7. **Seeker and mentor notification pages still poll.** `NotificationContext`
+   polls every 30 s regardless of tab visibility and has no realtime channel,
+   while the admin page has both (§16.2).
+8. **Manual refunds still need a human outside the app.** A Razorpay refund is
    issued through the gateway, but a manual UPI/QR refund requires an admin to
    transfer the money and then record it (§11.3a). There is no reconciliation job
    over `refund_status='PENDING'`, so a forgotten manual refund stays pending
    until someone looks.
-10. **No code splitting.** The main JS bundle is a single large chunk; Vite
-    emits a chunk-size warning on build.
-11. **Support is synchronous and text-first.** §14.7 stores every ticket,
+9. **No code splitting.** The main JS bundle is a single large chunk; Vite
+   emits a chunk-size warning on build.
+10. **Support is synchronous and text-first.** §14.7 stores every ticket,
     reply and internal note in the database, but a ticket has no SLA timer, no
     assignment queue beyond a single `assigned_admin_id`, no canned responses,
     no macros, no ticket merge and no escalation. Attachments are PNG/JPEG/WebP
     and PDF up to 5 MB, and there is no antivirus scan of an uploaded object.
-12. **No realtime support thread.** A ticket updates when its page is loaded or
+11. **No realtime support thread.** A ticket updates when its page is loaded or
     refreshed; a reply arriving in another tab is not pushed. The existing
     notification infrastructure notifies the other party in-app, but the open
     conversation does not live-update.
+12. **There is no automated sweep or UI over `razorpay_unmatched_captures`.** A
+    row stays `PENDING` until someone calls the reconcile route directly
+    (§11.4a).
 
 ---
 

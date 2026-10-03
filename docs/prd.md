@@ -1,8 +1,8 @@
 # Suggest Key — Product Requirements Document
 
-Version: 3.1
+Version: 3.2
 Status: As-built / Current
-Last verified: 2026-09-29
+Last verified: 2026-10-02
 
 Describes the product as it exists today. Current MVP and planned work are kept
 strictly separate, and every capability carries an explicit status label.
@@ -112,8 +112,18 @@ A user may hold more than one.
 - System health: metrics, logs, errors, auth logs, audit logs, retention
   policy, prune
 
-**Not implemented for admin:** refunds. Admin can observe refund outcomes
-arriving from the Razorpay webhook, but nothing in the product initiates one.
+**Refunds (implemented, two shapes).** An admin no longer only *observes*
+refunds: a Razorpay refund is issued through the gateway by `runCreateRazorpayRefund`
+on cancellation, and a manual UPI/QR refund is completed by an admin recording
+the external transfer from evidence (§15c). What an admin still cannot do is
+issue a refund for a payment that is not in a refundable state, partially refund,
+or run a reconciliation sweep over `refund_status='PENDING'` — see §19.
+
+**Coupons (implemented).** Admin-authored codes with server-side application,
+reservation and release (§10.5).
+
+**Support (implemented).** An in-app ticket system available to seekers,
+mentors and admins (§16.1).
 
 ---
 
@@ -126,7 +136,12 @@ Defined once in `src/config/navigation.ts` and rendered by
 |---|---|---|
 | Seeker | Home, My Bookings, Notifications, Settings (4) | top nav |
 | Mentor | Home, My Bookings, Availability, Notifications, Settings (5) | top nav |
-| Admin | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Coupons, Notifications, System Health, Settings (12) | sidebar |
+| Admin | Dashboard, Users, Mentors, Mentor Verification, Segments, Bookings, Workspaces, Payments, Coupons, Notifications, System Health, Support, Settings (13) | sidebar |
+
+Support is **not** a seeker or mentor top-nav item. Both reach it from Settings
+→ Help & Support (`/seeker/support`, `/mentor/support`), which keeps their
+top-nav shape unchanged. Admin Support *is* a sidebar item, between System Health
+and Settings.
 
 Routable but not in the nav config: `/mentor/gigs`, `/mentor/segments`
 (mentor, reached in-page), `/admin/users/create`, `/admin/system-health/logs`
@@ -287,10 +302,10 @@ Three separate concepts, often conflated:
    reason and cancels the booking; the proof is retained so the seeker can
    resubmit.
 
-**Known gap:** the `payment-qr` storage bucket that the admin QR upload writes
-to is not created by any migration. Against a database built purely from
-`supabase/migrations/`, the admin cannot upload a QR. See
-`docs/technical-audit.md` P1.
+The `payment-qr` bucket this writes to is created by
+`20261002000000_phase27_payment_qr_bucket_and_config_audit.sql` (public, 2 MB,
+png/jpeg/webp). This gap is closed; it is recorded here because the earlier
+revisions of this document described it as open.
 
 ### 10.2 Razorpay — **Implemented, opt-in, off by default**
 
@@ -573,9 +588,60 @@ was never shown the change. Now:
   completion, workspace publication, mentor application submitted/approved/
   rejected, and login-threat alerts.
 - **In-app only.** No email, SMS or push integration exists.
-- **Partially implemented freshness:** `notifications` is not in the realtime
-  publication, so updates arrive by polling (up to ~30 s). See
-  `docs/technical-audit.md` R1.
+- **Freshness is mixed, and the split is deliberate for now.**
+  - **Admin** notifications are realtime: `AdminNotificationsPage` consumes
+    `useNotificationSync`, which subscribes to `notifications` filtered on
+    `user_id = eq.<uid>`, revalidates on focus and visibility change, skips its
+    interval while the tab is hidden, and removes the channel on unmount. The
+    filter is the same predicate the RLS policy enforces, so a subscription
+    cannot widen what a user may read.
+  - **Seeker and mentor** notifications are **not** yet realtime. Their pages
+    read through `NotificationContext`, whose 30-second interval is
+    unconditional and not visibility-gated. Latency is therefore up to ~30 s and
+    a backgrounded tab keeps polling.
+  - The blocker is not the server — the table *is* in the live `supabase_realtime`
+    publication and the hook is fully built. It is a two-page migration that has
+    not happened. See `docs/technical-audit.md` R1.
+  - One caveat that matters for a rebuild: **no migration adds `notifications`
+    to the publication.** It was added out of band, so an environment created
+    purely from `supabase/migrations/` would have no realtime at all. See
+    `docs/technical-audit.md` R2.
+
+---
+
+## 16.1 Support — **Implemented (phase 41)**
+
+An in-app ticket system, available to every role.
+
+- **Five ticket statuses:** `OPEN`, `IN_PROGRESS`, `WAITING_FOR_USER`,
+  `RESOLVED`, `CLOSED`. Transitions are a closed vocabulary in
+  `src/lib/supportDomain.ts` and are enforced again in the database.
+- **Four priorities:** `LOW`, `NORMAL`, `HIGH`, `URGENT`.
+- **Categories are role-specific.** A seeker does not choose `SYSTEM` or
+  `USER`; a mentor does not choose `BOOKING`. The set is defined per role in
+  `src/lib/supportDomain.ts` and validated server-side, so a crafted request
+  cannot open a ticket in a category its role may not use.
+- **A human-readable code.** Every ticket gets a database-generated
+  `ticket_code` matching `^SK-[0-9]{8}-[0-9]{6}$`, which is what users quote in
+  correspondence. The sequence is server-side, so codes cannot collide or be
+  chosen by a client.
+- **Internal notes are invisible to the requester.** Replies and internal notes
+  share `support_messages` with an `is_internal` flag, and every non-admin read
+  filters them out. Storing both in one table means one ordering timeline
+  without a second read path that could forget the filter.
+- **Attachments** are PNG/JPEG/WebP/PDF up to 5 MB, in a private
+  `support-attachments` bucket at `support/<ticket-uuid>/…`. The path pattern is a
+  database CHECK, and a second CHECK rejects `..` and backslashes.
+- **A resolution must have a body.** `chk_support_resolution_presence` refuses a
+  `RESOLVED` ticket with no `resolution`, so "resolved" cannot be a bare state
+  change.
+- **Every state change is audited** into `support_audit_events`.
+- **Access:** a requester sees only their own tickets; an admin sees all. Both
+  are RLS-enforced, not filtered in the route.
+- **Not implemented:** SLA timers, assignment queues beyond a single
+  `assigned_admin_id`, canned responses, macros, ticket merge, escalation, and
+  antivirus scanning of uploaded objects. The conversation does not live-update
+  — there is no realtime support thread.
 
 ---
 
@@ -617,21 +683,26 @@ explicit.
 | Capability | Status | Note |
 |---|---|---|
 | Razorpay enabled in production | **Planned** | Code complete and tested; `RAZORPAY_ENABLED` is unset. Enabling it is a configuration decision plus a live credential check. |
-| Automated refunds | **Not implemented** | Events are consumed; no endpoint initiates a refund. |
+| Partial refunds | **Not implemented** | Refunds are full-amount only, by deliberate policy. A manual refund whose amount does not equal `amount_inr` is refused. |
+| Reconciling forgotten manual refunds | **Not implemented** | No scheduled sweep over `refund_status='PENDING'`. A forgotten manual refund stays pending until an admin looks at the payment queue. |
+| Reconciling unmatched Razorpay captures without an operator | **Not implemented** | The ledger is durable and two admin routes reconcile it, but there is no admin screen and no automatic sweep. An operator must act or read `audit_logs`. |
 | Retiring the manual payment path | **Planned, not recommended yet** | The manual path is the working default. Do not remove it before Razorpay is enabled and verified live. |
 | Mentor ratings and reviews | **Not implemented** | Columns exist; no computation, no submission flow. |
 | Email / SMS / push notifications | **Not implemented** | In-app only. |
+| Realtime notifications for seeker and mentor | **Not implemented** | The admin page has it. The two participant pages still poll through `NotificationContext` at an ungated 30 s. The hook already exists — see `docs/technical-audit.md` R1. |
 | Calendar invites and reminders sent externally | **Not implemented** | In-app reminders only. |
 | Video provider integration (auto-generated meeting links) | **Not implemented** | The mentor supplies the link. No Daily.co / Whereby / Jitsi call exists. |
 | Session recording | **Not implemented** | No column, no route, no UI. |
 | Multi-session packages / bundles | **Not implemented** | One booking is one session. |
-| Coupons, discounts, taxes, invoices | **Not implemented** | — |
+| Taxes and invoices | **Not implemented** | Coupons and an original struck-through price exist (§10.5); no tax computation and no invoice document. |
 | Mentor payouts | **Not implemented** | No financial outflow exists. |
 | Intelligent mentor matching / recommendations | **Not implemented** | Discovery is filter + list. |
-| In-app chat or messaging | **Not implemented** | No messaging entity exists. |
+| Direct seeker ↔ mentor messaging | **Not implemented** | There is no messaging entity. Support tickets exist (§16.1) but they are a request to the platform, not a channel between the two participants. |
+| Realtime support conversation | **Not implemented** | A ticket updates on load or refresh; there is no live thread. |
+| Support SLA, assignment queue, canned replies, macros, merge | **Not implemented** | A ticket has one `assigned_admin_id` and nothing else. |
 | Group sessions | **Not implemented** | Bookings are 1:1 by construction. |
 | Mentor analytics beyond counters | **Not implemented** | `rating`, `review_count`, `session_count` are stored values. |
-| Push or websocket notification channel | **Not implemented** | `notifications` is not published to realtime. |
+| Websocket notification channel for participants | **Not implemented** | See "Realtime notifications for seeker and mentor" above. |
 | Code splitting / route-level lazy loading | **Not implemented** | Single bundle today. |
 
 ---
@@ -662,8 +733,22 @@ slot, pay, attend, and read a workspace — on the manual path and on the
 Razorpay path — with every rule in `docs/rules.md` enforced by the server or
 the database rather than by the interface.
 
-Two defects currently block that claim in a fresh environment: the missing
-`payment-qr` bucket (blocks admin QR upload on the default payment path) and
-the fixture-backed overdue-links route (gives admins fabricated operational
-data). Both are documented in `docs/technical-audit.md`. Neither is fixed,
-because this documentation task does not modify application code.
+**As of 2026-10-02 the two defects that previously blocked this claim are both
+fixed**, and both are now pinned by regression tests:
+
+| Previously blocking | Now |
+|---|---|
+| `payment-qr` bucket missing, so the admin could not upload a QR on the default payment path | Created by phase 27 and verified present in the live project. |
+| `GET /api/admin/bookings/overdue-links` served fabricated mentors, bookings and meeting links | Reads real `bookings` rows through `getSupabaseAdmin()`, and now shares the canonical `resolveBookingLifecycle()` resolver with the mentor and admin ledgers. |
+
+Three things still stand between today and a comfortable claim, none of which
+block the core loop:
+
+1. **`notifications` is in the realtime publication with no migration adding
+   it** (`docs/technical-audit.md` R2). A rebuild from `supabase/migrations/`
+   alone loses notification realtime. This is the same class of defect P1 was.
+2. **`npm test` is red on 2 assertions** (`docs/technical-audit.md` N1). Neither
+   failure is a behaviour defect, but "the suite passes" cannot currently be
+   claimed, so this document does not claim it.
+3. **Razorpay has never been enabled in production.** Both payment paths are
+   implemented, but only the manual one has been exercised against real money.

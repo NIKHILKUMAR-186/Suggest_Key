@@ -43,6 +43,14 @@ import {
   SUPPORT_TICKET_PRIORITIES,
   SUPPORT_TICKET_STATUSES,
 } from './supportDomain';
+import {
+  PAYMENT_PROOF_MAX_BYTES,
+  PAYMENT_PROOF_MAX_LABEL,
+  PAYMENT_PROOF_MIME_TYPES,
+  PAYMENT_QR_MAX_BYTES,
+  PAYMENT_QR_MAX_LABEL,
+  PAYMENT_QR_MIME_TYPES,
+} from './paymentProof';
 
 // ---------------------------------------------------------------------------
 // HTML / control-character sanitising
@@ -134,6 +142,31 @@ export function optionalText(options: { max: number; label: string; multiline?: 
   return z.union([text({ ...options, min: 0 }), z.literal('').transform(() => '')]).optional();
 }
 
+/**
+ * Optional free text where a blank value CLEARS the stored column.
+ *
+ * The distinction this exists for: an ABSENT key means "leave this setting
+ * alone", while a key the admin submitted as empty means "clear it". The second
+ * has to reach the database as `null`, not as `''`, so the handler's previous
+ * behaviour — a trimmed empty string became NULL — is preserved exactly.
+ *
+ * Order matters, and getting it wrong is silent. `z.union([text(…), …])` tries
+ * `text` first, and `text` happily returns `''` for a blank input, so the blank
+ * branch below is never reached and the value is stored as an empty string
+ * instead of being cleared. Mapping the blank to `null` before the union runs
+ * removes that ordering hazard entirely.
+ *
+ * The emptiness test runs AFTER `stripHtmlTags` on purpose: a value that is
+ * only markup is genuinely empty, and clearing it is the honest outcome rather
+ * than storing a string of removed tags.
+ */
+export function nullableText(options: { max: number; label: string; multiline?: boolean }) {
+  return z.preprocess(
+    (value) => (typeof value === 'string' && stripHtmlTags(value).trim() === '' ? null : value),
+    z.union([text(options), z.null()]),
+  );
+}
+
 /** Email: trimmed, lower-cased, then format-checked. */
 export const emailField = z
   .string()
@@ -211,6 +244,24 @@ export function isValidTimezone(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * A gateway-issued token (a Razorpay order id, payment id or HMAC signature).
+ *
+ * Bounded but NOT trimmed and NOT markup-stripped, deliberately: every one of
+ * these values is compared byte-for-byte against what the gateway returned or
+ * against an HMAC digest. Tidying whitespace or stripping a character would
+ * turn a genuine mismatch into a 500 in the verification path, so the only rule
+ * here is "a non-empty string that cannot be used as a free-text injection
+ * vector". The character set is a superset of Razorpay's own ids and hex
+ * signatures.
+ */
+function gatewayToken(label: string) {
+  return z
+    .string()
+    .min(1, `${label} is required.`)
+    .max(200, `${label} is too long.`);
 }
 
 /**
@@ -705,6 +756,38 @@ export const apiSchemas = {
     ),
   }),
 
+  /**
+   * Body of `POST /api/auth/login-failure` — the brute-force alert telemetry.
+   *
+   * Supabase password sign-in happens in the browser, so the server never sees
+   * the failed attempt and the client reports it here. Both fields are
+   * deliberately optional: the tracker keys on `email` OR `ip`, and a client
+   * that could not resolve the email it tried must still be able to report the
+   * attempt by IP alone rather than have its telemetry silently dropped.
+   *
+   * `reason` is free text from an unauthenticated caller, so it is markup-
+   * stripped and bounded here rather than being handed to the tracker as an
+   * arbitrary `unknown`. It is only ever used for alerting, never for auth.
+   */
+  loginFailureReport: z.strictObject({
+    email: z.preprocess(blankToUndefined, emailField.optional()),
+    reason: optionalText({ max: 200, label: 'Reason' }),
+  }),
+
+  /**
+   * Body of `POST /api/auth/login-success`.
+   *
+   * Reports a correct password to break the consecutive-failure streak. There is
+   * deliberately no way to clear another account's streak: the tracker key is
+   * derived from the reported email AND the caller's IP, and this route takes no
+   * user id, so a caller can only ever clear their own streak. `email` is
+   * optional for the same reason it is on the failure report — a client that
+   * knows only its IP still resets the streak it just broke.
+   */
+  loginSuccessReport: z.strictObject({
+    email: z.preprocess(blankToUndefined, emailField.optional()),
+  }),
+
   // -- seeker booking -------------------------------------------------------
   bookingHold: z.strictObject({
     mentorId: uuidField,
@@ -712,6 +795,131 @@ export const apiSchemas = {
     gigId: uuidField,
     startTime: isoDateTimeField,
     endTime: isoDateTimeField,
+  }),
+
+  /**
+   * Body of `POST /api/seeker/bookings/:id/payment-proof`.
+   *
+   * The image bytes are NOT in this request. The browser PUTs them to the
+   * private bucket through a signed URL and sends only the resulting object key,
+   * which is what keeps a request at a few hundred bytes instead of a base64
+   * image ~33% larger than the file.
+   *
+   * There is deliberately no `status` field: a submitted proof always lands in
+   * `PENDING_VERIFICATION`, and because the object is strict a client that tried
+   * to assert a status would get a 400 rather than silently have the field
+   * dropped. There is no `bookingId` either — the booking comes from the path
+   * segment, and `storagePath` must sit inside that booking's own folder, which
+   * the handler re-checks against the verified caller.
+   *
+   * `transactionReference` is markup-stripped here and then re-normalised by
+   * `normaliseTransactionReference`, which owns the provider-issued character
+   * set. Both layers are kept: this one bounds the length before anything is
+   * stored, that one owns the exact format.
+   */
+  paymentProofSubmit: z.strictObject({
+    transactionReference: text({ min: 1, max: 64, label: 'Transaction reference' }),
+    fileName: z.string().trim().min(1, 'File name is required.').max(255, 'File name is too long.'),
+    mimeType: z.enum(PAYMENT_PROOF_MIME_TYPES, {
+      message: 'Upload a PNG or JPG screenshot of your payment.',
+    }),
+    fileSize: z
+      .int('File size must be a whole number of bytes.')
+      .positive('That file is empty.')
+      .max(PAYMENT_PROOF_MAX_BYTES, `Payment screenshots must be ${PAYMENT_PROOF_MAX_LABEL} or smaller.`),
+    storagePath: idField,
+  }),
+
+  /**
+   * Body of `POST /api/seeker/bookings/:id/razorpay/verify`.
+   *
+   * Exactly the three gateway values the checkout hands back, all required, all
+   * bounded. There is deliberately no `amount`, no `currency`, no `bookingId`
+   * and no `status`: the amount and currency are read from the STORED payment
+   * row and compared against the gateway response, so a body that could state
+   * them would be a body that could lie about what was paid. `strictObject` turns
+   * such an attempt into a 400 instead of a silently ignored field.
+   *
+   * The signature is bounded rather than trimmed, because the value is compared
+   * byte-for-byte against an HMAC — a leading or trailing space is a real
+   * mismatch, not something to be tidied away.
+   */
+  razorpayVerify: z.strictObject({
+    razorpayOrderId: gatewayToken('Order ID'),
+    razorpayPaymentId: gatewayToken('Payment ID'),
+    razorpaySignature: gatewayToken('Signature'),
+  }),
+
+  // -- admin: platform payment configuration ---------------------------------
+  /**
+   * Body of `PATCH /api/admin/platform-config`.
+   *
+   * Every field is optional (an admin may change one setting at a time) but at
+   * least one must be present: an empty patch is a no-op that should read as a
+   * mistake, not as a success.
+   *
+   * The free-text settings are markup-stripped. `payment_instructions` and
+   * `payment_account_name` are rendered back to seekers on the payment page, so
+   * storing raw markup there would put a script payload into a page every seeker
+   * with an unpaid booking loads. A blank value maps to `null` so an admin can
+   * CLEAR a setting — that is a distinct outcome from omitting the field, which
+   * leaves the stored value alone.
+   *
+   * `qrImageStoragePath` is pattern-constrained to the exact key shape this
+   * server mints in `POST /api/admin/platform-config/qr-upload-url`. A client
+   * cannot point the seeker payment page at an arbitrary object in the bucket.
+   */
+  platformConfigUpdate: z
+    .strictObject({
+      upiId: nullableText({ max: 120, label: 'UPI ID' }).optional(),
+      accountName: nullableText({ max: 120, label: 'Account name' }).optional(),
+      instructions: nullableText({ max: 1000, label: 'Payment instructions', multiline: true }).optional(),
+      // Every amount column is an `*_inr` integer, so INR is the only currency
+      // the payment architecture supports. Anything else is refused here rather
+      // than written and reinterpreted downstream.
+      currency: z.enum(['INR'], {
+        message: 'Currency is fixed to INR: all amounts are stored in rupees.',
+      }).nullable().optional(),
+      qrImageStoragePath: z
+        .union([
+          z
+            .string()
+            .trim()
+            .regex(
+              /^platform\/payment-qr-[0-9]{13}-[a-z0-9]{6}\.(png|jpe?g|webp)$/i,
+              'Unknown payment QR reference.',
+            ),
+          z.null(),
+        ])
+        .optional(),
+    })
+    .refine(
+      (body) =>
+        body.upiId !== undefined ||
+        body.accountName !== undefined ||
+        body.instructions !== undefined ||
+        body.currency !== undefined ||
+        body.qrImageStoragePath !== undefined,
+      { message: 'Change at least one setting.' },
+    ),
+
+  /**
+   * Body of `POST /api/admin/platform-config/qr-upload-url`.
+   *
+   * A TYPE AND A SIZE, and nothing else. There is deliberately no `fileName`
+   * field: the object key is built from a server timestamp and a server random
+   * suffix, and the extension is derived from the validated MIME type. Accepting
+   * a client-supplied name would let a file called `payload.exe` be uploaded to
+   * the public QR bucket under an `.exe` key.
+   */
+  platformQrUploadRequest: z.strictObject({
+    fileType: z.enum(PAYMENT_QR_MIME_TYPES, {
+      message: 'Upload a PNG, JPEG or WebP image.',
+    }),
+    fileSize: z
+      .int('File size must be a whole number of bytes.')
+      .positive('That file is empty.')
+      .max(PAYMENT_QR_MAX_BYTES, `That image is larger than ${PAYMENT_QR_MAX_LABEL}.`),
   }),
 
   bookingCancel: z.strictObject({

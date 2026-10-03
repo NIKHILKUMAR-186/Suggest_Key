@@ -78,6 +78,19 @@ test('the two functions that were missing a pinned search_path are pinned', () =
   assert.match(migration, /ALTER FUNCTION public\.get_user_role/);
 });
 
+test('both search_path pins are guarded, because one target is a legacy function no migration creates', () => {
+  // get_user_role exists only on the original database. An unguarded
+  // `ALTER FUNCTION` aborted this migration wherever it is absent, skipping
+  // section 6's fail-closed post-condition.
+  const guarded = [
+    ...migration.matchAll(
+      /IF to_regprocedure\('public\.(\w+)\([^)]*\)'\) IS NOT NULL THEN\s+ALTER FUNCTION public\.\1/g
+    ),
+  ].map((m) => m[1]);
+
+  assert.deepEqual(guarded.sort(), ['create_booking_with_hold', 'get_user_role']);
+});
+
 test('any legacy anon EXECUTE grant is superseded by the global containment revoke', () => {
   // phase14 line 201 still contains:
   //   GRANT EXECUTE ON FUNCTION public.mentor_is_publicly_visible(UUID) TO authenticated, anon;

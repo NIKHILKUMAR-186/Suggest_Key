@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '@/src/context/AuthContext';
 import type { UserRole } from '@/src/types/navigation';
 
@@ -32,19 +32,21 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return '/seeker';
   });
 
-  const navigate = (path: string) => {
+  // `navigate` and `replace` only touch setState and history, so they are safe
+  // to keep referentially stable for the life of the provider.
+  const navigate = useCallback((path: string) => {
     setCurrentPath(path);
     if (typeof window !== 'undefined') {
       window.history.pushState({}, '', path);
     }
-  };
+  }, []);
 
-  const replace = (path: string) => {
+  const replace = useCallback((path: string) => {
     setCurrentPath(path);
     if (typeof window !== 'undefined') {
       window.history.replaceState({}, '', path);
     }
-  };
+  }, []);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -56,8 +58,18 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  /**
+   * This provider sits directly above the router, so an unmemoized value would
+   * hand every consumer (AppShell, Router, every header) a new object on every
+   * render and re-render the entire app tree on unrelated state changes.
+   */
+  const value = useMemo<NavigationContextType>(
+    () => ({ currentPath, currentRole: activeRole, navigate, replace }),
+    [currentPath, activeRole, navigate, replace],
+  );
+
   return (
-    <NavigationContext.Provider value={{ currentPath, currentRole: activeRole, navigate, replace }}>
+    <NavigationContext.Provider value={value}>
       {children}
     </NavigationContext.Provider>
   );

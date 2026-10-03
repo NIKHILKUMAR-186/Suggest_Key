@@ -87,6 +87,53 @@ WHERE is_approved = TRUE
 
 
 -- ------------------------------------------------------------------------------
+-- 2b. BOOTSTRAP GUARD: is_account_suspended()
+-- ------------------------------------------------------------------------------
+-- Phase 13 owns is_account_suspended(). PostgreSQL resolves function
+-- references inside a LANGUAGE sql body at CREATE FUNCTION time, so on a
+-- database that never ran Phase 13 the discovery predicate in section 3
+-- fails with "function public.is_account_suspended(uuid) does not exist".
+--
+-- This guard mirrors the is_admin() bootstrap pattern: only created when
+-- absent, so it never replaces (or clobbers) Phase 13's definition.
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.is_account_suspended(uuid)') IS NULL THEN
+    CREATE FUNCTION public.is_account_suspended(p_user_id UUID)
+    RETURNS BOOLEAN LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+    DECLARE
+      v_status TEXT;
+      v_until  TIMESTAMPTZ;
+    BEGIN
+      SELECT account_status, suspended_until INTO v_status, v_until
+      FROM public.profiles WHERE id = p_user_id;
+
+      IF v_status IS NULL THEN
+        RETURN FALSE;
+      END IF;
+
+      IF v_status = 'deactivated' THEN
+        RETURN TRUE;
+      END IF;
+
+      IF v_status = 'suspended' THEN
+        IF v_until IS NOT NULL AND NOW() >= v_until THEN
+          RETURN FALSE;
+        END IF;
+        RETURN TRUE;
+      END IF;
+
+      RETURN FALSE;
+    END;
+    $fn$;
+
+    GRANT EXECUTE ON FUNCTION public.is_account_suspended(UUID) TO authenticated, anon;
+  END IF;
+END $$;
+
+
+-- ------------------------------------------------------------------------------
 -- 3. SINGLE DISCOVERY PREDICATE
 -- ------------------------------------------------------------------------------
 -- One database-side definition of "may this mentor be publicly discovered",
