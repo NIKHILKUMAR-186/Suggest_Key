@@ -34,8 +34,183 @@ const VIEWPORTS = [
   { name: 'phone-375', width: 375, height: 812 },
 ];
 
+/**
+ * Reads the element that currently holds focus and judges its ring.
+ *
+ * Evaluated once per Tab press, because a ring only exists while something is
+ * focused and `:focus-visible` only applies when the browser decided the focus
+ * was keyboard-driven. Both of those are things only the browser can know, so
+ * this cannot be faked by calling `.focus()` from script.
+ *
+ * Self-contained on purpose: it re-declares the small amount of colour maths it
+ * needs instead of sharing a helper block with the main pass, so the two probes
+ * cannot drift apart when one of them is edited.
+ */
+const STEP_FOCUS = `(() => {
+  const parse = (c) => {
+    const m = c.match(/rgba?\\(([^)]+)\\)/);
+    if (!m) return null;
+    const p = m[1].split(',').map((x) => parseFloat(x));
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  };
+  const lum = ({ r, g, b }) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const over = (fg, bg) => ({
+    r: fg.r * fg.a + bg.r * (1 - fg.a),
+    g: fg.g * fg.a + bg.g * (1 - fg.a),
+    b: fg.b * fg.a + bg.b * (1 - fg.a),
+    a: 1,
+  });
+  const ratio = (a, b) => {
+    const l1 = lum(a), l2 = lum(b);
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  };
+  // Every opaque colour at or behind the element.
+  const backs = (el) => {
+    /**
+     * Hex stops are parsed as well as rgb() ones. Several of these gradients
+     * name their colour stops in hex (#1b0d33 and friends), and a parser that
+     * only understands rgb() silently drops the opaque base layer of the plum
+     * field — which then composites against white instead of against plum and
+     * makes a perfectly visible ring look like an invisible one.
+     */
+    const stopsOf = (value) => {
+      const out = [];
+      for (const token of value.match(/rgba?\\([^)]+\\)/g) || []) {
+        const c = parse(token);
+        if (c) out.push(c);
+      }
+      for (const hex of value.match(/#[0-9a-f]{3,8}/gi) || []) {
+        const h = hex.slice(1);
+        const f = h.length === 3 || h.length === 4 ? h.split('').map((x) => x + x).join('') : h.padEnd(8, 'f');
+        out.push({
+          r: parseInt(f.slice(0, 2), 16),
+          g: parseInt(f.slice(2, 4), 16),
+          b: parseInt(f.slice(4, 6), 16),
+          a: parseInt(f.slice(6, 8), 16) / 255,
+        });
+      }
+      return out;
+    };
+
+    /**
+     * The nearest painted surface at or behind the element, as the eye sees it.
+     *
+     * Both halves of a CSS background are honoured, because most of these
+     * surfaces are painted with a gradient and no flat colour at all — the plum
+     * hero field and the violet discovery wash are radial gradients — so reading
+     * only backgroundColor would walk straight past them to the page canvas and
+     * report a ring over a plum band as a ring over white paper.
+     *
+     * Two rules keep the result honest:
+     *
+     *   1. Within one element, a translucent stop composites over that same
+     *      element's own opaque base, not over whatever was inherited. A violet
+     *      wash over the plum gradient is a dark plum; the same wash over white
+     *      would be lavender, and reporting the lavender would flag rings that
+     *      are perfectly visible.
+     *   2. The walk stops at the first fully opaque layer. Anything beyond it is
+     *      not the surface this ring is drawn against, only further away, and
+     *      including it turns every translucent field into a false alarm.
+     */
+    const chain = (from, stopAt) => {
+      const out = [];
+      let node = from;
+      let carried = { r: 255, g: 255, b: 255, a: 1 };
+      while (node && node !== document.documentElement && node !== stopAt) {
+        const cs = getComputedStyle(node);
+        const stops = stopsOf(cs.backgroundColor).concat(stopsOf(cs.backgroundImage));
+        const opaqueStops = stops.filter((c) => c.a === 1);
+        const base = opaqueStops.length ? { ...opaqueStops[0] } : carried;
+
+        for (const c of stops) {
+          if (c.a <= 0.05) continue;
+          const composited = c.a === 1 ? { r: c.r, g: c.g, b: c.b, a: 1 } : over(c, base);
+          out.push(composited);
+        }
+
+        if (opaqueStops.length) return out;
+        carried = base;
+        node = node.parentElement;
+      }
+      return out;
+    };
+
+    /**
+     * A fixed bar with no background of its own is not backed by its ancestors:
+     * what is behind it is a completely different subtree, which the ancestor
+     * chain never reaches. Walking past the bar anyway would add the page
+     * canvas — a surface the ring is never actually drawn on — and would report
+     * every transparent bar as invisible.
+     *
+     * So the chain stops at the bar, and the honest backdrop is found by hitting
+     * the point the bar actually covers.
+     */
+    let bar = null;
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const p = getComputedStyle(node).position;
+      if (p === 'fixed' || p === 'sticky') {
+        const barBg = parse(getComputedStyle(node).backgroundColor);
+        if (!barBg || barBg.a < 0.05) bar = node;
+        break;
+      }
+      node = node.parentElement;
+    }
+
+    const inside = chain(el, bar);
+    if (!bar) return inside.length ? inside : [{ r: 255, g: 255, b: 255, a: 1 }];
+
+    const r = bar.getBoundingClientRect();
+    const cx = Math.min(window.innerWidth - 2, Math.max(2, r.left + r.width / 2));
+    const cy = Math.min(window.innerHeight - 2, Math.max(2, r.top + r.height / 2));
+    const restore = [];
+    for (const n of [bar, ...bar.querySelectorAll('*')]) {
+      restore.push([n, n.style.pointerEvents]);
+      n.style.pointerEvents = 'none';
+    }
+    const hit = document.elementFromPoint(cx, cy);
+    for (const [n, prev] of restore) n.style.pointerEvents = prev;
+
+    const behind = hit && hit !== bar && !bar.contains(hit) ? chain(hit, null) : [];
+    const all = [...inside, ...behind];
+    return all.length ? all : [{ r: 255, g: 255, b: 255, a: 1 }];
+  };
+
+  const el = document.activeElement;
+  if (!el || el === document.body || el === document.documentElement) return null;
+
+  const cs = getComputedStyle(el);
+  const box = el.getBoundingClientRect();
+  const stop = {
+    label: (el.getAttribute('aria-label') || el.textContent || el.tagName)
+      .trim()
+      .replace(/\\s+/g, ' ')
+      .slice(0, 34),
+    w: Math.round(box.width),
+    h: Math.round(box.height),
+  };
+
+  const ring = parse(cs.outlineColor);
+  if (!ring || ring.a <= 0.05 || parseFloat(cs.outlineWidth) === 0) return stop;
+
+  const solid = { r: ring.r, g: ring.g, b: ring.b, a: 1 };
+  let worst = Infinity;
+  let worstBg = null;
+  for (const bg of backs(el)) {
+    const here = ratio(solid, bg);
+    if (here < worst) { worst = here; worstBg = bg; }
+  }
+  stop.worst = Number(worst.toFixed(2));
+  stop.ring = cs.outlineColor;
+  stop.against = 'rgb(' + Math.round(worstBg.r) + ', ' + Math.round(worstBg.g) + ', ' + Math.round(worstBg.b) + ')';
+  return stop;
+})()`;
+
 const AUDIT = `(() => {
-  const report = { overflowX: 0, offenders: [], clipped: [], lowContrast: [], images: [], consoleErrors: [], sizes: {}, headings: [] };
+  const report = { overflowX: 0, offenders: [], clipped: [], lowContrast: [], images: [], consoleErrors: [], sizes: {}, headings: [], rhythm: [], actions: [], focusStops: [], smallTargets: [] };
 
   const vw = window.innerWidth;
   report.overflowX = Math.max(0, document.documentElement.scrollWidth - vw);
@@ -200,6 +375,10 @@ const AUDIT = `(() => {
     return candidatesFrom(el);
   };
 
+
+
+
+
   const contrastSeen = new Set();
   for (const el of document.querySelectorAll('p, h1, h2, h3, li, a, button, span')) {
     const direct = Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
@@ -340,68 +519,31 @@ const AUDIT = `(() => {
   });
 
   /**
-   * Keyboard focus, checked rather than assumed.
-   *
-   * A focus ring is only a focus ring if it can be seen against whatever is
-   * behind it, and the failure mode here is specific: a global rule hands every
-   * element the same dark brand ring, which disappears completely on the plum
-   * bands. Each focusable element is focused in turn and its outline colour is
-   * compared with the surface it is drawn on.
+   * Touch targets, at the WCAG 2.2 minimum of 24 CSS pixels rather than a larger
+   * invented number: inline prose links are exempt from that criterion, so
+   * anything reported here is a standalone control a finger would miss.
    */
-  const focusables = Array.from(
-    document.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')
-  ).filter((el) => {
-    const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-    return el.getBoundingClientRect().width > 0;
-  });
-
-  report.focusRing = [];
-  report.smallTargets = [];
-  for (const el of focusables) {
-    const label = (el.getAttribute('aria-label') || el.textContent || el.tagName)
-      .trim()
-      .replace(/\\s+/g, ' ')
-      .slice(0, 34);
-
-    const r = el.getBoundingClientRect();
-    if (r.height < 40 || r.width < 40) {
-      report.smallTargets.push({
-        label,
+  report.smallTargets = Array.from(
+    document.querySelectorAll('a[href], button:not([disabled])')
+  )
+    .filter((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      if (el.closest('p')) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && (r.height < 24 || r.width < 24);
+    })
+    .map((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        label: (el.getAttribute('aria-label') || el.textContent || el.tagName)
+          .trim()
+          .replace(/\\s+/g, ' ')
+          .slice(0, 30),
         w: Math.round(r.width),
         h: Math.round(r.height),
-      });
-    }
-
-    el.focus({ preventScroll: true });
-    const cs = getComputedStyle(el);
-    const ring = parse(cs.outlineColor);
-    if (!ring || ring.a < 0.05 || parseFloat(cs.outlineWidth) === 0) continue;
-
-    // The ring is judged against every backdrop it could plausibly be drawn on,
-    // worst case first. A ring that reads on the gold button and vanishes on the
-    // plum band behind it is a failure on the band.
-    let worst = Infinity;
-    let worstBg = null;
-    for (const bg of candidatesFrom(el.parentElement || el)) {
-      const r = ratio({ ...ring, a: 1 }, bg);
-      if (r < worst) {
-        worst = r;
-        worstBg = bg;
-      }
-    }
-    if (worst < 1.35) {
-      report.focusRing.push({
-        label,
-        ring: cs.outlineColor,
-        worst: worst.toFixed(2),
-        against: worstBg
-          ? `rgb(${Math.round(worstBg.r)}, ${Math.round(worstBg.g)}, ${Math.round(worstBg.b)})`
-          : '?',
-      });
-    }
-  }
-  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      };
+    });
 
   report.pageHeight = Math.round(document.documentElement.scrollHeight);
   report.heroHeight = Math.round((document.querySelector('.sk-lp-hero') || { getBoundingClientRect: () => ({ height: 0 }) }).getBoundingClientRect().height);
@@ -505,6 +647,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       mobile: vp.width < 700,
     });
 
+    /**
+     * Emulate the pointer and hover capabilities of the device being tested.
+     *
+     * Without this the narrow viewports are a small desktop, and the `@media
+     * (hover: none)` rules that give text links a finger-sized target never
+     * apply — so the touch layout would go unmeasured while the audit claimed to
+     * have covered it.
+     */
+    await send(ws, ++id, 'Emulation.setEmulatedMedia', {
+      features: [
+        { name: 'hover', value: vp.width < 700 ? 'none' : 'hover' },
+        { name: 'pointer', value: vp.width < 700 ? 'coarse' : 'fine' },
+        { name: 'any-hover', value: vp.width < 700 ? 'none' : 'hover' },
+        { name: 'any-pointer', value: vp.width < 700 ? 'coarse' : 'fine' },
+      ],
+    });
+
     await send(ws, ++id, 'Page.navigate', { url: URL_UNDER_TEST });
     await sleep(2600);
 
@@ -565,6 +724,44 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       awaitPromise: true,
     });
 
+    /**
+     * Tab through the page with real key events and read the ring at each stop.
+     * A pass over the document (measure everything, once) cannot do this: the ring
+     * only exists while an element holds focus, and `:focus-visible` only applies
+     * when the focus came from the keyboard.
+     */
+    await send(ws, ++id, 'Runtime.evaluate', {
+      expression: 'document.body.focus(); if (document.activeElement) document.activeElement.blur(); null',
+      returnByValue: true,
+    });
+
+    const FOCUS_STOPS = 46;
+    const focusStops = [];
+    for (let i = 0; i < FOCUS_STOPS; i += 1) {
+      for (const type of ['rawKeyDown', 'char', 'keyUp']) {
+        await send(ws, ++id, 'Input.dispatchKeyEvent', {
+          type,
+          windowsVirtualKeyCode: 9,
+          key: 'Tab',
+          code: 'Tab',
+          nativeVirtualKeyCode: 9,
+        });
+      }
+      const probe = await send(ws, ++id, 'Runtime.evaluate', {
+        expression: STEP_FOCUS,
+        returnByValue: true,
+      });
+      if (probe.result && probe.result.value) focusStops.push(probe.result.value);
+    }
+
+    // The Tab walk scrolls the page to whatever it focuses. Return to the top so
+    // the geometry measured below is the geometry a visitor actually lands on.
+    await send(ws, ++id, 'Runtime.evaluate', {
+      expression: 'window.scrollTo(0, 0); null',
+      returnByValue: true,
+    });
+    await sleep(500);
+
     const result = await send(ws, ++id, 'Runtime.evaluate', {
       expression: AUDIT,
       returnByValue: true,
@@ -575,14 +772,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       );
     }
     const r = result.result.value;
+    r.focusStops = focusStops;
+
+    const invisibleRing = focusStops.filter((s) => s.worst !== undefined && s.worst < 1.35);
+    const unringed = focusStops.filter((s) => s.worst === undefined);
 
     const problems = [];
     if (r.overflowX > 0) problems.push(`horizontal overflow ${r.overflowX}px`);
     if (r.offenders.length) problems.push(`${r.offenders.length} element(s) outside viewport`);
     if (r.clipped.length) problems.push(`${r.clipped.length} clipped text block(s)`);
     if (r.lowContrast.length) problems.push(`${r.lowContrast.length} contrast failure(s)`);
-    if (r.focusRing.length) problems.push(`${r.focusRing.length} invisible focus ring(s)`);
-    if (r.smallTargets.length) problems.push(`${r.smallTargets.length} tap target(s) under 40px`);
+    if (invisibleRing.length) problems.push(`${invisibleRing.length} invisible focus ring(s)`);
+    if (unringed.length) problems.push(`${unringed.length} focus stop(s) with no ring`);
+    if (r.smallTargets.length && vp.width < 700) {
+      problems.push(`${r.smallTargets.length} tap target(s) under 24px`);
+    }
     const broken = r.images.filter((i) => !i.ok);
     if (broken.length) problems.push(`${broken.length} broken image(s)`);
     if (r.mentorCards === 0 && !r.areaCards) problems.push('no data sections rendered');
@@ -607,7 +811,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     if (r.offenders.length) console.log('   outside:', JSON.stringify(r.offenders.slice(0, 5)));
     if (r.clipped.length) console.log('   clipped:', JSON.stringify(r.clipped.slice(0, 5)));
     if (r.lowContrast.length) console.log('   contrast:', JSON.stringify(r.lowContrast.slice(0, 8)));
-    if (r.focusRing.length) console.log('   focus ring:', JSON.stringify(r.focusRing.slice(0, 6)));
+    if (invisibleRing.length) console.log('   focus ring:', JSON.stringify(invisibleRing.slice(0, 6)));
+    if (unringed.length) console.log('   no ring:', JSON.stringify(unringed.slice(0, 6)));
     if (r.smallTargets.length) console.log('   tap target:', JSON.stringify(r.smallTargets.slice(0, 8)));
     if (broken.length) console.log('   broken:', JSON.stringify(broken.slice(0, 4)));
     if (stray.length) console.log('   stray CTA:', JSON.stringify(stray));
@@ -626,6 +831,65 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       }
     }
     console.log('');
+  }
+
+  /**
+   * Reduced motion, on the real thing.
+   *
+   * The risk is not that the page animates too much; it is that it animates in a
+   * way that hides content from someone who asked for stillness. Every entrance
+   * primitive in this page starts its children at opacity 0, so if the reduced
+   * path ever failed to resolve them, the visitor would get a blank page and no
+   * error. This loads the page with the preference set and asserts that nothing
+   * is left invisible or displaced.
+   */
+  await send(ws, ++id, 'Emulation.setEmulatedMedia', {
+    features: [
+      { name: 'prefers-reduced-motion', value: 'reduce' },
+      { name: 'hover', value: 'hover' },
+      { name: 'pointer', value: 'fine' },
+    ],
+  });
+  await send(ws, ++id, 'Page.navigate', { url: URL_UNDER_TEST });
+  await sleep(2800);
+
+  const reduced = await send(ws, ++id, 'Runtime.evaluate', {
+    expression: `(() => {
+      const hidden = [];
+      for (const el of document.querySelectorAll('.sk-lp-shell *')) {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        if (el.closest('[aria-hidden="true"]')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        const opacity = parseFloat(cs.opacity);
+        const moved = /matrix\\(1, 0, 0, 1, 0, -?[0-9.]+\\)/.test(cs.transform);
+        if (opacity < 0.99 || moved) {
+          hidden.push({
+            sel: el.tagName + '.' + String(el.className).slice(0, 44),
+            opacity,
+            transform: cs.transform,
+          });
+        }
+      }
+      return {
+        matches: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        count: hidden.length,
+        sample: hidden.slice(0, 6),
+        heroCtas: document.querySelectorAll('.sk-lp-hero__actions button').length,
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const rm = reduced.result.value;
+
+  if (!rm.matches) {
+    console.log('reduced motion  ✗ the preference did not reach the page');
+  } else if (rm.count > 0) {
+    console.log('reduced motion  ✗ ' + rm.count + ' element(s) left hidden or displaced');
+    console.log('   ' + JSON.stringify(rm.sample));
+  } else {
+    console.log(`reduced motion  ✓ clean — every entrance resolved, ${rm.heroCtas} hero CTA`);
   }
 
   if (consoleErrors.length) console.log('console errors:', JSON.stringify(consoleErrors, null, 2));

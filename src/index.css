@@ -3087,6 +3087,19 @@ body {
   outline-color: var(--sk-lp-focus-on-plum);
 }
 
+/**
+ * The gold button is the one control that breaks that rule: it is gold, so a
+ * gold ring drawn on it is the same colour as the button and vanishes.
+ *
+ * The ring is moved off the fill instead. Inset by nothing and offset outward, it
+ * lands on the plum the button sits on, where white is unmistakable — and it is
+ * still unmistakable from the gold itself, so the state reads from either side.
+ */
+.sk-lp-on-plum .sk-lp-btn--gold:focus-visible {
+  outline-color: var(--sk-lp-on-plum);
+  outline-offset: 3px;
+}
+
 .sk-lp-skip {
   position: absolute;
   left: var(--sk-lp-gutter);
@@ -3113,8 +3126,7 @@ body {
 .sk-lp-numeral,
 .sk-lp-nav,
 .sk-lp-btn,
-.sk-lp-eyebrow,
-.sk-lp-serif-meta {
+.sk-lp-eyebrow {
   font-family: var(--font-aeonikpro);
 }
 
@@ -3306,7 +3318,14 @@ body {
   transform: translateY(-1px);
 }
 
-/* Secondary on a paper field: same shape, inverted ink. */
+/* Secondary on a paper field: same shape, inverted ink.
+
+   Nothing on the landing page currently uses this variant — the conversion rule
+   leaves exactly one action per band, so there is no paper-field secondary to
+   style. It is kept because it is the documented third treatment of this button
+   and the shared `.sk-lp-btn` geometry depends on the set being complete; if the
+   page ever does need a paper-field secondary, this is the one, and inventing a
+   new one at that point would be worse than reusing it. */
 .sk-lp-btn--outline {
   background: transparent;
   color: var(--sk-lp-ink);
@@ -3726,10 +3745,10 @@ body {
 }
 
 /* The area cards are full-bleed buttons with a pointer cursor, which tells a
-   desktop mouse user they can click but tells a finger nothing. On a touch
-   device they are given a hairline ring instead, which is the platform's own
-   affordance and costs nothing on the desktop layout. */
-@media (hover: none) {
+   desktop mouse user they can click but tells a finger nothing. On the narrow
+   layout they are given a stronger hairline instead — the platform's own
+   affordance, and free for anyone who was going to click it anyway. */
+@media (max-width: 767px) {
   .sk-lp-area {
     border-color: var(--sk-lp-hair-strong);
   }
@@ -4315,6 +4334,41 @@ body {
 
 .sk-lp-footer__link:hover {
   color: var(--sk-lp-on-plum);
+}
+
+/**
+ * Touch targets.
+ *
+ * Text links are 17-23px tall, which is the right size for reading and the wrong
+ * size for a finger: WCAG 2.2 asks for 24 CSS pixels. Padding does not change how
+ * a link looks, and it is keyed to the narrow layout rather than to
+ * `@media (hover: none)` — the narrow layout is the one a finger is aiming at,
+ * and a width query is the same answer on every device and every emulator, which
+ * a capability query is not.
+ */
+@media (max-width: 767px) {
+  .sk-lp-footer__link {
+    display: inline-block;
+    padding-block: 5px;
+  }
+
+  .sk-lp-nav__brand,
+  .sk-lp-nav__link,
+  .sk-lp-nav__signin {
+    padding-block: 6px;
+  }
+
+  .sk-lp-link {
+    padding-block: 5px;
+  }
+
+  /* The area cards are full-bleed buttons. A pointer cursor tells a mouse user
+     they can click and tells a finger nothing, so on the narrow layout the
+     hairline is strengthened — the platform's own affordance, and invisible to
+     anyone who was going to click it anyway. */
+  .sk-lp-area {
+    border-color: var(--sk-lp-hair-strong);
+  }
 }
 
 .sk-lp-footer__base {
