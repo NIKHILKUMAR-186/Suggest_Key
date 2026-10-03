@@ -1,146 +1,245 @@
+import { AnimatePresence, motion } from 'motion/react';
+import { ArrowRight, LogIn, Menu, X } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Menu, X } from 'lucide-react';
+import { useAuth } from '@/src/context/AuthContext';
 import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
-import { Button } from '@/src/components/ui/Button';
-import { NAV_LINKS, ROUTE_SIGN_IN } from '@/src/components/landing/landingContent';
-
-const NAV_BUTTON =
-  'cursor-pointer rounded-lg px-3 py-2 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sk-brand-focus)]';
-const NAV_IDLE =
-  'text-[var(--sk-brand-header-muted)] hover:bg-[var(--sk-brand-header-hover)] hover:text-[var(--sk-brand-header-text)]';
-const GOLD =
-  'bg-[var(--sk-brand-gold)] font-semibold text-[var(--sk-brand-on-gold)] hover:bg-[var(--sk-brand-gold-deep)]';
-const TOGGLE =
-  'border-[var(--sk-brand-header-border)] bg-transparent text-[var(--sk-brand-header-muted)] hover:bg-[var(--sk-brand-header-hover)] hover:text-[var(--sk-brand-header-text)] focus-visible:ring-[var(--sk-brand-focus)] focus-visible:ring-offset-[var(--sk-brand-plum)]';
-
-export interface LandingNavProps {
-  /** Where "Find a Mentor" goes, given the current auth state. */
-  findMentorPath: string;
-  onNavigate: (href: string) => void;
-}
+import { LandingWordmark } from '@/src/components/landing/LandingWordmark';
+import { useCanAnimate } from '@/src/components/landing/Reveal';
 
 /**
- * FLOATING NAVIGATION.
+ * LANDING NAVIGATION.
  *
- * The auth behaviour is unchanged from the page this replaces: a signed-out
- * visitor is sent to sign up, because mentor discovery is a gated route and
- * that is the step which actually unlocks it. The destination arrives as a
- * prop rather than being re-derived here, so the nav can never disagree with
- * the hero's primary button about where "Find a Mentor" goes.
+ * The bar is part of the hero, not a layer above it: it floats on the plum
+ * field with white text and no chrome, and only grows its own background once
+ * the hero has scrolled under it. That transition is the only state change here
+ * — there is no shrink, no pill, no colour animation, because the bar is already
+ * the same colour as the hero and only needs to become opaque.
+ *
+ * On a plum field the theme switch and the sign-in link are both overridden to
+ * light-on-dark. `ThemeToggle` is a shared component used by every portal, so
+ * the override arrives through its documented `buttonClassName` prop rather than
+ * by editing the shared component and risking all of them.
+ *
+ * Every item in here faces someone who came to find a mentor. Supplying the
+ * network is a different intent and a different audience, so it lives in the
+ * footer: a bar that offered both would ask the visitor to choose a side before
+ * they had read a word.
  */
+
+export interface LandingNavProps {
+  findMentorPath: string;
+  onNavigate: (path: string) => void;
+}
+
+interface LandingNavLink {
+  label: string;
+  path: string;
+}
+
 export const LandingNav: React.FC<LandingNavProps> = ({ findMentorPath, onNavigate }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const { isAuthenticated, isLoading: isAuthLoading, activeRole } = useAuth();
+  const [isStuck, setIsStuck] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const burgerRef = useRef<HTMLButtonElement>(null);
+  const canAnimate = useCanAnimate();
 
-  const close = useCallback(() => setIsOpen(false), []);
-
-  // Escape closes the panel and a click outside it does too, so the mobile menu
-  // can never be left stranded open over the page.
+  /**
+   * A single passive scroll listener that only ever writes a boolean. It reads
+   * `window.scrollY`, so it cannot trigger layout, and it is removed on unmount.
+   *
+   * The threshold is deliberately past the fold of the hero copy rather than at
+   * 1px: while the bar is transparent it is legible because the plum hero field
+   * is behind it, so it should stay that way for as long as it honestly can, and
+   * only take on its own background once the copy it sits over has gone.
+   */
   useEffect(() => {
-    if (!isOpen) return;
+    const onScroll = () => setIsStuck(window.scrollY > 120);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
-    };
-    const handlePointerDown = (event: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(event.target as Node)) close();
-    };
+  const closeMenu = useCallback(() => setIsMenuOpen(false), []);
 
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('mousedown', handlePointerDown);
+  useEffect(() => {
+    if (!isMenuOpen) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsMenuOpen(false);
+        burgerRef.current?.focus();
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('mousedown', handlePointerDown);
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
     };
-  }, [isOpen, close]);
+  }, [isMenuOpen]);
 
-  const go = (href: string) => () => {
-    close();
-    onNavigate(href);
+  const go = useCallback(
+    (path: string) => {
+      closeMenu();
+      onNavigate(path);
+    },
+    [closeMenu, onNavigate]
+  );
+
+  const dashboardPath =
+    activeRole === 'mentor' ? '/mentor' : activeRole === 'admin' ? '/admin' : '/seeker';
+
+  const links: LandingNavLink[] = [
+    { label: 'Find a Mentor', path: findMentorPath },
+    { label: 'How it works', path: '/#how-it-works' },
+  ];
+
+  const accountLabel = isAuthenticated ? 'Dashboard' : 'Sign in';
+  const accountPath = isAuthenticated ? dashboardPath : '/auth/login';
+
+  /** An in-page anchor is a scroll, not a route change. */
+  const handleLinkClick = (event: React.MouseEvent, path: string) => {
+    if (!path.startsWith('/#')) return;
+    event.preventDefault();
+    closeMenu();
+    const id = path.slice(2);
+    document.getElementById(id)?.scrollIntoView({
+      behavior: canAnimate ? 'smooth' : 'auto',
+      block: 'start',
+    });
   };
 
+  const brand = <LandingWordmark size={15} />;
+
   return (
-    <header className="sticky top-0 z-50 px-4 pt-3 sm:px-6 sm:pt-4 lg:px-8">
-      <nav
-        aria-label="Main navigation"
-        className="mx-auto flex h-16 max-w-[1240px] items-center justify-between gap-3 rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)]/90 px-3 shadow-[0_18px_44px_-24px_rgba(10,4,28,0.85)] backdrop-blur-xl sm:px-5"
+    <>
+      <motion.header
+        className={`sk-lp-nav sk-lp-on-plum ${isStuck ? 'sk-lp-nav--stuck' : ''}`}
+        initial={canAnimate ? { opacity: 0, y: -12 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
       >
-        <button
-          type="button"
-          onClick={go('/')}
-          className="flex shrink-0 cursor-pointer items-center gap-2.5 rounded-lg p-1 text-left transition-transform active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sk-brand-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--sk-brand-plum)]"
-        >
-          <img src="/logo.png" alt="" className="h-9 w-9 rounded-xl object-cover" width={36} height={36} />
-          <img src="/name.png" alt="Suggest Key" className="h-5 w-auto" />
-        </button>
+        <nav aria-label="Primary" className="sk-lp-wrap">
+          <div className="sk-lp-nav__inner">
+            <a
+              href="/"
+              onClick={(event) => {
+                event.preventDefault();
+                go('/');
+              }}
+              className="sk-lp-nav__brand"
+              aria-label="Suggest Key — home"
+            >
+              {brand}
+            </a>
 
-        <ul className="hidden items-center gap-0.5 lg:flex">
-          {NAV_LINKS.map((link) => (
-            <li key={link.anchor}>
-              <button type="button" onClick={go(`#${link.anchor}`)} className={`${NAV_BUTTON} ${NAV_IDLE}`}>
-                {link.label}
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <div className="hidden items-center gap-2 lg:flex">
-          <ThemeToggle buttonClassName={TOGGLE} />
-          <Button variant="ghost" size="sm" onClick={go(ROUTE_SIGN_IN)} className={`min-h-[40px] text-[13px] ${NAV_IDLE}`}>
-            Sign in
-          </Button>
-          <Button size="sm" onClick={go(findMentorPath)} className={`min-h-[40px] gap-1.5 px-4 text-[13px] ${GOLD}`}>
-            Get Started
-            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </Button>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setIsOpen((open) => !open)}
-          className={`flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center lg:hidden ${NAV_IDLE}`}
-          aria-label={isOpen ? 'Close navigation menu' : 'Open navigation menu'}
-          aria-expanded={isOpen}
-          aria-controls="landing-mobile-menu"
-        >
-          {isOpen ? <X className="h-5 w-5" aria-hidden="true" /> : <Menu className="h-5 w-5" aria-hidden="true" />}
-        </button>
-      </nav>
-{isOpen && (
-        <div
-          id="landing-mobile-menu"
-          ref={panelRef}
-          className="mx-auto mt-2 max-w-[1240px] overflow-hidden rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)]/95 px-3 py-3 shadow-[0_24px_60px_-28px_rgba(10,4,28,0.9)] lg:hidden"
-        >
-          <ul className="space-y-0.5">
-            {NAV_LINKS.map((link) => (
-              <li key={link.anchor}>
-                <button
-                  type="button"
-                  onClick={go(`#${link.anchor}`)}
-                  className={`${NAV_BUTTON} ${NAV_IDLE} min-h-[44px] w-full text-left text-sm`}
+            <div className="sk-lp-nav__links">
+              {links.map((link) => (
+                <a
+                  key={link.label}
+                  href={link.path}
+                  className="sk-lp-nav__link"
+                  onClick={(event) => handleLinkClick(event, link.path)}
                 >
                   {link.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <div className="mt-2 space-y-2 border-t border-[var(--sk-brand-header-border)] pt-3">
-            <Button variant="ghost" size="md" onClick={go(ROUTE_SIGN_IN)} className={`w-full text-sm ${NAV_IDLE}`}>
-              Sign in
-            </Button>
-            <Button size="md" onClick={go(findMentorPath)} className={`w-full gap-1.5 text-sm ${GOLD}`}>
-              Find a Mentor
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-white/45">Theme</span>
-              <ThemeToggle variant="labeled" buttonClassName={TOGGLE} />
+                </a>
+              ))}
             </div>
+
+            <div className="sk-lp-nav__actions">
+              {!isAuthLoading && (
+                <a
+                  href={accountPath}
+                  className="sk-lp-nav__signin inline-flex items-center gap-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    go(accountPath);
+                  }}
+                >
+                  {!isAuthenticated && <LogIn className="h-3.5 w-3.5" aria-hidden="true" />}
+                  {accountLabel}
+                </a>
+              )}
+
+              <ThemeToggle
+                buttonClassName="h-10 w-10 rounded-full border-[color:var(--sk-lp-hair-on-plum)] bg-transparent text-[color:var(--sk-lp-on-plum-soft)] hover:bg-white/10 hover:text-white"
+              />
+
+              <button
+                type="button"
+                onClick={() => go(findMentorPath)}
+                className="sk-lp-btn sk-lp-btn--gold sk-lp-nav__cta"
+              >
+                Find a Mentor
+                <ArrowRight className="h-4 w-4 sk-lp-btn__arrow" aria-hidden="true" />
+              </button>
+            </div>
+
+            <button
+              ref={burgerRef}
+              type="button"
+              className="sk-lp-nav__burger lg:hidden"
+              aria-expanded={isMenuOpen}
+              aria-controls="landing-mobile-menu"
+              aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
+              onClick={() => setIsMenuOpen((open) => !open)}
+            >
+              {isMenuOpen ? (
+                <X className="h-5 w-5" aria-hidden="true" />
+              ) : (
+                <Menu className="h-5 w-5" aria-hidden="true" />
+              )}
+            </button>
           </div>
-        </div>
-      )}
-    </header>
+        </nav>
+      </motion.header>
+
+      <AnimatePresence>
+        {isMenuOpen && (
+          <motion.div
+            id="landing-mobile-menu"
+            className="sk-lp-sheet sk-lp-on-plum lg:hidden"
+            initial={canAnimate ? { opacity: 0, y: -12 } : false}
+            animate={{ opacity: 1, y: 0 }}
+            exit={canAnimate ? { opacity: 0, y: -12 } : { opacity: 0 }}
+            transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {links.map((link) => (
+              <a
+                key={link.label}
+                href={link.path}
+                className="sk-lp-sheet__link"
+                onClick={(event) => handleLinkClick(event, link.path)}
+              >
+                {link.label}
+                <ArrowRight className="h-4 w-4 text-[color:var(--sk-lp-gold)]" aria-hidden="true" />
+              </a>
+            ))}
+
+            <div className="sk-lp-sheet__foot">
+              {!isAuthLoading && (
+                <button
+                  type="button"
+                  onClick={() => go(accountPath)}
+                  className="sk-lp-btn sk-lp-btn--ghost w-full"
+                >
+                  {accountLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => go(findMentorPath)}
+                className="sk-lp-btn sk-lp-btn--gold w-full"
+              >
+                Find a Mentor
+                <ArrowRight className="h-4 w-4 sk-lp-btn__arrow" aria-hidden="true" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 };

@@ -207,7 +207,7 @@ const Hero: React.FC<{
               <p
                 className="mt-5 max-w-xl text-[15px] leading-relaxed text-[var(--sk-hero-text-muted)] sm:text-[16px] lg:text-[17px]"
               >
-                {branding.heroSubheadline}
+                {branding.heroSubheadline}f
               </p>
             )}
 
@@ -233,7 +233,7 @@ const Hero: React.FC<{
                   className="sk-link-light"
                   onClick={() => onNavigate(mentorDirectoryPath())}
                 >
-                  Browse every mentor
+                  Browse every mentor 
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </button>
               )}
@@ -247,8 +247,8 @@ const Hero: React.FC<{
           <motion.div
             initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.55, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
-            className="min-w-0"
+            // transition={{ duration: 0.55, delay: 0.1, ease: [0.23, 1, 0.31, 1] }}
+            className="min-w-0 "
           >
             <div
               className={cn(
@@ -262,8 +262,8 @@ const Hero: React.FC<{
                 <img
                   src={heroImageUrl}
                   alt={heroImageAlt}
-                  loading="lazy"
-                  decoding="async"
+                  // loading="lazy"
+                  // decoding="async"
                 />
               )}
             </div>

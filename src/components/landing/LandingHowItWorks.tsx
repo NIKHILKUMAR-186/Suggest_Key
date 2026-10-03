@@ -1,72 +1,62 @@
 import React from 'react';
+import { LandingSectionHead } from '@/src/components/landing/LandingSectionHead';
 import { Reveal } from '@/src/components/landing/Reveal';
-import { JOURNEY_STEPS } from '@/src/components/landing/landingContent';
+import { STEPS, STEPS_BODY, STEPS_EYEBROW, STEPS_TITLE } from '@/src/components/landing/landingContent';
 
 /**
- * HOW SUGGEST KEY WORKS.
+ * HOW IT WORKS.
  *
- * Editorial rather than diagrammatic: a numbered left rail reads as an
- * editorial sequence rather than a software pipeline, and the hairline that
- * joins the numbers is the only connective device — no boxes, no arrows, no
- * per-step illustrations competing with the copy.
+ * Four steps, rendered as a ruled editorial list rather than four cards. The
+ * reference system treats a numbered sequence as a ledger: a hairline above the
+ * group, a hairline between rows, an oversized numeral as the anchor and the
+ * sentence itself set small beside it. Cards would have implied these steps are
+ * separable, and padded everything into boxes for no gain.
+ *
+ * The numerals are decorative. They repeat an ordered list the DOM already
+ * conveys, so they are hidden from assistive technology rather than announced as
+ * "01" between two headings.
+ *
+ * Every step describes the shipped flow: choose an area, browse approved
+ * mentors, take an opened slot, hold the session. Nothing here promises a
+ * feature that does not exist.
  */
+
 export const LandingHowItWorks: React.FC = () => (
   <section
     id="how-it-works"
-    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
-    aria-labelledby="how-it-works-heading"
+    className="sk-lp-section"
+    style={{ background: 'var(--sk-lp-surface)' }}
+    aria-labelledby="how-it-works-title"
   >
-    <div className="mx-auto max-w-[1240px]">
-      <Reveal className="max-w-2xl">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--color-shell-accent)]">
-          How Suggest Key works
-        </p>
-        <h2
-          id="how-it-works-heading"
-          className="mt-4 text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[38px]"
-          style={{ fontFamily: 'var(--font-aeonikpro)' }}
-        >
-          A simple journey from a question to a conversation that helps you move forward.
-        </h2>
-      </Reveal>
+    <div className="sk-lp-wrap">
+      <LandingSectionHead
+        id="how-it-works"
+        eyebrow={STEPS_EYEBROW}
+        title={STEPS_TITLE}
+        body={STEPS_BODY}
+      />
 
-      <ol className="mt-10 grid grid-cols-1 gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-4">
-        {JOURNEY_STEPS.map((step, index) => {
-          const Icon = step.icon;
-          const isLast = index === JOURNEY_STEPS.length - 1;
+      <ol className="sk-lp-steps">
+        {STEPS.map((step, index) => (
+          <Reveal
+            as="li"
+            key={step.index}
+            delay={index * 0.06}
+            className="sk-lp-step"
+            y={22}
+          >
+            <div className="sk-lp-step__title-col">
+              <span className="sk-lp-numeral" aria-hidden="true">
+                {step.index}
+              </span>
+            </div>
 
-          return (
-            <Reveal
-              as="li"
-              key={step.num}
-              delay={index * 0.07}
-              className="relative flex gap-5 lg:flex-col lg:gap-6"
-            >
-              {/* Rail: the number, a hairline to the next step, and the icon. */}
-              <div className="flex shrink-0 flex-col items-center lg:flex-row lg:items-center lg:gap-4">
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] text-[13px] font-bold text-[var(--sk-brand-text)] shadow-[var(--sk-shadow-card)]">
-                  {step.num}
-                </span>
-                {!isLast ? (
-                  <span
-                    className="hidden w-full flex-1 bg-[var(--sk-brand-border)] lg:block lg:h-px lg:w-full"
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </div>
-
-              <div className="lg:flex-1">
-                <Icon className="h-5 w-5 text-[var(--color-shell-accent)]" aria-hidden="true" />
-                <h3 className="mt-3 text-lg font-semibold leading-snug tracking-tight text-[var(--sk-brand-text)] lg:mt-4">
-                  {step.title}
-                </h3>
-                <p className="mt-2 text-[13.5px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-                  {step.description}
-                </p>
-              </div>
-            </Reveal>
-          );
-        })}
+            <div className="sk-lp-step__text-col">
+              <h3 className="sk-lp-step__title">{step.title}</h3>
+              <p className="sk-lp-step__desc mt-3">{step.description}</p>
+            </div>
+          </Reveal>
+        ))}
       </ol>
     </div>
   </section>

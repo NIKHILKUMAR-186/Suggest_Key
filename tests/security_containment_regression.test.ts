@@ -135,6 +135,7 @@ test('any legacy anon EXECUTE grant is superseded by the global containment revo
 // cannot be satisfied by whatever file happens to sort last.
 const POST_PHASE29_SECURITY_DEFINER_MIGRATIONS = [
   '20261005000000_phase30_reschedule_requests.sql',
+  '20261017000000_phase43_email_verification_rate_limit.sql',
 ];
 
 for (const migration of POST_PHASE29_SECURITY_DEFINER_MIGRATIONS) {

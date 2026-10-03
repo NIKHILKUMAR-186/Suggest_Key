@@ -1,127 +1,126 @@
-import React, { useCallback } from 'react';
-import { useNavigation } from '@/src/context/NavigationContext';
+import React from 'react';
+import type { DirectoryMentor, Segment } from '@/src/types/database';
 import { useAuth } from '@/src/context/AuthContext';
+import { useNavigation } from '@/src/context/NavigationContext';
 import { useActiveSegments } from '@/src/hooks/useActiveSegments';
-import { mentorListPath } from '@/src/lib/mentorNav';
+import { useFeaturedMentors } from '@/src/hooks/useFeaturedMentors';
+import { mentorDirectoryPath, mentorProfilePath } from '@/src/lib/mentorNav';
 import { LandingNav } from '@/src/components/landing/LandingNav';
 import { LandingHero } from '@/src/components/landing/LandingHero';
 import { LandingSegmentStrip } from '@/src/components/landing/LandingSegmentStrip';
 import { LandingHowItWorks } from '@/src/components/landing/LandingHowItWorks';
 import { LandingFeaturedMentors } from '@/src/components/landing/LandingFeaturedMentors';
-import { LandingWhySection } from '@/src/components/landing/LandingWhySection';
-import { LandingMentorCta } from '@/src/components/landing/LandingMentorCta';
+import { LandingConnectionSection } from '@/src/components/landing/LandingConnectionSection';
+import { LandingTrustSection } from '@/src/components/landing/LandingTrustSection';
 import { LandingFinalCta } from '@/src/components/landing/LandingFinalCta';
 import { LandingFooter } from '@/src/components/landing/LandingFooter';
 
 /**
- * THE LANDING PAGE.
+ * THE PUBLIC LANDING PAGE.
  *
- * Deliberately a composition and nothing else: every section owns its own
- * markup, its own data and its own states, so this file holds only the two
- * decisions that genuinely belong to the page as a whole.
+ * The composition is one argument, read top to bottom:
  *
- *   1. `findMentorPath` — where "Find a Mentor" goes.
- *   2. `handleNavigate` — the one href dispatcher.
+ *   1  hero          what this is, in one sentence and one button
+ *   2  areas         what it covers, from the live catalogue
+ *   3  how it works  the four steps, as a ruled ledger
+ *   4  the mentors   real, approved, current profiles
+ *   5  conversation  why one to one, in three lines of type
+ *   6  verification  the actual approval mechanism
+ *   7  final call    the one action, at full volume
  *
- * DATA. Nothing on this page carries a hardcoded mentor, gig, price, slot,
- * rating, review, testimonial or segment. Areas come from `useActiveSegments`,
- * mentors and availability from `useFeaturedMentors`, and both go through the
- * same shipped queries every other surface uses. No rule about who is eligible
- * to appear is re-implemented here: the backend's answer is the answer.
- *
- * AUTH. Unchanged from the page this replaces. Mentor discovery is a gated
- * seeker route, so a signed-out visitor is sent to sign up — the step that
- * actually unlocks discovery — rather than into an "Authentication Required"
- * screen for a page they never had access to.
- *
- * ROUTING. The app's hand-written router is preserved. `navigate` from
- * `NavigationContext` is the only way this page changes route; anchors are
- * scrolled in place. No router library is involved and no route is invented:
- * every destination resolves to a route the router implements.
+ * Data and behaviour are unchanged from the page this replaces. The segment
+ * catalogue is read once, here, and shared by the hero's photography and the
+ * areas section; mentor profiles come from the same public directory hook and
+ * the same profile route they always did. Nothing is cached, faked or hardcoded,
+ * and no service-role client is involved.
  */
+
 export const LandingPage: React.FC = () => {
-  const { navigate } = useNavigation();
   const { isAuthenticated } = useAuth();
-  const { segments, isLoading: isLoadingSegments, error: segmentsError, reload: reloadSegments } = useActiveSegments();
+  const { navigate } = useNavigation();
 
-  const findMentorPath = isAuthenticated ? mentorListPath() : '/auth/signup';
+  const {
+    segments,
+    isLoading: isLoadingSegments,
+    error: segmentError,
+    reload: reloadSegments,
+  } = useActiveSegments();
 
-  const handleNavigate = useCallback(
-    (href: string) => {
-      if (href === '/') {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        return;
-      }
+  const {
+    mentors: featuredMentors,
+    isLoading: isLoadingMentors,
+    hasError: hasMentorError,
+    reload: reloadMentors,
+  } = useFeaturedMentors();
 
-      if (href.startsWith('#')) {
-        const target = document.getElementById(href.slice(1));
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          // Move focus with the scroll, so a keyboard or screen-reader user
-          // lands on the section they chose instead of staying on the nav link.
-          target.setAttribute('tabindex', '-1');
-          target.focus({ preventScroll: true });
-          target.removeAttribute('tabindex');
-        }
-        return;
-      }
+  /**
+   * Discovery is the destination for every "find a mentor" action. A signed-out
+   * visitor cannot see mentors, so they are taken to signup instead of to a
+   * page that would redirect them anyway.
+   */
+  const findMentorPath = isAuthenticated ? '/seeker' : '/auth/signup';
 
-      navigate(href);
-    },
-    [navigate]
-  );
+  const handleNavigate = (path: string) => {
+    navigate(path);
+  };
 
-  const handleSegmentOpen = useCallback(
-    (segment: { slug: string }) => {
-      // Signed out, a segment link still has to land somewhere real, so it
-      // resolves to the same entry point as "Find a Mentor". Signed in, it is
-      // the segment's own discovery route with the slug carried through.
-      navigate(isAuthenticated ? mentorListPath({ segmentSlug: segment.slug }) : findMentorPath);
-    },
-    [navigate, isAuthenticated, findMentorPath]
-  );
+  const handleOpenArea = (segment: Segment) => {
+    navigate(`/seeker?segment=${encodeURIComponent(segment.slug)}`);
+  };
+
+  /**
+   * Signed in, a mentor card opens that mentor's public profile. Signed out,
+   * there is no profile to show, so the visitor goes to signup — the same
+   * destination as every other discovery action.
+   */
+  const handleOpenMentor = (mentor: DirectoryMentor) => {
+    navigate(
+      isAuthenticated
+        ? mentorProfilePath({ mentorId: mentor.id, origin: 'mentor-list' })
+        : findMentorPath
+    );
+  };
 
   return (
-    <div className="min-h-screen bg-[var(--sk-brand-canvas)] text-[var(--sk-brand-text)] antialiased">
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:rounded-lg focus:bg-[var(--sk-brand-surface)] focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-[var(--sk-brand-text)] focus:shadow-lg"
-      >
+    <div className="sk-lp-shell">
+      <a className="sk-lp-skip" href="#main">
         Skip to content
       </a>
 
       <LandingNav findMentorPath={findMentorPath} onNavigate={handleNavigate} />
 
       <main id="main">
-        <LandingHero
-          findMentorPath={findMentorPath}
-          onNavigate={handleNavigate}
-          segments={segments}
-          isLoadingSegments={isLoadingSegments}
-          onSegmentOpen={handleSegmentOpen}
-        />
+        <LandingHero onFindMentor={() => handleNavigate(findMentorPath)} />
 
         <LandingSegmentStrip
           segments={segments}
-          isLoading={isLoadingSegments}
-          hasError={Boolean(segmentsError)}
-          onOpen={handleSegmentOpen}
-          onFindMentor={() => handleNavigate(findMentorPath)}
+          isLoadingSegments={isLoadingSegments}
+          hasError={Boolean(segmentError)}
+          onOpenArea={handleOpenArea}
           onRetry={reloadSegments}
         />
 
         <LandingHowItWorks />
 
-        <LandingFeaturedMentors findMentorPath={findMentorPath} onNavigate={handleNavigate} />
+        <LandingFeaturedMentors
+          mentors={featuredMentors.map((entry) => entry.mentor)}
+          isLoading={isLoadingMentors}
+          hasError={hasMentorError}
+          onOpenMentor={handleOpenMentor}
+          onBrowseAll={() => handleNavigate(isAuthenticated ? mentorDirectoryPath() : '/auth/signup')}
+          onRetry={reloadMentors}
+        />
 
-        <LandingWhySection />
+        <LandingConnectionSection onFindMentor={() => handleNavigate(findMentorPath)} />
 
-        <LandingMentorCta onNavigate={handleNavigate} />
+        <LandingTrustSection />
 
-        <LandingFinalCta findMentorPath={findMentorPath} onNavigate={handleNavigate} />
+        <LandingFinalCta onFindMentor={() => handleNavigate(findMentorPath)} />
       </main>
 
       <LandingFooter onNavigate={handleNavigate} />
     </div>
   );
 };
+
+export default LandingPage;

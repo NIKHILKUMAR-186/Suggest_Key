@@ -6,6 +6,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { useMentorVerificationSync } from '@/src/hooks/useMentorVerificationSync';
 import {
   MENTOR_ACCOUNT_BADGE_LABELS,
   deriveMentorAccountState,
@@ -56,6 +57,9 @@ interface ApiMentor {
   isSuspended: boolean;
   isDeactivated: boolean;
   isEligible: boolean;
+  /** Authoritative, computed in the database. Not the same as `isEligible`. */
+  isDiscoverable: boolean;
+  isPubliclyVisible: boolean;
   approvalStatus: string | null;
   accountStatus: string;
   suspendedUntil: string | null;
@@ -84,9 +88,35 @@ export const AdminMentorsPage: React.FC = () => {
     }
   }, []);
 
+  /**
+   * Silent re-read, used by the realtime subscription.
+   *
+   * It must NOT raise the loading flag: a realtime event fires on every state
+   * change (including another admin's), and replacing a populated table with a
+   * spinner on each one makes the page flicker and hides the row the admin is
+   * looking at. Errors are also not surfaced - a background re-read that failed
+   * should not replace a correct list with an error screen; the next focus or
+   * event retries.
+   */
+  const refreshMentors = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/admin/mentors');
+      const data = await res.json();
+      if (!data.success) return;
+      setMentors(data.mentors || []);
+    } catch {
+      // Keep the last known-good list. Never guess a status from an event.
+    }
+  }, []);
+
   useEffect(() => {
     fetchMentors();
   }, [fetchMentors]);
+
+  // Authoritative re-read whenever a mentor's approval, active state, account
+  // status, segments or application changes - including from another admin's
+  // session. Scoped to this page's tables; the payload is never used as state.
+  useMentorVerificationSync({ scope: 'mentors-list', onInvalidate: refreshMentors });
 
   // Derive the badge from the stored columns, exactly as the detail page does.
   const rows = useMemo(
@@ -218,7 +248,11 @@ export const AdminMentorsPage: React.FC = () => {
                         {MENTOR_ACCOUNT_BADGE_LABELS[badge]}
                       </Badge>
                       <Badge variant="outline" className="text-[10px]">
-                        {state.isEligible ? 'Discoverable' : 'Not discoverable'}
+                        {/* Authoritative from the database. This used to read
+                            `state.isEligible`, which is mentor-level eligibility and
+                            reports an approved, active mentor with no gig as
+                            "Discoverable". */}
+                        {mentor.isDiscoverable ? 'Discoverable' : 'Not discoverable'}
                       </Badge>
                     </div>
                     {state.isSuspended && mentor.suspensionReason && (

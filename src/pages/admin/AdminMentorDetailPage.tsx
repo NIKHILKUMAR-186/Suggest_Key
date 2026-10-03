@@ -47,6 +47,8 @@ import {
   type MentorStatusAction,
   type MentorCreationSource,
 } from '@/src/lib/adminMentorControl';
+import { useMentorVerificationSync } from '@/src/hooks/useMentorVerificationSync';
+import type { MentorDiscoveryReadiness } from '@/src/types/database';
 
 
 
@@ -161,6 +163,14 @@ export interface AdminMentorDetail {
     deactivatedAt: string | null;
     internalNote: string | null;
   };
+  /**
+   * Computed by `mentor_discovery_readiness()` in the database.
+   *
+   * The six checks below used to be re-derived here from the payload, which was
+   * a second copy of a business rule the database already owned. `null` means
+   * the RPC was unavailable, and the page renders "unknown" rather than guessing.
+   */
+  discovery: MentorDiscoveryReadiness | null;
 }
 
 /** Shape returned by GET /api/admin/mentors/:id/bookings */
@@ -536,14 +546,22 @@ export const AdminMentorDetailPage: React.FC = () => {
   const [exceptionRows, setExceptionRows] = useState<Array<{ exceptionDate: string; isAvailable: boolean; startTime: string; endTime: string; reason: string }>>([]);
 
 
-  const load = useCallback(async () => {
+  // Reads the mentor from the server — the single source of truth for everything
+  // on this page, including discovery readiness.
+  //
+  // `background: true` is for revalidation (a realtime event, the tab regaining
+  // focus). It updates the page in place instead of blanking it to a skeleton:
+  // blanking would hide the very transition the admin needs to watch for.
+  const load = useCallback(async (options?: { background?: boolean }) => {
     if (!mentorId) {
       setError('Invalid mentor id.');
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setError(null);
+    if (!options?.background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await apiFetch(`/api/admin/mentors/${encodeURIComponent(mentorId)}`);
       const data = await res.json();
@@ -552,9 +570,16 @@ export const AdminMentorDetailPage: React.FC = () => {
       }
       setMentor(data.mentor);
     } catch (err) {
+      // A failed background revalidation keeps the mentor already on screen.
+      // Replacing a correct page with an error because a request timed out is
+      // worse than briefly stale data, and the next event retries.
+      if (options?.background) {
+        console.error('Background mentor revalidation failed:', err);
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Unable to load mentor details.');
     } finally {
-      setLoading(false);
+      if (!options?.background) setLoading(false);
     }
   }, [mentorId]);
 
@@ -562,6 +587,25 @@ export const AdminMentorDetailPage: React.FC = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+
+  /**
+   * Authoritative re-read when this mentor's profile, account, segments or
+   * application changes.
+   *
+   * This is the Control Center half of the incident: an approval commits
+   * `mentor_applications` and `mentor_profiles` in one transaction, and without
+   * this the page kept showing `draft` / "Pending Verification" for a mentor the
+   * verification queue already listed as approved.
+   */
+  useMentorVerificationSync({
+    scope: 'mentor-detail',
+    mentorId: mentorId || null,
+    onInvalidate: () => {
+      if (document.visibilityState === 'hidden') return;
+      void load({ background: true });
+    },
+  });
 
 
   // Derive account state from the LOADED database row (prompt section 13).
@@ -581,6 +625,17 @@ export const AdminMentorDetailPage: React.FC = () => {
 
   const availableActions = accountState ? availableMentorStatusActions(accountState) : [];
   const badge = accountState ? mentorAccountBadge(accountState) : 'active';
+
+  /**
+   * The database's own readiness calculation, passed straight through.
+   *
+   * `accountState` above stays a local derivation because it gates which Admin
+   * BUTTONS to offer, and that is a view concern. Discovery is different: it is
+   * the question "will a seeker find this mentor", and answering it from a second
+   * client-side copy of the rule is what let the Control Center and seeker
+   * discovery disagree.
+   */
+  const discovery = mentor?.discovery ?? null;
 
 
   const runStatusAction = async (action: MentorStatusAction) => {
@@ -1003,7 +1058,15 @@ export const AdminMentorDetailPage: React.FC = () => {
                 <Badge variant={accountState.isEligible ? 'success' : 'destructive'} className="text-[10px]">
                   {accountState.isEligible ? '● Active' : MENTOR_ACCOUNT_BADGE_LABELS[badge]}
                 </Badge>
-                {!accountState.isEligible && (
+                {/*
+                  Discoverability is a SEPARATE question from `isEligible`, and this
+                  badge used to answer it with `!isEligible`. An approved, active
+                  mentor with no gig is eligible but not discoverable, and labelling
+                  that row "Not discoverable" from the wrong column is exactly how the
+                  two admin pages ended up telling an admin opposite stories. The
+                  answer now comes from `mentor_discovery_readiness()`.
+                */}
+                {discovery && !discovery.isDiscoverable && (
                   <Badge variant="outline" className="text-[10px]">Not discoverable</Badge>
                 )}
               </div>
@@ -1154,15 +1217,50 @@ export const AdminMentorDetailPage: React.FC = () => {
             </dl>
           </Section>
           <Section title="Discovery readiness">
-            <ul className="space-y-1.5 text-xs">
-              <ReadinessRow ok={accountState.isApproved} label="Approved" />
-              <ReadinessRow ok={mentor.account.isActive} label="Active account" />
-              <ReadinessRow ok={!accountState.isSuspended && !accountState.isDeactivated} label="Not suspended or deactivated" />
-              <ReadinessRow ok={mentor.segments.length > 0} label="Has an eligible segment" />
-              <ReadinessRow ok={mentor.gigs.some((g) => g.isActive)} label="Has an active gig" />
-              <ReadinessRow ok={mentor.availability.length > 0} label="Has recurring availability" />
-            </ul>
-            <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+            {/*
+              Rendered verbatim from `mentor_discovery_readiness()`. Nothing here
+              is recomputed: the eligibility segment test in particular needs
+              `segments.is_active`, which this payload carries only for segments
+              the mentor is actually assigned to, so a client-side version of this
+              rule could silently disagree with seeker discovery.
+            */}
+            {discovery ? (
+              <>
+                <ul className="space-y-1.5 text-xs">
+                  <ReadinessRow ok={discovery.checks.approved} label="Approved" />
+                  <ReadinessRow ok={discovery.checks.active} label="Active account" />
+                  <ReadinessRow ok={discovery.checks.notSuspended} label="Not suspended or deactivated" />
+                  <ReadinessRow ok={discovery.checks.hasEligibleSegment} label="Has an eligible segment" />
+                  <ReadinessRow ok={discovery.checks.hasActiveGig} label="Has an active gig" />
+                  <ReadinessRow ok={discovery.checks.hasRecurringAvailability} label="Has recurring availability" />
+                </ul>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge variant={discovery.isPubliclyVisible ? 'success' : 'secondary'} className="text-[10px]">
+                    {discovery.isPubliclyVisible ? 'Publicly visible' : 'Not publicly visible'}
+                  </Badge>
+                  <Badge variant={discovery.isDiscoverable ? 'success' : 'secondary'} className="text-[10px]">
+                    {discovery.isDiscoverable ? 'Discoverable' : 'Not discoverable'}
+                  </Badge>
+                  {/*
+                    A disagreement between the authoritative column and the legacy
+                    boolean makes the mentor invisible to discovery while both admin
+                    pages still read as "approved". Surfacing it is the whole point of
+                    returning the raw columns alongside the computed answer.
+                  */}
+                  {!discovery.approvalStatusConsistent && (
+                    <Badge variant="destructive" className="text-[10px]">
+                      Approval columns disagree
+                    </Badge>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+                Discovery readiness is unavailable. It is computed in the database and was not
+                returned by the API, so it is not estimated here.
+              </p>
+            )}
+            <p className="mt-2 text-[11px] text-[var(--color-shell-text-subtle)]">
               A mentor only appears in seeker discovery when every row above is satisfied AND a valid
               bookable slot exists on the selected date.
             </p>

@@ -377,9 +377,9 @@ export const AdminSegmentExperienceEditor: React.FC<AdminSegmentExperienceEditor
             {draft.branding?.heroImageUrl ? (
               <div className="space-y-3">
                 <img
-                  src={draft.branding.heroImageUrl}
+                  // src={draft.branding.heroImageUrl}
                   alt={draft.branding?.heroImageAlt || ''}
-                  className="h-40 w-full rounded-xl object-cover ring-1 ring-zinc-200"
+                  className="h-40 w-full rounded-3xl object-cover ring-1 ring-zinc-900"
                 />
                 <Input
                   label="Alt text"

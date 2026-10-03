@@ -67,6 +67,8 @@ const EXPECTED_TABLES: Record<string, string | null> = {
   bookings: 'seeker_id+mentor_id',
   coupons: null, // seekers learn the outcome from the booking snapshot instead
   coupon_usage: null, // admin-only; counts feed the coupon limits in SQL
+  email_verification_rate_limit_config: null, // admin-only tuning row; server reaches it via SECURITY DEFINER helpers
+  email_verification_rate_limits: null, // admin-only ledger, keyed on an opaque HMAC
   gig_topics: null, // parent-derived via gigs
   gigs: 'mentor_id',
   login_failure_config: null,

@@ -602,6 +602,30 @@ export interface ValidationFailure {
 }
 
 /**
+ * Zod messages that carry no information for the person who submitted the form.
+ *
+ * `invalid_union` collapses every type mismatch of a `z.union` into one issue,
+ * and its default text is exactly "Invalid input". Surfaced verbatim it told an
+ * admin nothing about which field was wrong, so it is rewritten below.
+ */
+const UNINFORMATIVE_ZOD_MESSAGES = new Set(['Invalid input']);
+
+/**
+ * One issue turned into something displayable.
+ *
+ * Only the bare defaults are rewritten: a specific branch message (for example
+ * "Admin note must be 500 characters or fewer.") is always preferred and is
+ * never replaced. A union-level `error` override would have hidden those, which
+ * is why the fix lives here rather than in the schemas.
+ */
+function readableIssueMessage(issue: z.core.$ZodIssue): string {
+  if (!UNINFORMATIVE_ZOD_MESSAGES.has(issue.message)) return issue.message;
+  const key = issue.path.length > 0 ? issue.path.join('.') : null;
+  if (key) return `${key} was not a valid value for this field.`;
+  return 'The request was not valid.';
+}
+
+/**
  * Turn Zod issues into the app's error envelope.
  *
  * Issues that carry no path (a whole-object `.refine`, or a strict-object
@@ -614,13 +638,13 @@ export function formatValidationFailure(error: z.ZodError): ValidationFailure {
 
   for (const issue of error.issues) {
     const key = issue.path.length > 0 ? issue.path.join('.') : '_';
-    if (!(key in fields)) fields[key] = issue.message;
+    if (!(key in fields)) fields[key] = readableIssueMessage(issue);
   }
 
   const first = error.issues[0];
   return {
     code: 'VALIDATION_ERROR',
-    message: first ? first.message : 'The request was not valid.',
+    message: first ? readableIssueMessage(first) : 'The request was not valid.',
     fields,
   };
 }
@@ -786,6 +810,40 @@ export const apiSchemas = {
    */
   loginSuccessReport: z.strictObject({
     email: z.preprocess(blankToUndefined, emailField.optional()),
+  }),
+
+  /**
+   * Body of `POST /api/auth/email-verification/attempt` - the pre-flight gate
+   * in front of the verification email send.
+   *
+   * The whole body is the recipient address, and nothing else. There is
+   * deliberately no `remaining`, `attempts` or `retryAt` field: the client
+   * answers with those, and a strict object means a caller trying to assert one
+   * gets a 400 rather than having it silently dropped. `emailField` trims,
+   * lower-cases and format-checks, so the identifier key is computed from an
+   * already-normalised value and `A@B.com` cannot dodge its own budget with
+   * casing.
+   */
+  emailVerificationAttempt: z.strictObject({
+    email: emailField,
+  }),
+
+  /**
+   * Body of `POST /api/auth/email-verification/outcome` - what actually
+   * happened when the client asked Supabase Auth to send.
+   *
+   * `outcome` is the only signal that matters. `rate_limited` is the one that
+   * carries information the client cannot be trusted to report honestly about
+   * itself (a hostile client could simply never report it), so it only ever
+   * *lengthens* the block: it records that the provider refused and the ledger
+   * stores an absolute deadline. Nothing in this route can extend a budget or
+   * clear one.
+   */
+  emailVerificationOutcome: z.strictObject({
+    email: emailField,
+    outcome: z.enum(['sent', 'rate_limited', 'failed'], {
+      message: 'Unknown verification email outcome.',
+    }),
   }),
 
   // -- seeker booking -------------------------------------------------------
@@ -1278,9 +1336,28 @@ export const apiSchemas = {
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: 'Rejection reason', multiline: true }),
   }),
 
+  /**
+   * Body of `PATCH /api/admin/mentor-documents/:id/review`.
+   *
+   * `status` is the DOCUMENT vocabulary, not the application one: the database
+   * check `mentor_verification_documents_status_check` allows only
+   * `pending | approved | rejected`, so an admin review may only ever write the
+   * two decided values. `pending_review` belongs to `mentor_applications` and
+   * is rejected here.
+   *
+   * `adminNote` is `nullableText(...).optional()` and deliberately NOT
+   * `optionalText(...)`. The column is nullable, so "no note" legitimately
+   * arrives as an explicit `null` (the admin screen sends `adminNote: null`
+   * when the note is empty) as well as as an absent key. `optionalText`
+   * accepted only `string | '' | undefined`, so the union failed on `null`
+   * and `validateBody` answered 400 with Zod's bare `invalid_union` message —
+   * the literal "Invalid input" an admin saw on every plain approval. The
+   * bounds (MAX_REASON_LENGTH), the HTML stripping and the strict key set are
+   * all unchanged; only `null` joins the accepted values.
+   */
   mentorDocumentReview: z.strictObject({
     status: z.enum(['approved', 'rejected'], { message: 'Status must be "approved" or "rejected".' }),
-    adminNote: optionalText({ max: MAX_REASON_LENGTH, label: 'Admin note', multiline: true }),
+    adminNote: nullableText({ max: MAX_REASON_LENGTH, label: 'Admin note', multiline: true }).optional(),
   }),
 
   logRetention: z.strictObject({

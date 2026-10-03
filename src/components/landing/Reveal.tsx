@@ -1,89 +1,237 @@
+import { motion, useReducedMotion, type Variants } from 'motion/react';
 import React from 'react';
-import { motion, useReducedMotion } from 'motion/react';
-import { cn } from '@/src/lib/utils';
 
 /**
- * SCROLL REVEAL — the single place entrance animation is expressed.
+ * LANDING MOTION PRIMITIVES.
  *
- * Every section on the landing page reveals through this component so the
- * motion system stays one small, consistent thing rather than a variant of
- * itself in a dozen files:
+ * The page has three levels of movement and no more: the hero announces itself,
+ * sections arrive once, and hover is a whisper. Anything that would keep moving
+ * while nobody is touching it is decoration, not motion, and does not belong
+ * here.
  *
- *   - one short rise, one short fade, once per element;
- *   - `prefers-reduced-motion` is respected at the source, so a reduced-motion
- *     visitor gets the final state immediately with no transform and no delay,
- *     rather than a page of content that has to animate to become visible;
- *   - it renders a plain element and never intercepts clicks, so wrapping an
- *     interactive card cannot swallow its own activation.
+ * `canAnimate` is the single gate for all of it. When a visitor prefers reduced
+ * motion, every primitive resolves to its finished state immediately — no
+ * transform, no opacity ramp, no stagger — so the page is simply a still page
+ * with the same information in the same order. Nothing is hidden behind an
+ * animation that never plays.
  *
- * `y` is deliberately small: transform-based reveal causes layout-independent
- * repaint only, and a large offset reads as "sliding" rather than "arriving".
+ * Only `transform` and `opacity` are animated. Blur appears once, on the hero
+ * photograph, because it is a one-shot load and not a scroll-linked effect.
  */
-export interface RevealProps {
-  children: React.ReactNode;
-  className?: string;
-  /** Seconds of stagger. Kept under 0.3s so nothing feels slow. */
-  delay?: number;
-  /** Fraction of the element that must be visible before it plays. */
-  amount?: number;
-  /** Element to render. Defaults to a div. */
-  as?: 'div' | 'section' | 'li' | 'article' | 'header' | 'footer';
-  /** Inline CSS custom properties, e.g. a segment's runtime theme. */
-  style?: React.CSSProperties;
+
+/** Editorial easing: a long, quiet settle. No spring, no overshoot. */
+const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+
+/** False while the preference is unknown, so a first paint never animates. */
+export function useCanAnimate(): boolean {
+  const prefersReducedMotion = useReducedMotion();
+  return prefersReducedMotion !== true;
 }
 
-export const Reveal: React.FC<RevealProps> = ({
+interface RevealProps {
+  children: React.ReactNode;
+  /** Seconds. */
+  delay?: number;
+  /** Distance in pixels the block settles up from. */
+  y?: number;
+  className?: string;
+  as?: 'div' | 'section' | 'li' | 'header' | 'footer' | 'article';
+}
+
+export function Reveal({
+  children,
+  delay = 0,
+  y = 18,
+  className,
+  as = 'div',
+}: RevealProps) {
+  const canAnimate = useCanAnimate();
+  const Tag = motion[as];
+
+  if (!canAnimate) {
+    const Plain = as;
+    return <Plain className={className}>{children}</Plain>;
+  }
+
+  return (
+    <Tag
+      className={className}
+      initial={{ opacity: 0, y }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.2 }}
+      transition={{ duration: 0.72, delay, ease: EASE }}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+/**
+ * A group whose children arrive one after another.
+ *
+ * The stagger lives on the parent so the children carry no timing of their own,
+ * which is what keeps the whole group in step regardless of how many items the
+ * database returned.
+ */
+export function Stagger({
+  children,
+  className,
+  step = 0.08,
+  delay = 0,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  /** Seconds between children. */
+  step?: number;
+  /** Seconds before the first child. */
+  delay?: number;
+}) {
+  const canAnimate = useCanAnimate();
+
+  if (!canAnimate) return <div className={className}>{children}</div>;
+
+  return (
+    <motion.div
+      className={className}
+      initial="hidden"
+      whileInView="shown"
+      viewport={{ once: true, amount: 0.15 }}
+      variants={{
+        hidden: {},
+        shown: { transition: { staggerChildren: step, delayChildren: delay } },
+      }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+export function StaggerItem({
+  children,
+  className,
+  y = 14,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  y?: number;
+}) {
+  const canAnimate = useCanAnimate();
+
+  if (!canAnimate) return <div className={className}>{children}</div>;
+
+  return (
+    <motion.div
+      className={className}
+      variants={{
+        hidden: { opacity: 0, y },
+        shown: { opacity: 1, y: 0, transition: { duration: 0.62, ease: EASE } },
+      }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/**
+ * A headline that reveals one line at a time.
+ *
+ * Each line is its own clipping box, so the text rises out of nothing rather
+ * than sliding as one solid block. The caller supplies the lines: splitting on
+ * whitespace would break on the manual line breaks an editorial headline wants,
+ * and would produce an unpredictable number of animated nodes on a phone.
+ */
+export function LineReveal({
+  lines,
+  className,
+  lineClassName,
+  delay = 0,
+  /** Seconds between lines. */
+  step = 0.09,
+}: {
+  lines: readonly string[];
+  className?: string;
+  lineClassName?: string;
+  delay?: number;
+  step?: number;
+}) {
+  const canAnimate = useCanAnimate();
+
+  if (!canAnimate) {
+    return (
+      <span className={className}>
+        {lines.map((line) => (
+          <span key={line} className={`block ${lineClassName ?? ''}`}>
+            {line}
+          </span>
+        ))}
+      </span>
+    );
+  }
+
+  return (
+    <span className={className}>
+      {lines.map((line, index) => (
+        <span
+          key={line}
+          className="block overflow-hidden"
+          style={{ paddingBottom: '0.08em', marginBottom: '-0.08em' }}
+        >
+          <motion.span
+            className={`block ${lineClassName ?? ''}`}
+            initial={{ y: '108%', opacity: 0 }}
+            animate={{ y: '0%', opacity: 1 }}
+            transition={{
+              duration: 0.86,
+              delay: delay + index * step,
+              ease: EASE,
+            }}
+          >
+            {line}
+          </motion.span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * A photographic reveal: slightly soft and slightly scaled, sharpening into
+ * place. Deliberately used once. A blur ramp on a scrolling element reads as
+ * jank, so it belongs to a load, not a scroll.
+ */
+export function MediaReveal({
   children,
   className,
   delay = 0,
-  amount = 0.2,
-  as = 'div',
-  style,
-}) => {
-  const prefersReducedMotion = useReducedMotion();
-  const canAnimate = prefersReducedMotion === false;
-
-  const MotionTag = motion[as];
-
-  return (
-    <MotionTag
-      className={cn(className)}
-      style={style}
-      initial={canAnimate ? { opacity: 0, y: 16 } : false}
-      whileInView={canAnimate ? { opacity: 1, y: 0 } : undefined}
-      viewport={{ once: true, amount }}
-      transition={{ duration: 0.45, delay, ease: [0.23, 1, 0.31, 1] }}
-    >
-      {children}
-    </MotionTag>
-  );
-};
-
-/**
- * A one-shot entrance for above-the-fold content, which must not wait for a
- * scroll position the visitor has not reached yet.
- */
-export interface EnterProps extends Omit<RevealProps, 'amount'> {
+  duration = 1.4,
+}: {
   children: React.ReactNode;
   className?: string;
   delay?: number;
-  as?: RevealProps['as'];
-}
+  duration?: number;
+}) {
+  const canAnimate = useCanAnimate();
 
-export const Enter: React.FC<EnterProps> = ({ children, className, delay = 0, as = 'div' }) => {
-  const prefersReducedMotion = useReducedMotion();
-  const canAnimate = prefersReducedMotion === false;
+  if (!canAnimate) return <div className={className}>{children}</div>;
 
-  const MotionTag = motion[as];
+  const variants: Variants = {
+    hidden: { opacity: 0, scale: 1.05, filter: 'blur(16px)' },
+    shown: {
+      opacity: 1,
+      scale: 1,
+      filter: 'blur(0px)',
+      transition: { duration, delay, ease: EASE },
+    },
+  };
 
   return (
-    <MotionTag
-      className={cn(className)}
-      initial={canAnimate ? { opacity: 0, y: 14 } : false}
-      animate={canAnimate ? { opacity: 1, y: 0 } : undefined}
-      transition={{ duration: 0.5, delay, ease: [0.23, 1, 0.31, 1] }}
+    <motion.div
+      className={className}
+      variants={variants}
+      initial="hidden"
+      animate="shown"
     >
       {children}
-    </MotionTag>
+    </motion.div>
   );
-};
+}

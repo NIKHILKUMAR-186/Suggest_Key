@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ArrowLeft,
   AlertCircle,
@@ -19,6 +19,11 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
 import { mailtoHref } from '@/src/lib/contact';
 import { ShortId } from '@/src/components/shared/ShortId';
+import { useMentorVerificationSync } from '@/src/hooks/useMentorVerificationSync';
+import {
+  canDispatchApproval,
+  reconcileApproveConflict,
+} from '@/src/lib/mentorApplicationApproval';
 import type {
   AdminMentorApplicationDetailResponse,
   MentorApplicationDetailRow,
@@ -56,56 +61,133 @@ const REQUIRED_DOC_TYPES = ['identity_proof', 'qualification_proof'];
 export const AdminMentorVerificationDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
   const toast = useToast();
-  const [applicationId] = useState<string>(() => {
-    // Extract ID from path like /admin/mentor-verification/<id>
+  // Derived, not frozen in state: the Router renders this same component for
+  // every `/admin/mentor-verification/<id>` path, so React reuses the instance
+  // when the admin moves from one application straight to another. Capturing
+  // the id once left the page showing (and approving) the previous application.
+  const applicationId = useMemo(() => {
     const pathParts = currentPath.split('/');
     return pathParts[pathParts.length - 1] || '';
-  });
+  }, [currentPath]);
   const [application, setApplication] = useState<MentorApplication | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [docReviewLoading, setDocReviewLoading] = useState<string | null>(null);
+  // ponytail: synchronous re-entry guard for the approve action. The button's
+  // `disabled` prop is driven by async setState, so a fast double-click (or a
+  // stale render under multi-tab/another-admin concurrency) can dispatch a
+  // second POST before the DOM is actually inert. A ref is checked
+  // synchronously and blocks the second invocation instantly.
+  const approveInFlightRef = useRef(false);
+  const rejectInFlightRef = useRef(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [rejectionReasonError, setRejectionReasonError] = useState<string | null>(null);
 
-  const fetchApplication = useCallback(async () => {
-    if (!applicationId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/admin/mentor-applications/${applicationId}`);
-      const data = (await res.json()) as Partial<AdminMentorApplicationDetailResponse> & {
-        error?: { message?: string };
-      };
-      if (!res.ok || !data.success || !data.application) {
-        throw new Error(data.error?.message || 'Failed to fetch application');
+  // Guards against applying a response that has already been superseded, and
+  // against writing state after the Router unmounted this component.
+  const latestFetchIdRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  /**
+   * Reads the application from the server — the single source of truth for the
+   * status shown on this page. No caller ever writes a status locally.
+   *
+   * `background: true` is used for revalidation (after an action, and when the
+   * tab regains focus) so the already-rendered page updates in place. Blanking
+   * to a skeleton there would hide the very transition the admin needs to see,
+   * and would make a reconciliation look like a page reload.
+   */
+  const fetchApplication = useCallback(
+    async (options?: { background?: boolean }) => {
+      if (!applicationId) return undefined;
+      const fetchId = ++latestFetchIdRef.current;
+      if (!options?.background) setLoading(true);
+      setError(null);
+      try {
+        const res = await apiFetch(`/api/admin/mentor-applications/${applicationId}`);
+        const data = (await res.json()) as Partial<AdminMentorApplicationDetailResponse> & {
+          error?: { message?: string };
+        };
+        if (!res.ok || !data.success || !data.application) {
+          throw new Error(data.error?.message || 'Failed to fetch application');
+        }
+        // A slower earlier request must never overwrite a newer one, but the
+        // caller still gets this result so a 409 handler can reconcile on it.
+        if (mountedRef.current && fetchId === latestFetchIdRef.current) {
+          setApplication(data.application);
+        }
+        return data.application as MentorApplication;
+      } catch (err) {
+        if (mountedRef.current && fetchId === latestFetchIdRef.current) {
+          setError(getErrorMessage(err, 'Failed to load application'));
+          console.error('Failed to fetch application:', err);
+        }
+        return undefined;
+      } finally {
+        if (mountedRef.current && fetchId === latestFetchIdRef.current) setLoading(false);
       }
-      setApplication(data.application);
-    } catch (err) {
-      setError(getErrorMessage(err, 'Failed to load application'));
-      console.error('Failed to fetch application:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [applicationId]);
+    },
+    [applicationId],
+  );
 
   useEffect(() => {
     fetchApplication();
   }, [fetchApplication]);
 
+  // A stale page must reconcile on its own rather than waiting for the admin to
+  // press Approve and eat a 409. Another tab or another admin can move this
+  // application off pending_review at any time; refetching when the admin comes
+  // back to this tab re-renders it as Approved and drops the Approve button.
+  //
+  // The hook covers focus/visibility/online/pageshow, a realtime event on this
+  // application, its documents, the synchronised mentor profile/account, and an
+  // authoritative refetch every time the channel re-joins. It replaced a local
+  // focus/visibility listener so the two cannot both refetch on one resume.
+  useMentorVerificationSync({
+    scope: 'application-detail',
+    applicationId,
+    // Only meaningful once the applicant is known: the profile rows are
+    // synchronised by the same transaction that decides this application.
+    mentorId: application?.user_id ?? null,
+    onInvalidate: () => {
+      // Never race an in-flight mutation — its own revalidation is authoritative.
+      if (approveInFlightRef.current || rejectInFlightRef.current) return;
+      if (document.visibilityState === 'hidden') return;
+      void fetchApplication({ background: true });
+    },
+  });
+
   const handleDocumentReview = async (docId: string, status: 'approved' | 'rejected', note?: string) => {
+    if (docReviewLoading !== null) return;
     setDocReviewLoading(docId);
     setError(null);
     try {
       const res = await apiFetch(`/api/admin/mentor-documents/${docId}/review`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, adminNote: note || null }),
+        // `adminNote` is optional AND nullable on the API
+        // (apiSchemas.mentorDocumentReview): null is how "no note" is sent.
+        body: JSON.stringify({ status, adminNote: note ?? null }),
       });
-      const data = (await res.json()) as { success?: boolean; error?: { message?: string } };
-      if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to review document');
-      await fetchApplication();
+      const data = (await res.json()) as {
+        success?: boolean;
+        error?: { code?: string; message?: string; fields?: Record<string, string> };
+      };
+      if (!res.ok || !data.success) {
+        // Prefer the server's own wording — a validation 400 carries a message
+        // per field, and the top-level one names the first field that failed.
+        const fieldDetail = data.error?.fields ? Object.values(data.error.fields)[0] : undefined;
+        throw new Error(data.error?.message || fieldDetail || `Failed to ${status} document`);
+      }
+      await fetchApplication({ background: true });
       toast.success(`Document ${status === 'approved' ? 'approved' : 'rejected'}.`);
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to review document'));
@@ -114,7 +196,31 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
     }
   };
 
+  const handleRejectDocument = (docId: string) => {
+    const note = window.prompt('Rejection reason for this document:');
+    if (note === null) return;
+    if (!note.trim()) {
+      setError('A rejection reason is required to reject a document.');
+      return;
+    }
+    void handleDocumentReview(docId, 'rejected', note.trim());
+  };
+
   const handleApproveApplication = async () => {
+    // Ref guard: blocks a fast double-click / Enter / a second wired-up
+    // listener from dispatching a concurrent POST before the `disabled` prop can
+    // take effect on the next render.
+    if (approveInFlightRef.current) return;
+    approveInFlightRef.current = true;
+
+    // The cached `application` may be stale (another tab/admin already moved it
+    // off pending_review). Re-check the authoritative cached status before
+    // mutating so we don't fire a POST the server is guaranteed to 409.
+    if (!canDispatchApproval(application?.status)) {
+      approveInFlightRef.current = false;
+      return;
+    }
+
     setActionLoading('approve');
     setError(null);
     const approvedDocs = application?.documents.filter((d) => d.status === 'approved');
@@ -123,6 +229,7 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
 
     if (missing.length > 0) {
       setError(`All required documents must be approved before application approval. Missing: ${missing.join(', ')}`);
+      approveInFlightRef.current = false;
       setActionLoading(null);
       return;
     }
@@ -131,22 +238,45 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
       const res = await apiFetch(`/api/admin/mentor-applications/${applicationId}/approve`, {
         method: 'POST',
       });
-      const data = (await res.json()) as { success?: boolean; error?: { message?: string } };
+      const data = (await res.json()) as { success?: boolean; error?: { code?: string; message?: string } };
+
+      // 409 Conflict: this request lost the race — usually the second of a
+      // double-click, or another admin/tab beat us to it. Re-read the
+      // authoritative row and reconcile the UI to whatever the server says,
+      // instead of surfacing the raw conflict text.
+      if (res.status === 409) {
+        const refreshed = await fetchApplication({ background: true });
+        const reconciliation = reconcileApproveConflict(refreshed?.status, data.error?.message);
+        if (reconciliation.kind === 'conflict') {
+          // A genuine conflict that re-reading could not explain: keep the
+          // server's own wording rather than hiding it.
+          setError(reconciliation.message);
+        } else {
+          toast.info(reconciliation.message);
+        }
+        return;
+      }
+
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to approve application');
-      await fetchApplication();
+      await fetchApplication({ background: true });
       toast.success('Application approved. The mentor can now create gigs.');
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to approve application'));
     } finally {
       setActionLoading(null);
+      approveInFlightRef.current = false;
     }
   };
 
   const handleRejectApplication = async () => {
+    // Same synchronous guard as approve: the `disabled` prop is async, so a
+    // second click before React commits would fire a duplicate reject.
+    if (rejectInFlightRef.current) return;
     if (!rejectionReason.trim()) {
       setRejectionReasonError('Rejection reason is required.');
       return;
     }
+    rejectInFlightRef.current = true;
     setRejectionReasonError(null);
     setActionLoading('reject');
     setError(null);
@@ -157,18 +287,29 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
         body: JSON.stringify({ rejectionReason: rejectionReason.trim() }),
       });
       const data = (await res.json()) as { success?: boolean; error?: { message?: string } };
+      if (res.status === 409) {
+        // Someone else decided first; show their outcome rather than the raw conflict.
+        const refreshed = await fetchApplication({ background: true });
+        toast.info(
+          refreshed?.status === 'rejected'
+            ? 'This application has already been rejected.'
+            : 'This application is no longer pending review.',
+        );
+        return;
+      }
       if (!res.ok || !data.success) throw new Error(data.error?.message || 'Failed to reject application');
-      await fetchApplication();
+      await fetchApplication({ background: true });
       setRejectionReason('');
       toast.success('Application rejected and the mentor has been notified.');
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to reject application'));
     } finally {
       setActionLoading(null);
+      rejectInFlightRef.current = false;
     }
   };
 
-  const canApprove = application?.status === 'pending_review';
+  const canApprove = canDispatchApproval(application?.status);
   const allRequiredDocsApproved = REQUIRED_DOC_TYPES.every((type) =>
     application?.documents.some((d) => d.document_type === type && d.status === 'approved')
   );
@@ -342,7 +483,12 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
             const isPending = doc.status === 'pending';
             const isRejected = doc.status === 'rejected';
             const IconComponent = FILE_ICONS[doc.mime_type] || FileIcon;
-            const isReviewable = application.status === 'pending_review' || application.status === 'draft';
+            // A document is reviewable once: the server only moves a document
+            // out of `pending`, so the buttons are offered only for a document
+            // that still has no decision.
+            const isReviewable =
+              (application.status === 'pending_review' || application.status === 'draft') && isPending;
+            const isReviewBusy = docReviewLoading !== null;
 
             return (
               <div
@@ -414,21 +560,16 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
                     {isReviewable && (
                       <>
                         <button
-                          onClick={() => handleDocumentReview(doc.id, 'approved')}
-                          disabled={docReviewLoading === doc.id}
+                          onClick={() => void handleDocumentReview(doc.id, 'approved')}
+                          disabled={isReviewBusy}
                           className="text-xs text-[var(--color-shell-success)] hover:text-[var(--color-shell-success)]/80 flex items-center gap-1 disabled:opacity-50 cursor-pointer"
                         >
                           {docReviewLoading === doc.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
                           Approve
                         </button>
                         <button
-                          onClick={() => {
-                            const note = prompt('Rejection reason for this document:');
-                            if (note && note.trim()) {
-                              handleDocumentReview(doc.id, 'rejected', note.trim());
-                            }
-                          }}
-                          disabled={docReviewLoading === doc.id}
+                          onClick={() => handleRejectDocument(doc.id)}
+                          disabled={isReviewBusy}
                           className="text-xs text-[var(--color-shell-error)] hover:text-[var(--color-shell-error)]/80 flex items-center gap-1 disabled:opacity-50 cursor-pointer"
                         >
                           <XCircle className="h-3 w-3" />
@@ -458,13 +599,24 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
 
           {allRequiredDocsApproved && (
             <Button
+              type="button"
               size="sm"
               className="bg-[var(--color-shell-success)] hover:bg-[var(--color-shell-success)]/90 text-white"
               disabled={actionLoading === 'approve'}
+              aria-busy={actionLoading === 'approve'}
               onClick={handleApproveApplication}
             >
-              {actionLoading === 'approve' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              <span>Approve Application</span>
+              {actionLoading === 'approve' ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Approving...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span>Approve Application</span>
+                </>
+              )}
             </Button>
           )}
 

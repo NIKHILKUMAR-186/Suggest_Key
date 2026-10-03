@@ -1,60 +1,89 @@
 import React from 'react';
-import { FOOTER_GROUPS } from '@/src/components/landing/landingContent';
-
-export interface LandingFooterProps {
-  /** The app's own navigate(); anchors are scrolled, routes are pushed. */
-  onNavigate: (href: string) => void;
-}
+import { LandingWordmark } from '@/src/components/landing/LandingWordmark';
+import { FOOTER_GROUPS, FOOTER_LEGAL, FOOTER_PROMISE } from '@/src/components/landing/landingContent';
 
 /**
  * FOOTER.
  *
- * Links only to what exists: on-page anchors, the sign-in and sign-up routes,
- * and mentor signup. This app has no About, Privacy or Terms page, so none is
- * listed rather than linking somewhere that would 404.
+ * Carries the routes a visitor is most likely to want next — including the ones
+ * the hero does not surface, such as the mentor verification status and support
+ * — grouped by who they are for. It continues the brand field from the final
+ * call, so the page closes on one continuous dark surface instead of a change of
+ * tone at the last screen.
+ *
+ * In-page entries go through the same navigation handler as everything else, so
+ * the anchor scrolls rather than reloading the route.
  */
-export const LandingFooter: React.FC<LandingFooterProps> = ({ onNavigate }) => (
-  <footer className="border-t border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] px-4 py-14 sm:px-6 lg:px-8">
-    <div className="mx-auto max-w-[1240px]">
-      <div className="grid grid-cols-2 gap-10 sm:grid-cols-4 lg:grid-cols-[1.4fr_repeat(3,1fr)]">
-        <div className="col-span-2 sm:col-span-4 lg:col-span-1">
-          <div className="flex items-center gap-2.5">
-            <img src="/logo.png" alt="" className="h-9 w-9 rounded-xl object-cover" width={36} height={36} />
-            <img src="/name.png" alt="Suggest Key" className="h-5 w-auto" />
+
+export interface LandingFooterProps {
+  onNavigate: (path: string) => void;
+}
+
+export const LandingFooter: React.FC<LandingFooterProps> = ({ onNavigate }) => {
+  const currentYear = new Date().getFullYear();
+
+  return (
+    <footer className="sk-lp-footer sk-lp-on-plum">
+      <div className="sk-lp-wrap">
+        <div className="sk-lp-footer__grid">
+          <div>
+            <a
+              href="/"
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate('/');
+              }}
+              className="inline-flex items-center"
+              aria-label="Suggest Key — home"
+            >
+              <LandingWordmark size={16} />
+            </a>
+            <p className="mt-5 max-w-[30ch] text-sm leading-relaxed">{FOOTER_PROMISE}</p>
           </div>
-          <p className="mt-4 max-w-xs text-[13px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-            A curated 1:1 mentorship marketplace. Find an approved mentor, book a time that works, and leave with
-            clarity.
-          </p>
+
+          {FOOTER_GROUPS.map((group) => (
+            <nav key={group.heading} aria-label={group.heading}>
+              {/*
+                A label, not a document heading. These are 11px tracked caps; a
+                real h2 at that size would be a heading the outline advertises
+                and the eye cannot find, and the footer follows every section
+                heading on the page rather than nesting under one.
+              */}
+              <p className="sk-lp-footer__heading">{group.heading}</p>
+              <ul className="sk-lp-footer__links">
+                {group.links.map((link) => (
+                  <li key={link.label}>
+                    <a
+                      href={link.route}
+                      className="sk-lp-footer__link"
+                      onClick={(event) => {
+                        if (link.route.startsWith('/#')) {
+                          event.preventDefault();
+                          document
+                            .getElementById(link.route.slice(2))
+                            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          return;
+                        }
+                        event.preventDefault();
+                        onNavigate(link.route);
+                      }}
+                    >
+                      {link.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          ))}
         </div>
 
-        {FOOTER_GROUPS.map((group) => (
-          <nav key={group.title} aria-label={`Footer: ${group.title}`}>
-            <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--sk-brand-text-muted)]">
-              {group.title}
-            </h2>
-            <ul className="mt-4 space-y-1">
-              {group.links.map((link) => (
-                <li key={link.label}>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate(link.href)}
-                    className="min-h-[36px] cursor-pointer rounded px-1 py-1.5 text-left text-[13px] text-[var(--sk-brand-text-muted)] transition-colors hover:text-[var(--sk-brand-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)]"
-                  >
-                    {link.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        ))}
+        <div className="sk-lp-footer__base">
+          <p>
+            © {currentYear} Suggest Key. {FOOTER_LEGAL}
+          </p>
+          <p>Mentorship marketplace · India</p>
+        </div>
       </div>
-
-      <div className="mt-12 border-t border-[var(--sk-brand-border)] pt-6">
-        <p className="text-[12px] text-[var(--sk-brand-text-muted)]">
-          &copy; {new Date().getFullYear()} Suggest Key. All rights reserved.
-        </p>
-      </div>
-    </div>
-  </footer>
-);
+    </footer>
+  );
+};

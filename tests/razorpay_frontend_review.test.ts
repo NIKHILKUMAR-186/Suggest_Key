@@ -870,6 +870,10 @@ function browserReachableFiles(): string[] {
     const specifiers = [
       ...[...contents.matchAll(/(?:^|\n)\s*(?:import|export)[\s\S]{0,400}?from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]),
       ...[...contents.matchAll(/(?:^|\n)\s*import\s+['"]([^'"]+)['"]/g)].map((m) => m[1]),
+      // The router lazy-loads every authenticated screen, so a real
+      // bundler follows these dynamic edges too. Ignoring them would
+      // make the graph walk vacuously miss whole chunks of the bundle.
+      ...[...contents.matchAll(/import\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]),
     ];
 
     for (const specifier of specifiers) {

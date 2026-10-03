@@ -780,6 +780,59 @@ export interface AdminMentorApplicationsResponse {
   pagination: MentorApplicationPaginationPayload;
 }
 
+// ---------------------------------------------------------------------------
+// Mentor discovery readiness - computed by `mentor_discovery_readiness(UUID)`
+//
+// The six checks are a BUSINESS RULE the database owns. They are returned to the
+// browser as data so no component re-derives them; a second client-side copy of
+// a rule is exactly how a Control Center ends up disagreeing with seeker
+// discovery. `isDiscoverable` additionally requires an active gig, which is
+// why "approved" and "discoverable" are separate answers here.
+// ---------------------------------------------------------------------------
+
+export interface MentorDiscoveryReadinessChecks {
+  /** `approval_status = 'approved'` AND the legacy `is_approved` agrees. */
+  approved: boolean;
+  /** `mentor_profiles.is_active`. */
+  active: boolean;
+  /** Not suspended and not deactivated. */
+  notSuspended: boolean;
+  /** Has a `mentor_segments` row whose segment is itself active. */
+  hasEligibleSegment: boolean;
+  /** Has at least one active gig. */
+  hasActiveGig: boolean;
+  /** Has at least one enabled recurring availability rule. */
+  hasRecurringAvailability: boolean;
+}
+
+export interface MentorDiscoveryReadiness {
+  outcome: 'ok';
+  mentorId: string;
+  hasMentorProfile: boolean;
+  checks: MentorDiscoveryReadinessChecks;
+  /**
+   * The authoritative approval column. Read this, never `checks.approved`,
+   * when the question is "what state is this mentor in".
+   */
+  approvalStatus: string | null;
+  /**
+   * The pre-`approval_status` boolean. Reported only so an inconsistency is
+   * visible; it is NOT a second source of approval.
+   */
+  isApprovedLegacy: boolean;
+  isActive: boolean;
+  accountStatus: string;
+  /**
+   * False when `approvalStatus` and `isApprovedLegacy` disagree, which makes the
+   * mentor invisible to discovery while both admin pages still look correct.
+   */
+  approvalStatusConsistent: boolean;
+  /** `mentor_is_publicly_visible(id)`. */
+  isPubliclyVisible: boolean;
+  /** `is_mentor_discoverable(id)` - also requires an active gig. */
+  isDiscoverable: boolean;
+}
+
 // ----------------------------------------------------------------------
 // 14. SLOT GENERATION & DISCOVERY TYPES (continued)
 // ----------------------------------------------------------------------

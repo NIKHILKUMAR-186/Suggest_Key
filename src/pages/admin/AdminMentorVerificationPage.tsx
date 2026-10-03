@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Clock, Search, AlertTriangle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -7,6 +7,7 @@ import { apiFetch, getLastResponseRequestId } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { mailtoHref } from '@/src/lib/contact';
 import { DEFAULT_MENTOR_APPLICATION_PAGE_SIZE } from '@/src/lib/mentorApplicationsQuery';
+import { useMentorVerificationSync } from '@/src/hooks/useMentorVerificationSync';
 import type {
   AdminMentorApplicationsResponse,
   MentorApplicationPaginationPayload,
@@ -97,6 +98,20 @@ export const AdminMentorVerificationPage: React.FC = () => {
    */
   const [reloadToken, setReloadToken] = useState(0);
 
+  /**
+   * Realtime re-read trigger. Kept separate from `reloadToken` because the two
+   * mean different things to the admin: `reloadToken` is "I asked, show me that
+   * something is happening", this is "the queue moved under you, quietly replace
+   * the contents". Sharing one token would swap a populated queue for a spinner
+   * on every decision any admin makes, including decisions on a different page
+   * of the queue.
+   */
+  const [silentReloadToken, setSilentReloadToken] = useState(0);
+
+  /** Previous token values, so the fetch effect can classify the change. */
+  const prevReloadToken = useRef(0);
+  const prevSilentReloadToken = useRef(0);
+
   // Debounced server-side search: the query is applied after the user pauses.
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -135,8 +150,20 @@ export const AdminMentorVerificationPage: React.FC = () => {
     const controller = new AbortController();
     let isActive = true;
 
-    setLoading(true);
-    setError(null);
+    // Compare against the previous tokens so the effect can tell an
+    // intentional, user-driven reload (show the spinner) from a realtime
+    // revalidation (replace the contents silently). A Retry that lands in the
+    // same render as a realtime event still shows the spinner, because the
+    // admin asked for visible feedback.
+    const silentReload = silentReloadToken !== prevSilentReloadToken.current
+      && reloadToken === prevReloadToken.current;
+    prevSilentReloadToken.current = silentReloadToken;
+    prevReloadToken.current = reloadToken;
+
+    if (!silentReload) {
+      setLoading(true);
+      setError(null);
+    }
 
     fetchApplications(controller.signal)
       .catch((err: unknown) => {
@@ -147,20 +174,35 @@ export const AdminMentorVerificationPage: React.FC = () => {
         // The request id lets an admin locate the diagnostic entry in
         // Admin -> System Health.
         console.error('Failed to fetch mentor applications:', err);
+        // A failed background revalidation keeps the rows already on screen: the
+        // alternative is replacing a correct queue with an error because a
+        // request timed out. The next event or focus retries.
+        if (silentReload) return;
         setApplications([]);
         setCounts(EMPTY_COUNTS);
         setPagination(EMPTY_PAGINATION);
         setError({ message: 'Unable to load mentor applications.', requestId: getLastResponseRequestId() });
       })
       .finally(() => {
-        if (isActive) setLoading(false);
+        if (isActive && !silentReload) setLoading(false);
       });
 
     return () => {
       isActive = false;
       controller.abort();
     };
-  }, [fetchApplications, reloadToken]);
+  }, [fetchApplications, reloadToken, silentReloadToken]);
+
+  /**
+   * The queue is the single most contended view in the product: a submission, a
+   * document review, an approval and a rejection all change it, and any of them
+   * can come from another admin's session. Re-read the authoritative list on
+   * every such change rather than patching rows from an event payload.
+   */
+  useMentorVerificationSync({
+    scope: 'verification-queue',
+    onInvalidate: () => setSilentReloadToken((token) => token + 1),
+  });
 
   const handleRetry = () => {
     setReloadToken((token) => token + 1);

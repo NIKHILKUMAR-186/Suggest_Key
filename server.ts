@@ -21,6 +21,11 @@ import {
 import { generateMentorSlots, addDaysToDateString } from './src/lib/slotEngine';
 import { describeBookingContextMismatch } from './src/lib/gigContext';
 import {
+  mentorDecisionHttpMapping,
+  transitionConflictPayload,
+  type MentorDecisionResult,
+} from './src/lib/mentorApplicationApproval';
+import {
   isBookingIdShape,
   isSafeBookingIdentifier,
   redactMeetingUrlForParticipant,
@@ -129,6 +134,7 @@ import type {
   MentorApplicationDetailRow,
   MentorApplicationQueueAuditEntry,
   MentorApplicationQueueRow,
+  MentorDiscoveryReadiness,
 } from './src/types/database';
 import {
   ADMIN_CREATED_MENTOR_DEFAULTS,
@@ -159,7 +165,14 @@ import {
 } from './src/lib/adminAccountControl';
 import { APP_CONFIG } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
-import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
+import {
+  EMAIL_VERIFICATION_RATE_LIMIT_CODE,
+  EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE,
+  consumeEmailVerificationAttempt,
+  markEmailVerificationUpstreamBlocked,
+  readEmailVerificationRateLimit,
+} from './src/lib/emailVerificationRateLimit';
+import { apiSchemas, emailField, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
 /**
  * Applicant embed for the admin mentor verification queue.
@@ -1539,6 +1552,26 @@ export function validateHeroUploadPayload(body: unknown) {
   return { valid: true as const, type, size: fileSize };
 }
 
+/**
+ * Whether `PATCH /api/admin/mentor-documents/:id/review` may still be applied.
+ *
+ * The rule, stated once: a verification document carries ONE admin decision, so
+ * only `pending` — the value `register_mentor_document` inserts and the only
+ * member of `mentor_verification_documents_status_check` that is not a decision
+ * — can be reviewed. `approved` and `rejected` are final for that row; an admin
+ * who wants a different answer gets a 409 rather than an overwrite of the first
+ * admin's `status`, `reviewed_at`, `reviewed_by` and `admin_note`.
+ *
+ * A changed decision is still reachable, and only through the applicant: the
+ * mentor uploads a fresh document, which is a new row with a new id.
+ *
+ * Exported for the regression tests in `tests/mentor_document_review.test.ts`,
+ * which assert the transition rule itself rather than the SQL around it.
+ */
+export function canReviewMentorDocument(documentStatus: unknown): boolean {
+  return documentStatus === 'pending';
+}
+
 export function extractSegmentHeroStoragePath(heroImageUrl: unknown): string | null {
   if (typeof heroImageUrl !== 'string') return null;
   const trimmed = heroImageUrl.trim();
@@ -1990,6 +2023,152 @@ async function startServer() {
       });
     }
   });
+
+  // --------------------------------------------------------------------------
+  // Verification-email rate limit
+  // --------------------------------------------------------------------------
+  // /mentor/signup sends its verification email through Supabase Auth, and
+  // GoTrue answers a throttled request with `over_email_send_rate_limit` and no
+  // timing information whatsoever. The three routes below are the minimum
+  // server-authoritative surface that makes that state readable, so the UI never
+  // has to invent a count or a cooldown:
+  //
+  //   GET  .../rate-limit   read the budget, spending nothing
+  //   POST .../attempt      spend one attempt, or be told why not
+  //   POST .../outcome      report what the provider did with the send
+  //
+  // This is a gate in front of the existing limiter, not a replacement for it.
+  // GoTrue still validates every actual send and is untouched; these routes stop
+  // our own UI from spending that budget blindly and give the countdown a server
+  // timestamp to count down from.
+  //
+  // None of them take a count, a remaining number or a deadline as input. The
+  // body is the recipient address and nothing else, and the identifier key is
+  // derived server-side from that address plus the caller's IP, so a refresh, a
+  // second tab or a repeated submit all land on the same budget while an
+  // attacker probing someone else's address from another network sees nothing.
+
+  // GET /api/auth/email-verification/rate-limit
+  // Read-only by design: the signup page calls it on mount and again when a
+  // countdown reaches zero, so refreshing cannot shorten a cooldown and cannot
+  // consume an attempt. Left on the general /api limiter rather than the strict
+  // one, because it is not an expensive operation and must stay reachable for a
+  // page refresh to rehydrate correctly.
+  app.get('/api/auth/email-verification/rate-limit', async (req: AuthRequest, res) => {
+    res.set('Cache-Control', 'no-store');
+    // The one definition of a usable address, the same one the POST bodies go
+    // through, so the ledger key is derived from an already-normalised value.
+    const parsed = emailField.safeParse(
+      typeof req.query.email === 'string' ? req.query.email : '',
+    );
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Enter a valid email address.' },
+      });
+    }
+
+    const state = await readEmailVerificationRateLimit({ email: parsed.data, ip: req.ip });
+    return res.json({ success: true, rateLimit: state });
+  });
+
+  // POST /api/auth/email-verification/attempt
+  // The enforcement point. `allowed: false` means the caller must not ask
+  // Supabase Auth for a verification email; `retryAt` is the server's own
+  // deadline. Unauthenticated by nature, so the strict limiter keys on IP.
+  app.post(
+    '/api/auth/email-verification/attempt',
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.emailVerificationAttempt),
+    async (req: AuthRequest, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        // Trimmed, lower-cased and format-checked by the schema, so the ledger
+        // key is derived from an already-normalised address.
+        const { email } = req.body as { email: string };
+        const ip = typeof req.ip === 'string' ? req.ip : '';
+
+        const state = await consumeEmailVerificationAttempt({ email, ip });
+
+        if (state.allowed === false) {
+          return res.status(429).json({
+            success: false,
+            error: {
+              code: EMAIL_VERIFICATION_RATE_LIMIT_CODE,
+              message: EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE,
+            },
+            rateLimit: state,
+          });
+        }
+
+        // `allowed === null` means the ledger could not be consulted. The request
+        // is allowed through and Supabase Auth still validates it, because a
+        // database outage must not be able to lock a legitimate mentor out of
+        // signing up. `null` is also what tells the UI to say nothing about the
+        // remaining count rather than show a fabricated one.
+        return res.json({ success: true, rateLimit: state });
+      } catch (err: any) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: 'POST /api/auth/email-verification/attempt',
+          clientMessage: 'Unable to check the email verification rate limit.',
+        });
+      }
+    },
+  );
+
+  // POST /api/auth/email-verification/outcome
+  // What the provider actually did. `rate_limited` records a Supabase Auth
+  // refusal so the countdown has a real deadline instead of a guessed one; GoTrue
+  // sends no retry-after, so the length comes from the operator-owned
+  // `cooldown_seconds` config row, never from the browser.
+  //
+  // This route can only ever LENGTHEN a block. It cannot clear, extend or raise a
+  // budget, so a client that lies about the outcome - by claiming `sent` to dodge
+  // a cooldown, or by never reporting at all - gains nothing it did not already
+  // have.
+  app.post(
+    '/api/auth/email-verification/outcome',
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.emailVerificationOutcome),
+    async (req: AuthRequest, res) => {
+      res.set('Cache-Control', 'no-store');
+      try {
+        const { email, outcome } = req.body as { email: string; outcome: 'sent' | 'rate_limited' | 'failed' };
+        const ip = typeof req.ip === 'string' ? req.ip : '';
+
+        if (outcome !== 'rate_limited') {
+          // Re-read so the UI's remaining count reflects the attempt already
+          // spent by the matching /attempt call.
+          return res.json({
+            success: true,
+            rateLimit: await readEmailVerificationRateLimit({ email, ip }),
+          });
+        }
+
+        const state = await markEmailVerificationUpstreamBlocked({ email, ip });
+
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: EMAIL_VERIFICATION_RATE_LIMIT_CODE,
+            message: EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE,
+          },
+          rateLimit: state,
+        });
+      } catch (err: any) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: 'POST /api/auth/email-verification/outcome',
+          clientMessage: 'Unable to record the email verification attempt.',
+        });
+      }
+    },
+  );
 
   // POST /api/bookings/hold: Complete Phase 6 Atomic Booking & Hold Endpoint
   // Expensive: the RPC takes a mentor row lock and writes a hold. The strict
@@ -5406,6 +5585,38 @@ async function startServer() {
         accountMap.set(row.id, row);
       }
 
+      // ---- Discovery readiness, computed by the database ----
+      // `isEligible` above is MENTOR-level eligibility (approved + active +
+      // account usable). It is not discoverability: an active gig is also
+      // required, and only the database knows that. One statement for the whole
+      // directory rather than a call per row.
+      //
+      // Mentors with no mentor_profiles row are absent from this result and are
+      // reported as not discoverable, which is what the delegated functions say
+      // for them too.
+      const { data: readinessRows, error: readinessErr } = await admin.rpc(
+        'mentor_discovery_readiness_for_all',
+      );
+      if (readinessErr) throw readinessErr;
+
+      const readinessMap = new Map<string, {
+        isPubliclyVisible: boolean;
+        isDiscoverable: boolean;
+        approvalStatus: string | null;
+      }>();
+      for (const row of (readinessRows ?? []) as Array<{
+        mentor_id: string;
+        approval_status: string | null;
+        is_publicly_visible: boolean;
+        is_discoverable: boolean;
+      }>) {
+        readinessMap.set(row.mentor_id, {
+          isPubliclyVisible: row.is_publicly_visible === true,
+          isDiscoverable: row.is_discoverable === true,
+          approvalStatus: row.approval_status ?? null,
+        });
+      }
+
       const mentors = [];
       for (const [mentorId, profile] of mentorMap) {
         const mp = mpMap.get(mentorId);
@@ -5423,6 +5634,8 @@ async function startServer() {
           account_status: account.account_status ?? null,
           suspended_until: account.suspended_until ?? null,
         });
+
+        const readiness = readinessMap.get(mentorId);
 
         mentors.push({
           id: mentorId,
@@ -5442,6 +5655,12 @@ async function startServer() {
           isDeactivated: state.isDeactivated,
           isEligible: state.isEligible,
           approvalStatus: mp?.approval_status ?? null,
+          // Authoritative discovery answers, from `mentor_discovery_readiness_for_all`.
+          // The page must not substitute `isEligible` here: that is eligibility,
+          // not discoverability, and the two differ for every mentor without an
+          // active gig.
+          isDiscoverable: readiness?.isDiscoverable ?? false,
+          isPubliclyVisible: readiness?.isPubliclyVisible ?? false,
           accountStatus: account.account_status ?? 'active',
           suspendedUntil: account.suspended_until ?? null,
           suspensionReason: account.suspension_reason ?? null,
@@ -5946,6 +6165,21 @@ async function startServer() {
         createdByAdmin = creator || null;
       }
 
+      // ---- CANONICAL DISCOVERY READINESS ----
+      // Six business rules the Control Center used to re-derive in React from
+      // this payload, which meant a second copy of a rule the database already
+      // owned and the two could disagree. The calculation is delegated to the
+      // database and the page renders it verbatim.
+      //
+      // Read-only, so a mentor with no mentor_profiles row is still a valid
+      // answer rather than an error - the Control Center must open for an
+      // unapproved applicant who holds the mentor role.
+      const { data: readinessRaw, error: readinessErr } = await admin.rpc('mentor_discovery_readiness', {
+        p_mentor_id: mentorId,
+      });
+      if (readinessErr) throw readinessErr;
+      const readiness = (readinessRaw ?? null) as MentorDiscoveryReadiness | null;
+
       return res.json({
         success: true,
         mentor: {
@@ -6050,6 +6284,11 @@ async function startServer() {
             deactivatedAt: profile.deactivated_at ?? null,
             internalNote: profile.internal_note ?? null,
           },
+          // ---- DISCOVERY READINESS (computed in the database) ----
+          // The single source of truth for "will a seeker find this mentor".
+          // `null` only if the RPC itself is unavailable, which the page renders
+          // as unknown rather than guessing.
+          discovery: readiness,
         },
       });
     } catch (err: any) {
@@ -13030,6 +13269,24 @@ async function startServer() {
   });
 
   // POST /api/admin/mentor-applications/:id/approve: Approve mentor application (admin)
+  //
+  // ATOMIC, DATABASE-AUTHORITATIVE.
+  //
+  // This route used to perform six independent writes, and committed
+  // `mentor_applications.status = 'approved'` as the FIRST of them. Anything
+  // that failed afterwards left the database self-contradictory - application
+  // approved, mentor profile still `draft` - and because re-approving a
+  // non-pending application is a 409 by design, the drift could never be
+  // repaired through the product. See
+  // supabase/migrations/20261020000000_phase44_mentor_verification_authoritative_realtime.sql.
+  //
+  // Now there is exactly one writer. The transaction, the row lock, the
+  // transition validation, the required-document gate, the mentor profile sync,
+  // the application audit row and the notification all happen inside
+  // `approve_mentor_application`, and the function re-verifies the acting admin
+  // against `user_roles` itself - so this handler cannot widen access even if it
+  // is wrong. `auditAction` stays here because it is API-request telemetry
+  // (request_id, actor identity), which the database has no way to know.
   app.post('/api/admin/mentor-applications/:id/approve', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
@@ -13039,129 +13296,64 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // Get application with lock
-      const { data: application, error: appErr } = await admin
-        .from('mentor_applications')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
+      const { data, error: rpcErr } = await admin.rpc('approve_mentor_application', {
+        p_application_id: id,
+        p_admin_user_id: adminUserId,
+      });
 
-      if (appErr) throw appErr;
-      if (!application) {
-        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
-      }
+      if (rpcErr) throw rpcErr;
 
-      if (application.status !== 'pending_review') {
-        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: `Application is not pending review (current: ${application.status}).` } });
-      }
+      const result = (data ?? {}) as MentorDecisionResult;
+      const mapping = mentorDecisionHttpMapping(result.outcome);
 
-      // Validate required documents are approved
-      const { data: docs, error: docsErr } = await admin
-        .from('mentor_verification_documents')
-        .select('document_type, status')
-        .eq('application_id', id);
-
-      if (docsErr) throw docsErr;
-
-      const { data: requiredDocumentTypes, error: requiredTypesErr } = await admin
-        .from('mentor_document_types')
-        .select('code')
-        .eq('is_active', true)
-        .eq('is_required', true);
-      if (requiredTypesErr) throw requiredTypesErr;
-
-      const approvedDocTypes = new Set((docs || []).filter((d: any) => d.status === 'approved').map((d: any) => d.document_type));
-      const missingApproved = (requiredDocumentTypes || []).map((documentType: { code: string }) => documentType.code).filter((type: string) => !approvedDocTypes.has(type));
-
-      if (missingApproved.length > 0) {
-        return res.status(400).json({
+      if (!mapping.ok || result.outcome !== 'approved') {
+        // A non-success outcome is a normal answer, not a fault: it carries the
+        // authoritative reason the transaction did not commit. No side effect
+        // has happened, so there is nothing to unwind and nothing to retry.
+        if (result.outcome === 'not_pending_review') {
+          return res.status(409).json(transitionConflictPayload(result.current_status));
+        }
+        if (result.outcome === 'missing_documents') {
+          const missing = result.missing ?? [];
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'MISSING_APPROVED_DOCUMENTS',
+              message: `All required documents must be approved before mentor approval: ${missing.join(', ')}`,
+            },
+          });
+        }
+        return res.status(mapping.status).json({
           success: false,
           error: {
-            code: 'MISSING_APPROVED_DOCUMENTS',
-            message: `All required documents must be approved before mentor approval: ${missingApproved.join(', ')}`,
+            code: mapping.code,
+            message:
+              result.outcome === 'forbidden'
+                ? 'Admin authorization required.'
+                : result.outcome === 'not_found'
+                  ? 'Application not found.'
+                  : 'Unable to approve mentor application.',
           },
         });
       }
 
-      // Atomic transaction-equivalent: update application, create mentor profile, assign role
-      await admin.rpc('approve_mentor_application', { p_application_id: id });
-
-      // The RPC handles: application status, mentor_profiles creation, user_roles, audit, notifications
-      // But since it uses auth.uid() and we're using service role, we need to do it manually
-      // Actually, the RPC uses is_admin() which checks auth.uid() - this won't work with service role
-
-      // So we need to manually perform the approve logic:
-      // 1. Update application
-      const { error: updErr } = await admin
-        .from('mentor_applications')
-        .update({
-          status: 'approved',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: adminUserId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id);
-
-      if (updErr) throw updErr;
-
-      // 2. Log audit
-      await admin.from('mentor_application_audit').insert({
-        application_id: id,
-        action: 'approved',
-        admin_user_id: adminUserId,
-        metadata: { approved_by: adminUserId },
-      });
-
-      // 3. Ensure mentor role exists
-      const { error: roleErr } = await admin.from('user_roles').upsert({
-        user_id: application.user_id,
-        role: 'mentor',
-      });
-
-      if (roleErr) throw roleErr;
-
-      // 4. Create/update mentor_profile
-      const { error: mpErr } = await admin.from('mentor_profiles').upsert({
-        id: application.user_id,
-        headline: application.bio || '',
-        about: application.bio || '',
-        experience_years: 0,
-        languages: [],
-        rating: 0.0,
-        review_count: 0,
-        session_count: 0,
-        is_approved: true,
-        is_featured: false,
-        approval_status: 'approved',
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-
-      if (mpErr) throw mpErr;
-
-      // 5. Notification to applicant
-      await admin.from('notifications').insert({
-        user_id: application.user_id,
-        title: 'Mentor Application Approved',
-        message: 'Congratulations! Your mentor application has been approved. You can now complete your mentor profile and configure your availability.',
-        type: 'SYSTEM',
-        event_type: 'MENTOR_APPLICATION_APPROVED',
-        entity_type: 'mentor_application',
-        entity_id: id,
-        link: '/mentor',
-        is_read: false,
-      });
-
-      // 6. Audit log to audit_logs table
       auditAction(req.auth, 'mentor_application_approved', {
         entityType: 'mentor_application',
         entityId: id,
         requestId: req.requestId,
-        metadata: { approvedByUserId: adminUserId, applicantUserId: application.user_id },
+        metadata: { approvedByUserId: adminUserId, applicantUserId: result.mentor_user_id },
       });
 
-      return res.json({ success: true, message: 'Mentor application approved successfully.' });
+      return res.json({
+        success: true,
+        message: 'Mentor application approved successfully.',
+        // Echoed from the transaction so the caller can reconcile without a
+        // second read, and so a stale tab sees which decision it actually got.
+        applicationId: result.application_id,
+        mentorUserId: result.mentor_user_id,
+        applicationStatus: result.application_status,
+        approvalStatus: result.approval_status,
+      });
     } catch (err) {
       return respondWithServerError({
         req,
@@ -13174,6 +13366,10 @@ async function startServer() {
   });
 
   // POST /api/admin/mentor-applications/:id/reject: Reject mentor application (admin)
+  //
+  // One atomic writer, same as the approve route. `mentorApplicationReject`
+  // already bounds and sanitises the reason, and the function re-checks it, so
+  // a blank reason is answered with 400 rather than an empty audit trail.
   app.post('/api/admin/mentor-applications/:id/reject', requireAuth, requireAdmin, validateBody(apiSchemas.mentorApplicationReject), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
@@ -13184,67 +13380,51 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // `rejectionReason` is required, bounded and markup-free by the schema.
-
-
-      const { data: application, error: appErr } = await admin
-        .from('mentor_applications')
-        .select('*')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (appErr) throw appErr;
-      if (!application) {
-        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Application not found.' } });
-      }
-
-      if (application.status !== 'pending_review') {
-        return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: `Application is not pending review (current: ${application.status}).` } });
-      }
-
-      const { error: updErr } = await admin
-        .from('mentor_applications')
-        .update({
-          status: 'rejected',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: adminUserId,
-          rejection_reason: rejectionReason.trim(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id);
-
-      if (updErr) throw updErr;
-
-      // Log audit
-      await admin.from('mentor_application_audit').insert({
-        application_id: id,
-        action: 'rejected',
-        admin_user_id: adminUserId,
-        rejection_reason: rejectionReason.trim(),
-        metadata: { rejected_by: adminUserId },
+      const { data, error: rpcErr } = await admin.rpc('reject_mentor_application', {
+        p_application_id: id,
+        p_rejection_reason: rejectionReason.trim(),
+        p_admin_user_id: adminUserId,
       });
 
-      // Notification to applicant
-      await admin.from('notifications').insert({
-        user_id: application.user_id,
-        title: 'Mentor Application Needs Changes',
-        message: `Your mentor application needs changes: ${rejectionReason.trim()}. Please review the Admin feedback and resubmit your verification.`,
-        type: 'SYSTEM',
-        event_type: 'MENTOR_APPLICATION_REJECTED',
-        entity_type: 'mentor_application',
-        entity_id: id,
-        link: '/mentor/verification',
-        is_read: false,
-      });
+      if (rpcErr) throw rpcErr;
+
+      const result = (data ?? {}) as MentorDecisionResult;
+      const mapping = mentorDecisionHttpMapping(result.outcome);
+
+      if (!mapping.ok || result.outcome !== 'rejected') {
+        if (result.outcome === 'not_pending_review') {
+          return res.status(409).json(transitionConflictPayload(result.current_status));
+        }
+        return res.status(mapping.status).json({
+          success: false,
+          error: {
+            code: mapping.code,
+            message:
+              result.outcome === 'forbidden'
+                ? 'Admin authorization required.'
+                : result.outcome === 'not_found'
+                  ? 'Application not found.'
+                  : result.outcome === 'reason_required'
+                    ? 'A rejection reason is required.'
+                    : 'Unable to reject mentor application.',
+          },
+        });
+      }
 
       auditAction(req.auth, 'mentor_application_rejected', {
         entityType: 'mentor_application',
         entityId: id,
         requestId: req.requestId,
-        metadata: { rejectedByUserId: adminUserId, applicantUserId: application.user_id, rejectionReason },
+        metadata: { rejectedByUserId: adminUserId, applicantUserId: result.mentor_user_id, rejectionReason },
       });
 
-      return res.json({ success: true, message: 'Mentor application rejected successfully.' });
+      return res.json({
+        success: true,
+        message: 'Mentor application rejected successfully.',
+        applicationId: result.application_id,
+        mentorUserId: result.mentor_user_id,
+        applicationStatus: result.application_status,
+      });
     } catch (err) {
       return respondWithServerError({
         req,
@@ -13257,6 +13437,11 @@ async function startServer() {
   });
 
   // PATCH /api/admin/mentor-documents/:id/review: Review a verification document (admin)
+  //
+  // One atomic writer. The document carries exactly ONE decision, and that
+  // predicate now lives under the row lock inside the function instead of being
+  // re-read and re-checked across four round trips, so two admins clicking
+  // Approve on the same document produce one decision and one 409.
   app.patch('/api/admin/mentor-documents/:id/review', requireAuth, requireAdmin, validateBody(apiSchemas.mentorDocumentReview), async (req: AuthRequest, res) => {
     try {
       const { id } = req.params;
@@ -13267,52 +13452,62 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // `status` is constrained to the approved/rejected enum by the schema.
-
-      // Get document with application context
-      const { data: document, error: docErr } = await admin
-        .from('mentor_verification_documents')
-        .select('*, application:mentor_applications!inner(id, user_id, full_name)')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (docErr) throw docErr;
-      if (!document) {
-        return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Document not found.' } });
-      }
-
-      // Update document status
-      const { data: updatedDoc, error: updErr } = await admin
-        .from('mentor_verification_documents')
-        .update({
-          status,
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: adminUserId,
-          admin_note: adminNote || null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (updErr) throw updErr;
-
-      // Log audit
-      await admin.from('mentor_application_audit').insert({
-        application_id: document.application.id,
-        action: 'document_reviewed',
-        admin_user_id: adminUserId,
-        metadata: { document_id: id, document_type: document.document_type, status },
+      const { data, error: rpcErr } = await admin.rpc('review_mentor_document', {
+        p_document_id: id,
+        p_status: status,
+        p_admin_note: adminNote || null,
+        p_admin_user_id: adminUserId,
       });
+
+      if (rpcErr) throw rpcErr;
+
+      const result = (data ?? {}) as MentorDecisionResult;
+      const mapping = mentorDecisionHttpMapping(result.outcome);
+
+      if (!mapping.ok || result.outcome !== 'reviewed') {
+        if (result.outcome === 'already_reviewed') {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'DOCUMENT_ALREADY_REVIEWED',
+              message: `This document is already ${result.current_status ?? 'decided'} and cannot be reviewed again.`,
+            },
+          });
+        }
+        return res.status(mapping.status).json({
+          success: false,
+          error: {
+            code: mapping.code,
+            message:
+              result.outcome === 'forbidden'
+                ? 'Admin authorization required.'
+                : result.outcome === 'not_found'
+                  ? 'Document not found.'
+                  : result.outcome === 'invalid_status'
+                    ? 'A document can only be approved or rejected.'
+                    : 'Unable to review verification document.',
+          },
+        });
+      }
 
       auditAction(req.auth, 'mentor_document_reviewed', {
         entityType: 'mentor_verification_document',
         entityId: id,
         requestId: req.requestId,
-        metadata: { documentType: document.document_type, status, adminNote },
+        metadata: { documentType: result.document_type, status: result.status, adminNote },
       });
 
-      return res.json({ success: true, document: updatedDoc });
+      // Re-read rather than echo the outcome: the response shape is the full
+      // document row the page already expects, and a signed-URL mint stays the
+      // page's job.
+      const { data: reviewedDocument, error: docErr } = await admin
+        .from('mentor_verification_documents')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (docErr) throw docErr;
+
+      return res.json({ success: true, document: reviewedDocument });
     } catch (err) {
       return respondWithServerError({
         req,

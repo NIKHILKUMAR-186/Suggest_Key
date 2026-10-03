@@ -29,6 +29,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // server.ts
 var server_exports = {};
 __export(server_exports, {
+  canReviewMentorDocument: () => canReviewMentorDocument,
   extractSegmentHeroStoragePath: () => extractSegmentHeroStoragePath,
   validateHeroUploadPayload: () => validateHeroUploadPayload
 });
@@ -36,7 +37,7 @@ module.exports = __toCommonJS(server_exports);
 var import_config = require("dotenv/config");
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
-var import_crypto5 = require("crypto");
+var import_crypto6 = require("crypto");
 var import_http = require("http");
 
 // src/config/app.ts
@@ -1034,6 +1035,39 @@ function describeBookingContextMismatch(input) {
   }
   if (gig.is_active !== true) return `gig ${gigId} is no longer active`;
   return null;
+}
+
+// src/lib/mentorApplicationApproval.ts
+function transitionConflictPayload(currentStatus) {
+  return {
+    success: false,
+    error: {
+      code: "CONFLICT",
+      message: `Application is not pending review (current: ${currentStatus ?? "unknown"}).`
+    }
+  };
+}
+function mentorDecisionHttpMapping(outcome) {
+  switch (outcome) {
+    case "approved":
+    case "rejected":
+    case "reviewed":
+      return { status: 200, code: "OK", ok: true };
+    case "forbidden":
+      return { status: 403, code: "FORBIDDEN", ok: false };
+    case "not_found":
+      return { status: 404, code: "NOT_FOUND", ok: false };
+    case "not_pending_review":
+      return { status: 409, code: "CONFLICT", ok: false };
+    case "already_reviewed":
+      return { status: 409, code: "DOCUMENT_ALREADY_REVIEWED", ok: false };
+    case "missing_documents":
+    case "reason_required":
+    case "invalid_status":
+      return { status: 400, code: "BAD_REQUEST", ok: false };
+    default:
+      return { status: 500, code: "DECISION_OUTCOME_UNRECOGNISED", ok: false };
+  }
 }
 
 // src/lib/sessionAccess.ts
@@ -6366,6 +6400,88 @@ var buildLimiter = (limit) => (0, import_express_rate_limit.rateLimit)({
 var apiRateLimiter = buildLimiter(API_RATE_LIMIT);
 var expensiveRouteLimiter = buildLimiter(EXPENSIVE_RATE_LIMIT);
 
+// src/lib/emailVerificationRateLimit.ts
+var import_crypto5 = require("crypto");
+var EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE = "Too many email verification attempts";
+var EMAIL_VERIFICATION_RATE_LIMIT_CODE = "EMAIL_VERIFICATION_RATE_LIMITED";
+var IDENTIFIER_SALT2 = process.env.LOGIN_ALERT_SALT || process.env.SUPABASE_SERVICE_ROLE_KEY || (0, import_crypto5.randomBytes)(32).toString("hex");
+function unknownState() {
+  return { allowed: null, remaining: null, retryAt: null, serverNow: (/* @__PURE__ */ new Date()).toISOString() };
+}
+function normalizeEmail2(email) {
+  return typeof email === "string" ? email.trim().toLowerCase() : "";
+}
+function normalizeIp2(ip) {
+  return typeof ip === "string" ? ip.trim().slice(0, 64) : "";
+}
+function buildEmailVerificationKey(email, ip) {
+  return (0, import_crypto5.createHmac)("sha256", IDENTIFIER_SALT2).update(`verify:${normalizeEmail2(email)}|${normalizeIp2(ip)}`).digest("hex");
+}
+function firstRow2(data) {
+  return Array.isArray(data) && data.length > 0 ? data[0] : null;
+}
+function toState(row) {
+  const serverNow = (/* @__PURE__ */ new Date()).toISOString();
+  if (!row || typeof row.allowed !== "boolean") return unknownState();
+  const remaining = Number.isInteger(row.remaining) && row.remaining >= 0 ? row.remaining : null;
+  if (remaining === null) return unknownState();
+  const retryAt = typeof row.retry_at === "string" && !Number.isNaN(Date.parse(row.retry_at)) ? row.retry_at : null;
+  return { allowed: row.allowed, remaining, retryAt, serverNow };
+}
+async function callLedger(rpc, identifierKey) {
+  const admin = getSupabaseAdmin();
+  if (!admin) return unknownState();
+  try {
+    const { data, error } = await admin.rpc(rpc, { p_identifier_key: identifierKey });
+    if (error) {
+      console.error(`[email-rate-limit] ${rpc} failed:`, logSanitizer.safeMessage(error));
+      return unknownState();
+    }
+    const row = firstRow2(data);
+    if (!row) return unknownState();
+    return toState(row);
+  } catch (error) {
+    console.error(`[email-rate-limit] ${rpc} threw:`, logSanitizer.safeMessage(error));
+    return unknownState();
+  }
+}
+function readEmailVerificationRateLimit(identity) {
+  return callLedger(
+    "read_email_verification_rate_limit",
+    buildEmailVerificationKey(identity.email, identity.ip)
+  );
+}
+function consumeEmailVerificationAttempt(identity) {
+  return callLedger(
+    "consume_email_verification_attempt",
+    buildEmailVerificationKey(identity.email, identity.ip)
+  );
+}
+async function markEmailVerificationUpstreamBlocked(identity) {
+  const admin = getSupabaseAdmin();
+  if (!admin) return unknownState();
+  const identifierKey = buildEmailVerificationKey(identity.email, identity.ip);
+  try {
+    const { error } = await admin.rpc("mark_email_verification_upstream_blocked", {
+      p_identifier_key: identifierKey
+    });
+    if (error) {
+      console.error(
+        "[email-rate-limit] mark_email_verification_upstream_blocked failed:",
+        logSanitizer.safeMessage(error)
+      );
+      return unknownState();
+    }
+  } catch (error) {
+    console.error(
+      "[email-rate-limit] mark_email_verification_upstream_blocked threw:",
+      logSanitizer.safeMessage(error)
+    );
+    return unknownState();
+  }
+  return readEmailVerificationRateLimit(identity);
+}
+
 // src/lib/validation.ts
 var import_zod = require("zod");
 
@@ -6649,16 +6765,23 @@ var followUpSchema = import_zod.z.union([
   optionalText({ max: MAX_BIO_LENGTH, label: "Follow-up recommendation", multiline: true }),
   import_zod.z.null()
 ]);
+var UNINFORMATIVE_ZOD_MESSAGES = /* @__PURE__ */ new Set(["Invalid input"]);
+function readableIssueMessage(issue) {
+  if (!UNINFORMATIVE_ZOD_MESSAGES.has(issue.message)) return issue.message;
+  const key = issue.path.length > 0 ? issue.path.join(".") : null;
+  if (key) return `${key} was not a valid value for this field.`;
+  return "The request was not valid.";
+}
 function formatValidationFailure(error) {
   const fields = {};
   for (const issue of error.issues) {
     const key = issue.path.length > 0 ? issue.path.join(".") : "_";
-    if (!(key in fields)) fields[key] = issue.message;
+    if (!(key in fields)) fields[key] = readableIssueMessage(issue);
   }
   const first = error.issues[0];
   return {
     code: "VALIDATION_ERROR",
-    message: first ? first.message : "The request was not valid.",
+    message: first ? readableIssueMessage(first) : "The request was not valid.",
     fields
   };
 }
@@ -6764,6 +6887,38 @@ var apiSchemas = {
    */
   loginSuccessReport: import_zod.z.strictObject({
     email: import_zod.z.preprocess(blankToUndefined, emailField.optional())
+  }),
+  /**
+   * Body of `POST /api/auth/email-verification/attempt` - the pre-flight gate
+   * in front of the verification email send.
+   *
+   * The whole body is the recipient address, and nothing else. There is
+   * deliberately no `remaining`, `attempts` or `retryAt` field: the client
+   * answers with those, and a strict object means a caller trying to assert one
+   * gets a 400 rather than having it silently dropped. `emailField` trims,
+   * lower-cases and format-checks, so the identifier key is computed from an
+   * already-normalised value and `A@B.com` cannot dodge its own budget with
+   * casing.
+   */
+  emailVerificationAttempt: import_zod.z.strictObject({
+    email: emailField
+  }),
+  /**
+   * Body of `POST /api/auth/email-verification/outcome` - what actually
+   * happened when the client asked Supabase Auth to send.
+   *
+   * `outcome` is the only signal that matters. `rate_limited` is the one that
+   * carries information the client cannot be trusted to report honestly about
+   * itself (a hostile client could simply never report it), so it only ever
+   * *lengthens* the block: it records that the provider refused and the ledger
+   * stores an absolute deadline. Nothing in this route can extend a budget or
+   * clear one.
+   */
+  emailVerificationOutcome: import_zod.z.strictObject({
+    email: emailField,
+    outcome: import_zod.z.enum(["sent", "rate_limited", "failed"], {
+      message: "Unknown verification email outcome."
+    })
   }),
   // -- seeker booking -------------------------------------------------------
   bookingHold: import_zod.z.strictObject({
@@ -7160,9 +7315,28 @@ var apiSchemas = {
   mentorApplicationReject: import_zod.z.strictObject({
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: "Rejection reason", multiline: true })
   }),
+  /**
+   * Body of `PATCH /api/admin/mentor-documents/:id/review`.
+   *
+   * `status` is the DOCUMENT vocabulary, not the application one: the database
+   * check `mentor_verification_documents_status_check` allows only
+   * `pending | approved | rejected`, so an admin review may only ever write the
+   * two decided values. `pending_review` belongs to `mentor_applications` and
+   * is rejected here.
+   *
+   * `adminNote` is `nullableText(...).optional()` and deliberately NOT
+   * `optionalText(...)`. The column is nullable, so "no note" legitimately
+   * arrives as an explicit `null` (the admin screen sends `adminNote: null`
+   * when the note is empty) as well as as an absent key. `optionalText`
+   * accepted only `string | '' | undefined`, so the union failed on `null`
+   * and `validateBody` answered 400 with Zod's bare `invalid_union` message —
+   * the literal "Invalid input" an admin saw on every plain approval. The
+   * bounds (MAX_REASON_LENGTH), the HTML stripping and the strict key set are
+   * all unchanged; only `null` joins the accepted values.
+   */
   mentorDocumentReview: import_zod.z.strictObject({
     status: import_zod.z.enum(["approved", "rejected"], { message: 'Status must be "approved" or "rejected".' }),
-    adminNote: optionalText({ max: MAX_REASON_LENGTH, label: "Admin note", multiline: true })
+    adminNote: nullableText({ max: MAX_REASON_LENGTH, label: "Admin note", multiline: true }).optional()
   }),
   logRetention: import_zod.z.strictObject({
     retentionDays: import_zod.z.int("Retention must be a whole number of days.").min(1, "Retention must be at least 1 day.").max(365, "Retention must be 365 days or fewer.")
@@ -8036,6 +8210,9 @@ function validateHeroUploadPayload(body) {
   }
   return { valid: true, type, size: fileSize };
 }
+function canReviewMentorDocument(documentStatus) {
+  return documentStatus === "pending";
+}
 function extractSegmentHeroStoragePath(heroImageUrl) {
   if (typeof heroImageUrl !== "string") return null;
   const trimmed = heroImageUrl.trim();
@@ -8111,7 +8288,7 @@ async function startServer() {
   const passwordsMatch = (expected, candidate) => {
     const expectedBuffer = Buffer.from(expected);
     const candidateBuffer = Buffer.from(candidate);
-    return expectedBuffer.length === candidateBuffer.length && (0, import_crypto5.timingSafeEqual)(expectedBuffer, candidateBuffer);
+    return expectedBuffer.length === candidateBuffer.length && (0, import_crypto6.timingSafeEqual)(expectedBuffer, candidateBuffer);
   };
   const demoAuthResponse = (account) => {
     const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -8315,6 +8492,87 @@ async function startServer() {
           error: err,
           context: "POST /api/auth/login-success",
           clientMessage: "Unable to record login attempt."
+        });
+      }
+    }
+  );
+  app.get("/api/auth/email-verification/rate-limit", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const parsed = emailField.safeParse(
+      typeof req.query.email === "string" ? req.query.email : ""
+    );
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "VALIDATION_ERROR", message: "Enter a valid email address." }
+      });
+    }
+    const state = await readEmailVerificationRateLimit({ email: parsed.data, ip: req.ip });
+    return res.json({ success: true, rateLimit: state });
+  });
+  app.post(
+    "/api/auth/email-verification/attempt",
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.emailVerificationAttempt),
+    async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      try {
+        const { email } = req.body;
+        const ip = typeof req.ip === "string" ? req.ip : "";
+        const state = await consumeEmailVerificationAttempt({ email, ip });
+        if (state.allowed === false) {
+          return res.status(429).json({
+            success: false,
+            error: {
+              code: EMAIL_VERIFICATION_RATE_LIMIT_CODE,
+              message: EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE
+            },
+            rateLimit: state
+          });
+        }
+        return res.json({ success: true, rateLimit: state });
+      } catch (err) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: "POST /api/auth/email-verification/attempt",
+          clientMessage: "Unable to check the email verification rate limit."
+        });
+      }
+    }
+  );
+  app.post(
+    "/api/auth/email-verification/outcome",
+    expensiveRouteLimiter,
+    validateBody(apiSchemas.emailVerificationOutcome),
+    async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      try {
+        const { email, outcome } = req.body;
+        const ip = typeof req.ip === "string" ? req.ip : "";
+        if (outcome !== "rate_limited") {
+          return res.json({
+            success: true,
+            rateLimit: await readEmailVerificationRateLimit({ email, ip })
+          });
+        }
+        const state = await markEmailVerificationUpstreamBlocked({ email, ip });
+        return res.status(429).json({
+          success: false,
+          error: {
+            code: EMAIL_VERIFICATION_RATE_LIMIT_CODE,
+            message: EMAIL_VERIFICATION_RATE_LIMIT_MESSAGE
+          },
+          rateLimit: state
+        });
+      } catch (err) {
+        return respondWithServerError({
+          req,
+          res,
+          error: err,
+          context: "POST /api/auth/email-verification/outcome",
+          clientMessage: "Unable to record the email verification attempt."
         });
       }
     }
@@ -10470,6 +10728,18 @@ async function startServer() {
       for (const row of accountProfiles || []) {
         accountMap.set(row.id, row);
       }
+      const { data: readinessRows, error: readinessErr } = await admin.rpc(
+        "mentor_discovery_readiness_for_all"
+      );
+      if (readinessErr) throw readinessErr;
+      const readinessMap = /* @__PURE__ */ new Map();
+      for (const row of readinessRows ?? []) {
+        readinessMap.set(row.mentor_id, {
+          isPubliclyVisible: row.is_publicly_visible === true,
+          isDiscoverable: row.is_discoverable === true,
+          approvalStatus: row.approval_status ?? null
+        });
+      }
       const mentors = [];
       for (const [mentorId, profile] of mentorMap) {
         const mp = mpMap.get(mentorId);
@@ -10484,6 +10754,7 @@ async function startServer() {
           account_status: account.account_status ?? null,
           suspended_until: account.suspended_until ?? null
         });
+        const readiness = readinessMap.get(mentorId);
         mentors.push({
           id: mentorId,
           name: profile.full_name,
@@ -10500,6 +10771,12 @@ async function startServer() {
           isDeactivated: state.isDeactivated,
           isEligible: state.isEligible,
           approvalStatus: mp?.approval_status ?? null,
+          // Authoritative discovery answers, from `mentor_discovery_readiness_for_all`.
+          // The page must not substitute `isEligible` here: that is eligibility,
+          // not discoverability, and the two differ for every mentor without an
+          // active gig.
+          isDiscoverable: readiness?.isDiscoverable ?? false,
+          isPubliclyVisible: readiness?.isPubliclyVisible ?? false,
           accountStatus: account.account_status ?? "active",
           suspendedUntil: account.suspended_until ?? null,
           suspensionReason: account.suspension_reason ?? null,
@@ -10816,6 +11093,11 @@ async function startServer() {
         const { data: creator } = await admin.from("profiles").select("id, full_name, email").eq("id", creationEvent.actor_user_id).maybeSingle();
         createdByAdmin = creator || null;
       }
+      const { data: readinessRaw, error: readinessErr } = await admin.rpc("mentor_discovery_readiness", {
+        p_mentor_id: mentorId
+      });
+      if (readinessErr) throw readinessErr;
+      const readiness = readinessRaw ?? null;
       return res.json({
         success: true,
         mentor: {
@@ -10919,7 +11201,12 @@ async function startServer() {
             suspendedBy: profile.suspended_by ?? null,
             deactivatedAt: profile.deactivated_at ?? null,
             internalNote: profile.internal_note ?? null
-          }
+          },
+          // ---- DISCOVERY READINESS (computed in the database) ----
+          // The single source of truth for "will a seeker find this mentor".
+          // `null` only if the RPC itself is unavailable, which the page renders
+          // as unknown rather than guessing.
+          discovery: readiness
         }
       });
     } catch (err) {
@@ -12466,7 +12753,7 @@ async function startServer() {
         "image/webp": "webp",
         "image/gif": "gif"
       };
-      const storagePath = `segment-hero/${id}-${Date.now()}-${(0, import_crypto5.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
+      const storagePath = `segment-hero/${id}-${Date.now()}-${(0, import_crypto6.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
       const { data, error } = await admin.storage.from("segment-hero").createSignedUploadUrl(storagePath);
       if (error) throw error;
       const supabaseUrl2 = (process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
@@ -13869,7 +14156,7 @@ async function startServer() {
           "image/jpeg": "jpg",
           "image/webp": "webp"
         };
-        const storagePath = `platform/payment-qr-${Date.now()}-${(0, import_crypto5.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
+        const storagePath = `platform/payment-qr-${Date.now()}-${(0, import_crypto6.randomUUID)().slice(0, 6)}.${extensionByMimeType[type]}`;
         const { data, error } = await admin.storage.from(PAYMENT_QR_BUCKET).createSignedUploadUrl(storagePath);
         if (error) throw error;
         return res.json({
@@ -14255,7 +14542,7 @@ async function startServer() {
           error: { code: "TICKET_CLOSED", message: "This ticket is closed. Please raise a new support ticket." }
         });
       }
-      const safeName = buildSupportAttachmentPath(ticket.id, fileName, (0, import_crypto5.randomUUID)().slice(0, 8));
+      const safeName = buildSupportAttachmentPath(ticket.id, fileName, (0, import_crypto6.randomUUID)().slice(0, 8));
       const { data: signed, error: signErr } = await admin.storage.from(SUPPORT_ATTACHMENT_BUCKET).createSignedUploadUrl(safeName);
       if (signErr || !signed?.token) {
         console.error("[Support] Failed to mint an attachment upload URL:", logSanitizer.safeMessage(signErr));
@@ -14993,7 +15280,7 @@ async function startServer() {
         callerId: req.auth.user.id,
         roles: req.auth.roles,
         nowIso: (/* @__PURE__ */ new Date()).toISOString(),
-        newId: (0, import_crypto5.randomUUID)()
+        newId: (0, import_crypto6.randomUUID)()
       });
       if (!result.ok) {
         const status = result.reason === "BOOKING_NOT_FOUND" ? 404 : result.reason === "PARTICIPANT_MISMATCH" ? 409 : 403;
@@ -15453,83 +15740,51 @@ async function startServer() {
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
       }
-      const { data: application, error: appErr } = await admin.from("mentor_applications").select("*").eq("id", id).maybeSingle();
-      if (appErr) throw appErr;
-      if (!application) {
-        return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Application not found." } });
-      }
-      if (application.status !== "pending_review") {
-        return res.status(409).json({ success: false, error: { code: "CONFLICT", message: `Application is not pending review (current: ${application.status}).` } });
-      }
-      const { data: docs, error: docsErr } = await admin.from("mentor_verification_documents").select("document_type, status").eq("application_id", id);
-      if (docsErr) throw docsErr;
-      const { data: requiredDocumentTypes, error: requiredTypesErr } = await admin.from("mentor_document_types").select("code").eq("is_active", true).eq("is_required", true);
-      if (requiredTypesErr) throw requiredTypesErr;
-      const approvedDocTypes = new Set((docs || []).filter((d) => d.status === "approved").map((d) => d.document_type));
-      const missingApproved = (requiredDocumentTypes || []).map((documentType) => documentType.code).filter((type) => !approvedDocTypes.has(type));
-      if (missingApproved.length > 0) {
-        return res.status(400).json({
+      const { data, error: rpcErr } = await admin.rpc("approve_mentor_application", {
+        p_application_id: id,
+        p_admin_user_id: adminUserId
+      });
+      if (rpcErr) throw rpcErr;
+      const result = data ?? {};
+      const mapping = mentorDecisionHttpMapping(result.outcome);
+      if (!mapping.ok || result.outcome !== "approved") {
+        if (result.outcome === "not_pending_review") {
+          return res.status(409).json(transitionConflictPayload(result.current_status));
+        }
+        if (result.outcome === "missing_documents") {
+          const missing = result.missing ?? [];
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: "MISSING_APPROVED_DOCUMENTS",
+              message: `All required documents must be approved before mentor approval: ${missing.join(", ")}`
+            }
+          });
+        }
+        return res.status(mapping.status).json({
           success: false,
           error: {
-            code: "MISSING_APPROVED_DOCUMENTS",
-            message: `All required documents must be approved before mentor approval: ${missingApproved.join(", ")}`
+            code: mapping.code,
+            message: result.outcome === "forbidden" ? "Admin authorization required." : result.outcome === "not_found" ? "Application not found." : "Unable to approve mentor application."
           }
         });
       }
-      await admin.rpc("approve_mentor_application", { p_application_id: id });
-      const { error: updErr } = await admin.from("mentor_applications").update({
-        status: "approved",
-        reviewed_at: (/* @__PURE__ */ new Date()).toISOString(),
-        reviewed_by: adminUserId,
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      }).eq("id", id);
-      if (updErr) throw updErr;
-      await admin.from("mentor_application_audit").insert({
-        application_id: id,
-        action: "approved",
-        admin_user_id: adminUserId,
-        metadata: { approved_by: adminUserId }
-      });
-      const { error: roleErr } = await admin.from("user_roles").upsert({
-        user_id: application.user_id,
-        role: "mentor"
-      });
-      if (roleErr) throw roleErr;
-      const { error: mpErr } = await admin.from("mentor_profiles").upsert({
-        id: application.user_id,
-        headline: application.bio || "",
-        about: application.bio || "",
-        experience_years: 0,
-        languages: [],
-        rating: 0,
-        review_count: 0,
-        session_count: 0,
-        is_approved: true,
-        is_featured: false,
-        approval_status: "approved",
-        is_active: true,
-        created_at: (/* @__PURE__ */ new Date()).toISOString(),
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      if (mpErr) throw mpErr;
-      await admin.from("notifications").insert({
-        user_id: application.user_id,
-        title: "Mentor Application Approved",
-        message: "Congratulations! Your mentor application has been approved. You can now complete your mentor profile and configure your availability.",
-        type: "SYSTEM",
-        event_type: "MENTOR_APPLICATION_APPROVED",
-        entity_type: "mentor_application",
-        entity_id: id,
-        link: "/mentor",
-        is_read: false
-      });
       auditAction(req.auth, "mentor_application_approved", {
         entityType: "mentor_application",
         entityId: id,
         requestId: req.requestId,
-        metadata: { approvedByUserId: adminUserId, applicantUserId: application.user_id }
+        metadata: { approvedByUserId: adminUserId, applicantUserId: result.mentor_user_id }
       });
-      return res.json({ success: true, message: "Mentor application approved successfully." });
+      return res.json({
+        success: true,
+        message: "Mentor application approved successfully.",
+        // Echoed from the transaction so the caller can reconcile without a
+        // second read, and so a stale tab sees which decision it actually got.
+        applicationId: result.application_id,
+        mentorUserId: result.mentor_user_id,
+        applicationStatus: result.application_status,
+        approvalStatus: result.approval_status
+      });
     } catch (err) {
       return respondWithServerError({
         req,
@@ -15549,47 +15804,39 @@ async function startServer() {
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
       }
-      const { data: application, error: appErr } = await admin.from("mentor_applications").select("*").eq("id", id).maybeSingle();
-      if (appErr) throw appErr;
-      if (!application) {
-        return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Application not found." } });
-      }
-      if (application.status !== "pending_review") {
-        return res.status(409).json({ success: false, error: { code: "CONFLICT", message: `Application is not pending review (current: ${application.status}).` } });
-      }
-      const { error: updErr } = await admin.from("mentor_applications").update({
-        status: "rejected",
-        reviewed_at: (/* @__PURE__ */ new Date()).toISOString(),
-        reviewed_by: adminUserId,
-        rejection_reason: rejectionReason.trim(),
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      }).eq("id", id);
-      if (updErr) throw updErr;
-      await admin.from("mentor_application_audit").insert({
-        application_id: id,
-        action: "rejected",
-        admin_user_id: adminUserId,
-        rejection_reason: rejectionReason.trim(),
-        metadata: { rejected_by: adminUserId }
+      const { data, error: rpcErr } = await admin.rpc("reject_mentor_application", {
+        p_application_id: id,
+        p_rejection_reason: rejectionReason.trim(),
+        p_admin_user_id: adminUserId
       });
-      await admin.from("notifications").insert({
-        user_id: application.user_id,
-        title: "Mentor Application Needs Changes",
-        message: `Your mentor application needs changes: ${rejectionReason.trim()}. Please review the Admin feedback and resubmit your verification.`,
-        type: "SYSTEM",
-        event_type: "MENTOR_APPLICATION_REJECTED",
-        entity_type: "mentor_application",
-        entity_id: id,
-        link: "/mentor/verification",
-        is_read: false
-      });
+      if (rpcErr) throw rpcErr;
+      const result = data ?? {};
+      const mapping = mentorDecisionHttpMapping(result.outcome);
+      if (!mapping.ok || result.outcome !== "rejected") {
+        if (result.outcome === "not_pending_review") {
+          return res.status(409).json(transitionConflictPayload(result.current_status));
+        }
+        return res.status(mapping.status).json({
+          success: false,
+          error: {
+            code: mapping.code,
+            message: result.outcome === "forbidden" ? "Admin authorization required." : result.outcome === "not_found" ? "Application not found." : result.outcome === "reason_required" ? "A rejection reason is required." : "Unable to reject mentor application."
+          }
+        });
+      }
       auditAction(req.auth, "mentor_application_rejected", {
         entityType: "mentor_application",
         entityId: id,
         requestId: req.requestId,
-        metadata: { rejectedByUserId: adminUserId, applicantUserId: application.user_id, rejectionReason }
+        metadata: { rejectedByUserId: adminUserId, applicantUserId: result.mentor_user_id, rejectionReason }
       });
-      return res.json({ success: true, message: "Mentor application rejected successfully." });
+      return res.json({
+        success: true,
+        message: "Mentor application rejected successfully.",
+        applicationId: result.application_id,
+        mentorUserId: result.mentor_user_id,
+        applicationStatus: result.application_status
+      });
     } catch (err) {
       return respondWithServerError({
         req,
@@ -15609,32 +15856,42 @@ async function startServer() {
       if (!admin) {
         return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
       }
-      const { data: document, error: docErr } = await admin.from("mentor_verification_documents").select("*, application:mentor_applications!inner(id, user_id, full_name)").eq("id", id).maybeSingle();
-      if (docErr) throw docErr;
-      if (!document) {
-        return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Document not found." } });
-      }
-      const { data: updatedDoc, error: updErr } = await admin.from("mentor_verification_documents").update({
-        status,
-        reviewed_at: (/* @__PURE__ */ new Date()).toISOString(),
-        reviewed_by: adminUserId,
-        admin_note: adminNote || null,
-        updated_at: (/* @__PURE__ */ new Date()).toISOString()
-      }).eq("id", id).select().single();
-      if (updErr) throw updErr;
-      await admin.from("mentor_application_audit").insert({
-        application_id: document.application.id,
-        action: "document_reviewed",
-        admin_user_id: adminUserId,
-        metadata: { document_id: id, document_type: document.document_type, status }
+      const { data, error: rpcErr } = await admin.rpc("review_mentor_document", {
+        p_document_id: id,
+        p_status: status,
+        p_admin_note: adminNote || null,
+        p_admin_user_id: adminUserId
       });
+      if (rpcErr) throw rpcErr;
+      const result = data ?? {};
+      const mapping = mentorDecisionHttpMapping(result.outcome);
+      if (!mapping.ok || result.outcome !== "reviewed") {
+        if (result.outcome === "already_reviewed") {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: "DOCUMENT_ALREADY_REVIEWED",
+              message: `This document is already ${result.current_status ?? "decided"} and cannot be reviewed again.`
+            }
+          });
+        }
+        return res.status(mapping.status).json({
+          success: false,
+          error: {
+            code: mapping.code,
+            message: result.outcome === "forbidden" ? "Admin authorization required." : result.outcome === "not_found" ? "Document not found." : result.outcome === "invalid_status" ? "A document can only be approved or rejected." : "Unable to review verification document."
+          }
+        });
+      }
       auditAction(req.auth, "mentor_document_reviewed", {
         entityType: "mentor_verification_document",
         entityId: id,
         requestId: req.requestId,
-        metadata: { documentType: document.document_type, status, adminNote }
+        metadata: { documentType: result.document_type, status: result.status, adminNote }
       });
-      return res.json({ success: true, document: updatedDoc });
+      const { data: reviewedDocument, error: docErr } = await admin.from("mentor_verification_documents").select("*").eq("id", id).maybeSingle();
+      if (docErr) throw docErr;
+      return res.json({ success: true, document: reviewedDocument });
     } catch (err) {
       return respondWithServerError({
         req,
@@ -16589,6 +16846,7 @@ async function startServer() {
 startServer();
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  canReviewMentorDocument,
   extractSegmentHeroStoragePath,
   validateHeroUploadPayload
 });

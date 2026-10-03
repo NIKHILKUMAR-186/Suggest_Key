@@ -832,7 +832,7 @@ describe('the phase-37 migration is forward-only and self-verifying', () => {
 
   it('fails loudly if either trigger did not install', () => {
     assert.match(code, /phase37 identity enforcement incomplete/);
-    assert.match(code, /NOT t\.tgenabled/);
+    assert.match(code, /t\.tgenabled\s*<>\s*'O'/);
     assert.match(code, /trg_bookings_offer_identity'\s*,\s*'trg_session_workspaces_participant_identity'/);
   });
 

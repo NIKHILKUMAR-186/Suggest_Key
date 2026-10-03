@@ -1,127 +1,96 @@
+import { ArrowRight } from 'lucide-react';
 import React from 'react';
-import { Button } from '@/src/components/ui/Button';
-import { Enter } from '@/src/components/landing/Reveal';
 import { HeroConversationVisual } from '@/src/components/landing/HeroConversationVisual';
-import { HeroSegmentBubbles } from '@/src/components/landing/HeroSegmentBubbles';
-import { HERO_ARROW, ROUTE_MENTOR_SIGNUP, TRUST_POINTS } from '@/src/components/landing/landingContent';
-import type { Segment } from '@/src/types/database';
-
-export interface LandingHeroProps {
-  findMentorPath: string;
-  onNavigate: (href: string) => void;
-  /** The same live catalogue the section below the hero renders from. */
-  segments: Segment[];
-  isLoadingSegments: boolean;
-  onSegmentOpen: (segment: Segment) => void;
-}
+import { LineReveal, Reveal, Stagger, StaggerItem } from '@/src/components/landing/Reveal';
+import { HERO_IMAGE } from '@/src/components/landing/landingImages';
+import {
+  HERO_BODY,
+  HERO_EYEBROW,
+  HERO_PRIMARY_LABEL,
+  HERO_PROOF,
+  HERO_TITLE_LINES,
+} from '@/src/components/landing/landingContent';
 
 /**
- * HERO.
+ * THE HERO.
  *
- * Composition, left to right: the message, then a human scene, with the LIVE
- * mentorship areas floating around that scene. The bubbles sit on the visual
- * because they are the bridge between "a conversation" and "here are the areas we
- * actually cover" — they are the first thing a visitor can actually click.
+ * One sentence, one promise, one action. The whole page is engineered so a
+ * visitor who never scrolls still knows what this is: an eyebrow that names the
+ * format, a headline that names the outcome, a sentence that names the
+ * mechanism, and exactly one button.
  *
- * Everything on the left is a mechanic the product implements (approval, fees
- * shown before payment, private 1:1). There is no rating, review count or
- * testimonial on this page, because there is no review system behind any of it.
+ * There is deliberately no second action here. A visitor who has not yet chosen
+ * a mentor and a visitor who wants to become one are at very different points,
+ * and offering both at the same weight would split the only conversion this
+ * page has. "Become a mentor" is a footer link, where it can be chosen without
+ * competing.
+ *
+ * The entrance is ordered rather than simultaneous: the bar settles, the
+ * photograph resolves out of a soft frame, the label appears, the headline
+ * arrives line by line out of its own mask, then the copy, the action and the
+ * proof line follow. The whole thing is settled inside about a second and a
+ * quarter. Nothing here loops, and every step is a transform or an opacity, so
+ * the sequence costs one composited frame.
+ *
+ * The photograph is the full-bleed field on desktop and a wide band on mobile.
+ * That is a different composition, not a smaller one: on a phone the headline
+ * and the action need the whole width, so the image moves underneath them
+ * instead of competing with them.
  */
-export const LandingHero: React.FC<LandingHeroProps> = ({
-  findMentorPath,
-  onNavigate,
-  segments,
-  isLoadingSegments,
-  onSegmentOpen,
-}) => (
-  <section className="relative isolate overflow-hidden bg-[var(--sk-brand-plum)]">
-    {/* Ambient lighting. Clipped by `isolate overflow-hidden`, so the large
-        blurred shapes below can never widen the document at any viewport. */}
-    <div className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
-      <div className="landing-grid absolute inset-0 opacity-50" />
-      <div
-        className="absolute -left-48 -top-64 h-[640px] w-[640px] rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(102,58,243,0.5), transparent 62%)', filter: 'blur(40px)' }}
-      />
-      <div
-        className="absolute -right-40 top-0 h-[560px] w-[560px] rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(37,99,235,0.3), transparent 64%)', filter: 'blur(40px)' }}
-      />
-      <div
-        className="absolute bottom-[-220px] left-1/4 h-[420px] w-[520px] rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(247,210,67,0.11), transparent 66%)', filter: 'blur(40px)' }}
-      />
-    </div>
-    <div className="mx-auto grid max-w-[1280px] grid-cols-1 items-center gap-8 px-4 pb-24 pt-10 sm:px-6 sm:pb-28 sm:pt-14 lg:grid-cols-[47fr_53fr] lg:gap-6 lg:px-8 lg:pb-32 lg:pt-16">
-      {/* LEFT - the message */}
-      <div className="max-w-xl lg:pr-2">
-        <Enter>
-          <span className="inline-flex items-center gap-2 rounded-full border border-[var(--sk-brand-header-border)] bg-white/[0.06] px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--sk-brand-gold)]">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--sk-brand-gold)]" aria-hidden="true" />
-            1:1 mentorship marketplace
-          </span>
-        </Enter>
 
-        <Enter delay={0.06}>
-          <h1
-            className="mt-5 text-[34px] font-medium leading-[1.05] tracking-tight text-[var(--sk-brand-header-text)] sm:text-[48px] lg:text-[64px]"
-            style={{ fontFamily: 'var(--font-aeonikpro)' }}
-          >
-            The right mentor
-            <br />
-            for the questions
-            <br />
-            <span className="text-[var(--sk-brand-gold)]">that matter.</span>
-          </h1>
-        </Enter>
+export interface LandingHeroProps {
+  onFindMentor: () => void;
+}
 
-        <Enter delay={0.12}>
-          <p className="mt-5 max-w-lg text-[15px] leading-relaxed text-[var(--sk-brand-header-muted)] sm:text-base">
-            Find a verified mentor, choose a time that works for you, and have a private 1:1 conversation built
-            around your situation.
-          </p>
-        </Enter>
+export const LandingHero: React.FC<LandingHeroProps> = ({ onFindMentor }) => {
+  return (
+    <section
+      className="sk-lp-hero sk-lp-on-plum"
+      aria-labelledby="sk-lp-hero-title"
+      /**
+       * The same photograph that fills the desktop hero is laid behind the copy
+       * on small screens. The path is handed over from the image manifest rather
+       * than repeated in the stylesheet, so the file it points at can only ever
+       * be the one the band below is already loading.
+       */
+      style={{ '--sk-lp-hero-atmosphere': `url(${HERO_IMAGE.src})` } as React.CSSProperties}
+    >
+      <div className="sk-lp-wrap">
+        <div className="sk-lp-hero__grid">
+          <div className="sk-lp-hero__copy">
+            <Reveal delay={0.18} y={10}>
+              <p className="sk-lp-eyebrow">{HERO_EYEBROW}</p>
+            </Reveal>
 
-        <Enter delay={0.18}>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <Button
-              size="lg"
-              onClick={() => onNavigate(findMentorPath)}
-              className="min-h-[52px] gap-2 rounded-xl bg-[var(--sk-brand-gold)] px-7 text-[15px] font-semibold text-[var(--sk-brand-on-gold)] hover:bg-[var(--sk-brand-gold-deep)] hover:shadow-[0_14px_34px_-14px_rgba(247,210,67,0.7)]"
-            >
-              Find a Mentor {HERO_ARROW}
-            </Button>
-            <Button
-              size="lg"
-              onClick={() => onNavigate(ROUTE_MENTOR_SIGNUP)}
-              className="min-h-[52px] rounded-xl border border-white/20 bg-white/[0.06] px-7 text-[15px] text-[var(--sk-brand-header-text)] hover:bg-white/[0.12]"
-            >
-              Become a Mentor
-            </Button>
+            <h1 id="sk-lp-hero-title" className="sk-lp-display sk-lp-display--xl mt-6">
+              <LineReveal lines={HERO_TITLE_LINES} delay={0.26} step={0.1} />
+            </h1>
+
+            <Reveal delay={0.48}>
+              <p className="sk-lp-lead mt-7 max-w-[46ch]">{HERO_BODY}</p>
+            </Reveal>
+
+            <Stagger className="sk-lp-hero__actions" step={0.09} delay={0.56}>
+              <StaggerItem>
+                <button type="button" className="sk-lp-btn sk-lp-btn--gold" onClick={onFindMentor}>
+                  {HERO_PRIMARY_LABEL}
+                  <ArrowRight className="h-4 w-4 sk-lp-btn__arrow" aria-hidden="true" />
+                </button>
+              </StaggerItem>
+            </Stagger>
+
+            <Reveal delay={0.68}>
+              <ul className="sk-lp-hero__proof">
+                {HERO_PROOF.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </Reveal>
           </div>
-        </Enter>
-
-        <Enter delay={0.24}>
-          <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
-            {TRUST_POINTS.map(({ icon: Icon, label }) => (
-              <li key={label} className="flex items-center gap-2 text-[13px] text-[var(--sk-brand-header-muted)]">
-                <Icon className="h-4 w-4 shrink-0 text-[var(--sk-brand-gold)]" aria-hidden="true" />
-                {label}
-              </li>
-            ))}
-          </ul>
-        </Enter>
+        </div>
       </div>
 
-      {/* RIGHT - the human scene, with live areas floating around it */}
-      <div className="relative mx-auto w-full max-w-[560px] lg:max-w-none">
-        <HeroConversationVisual className="mx-auto aspect-[560/620] w-full max-w-[480px] sm:max-w-[520px] lg:max-w-[560px]" />
-
-        {/* The bubbles share the live catalogue with the section below, and are
-            positioned against this relatively-positioned box so they orbit the
-            figure rather than escaping into the page. */}
-        <HeroSegmentBubbles segments={segments} isLoading={isLoadingSegments} onOpen={onSegmentOpen} />
-      </div>
-    </div>
-  </section>
-);
+      <HeroConversationVisual isFullBleed />
+    </section>
+  );
+};

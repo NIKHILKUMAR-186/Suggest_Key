@@ -2880,5 +2880,1578 @@ body {
     }
   }
 
+/* ============================================================
+   SUGGEST KEY — LANDING PAGE COMPOSITION LAYER (additive)
+   ------------------------------------------------------------
+   The public landing page only. Everything here is namespaced
+   `--sk-lp-*` / `.sk-lp-*`, and every token falls back to the
+   existing `--sk-brand-*` and `--segment-*` values, so nothing
+   in seeker / mentor / admin can be affected by this block.
+
+   The editorial system, in one place:
+
+   TYPE     display is the project's Space Grotesk ("--font-aeonikpro")
+            at weight 400-500 with hard negative tracking; UI is
+            Inter ("--font-untitled-sans") at 500-600. Large type
+            is light and tight, never bold — that contrast between
+            a huge quiet headline and small confident UI text IS
+            the hierarchy.
+
+   RHYTHM   8px base. Sections breathe on --sk-lp-section-y
+            (72px mobile -> 152px desktop). Hairlines, never
+            shadows, separate light sections.
+
+   SURFACE  Five surfaces, alternating so no two neighbours
+            look alike:
+              1 photo + plum gradient   hero
+              2 warm paper              areas
+              3 pure white              how it works
+              4 deep plum (fixed)       the mentors
+              5 violet wash             human connection
+              6 warm paper              verification
+              7 deep plum + gold        final call
+            Fixed plum bands read as brand fields in BOTH themes;
+            the paper/white bands follow the theme.
+
+   GRADIENT gradients are ENVIRONMENT: the atmosphere behind a
+            surface, or the scrim that makes text legible over a
+            photograph. Never a fill on a button, never decoration
+            on a card.
+
+   MOTION   transform + opacity only. Short, editorial easing
+            (cubic-bezier(.22,1,.36,1)), one hierarchy: hero is
+            loud, section reveals are medium, hover is a whisper.
+   ============================================================ */
+
+:root {
+  /* Fluid display scale. The 8vw/6vw viewports are the reference
+     system's own sizes, re-pointed to Suggest Key's type. */
+--sk-lp-display-xl: clamp(2.75rem, 1.05rem + 4.6vw, 5rem);
+--sk-lp-display-lg: clamp(2.15rem, 1.35rem + 3.1vw, 3.75rem);
+--sk-lp-display-md: clamp(1.7rem, 1.28rem + 1.9vw, 2.5rem);
+--sk-lp-display-sm: clamp(1.3rem, 1.1rem + 0.9vw, 1.65rem);
+--sk-lp-display-final: clamp(2.4rem, 1.25rem + 3.7vw, 4.5rem);
+  --sk-lp-numeral: clamp(2.9rem, 1.4rem + 4.6vw, 5rem);
+  --sk-lp-lead: clamp(1.02rem, 0.96rem + 0.34vw, 1.19rem);
+
+  --sk-lp-section-y: clamp(72px, 8.5vw, 152px);
+  --sk-lp-gutter: clamp(20px, 4.4vw, 48px);
+  --sk-lp-maxw: 1440px;
+
+  /* Paper surfaces — follow the theme. */
+  --sk-lp-canvas: #fbf8f3;
+  --sk-lp-surface: #ffffff;
+  --sk-lp-ink: #1f1037;
+  --sk-lp-ink-soft: #3b2f52;
+  --sk-lp-ink-muted: #5d5173;
+  --sk-lp-hair: rgba(31, 16, 55, 0.13);
+  --sk-lp-hair-strong: rgba(31, 16, 55, 0.26);
+  --sk-lp-focus: #1f1037;
+
+  /* Brand fields — deliberately theme-invariant. */
+  --sk-lp-plum: #1f1037;
+  --sk-lp-plum-deep: #120722;
+  --sk-lp-gold: #f7d243;
+  --sk-lp-gold-deep: #e0b72c;
+  --sk-lp-on-plum: #ffffff;
+  --sk-lp-on-plum-soft: rgba(255, 255, 255, 0.76);
+  --sk-lp-on-plum-muted: rgba(255, 255, 255, 0.56);
+  --sk-lp-hair-on-plum: rgba(255, 255, 255, 0.15);
+  --sk-lp-focus-on-plum: #f7d243;
+
+  /* Atmosphere. One wash per surface, used as a background, and
+     the photograph scrim. Lavender + violet, never neon. */
+  --sk-lp-plum-field: radial-gradient(
+      118% 92% at 88% 6%,
+      rgba(122, 74, 219, 0.42) 0%,
+      rgba(122, 74, 219, 0) 58%
+    ),
+    linear-gradient(158deg, #1b0d33 0%, #241246 52%, #180b2f 100%);
+  --sk-lp-violet-field: radial-gradient(
+      96% 78% at 14% 0%,
+      rgba(102, 57, 243, 0.09) 0%,
+      rgba(102, 57, 243, 0) 62%
+    ),
+    radial-gradient(72% 62% at 92% 96%, rgba(14, 165, 160, 0.07) 0%, rgba(14, 165, 160, 0) 60%);
+  --sk-lp-lavender-wash: linear-gradient(168deg, #f4efff 0%, #fbf8f3 46%, #f0f4fb 100%);
+  --sk-lp-night-wash: radial-gradient(
+      104% 84% at 18% 0%,
+      rgba(124, 92, 246, 0.28) 0%,
+      rgba(124, 92, 246, 0) 60%
+    ),
+    linear-gradient(170deg, #1c0c38 0%, #150a28 58%, #100520 100%);
+
+  /* Text legibility over photography.
+     Desktop: weighted left, so the copy column sits on near-solid plum while
+     the two people stay visible on the right. The photograph is dimmed, never
+     erased — the top-right corner keeps roughly two thirds of its light.
+     Mobile: the image is a band UNDER the copy rather than behind it, so it
+     only needs enough scrim to unify the palette, not to carry text. */
+  --sk-lp-photo-scrim: linear-gradient(
+      to right,
+      rgba(17, 7, 33, 0.97) 0%,
+      rgba(18, 8, 36, 0.93) 28%,
+      rgba(22, 9, 44, 0.66) 54%,
+      rgba(34, 15, 64, 0.36) 78%,
+      rgba(48, 22, 88, 0.3) 100%
+    ),
+    linear-gradient(to top, rgba(13, 5, 26, 0.86) 0%, rgba(13, 5, 26, 0) 46%);
+  --sk-lp-photo-scrim-band: linear-gradient(
+      to bottom,
+      rgba(24, 10, 46, 0.46) 0%,
+      rgba(24, 10, 46, 0.12) 38%,
+      rgba(20, 8, 38, 0.62) 100%
+    );
+
+  /* Restrained depth. Two levels, both soft. */
+  --sk-lp-shadow-card: 0 1px 2px rgba(31, 16, 55, 0.05), 0 18px 42px -28px rgba(31, 16, 55, 0.36);
+  --sk-lp-shadow-card-hover: 0 2px 4px rgba(31, 16, 55, 0.06), 0 30px 60px -26px rgba(31, 16, 55, 0.46);
+  --sk-lp-shadow-lift: 0 28px 68px -34px rgba(10, 4, 22, 0.7);
+
+  /* Editorial easing: fast out, long settle. No spring, no bounce. */
+  --sk-lp-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --sk-lp-dur-fast: 220ms;
+  --sk-lp-dur: 420ms;
+  --sk-lp-dur-slow: 720ms;
+}
+
+.dark {
+  --sk-lp-canvas: #0d0718;
+  --sk-lp-surface: #170d2b;
+  --sk-lp-ink: #f5f1fb;
+  --sk-lp-ink-soft: #ddd4ec;
+  --sk-lp-ink-muted: #b3a8c6;
+  --sk-lp-hair: rgba(245, 241, 251, 0.14);
+  --sk-lp-hair-strong: rgba(245, 241, 251, 0.28);
+  --sk-lp-focus: #f7d243;
+  --sk-lp-violet-field: radial-gradient(
+      96% 78% at 14% 0%,
+      rgba(124, 92, 246, 0.16) 0%,
+      rgba(124, 92, 246, 0) 62%
+    ),
+    radial-gradient(72% 62% at 92% 96%, rgba(56, 189, 248, 0.08) 0%, rgba(56, 189, 248, 0) 60%);
+  --sk-lp-lavender-wash: radial-gradient(
+      104% 86% at 16% 0%,
+      rgba(124, 92, 246, 0.2) 0%,
+      rgba(124, 92, 246, 0) 62%
+    ),
+    linear-gradient(170deg, #150a28 0%, #0d0718 62%, #100620 100%);
+  --sk-lp-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 22px 48px -30px rgba(0, 0, 0, 0.9);
+  --sk-lp-shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.55), 0 34px 68px -28px rgba(0, 0, 0, 0.95);
+}
+
+/* --- structure ------------------------------------------------ */
+
+.sk-lp-shell {
+  background: var(--sk-lp-canvas);
+  color: var(--sk-lp-ink);
+  font-family: var(--font-untitled-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+}
+
+.sk-lp-wrap {
+  width: 100%;
+  max-width: var(--sk-lp-maxw);
+  margin-inline: auto;
+  padding-inline: var(--sk-lp-gutter);
+}
+
+/* A section that must read as one calm surface: no boxed edges. */
+.sk-lp-section {
+  position: relative;
+  padding-block: var(--sk-lp-section-y);
+}
+
+.sk-lp-section--plum {
+  background: var(--sk-lp-plum-field);
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-section--wash {
+  background: var(--sk-lp-lavender-wash);
+  color: var(--sk-lp-ink);
+}
+
+.sk-lp-shell :focus-visible {
+  outline: 2px solid var(--sk-lp-focus);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* A dark field needs a light ring. Keying this off the shared plum context rather
+   than a list of section names means a new dark band is covered by adding the
+   class, not by remembering to edit a selector here — and a dark-plum focus ring
+   on a dark-plum button is a focus state nobody can see. */
+.sk-lp-on-plum :focus-visible {
+  outline-color: var(--sk-lp-focus-on-plum);
+}
+
+.sk-lp-skip {
+  position: absolute;
+  left: var(--sk-lp-gutter);
+  top: 8px;
+  z-index: 90;
+  transform: translateY(-160%);
+  background: var(--sk-lp-gold);
+  color: var(--sk-lp-plum-deep);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 10px 16px;
+  border-radius: 9999px;
+  transition: transform var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-skip:focus-visible {
+  transform: translateY(0);
+}
+
+/* --- typography ----------------------------------------------- */
+
+.sk-lp-display,
+.sk-lp-numeral,
+.sk-lp-nav,
+.sk-lp-btn,
+.sk-lp-eyebrow,
+.sk-lp-serif-meta {
+  font-family: var(--font-aeonikpro);
+}
+
+/* Headings must follow the surface they sit on. The shell sets an explicit
+   colour on every h1-h6, so without `inherit` here a display heading would
+   keep the shell's dark brand ink even when it lands on a plum field. */
+.sk-lp-display,
+.sk-lp-step__title,
+.sk-lp-area__name,
+.sk-lp-mentor__name,
+.sk-lp-trust__title,
+.sk-lp-state__title,
+.sk-lp-footer__heading,
+.sk-lp-sheet__heading {
+  color: inherit;
+}
+
+.sk-lp-display {
+  font-size: var(--sk-lp-display-lg);
+  font-weight: 500;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.sk-lp-display--xl {
+  font-size: var(--sk-lp-display-xl);
+  line-height: 0.98;
+  letter-spacing: -0.042em;
+}
+
+.sk-lp-display--sm {
+  font-size: var(--sk-lp-display-md);
+  line-height: 1.1;
+  letter-spacing: -0.028em;
+}
+
+/* The closing call sits between a section heading and the hero: the largest type
+   on the page that is not the headline a visitor arrived for. */
+.sk-lp-display--final {
+  font-size: var(--sk-lp-display-final);
+  line-height: 1;
+  letter-spacing: -0.038em;
+}
+
+.sk-lp-lead {
+  font-size: var(--sk-lp-lead);
+  line-height: 1.62;
+  color: var(--sk-lp-ink-muted);
+  text-wrap: pretty;
+}
+
+.sk-lp-body {
+  font-size: 0.97rem;
+  line-height: 1.68;
+  color: var(--sk-lp-ink-muted);
+  text-wrap: pretty;
+}
+
+/* One dark-field colour context, shared by every plum surface: the hero, the
+   mentor band, the closing call to action, the footer and the mobile sheet.
+   Scoping these to `.sk-lp-section--plum` alone left the other dark fields
+   inheriting the light-surface ink, which is unreadable on plum. */
+.sk-lp-on-plum {
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-on-plum .sk-lp-lead,
+.sk-lp-on-plum .sk-lp-body,
+.sk-lp-on-plum .sk-lp-muted {
+  color: var(--sk-lp-on-plum-soft);
+}
+
+/* The label itself is deep plum on paper, not gold. Brand gold is a
+   LIGHT-surface failure colour: at 11px it lands around 1.8:1 against the warm
+   canvas, which is unreadable. Gold is reserved for the dark fields, where it
+   is genuinely legible, and where it carries the brand rather than the
+   contrast. */
+.sk-lp-muted {
+  color: var(--sk-lp-ink-muted);
+}
+
+.sk-lp-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sk-lp-ink-soft);
+}
+
+.sk-lp-eyebrow::before {
+  content: '';
+  width: clamp(20px, 3vw, 38px);
+  height: 1px;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.sk-lp-on-plum .sk-lp-eyebrow {
+  color: var(--sk-lp-gold);
+}
+
+/* Big quiet numerals used as editorial anchors, never as counters. */
+.sk-lp-numeral {
+  font-size: var(--sk-lp-numeral);
+  font-weight: 400;
+  line-height: 0.82;
+  letter-spacing: -0.05em;
+  color: var(--sk-lp-ink);
+  opacity: 0.16;
+  font-variant-numeric: tabular-nums;
+}
+
+.sk-lp-on-plum .sk-lp-numeral {
+  color: var(--sk-lp-gold);
+  opacity: 0.42;
+}
+
+/* --- actions -------------------------------------------------- */
+
+.sk-lp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 52px;
+  padding-inline: clamp(22px, 2.4vw, 30px);
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--sk-lp-dur-fast) var(--sk-lp-ease),
+    color var(--sk-lp-dur-fast) var(--sk-lp-ease),
+    border-color var(--sk-lp-dur-fast) var(--sk-lp-ease),
+    transform var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The single dominant action on the page. Gold is the only colour
+   allowed to be this saturated. */
+.sk-lp-btn--gold {
+  background: var(--sk-lp-gold);
+  color: var(--sk-lp-plum-deep);
+  box-shadow: 0 1px 2px rgba(12, 5, 24, 0.28);
+}
+
+.sk-lp-btn--gold:hover:not(:disabled) {
+  background: var(--sk-lp-gold-deep);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -14px rgba(12, 5, 24, 0.8);
+}
+
+/* A press has to be felt, not just seen: the button travels down and settles a
+   fraction smaller, so the finger and the cursor agree that something happened. */
+.sk-lp-btn--gold:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+  box-shadow: 0 1px 2px rgba(12, 5, 24, 0.28);
+}
+
+/* The closing call is the one place the action is allowed to be oversized. */
+.sk-lp-btn--lg {
+  height: 60px;
+  padding-inline: clamp(28px, 3vw, 38px);
+  font-size: 1rem;
+  letter-spacing: -0.008em;
+}
+
+/* Secondary on a dark field: a hairline, nothing filled. */
+.sk-lp-btn--ghost {
+  background: transparent;
+  color: var(--sk-lp-on-plum);
+  border-color: var(--sk-lp-hair-on-plum);
+}
+
+.sk-lp-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.34);
+  transform: translateY(-1px);
+}
+
+/* Secondary on a paper field: same shape, inverted ink. */
+.sk-lp-btn--outline {
+  background: transparent;
+  color: var(--sk-lp-ink);
+  border-color: var(--sk-lp-hair-strong);
+}
+
+.sk-lp-btn--outline:hover:not(:disabled) {
+  background: var(--sk-lp-ink);
+  color: var(--sk-lp-canvas);
+  border-color: var(--sk-lp-ink);
+  transform: translateY(-1px);
+}
+
+.sk-lp-btn__arrow {
+  transition: transform var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-btn:hover:not(:disabled) .sk-lp-btn__arrow {
+  transform: translateX(3px);
+}
+
+/* Text-and-arrow link, for the quietest actions in the page. */
+.sk-lp-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-aeonikpro);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sk-lp-link__arrow {
+  transition: transform var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-link:hover .sk-lp-link__arrow {
+  transform: translateX(4px);
+}
+
+.sk-lp-link--on-plum {
+  color: var(--sk-lp-gold);
+}
+
+/* --- navigation ------------------------------------------------ */
+
+.sk-lp-nav {
+  position: fixed;
+  inset-inline: 0;
+  top: 0;
+  z-index: 60;
+  color: var(--sk-lp-on-plum);
+  transition:
+    background-color var(--sk-lp-dur) var(--sk-lp-ease),
+    box-shadow var(--sk-lp-dur) var(--sk-lp-ease),
+    border-color var(--sk-lp-dur) var(--sk-lp-ease);
+  border-bottom: 1px solid transparent;
+}
+
+/* Sticky state: the bar grows its own background once the hero has
+   moved under it, so it never floats as an unexplained slab. */
+.sk-lp-nav--stuck {
+  background: color-mix(in srgb, var(--sk-lp-plum-deep) 82%, transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom-color: var(--sk-lp-hair-on-plum);
+}
+
+.sk-lp-nav__inner {
+  display: flex;
+  align-items: center;
+  gap: clamp(16px, 3vw, 40px);
+  height: 68px;
+}
+
+.sk-lp-nav__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+  flex-shrink: 0;
+}
+
+.sk-lp-nav__links {
+  display: none;
+  align-items: center;
+  gap: clamp(18px, 2.2vw, 32px);
+}
+
+.sk-lp-nav__link {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--sk-lp-on-plum-soft);
+  transition: color var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-nav__link:hover {
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-nav__actions {
+  display: none;
+  align-items: center;
+  gap: clamp(14px, 1.6vw, 22px);
+}
+
+.sk-lp-nav__signin {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--sk-lp-on-plum-soft);
+  transition: color var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-nav__signin:hover {
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-nav__cta {
+  height: 44px;
+  font-size: 0.875rem;
+  padding-inline: 22px;
+}
+
+.sk-lp-nav__burger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  color: var(--sk-lp-on-plum);
+  background: transparent;
+  border: 1px solid var(--sk-lp-hair-on-plum);
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+@media (min-width: 1024px) {
+  .sk-lp-nav__links,
+  .sk-lp-nav__actions {
+    display: flex;
+  }
+  .sk-lp-nav__burger {
+    display: none;
+  }
+}
+
+/* Mobile sheet: the bar's own column, not a modal dialog. */
+.sk-lp-sheet {
+  position: fixed;
+  inset-inline: 0;
+  top: 0;
+  z-index: 70;
+  background: var(--sk-lp-plum-deep);
+  border-bottom: 1px solid var(--sk-lp-hair-on-plum);
+  padding: 82px var(--sk-lp-gutter) 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sk-lp-sheet__link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--sk-lp-hair-on-plum);
+  font-family: var(--font-aeonikpro);
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-sheet__foot {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* --- hero ------------------------------------------------------ */
+
+.sk-lp-hero {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  background: var(--sk-lp-plum-field);
+  color: var(--sk-lp-on-plum);
+  padding-top: 68px;
+  overflow: hidden;
+}
+
+/**
+ * Photographic atmosphere behind the copy, for the recomposed hero only.
+ *
+ * On a phone the type comes first and the photograph is a band below it, which
+ * means the first screen would otherwise be type on a flat gradient — the one
+ * place on the page where "this is about people" is not yet visible. So the same
+ * photograph is laid in behind the copy, pushed to the upper right where the
+ * copy does not reach, softened and held far back in value. It is atmosphere,
+ * not content: the band below still carries the full-strength, sharp crop.
+ *
+ * The scrim and the plum wash both sit on top of this layer, so the contrast the
+ * audit measures is measured against what is actually behind the text.
+ */
+.sk-lp-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--sk-lp-hero-atmosphere, none);
+  background-repeat: no-repeat;
+  background-position: 74% 8%;
+  background-size: cover;
+  opacity: 0.5;
+  filter: blur(2px) saturate(0.9);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.72) 46%, transparent 82%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    rgba(0, 0, 0, 0.72) 46%,
+    transparent 82%
+  );
+}
+
+@media (min-width: 1024px) {
+  .sk-lp-hero::before {
+    display: none;
+  }
+}
+
+.sk-lp-hero__grid {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-block: clamp(40px, 7vw, 72px);
+}
+
+.sk-lp-hero__copy {
+  max-width: 46ch;
+}
+
+/* On desktop the photograph becomes the whole hero: full bleed, subject held
+   to the right, copy standing on the plum the scrim builds under it. On mobile
+   it drops back into flow as a wide band after the copy — a recomposition, not
+   a shrink, because the two layouts carry different jobs.
+
+   The band's crop is responsive rather than fixed. A 5:4 panel is right on a
+   phone, where it reads as a portrait crop of one moment; from tablet up it
+   flattens toward a film still, so the band stays a band instead of turning
+   into the tallest thing on the page. */
+.sk-lp-hero__media {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  aspect-ratio: 5 / 4;
+  background: var(--sk-lp-plum-deep);
+}
+
+@media (min-width: 600px) {
+  .sk-lp-hero__media {
+    aspect-ratio: 16 / 9;
+  }
+}
+
+.sk-lp-hero__media img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 68% 44%;
+}
+
+.sk-lp-hero__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--sk-lp-photo-scrim-band);
+  pointer-events: none;
+}
+
+@media (min-width: 1024px) {
+  .sk-lp-hero {
+    display: block;
+    min-height: 100svh;
+  }
+  .sk-lp-hero__grid {
+    min-height: calc(100svh - 68px);
+    padding-block: 0;
+  }
+  .sk-lp-hero__media {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    aspect-ratio: auto;
+  }
+  .sk-lp-hero__media img {
+    object-position: 72% 40%;
+    /* Headroom for the parallax drift, so the frame never shows an edge. */
+    height: 112%;
+    top: -6%;
+  }
+  .sk-lp-hero__scrim {
+    background: var(--sk-lp-photo-scrim);
+  }
+  .sk-lp-hero__copy {
+    max-width: min(66ch, 62vw);
+  }
+}
+
+.sk-lp-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: clamp(26px, 3vw, 36px);
+}
+
+.sk-lp-hero__proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: clamp(26px, 3vw, 40px);
+  padding-top: 22px;
+  border-top: 1px solid var(--sk-lp-hair-on-plum);
+}
+
+.sk-lp-hero__proof li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  color: var(--sk-lp-on-plum-muted);
+}
+
+.sk-lp-hero__proof li::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--sk-lp-gold);
+}
+
+/* --- section headers ------------------------------------------- */
+
+/* Asymmetric editorial header: label and heading left, supporting
+   line pushed to the right rail. */
+.sk-lp-head {
+  display: grid;
+  gap: clamp(18px, 2.4vw, 40px);
+  margin-bottom: clamp(40px, 5vw, 76px);
+}
+
+@media (min-width: 900px) {
+  .sk-lp-head {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    align-items: end;
+  }
+}
+
+.sk-lp-head__aside {
+  max-width: 46ch;
+  padding-bottom: 4px;
+}
+
+/* --- areas (segments) ------------------------------------------- */
+
+.sk-lp-areas {
+  display: grid;
+  gap: clamp(16px, 1.6vw, 22px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+/* Each grid cell is a reveal wrapper, so it has to behave as the card itself
+   for the lead card's span to mean anything. */
+.sk-lp-areas__cell {
+  display: flex;
+}
+
+.sk-lp-areas__cell .sk-lp-area {
+  flex: 1;
+}
+
+.sk-lp-area {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+  background: var(--sk-lp-surface);
+  color: var(--sk-lp-ink);
+  border: 1px solid var(--sk-lp-hair);
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    transform var(--sk-lp-dur) var(--sk-lp-ease),
+    box-shadow var(--sk-lp-dur) var(--sk-lp-ease),
+    border-color var(--sk-lp-dur) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-area:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--sk-lp-shadow-card-hover);
+    border-color: transparent;
+  }
+}
+
+/* The area cards are full-bleed buttons with a pointer cursor, which tells a
+   desktop mouse user they can click but tells a finger nothing. On a touch
+   device they are given a hairline ring instead, which is the platform's own
+   affordance and costs nothing on the desktop layout. */
+@media (hover: none) {
+  .sk-lp-area {
+    border-color: var(--sk-lp-hair-strong);
+  }
+}
+
+.sk-lp-area__media {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  background: var(--sk-lp-plum);
+}
+
+/* One soft wash of the area's configured accent, in the corner the numeral
+   sits in. It ties the card to its area without tinting the whole page. */
+.sk-lp-area__media::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    72% 62% at 14% 104%,
+    color-mix(in srgb, var(--lp-area-accent, var(--sk-lp-gold)) 34%, transparent),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+.sk-lp-area__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 45%;
+  transition: transform var(--sk-lp-dur-slow) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-area:hover .sk-lp-area__media img {
+    transform: scale(1.045);
+  }
+}
+
+/* Index numeral, hairline-ruled, sitting on the image. */
+.sk-lp-area__index {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 1;
+  padding: 14px 18px;
+  font-family: var(--font-aeonikpro);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  /* Lifted toward white rather than printed at full accent strength. A segment's
+     configured accent is a mid-tone by design — on the plum scrim it would land
+     around 3:1 at this size. Mixing it 30% into white keeps the hue recognisable
+     and the contrast honest. */
+  color: color-mix(in srgb, var(--lp-area-accent, var(--sk-lp-gold)) 30%, #ffffff);
+  background: linear-gradient(to top, rgba(15, 6, 30, 0.72), rgba(15, 6, 30, 0));
+  width: 100%;
+}
+
+.sk-lp-area__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: clamp(20px, 2vw, 26px);
+  flex: 1;
+}
+
+.sk-lp-area__name {
+  font-family: var(--font-aeonikpro);
+  font-size: clamp(1.2rem, 1.05rem + 0.52vw, 1.45rem);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.14;
+}
+
+.sk-lp-area__desc {
+  font-size: 0.9375rem;
+  line-height: 1.62;
+  color: var(--sk-lp-ink-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sk-lp-area__go {
+  margin-top: auto;
+  padding-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-aeonikpro);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--sk-lp-ink);
+}
+
+.sk-lp-area__go svg {
+  transition: transform var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-area:hover .sk-lp-area__go svg {
+    transform: translateX(4px);
+  }
+}
+
+/* The grid is capped at three columns rather than run by auto-fit, so a
+   catalogue of five areas reads as three plus two on the same baseline instead
+   of as a ragged remainder, and a catalogue of three reads as three equal,
+   equally designed cards. The image is a touch taller than the card is wide's
+   share at desktop so the crop stays editorial rather than letterboxed. */
+@media (min-width: 700px) {
+  .sk-lp-areas {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1080px) {
+  .sk-lp-areas {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sk-lp-area__media {
+    aspect-ratio: 4 / 3;
+  }
+}
+
+/* --- how it works ------------------------------------------------ */
+
+.sk-lp-steps {
+  border-top: 1px solid var(--sk-lp-hair);
+}
+
+.sk-lp-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: clamp(16px, 2.4vw, 44px);
+  width: 100%;
+  text-align: left;
+  padding-block: clamp(24px, 2.8vw, 38px);
+  border-bottom: 1px solid var(--sk-lp-hair);
+  color: inherit;
+  background: none;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  transition: background-color var(--sk-lp-dur) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-step:hover {
+    background: color-mix(in srgb, var(--sk-lp-gold) 8%, transparent);
+  }
+  .sk-lp-step:hover .sk-lp-numeral {
+    color: var(--sk-lp-ink);
+    opacity: 1;
+  }
+}
+
+@media (min-width: 900px) {
+  .sk-lp-step {
+    grid-template-columns: minmax(120px, 0.28fr) minmax(0, 1fr);
+    align-items: baseline;
+  }
+  .sk-lp-step__title-col {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+}
+
+.sk-lp-step__title {
+  font-family: var(--font-aeonikpro);
+  font-size: var(--sk-lp-display-md);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.06;
+}
+
+.sk-lp-step__desc {
+  font-size: 0.95rem;
+  line-height: 1.66;
+  color: var(--sk-lp-ink-muted);
+  max-width: 52ch;
+}
+
+/* --- mentors ------------------------------------------------------ */
+
+.sk-lp-mentors {
+  display: grid;
+  gap: clamp(20px, 2.4vw, 34px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+/* The empty directory. It occupies the same grid the portraits would have, so
+   the band does not collapse, and it is set from the left with a numeral rather
+   than boxed, so it reads as an editorial pause instead of a missing module. */
+.sk-lp-mentors--empty {
+  grid-template-columns: minmax(0, 1fr);
+  border-top: 1px solid var(--sk-lp-hair-on-plum);
+  padding-top: clamp(40px, 5vw, 64px);
+}
+
+.sk-lp-mentors__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 54ch;
+}
+
+.sk-lp-mentors__empty-numeral {
+  margin-bottom: 18px;
+  color: var(--sk-lp-gold);
+  opacity: 0.5;
+}
+
+.sk-lp-mentors__empty-title {
+  max-width: 18ch;
+}
+
+.sk-lp-mentors__empty-text {
+  margin-top: 18px;
+  max-width: 46ch;
+}
+
+/* Touch devices never see the hover, so the press is the only feedback they get.
+   It is the same settling gesture as the button, at the same scale, so the page
+   feels like one system rather than a desktop design with a phone fallback. */
+.sk-lp-area:active,
+.sk-lp-mentor:active {
+  transform: translateY(2px);
+}
+
+.sk-lp-mentor {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: transform var(--sk-lp-dur) var(--sk-lp-ease);
+}
+
+/* The card as a whole lifts, and the portrait with it. Scaling the image alone
+   would read as a zoom inside a fixed frame; lifting the whole card is what
+   reads as picking the person up. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-mentor:hover {
+    transform: translateY(-4px);
+  }
+}
+
+.sk-lp-mentor__portrait {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 4 / 5;
+  border-radius: 3px;
+  background: var(--sk-lp-plum-deep);
+  box-shadow: var(--sk-lp-shadow-lift);
+  transition: box-shadow var(--sk-lp-dur) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-mentor:hover .sk-lp-mentor__portrait {
+    box-shadow: 0 40px 90px -38px rgba(4, 1, 12, 0.86);
+  }
+}
+
+.sk-lp-mentor__portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 22%;
+  transition: transform var(--sk-lp-dur-slow) var(--sk-lp-ease);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .sk-lp-mentor:hover .sk-lp-mentor__portrait img {
+    transform: scale(1.04);
+  }
+  .sk-lp-mentor:hover .sk-lp-link__arrow {
+    transform: translateX(4px);
+  }
+}
+
+/* Initials monogram, used only when a mentor has no avatar. */
+.sk-lp-mentor__monogram {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-aeonikpro);
+  font-size: clamp(2rem, 6vw, 3.25rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  color: rgba(255, 255, 255, 0.72);
+  background:
+    radial-gradient(90% 70% at 30% 12%, rgba(122, 74, 219, 0.5), rgba(122, 74, 219, 0) 62%),
+    linear-gradient(160deg, #2a1550, #150a28);
+}
+
+.sk-lp-mentor__name {
+  font-family: var(--font-aeonikpro);
+  font-size: var(--sk-lp-display-sm);
+  font-weight: 500;
+  letter-spacing: -0.028em;
+  line-height: 1.14;
+}
+
+.sk-lp-mentor__specialty {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--sk-lp-gold);
+  margin-top: 6px;
+}
+
+.sk-lp-mentor__bio {
+  font-size: 0.9rem;
+  line-height: 1.62;
+  color: var(--sk-lp-on-plum-muted);
+  margin-top: 10px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Real metadata only — duration and price from the live gig row. */
+.sk-lp-mentor__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--sk-lp-hair-on-plum);
+  font-size: 0.8125rem;
+  color: var(--sk-lp-on-plum-muted);
+}
+
+.sk-lp-mentor__facts strong {
+  font-weight: 500;
+  color: var(--sk-lp-on-plum-soft);
+}
+
+.sk-lp-mentor__go {
+  margin-top: 14px;
+}
+
+/* --- human connection spread --------------------------------------- */
+
+.sk-lp-connection {
+  display: grid;
+  gap: clamp(32px, 4vw, 64px);
+  align-items: center;
+}
+
+@media (min-width: 900px) {
+  .sk-lp-connection {
+    grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  }
+}
+
+.sk-lp-connection__media {
+  position: relative;
+  overflow: hidden;
+  border-radius: 3px;
+  aspect-ratio: 4 / 5;
+  max-height: 640px;
+  background: var(--sk-lp-plum);
+}
+
+.sk-lp-connection__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 45%;
+}
+
+.sk-lp-connection__media::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(18, 8, 36, 0.42), rgba(18, 8, 36, 0) 46%);
+  pointer-events: none;
+}
+
+.sk-lp-connection__quote {
+  font-family: var(--font-aeonikpro);
+  font-size: var(--sk-lp-display-md);
+  font-weight: 500;
+  line-height: 1.14;
+  letter-spacing: -0.03em;
+  margin-top: clamp(20px, 2.4vw, 30px);
+}
+
+/* --- verification ---------------------------------------------------- */
+
+.sk-lp-trust {
+  display: grid;
+  gap: clamp(28px, 3vw, 56px);
+}
+
+@media (min-width: 900px) {
+  .sk-lp-trust {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: start;
+  }
+}
+
+.sk-lp-trust__list {
+  display: grid;
+  gap: clamp(22px, 2.4vw, 34px);
+  border-top: 1px solid var(--sk-lp-hair);
+}
+
+.sk-lp-trust__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: clamp(14px, 1.8vw, 26px);
+  padding-top: clamp(22px, 2.4vw, 30px);
+  border-bottom: 1px solid var(--sk-lp-hair);
+  padding-bottom: clamp(22px, 2.4vw, 30px);
+}
+
+.sk-lp-trust__title {
+  font-family: var(--font-aeonikpro);
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: -0.022em;
+}
+
+.sk-lp-trust__text {
+  margin-top: 8px;
+  font-size: 0.93rem;
+  line-height: 1.64;
+  color: var(--sk-lp-ink-muted);
+}
+
+/* --- final call -------------------------------------------------------- */
+
+.sk-lp-final {
+  position: relative;
+  isolation: isolate;
+  background: var(--sk-lp-night-wash);
+  color: var(--sk-lp-on-plum);
+  padding-block: clamp(96px, 10vw, 176px);
+  text-align: center;
+  overflow: hidden;
+}
+
+/* Ambient life, kept well below the type. A single wide violet bloom drifts
+   sideways once across the foot of the section and stops there: it is a long
+   transform on one composited layer, and it never crosses the headline, so
+   nothing about legibility depends on where it happens to be. */
+.sk-lp-final::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -34%;
+  z-index: 0;
+  width: min(1200px, 150vw);
+  height: 60%;
+  translate: -50% 0;
+  pointer-events: none;
+  background: radial-gradient(
+    52% 60% at 50% 100%,
+    rgba(126, 84, 214, 0.34),
+    rgba(126, 84, 214, 0) 70%
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sk-lp-final::after {
+    animation: sk-lp-final-breathe 18s cubic-bezier(0.37, 0, 0.63, 1) 0.4s both;
+  }
+}
+
+@keyframes sk-lp-final-breathe {
+  from {
+    transform: translate3d(-7%, 0, 0) scale(0.94);
+    opacity: 0.5;
+  }
+
+  to {
+    transform: translate3d(7%, 0, 0) scale(1.06);
+    opacity: 1;
+  }
+}
+
+/* A single hairline horizon, the one decorative line on the page. */
+.sk-lp-final::before {
+  content: '';
+  position: absolute;
+  inset-inline: var(--sk-lp-gutter);
+  top: 0;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(247, 210, 67, 0.42) 22%,
+    rgba(247, 210, 67, 0.42) 78%,
+    transparent
+  );
+}
+
+.sk-lp-final__inner {
+  position: relative;
+  z-index: 1;
+  max-width: 22ch;
+  margin-inline: auto;
+}
+
+/* The closing call is the one centred block on the page, so its label centres
+   with it. Everywhere else the label stays on the left rail. */
+.sk-lp-final .sk-lp-eyebrow {
+  justify-content: center;
+}
+
+.sk-lp-final .sk-lp-eyebrow::before {
+  display: none;
+}
+
+.sk-lp-final__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: clamp(28px, 3vw, 40px);
+}
+
+/* --- footer ------------------------------------------------------------ */
+
+.sk-lp-footer {
+  background: var(--sk-lp-plum-deep);
+  color: var(--sk-lp-on-plum-muted);
+  padding-block: clamp(48px, 5vw, 72px) clamp(28px, 3vw, 40px);
+}
+
+.sk-lp-footer__grid {
+  display: grid;
+  gap: clamp(32px, 4vw, 56px);
+  padding-bottom: clamp(36px, 4vw, 56px);
+  border-bottom: 1px solid var(--sk-lp-hair-on-plum);
+}
+
+@media (min-width: 768px) {
+  .sk-lp-footer__grid {
+    grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
+  }
+}
+
+.sk-lp-footer__heading {
+  font-family: var(--font-aeonikpro);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--sk-lp-on-plum-soft);
+  margin-bottom: 18px;
+}
+
+.sk-lp-footer__links {
+  display: grid;
+  gap: 12px;
+}
+
+.sk-lp-footer__link {
+  font-size: 0.9rem;
+  color: var(--sk-lp-on-plum-muted);
+  transition: color var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-footer__link:hover {
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-footer__base {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 28px;
+  font-size: 0.8125rem;
+}
+
+/* --- states -------------------------------------------------------------- */
+
+.sk-lp-state {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  padding: clamp(24px, 3vw, 40px);
+  border: 1px solid var(--sk-lp-hair);
+  border-radius: 3px;
+  background: var(--sk-lp-surface);
+}
+
+.sk-lp-state--plain {
+  border: 0;
+  background: none;
+  padding: 0;
+}
+
+/* A state panel that lives on a plum band. The white card background would
+   leave white state copy on white, so the panel drops its fill and is held in
+   place by the plum hairline instead. */
+.sk-lp-state--on-plum {
+  background: none;
+  border-color: var(--sk-lp-hair-on-plum);
+}
+
+.sk-lp-on-plum .sk-lp-state__title {
+  color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-on-plum .sk-lp-state__text {
+  color: var(--sk-lp-on-plum-soft);
+}
+
+.sk-lp-on-plum .sk-lp-state__action {
+  color: var(--sk-lp-on-plum);
+  border-bottom-color: var(--sk-lp-on-plum);
+}
+
+.sk-lp-state__title {
+  font-family: var(--font-aeonikpro);
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: -0.022em;
+  color: var(--sk-lp-ink);
+}
+
+.sk-lp-state__text {
+  font-size: 0.93rem;
+  line-height: 1.62;
+  color: var(--sk-lp-ink-muted);
+  max-width: 52ch;
+}
+
+.sk-lp-state__action {
+  font-family: var(--font-aeonikpro);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--sk-lp-ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--sk-lp-ink);
+  padding: 0 0 2px;
+  cursor: pointer;
+  transition: opacity var(--sk-lp-dur-fast) var(--sk-lp-ease);
+}
+
+.sk-lp-state__action:hover {
+  opacity: 0.62;
+}
+
+.sk-lp-skeleton {
+  background: var(--sk-lp-surface);
+  border: 1px solid var(--sk-lp-hair);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.sk-lp-skeleton__media {
+  aspect-ratio: 16 / 10;
+  background: color-mix(in srgb, var(--sk-lp-ink) 7%, transparent);
+}
+
+.sk-lp-skeleton__line {
+  height: 12px;
+  margin: 0 clamp(20px, 2vw, 26px) 12px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--sk-lp-ink) 7%, transparent);
+}
+
+.sk-lp-skeleton__line--short {
+  width: 55%;
+}
+
+.sk-lp-skeleton__line--flush {
+  margin-inline: 0;
+  width: 64%;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.sk-lp-skeleton__portrait {
+  aspect-ratio: 4 / 5;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* --- reduced motion -----------------------------------------------------
+   The global block already neutralises CSS animation and transition;
+   this adds the transform/opacity half so nothing is left half-applied. */
+@media (prefers-reduced-motion: reduce) {
+  .sk-lp-btn,
+  .sk-lp-link__arrow,
+  .sk-lp-btn__arrow,
+  .sk-lp-area__go svg,
+  .sk-lp-area__media img,
+  .sk-lp-mentor__portrait img,
+  .sk-lp-skip {
+    transition: none !important;
+    transform: none !important;
+  }
+  .sk-lp-area:hover,
+  .sk-lp-mentor:hover {
+    transform: none !important;
+  }
+}
+
 
 

@@ -198,7 +198,7 @@ describe('the reschedule route exists end to end', () => {
       'Router.tsx must route /seeker/reschedule to its own page',
     );
     assert.ok(
-      code(ROUTER).includes("import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage'"),
+      code(ROUTER).includes("import('@/src/pages/seeker/SeekerReschedulePage'"),
       'the page must be imported by the router',
     );
   });

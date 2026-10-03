@@ -191,7 +191,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/mentor/settings') return <MentorSettingsPage />;
           if (pathname === '/mentor/support') return <SupportPage />;
           if (pathname === '/mentor') return <MentorHomePage />;
-          // Any other /mentor/* path is not a route. Returning the home page
+          // Any other path under /mentor/ is not a route. Returning the home page
           // here made a stale or mistyped link look like a successful
           // navigation to a real, populated screen, which is how the dead
           // `/seeker/reschedule` link survived. The 404 is rendered inside the

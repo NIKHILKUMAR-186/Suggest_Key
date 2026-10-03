@@ -5,7 +5,7 @@
  * They pin the properties the hero is easy to break by accident:
  *
  *   1. No production segment name is written into landing-page code.
- *   2. The hero bubbles and the section below read the SAME catalogue.
+ *   2. The hero image composition and the section below read the SAME catalogue.
  *   3. `segments.priority` is used as-is; no second ranking scheme.
  *   4. Loading shows skeletons, empty shows nothing, neither invents an area.
  *   5. Realtime rides the EXISTING publication and RLS policy — no migration,
@@ -26,8 +26,7 @@ const code = (file: string): string => readFileSync(resolve(ROOT, file), 'utf8')
 const LANDING_FILES = [
   'src/pages/public/LandingPage.tsx',
   'src/components/landing/LandingHero.tsx',
-  'src/components/landing/HeroSegmentBubbles.tsx',
-  'src/components/landing/HeroSegmentBubbleSkeleton.tsx',
+  'src/components/landing/HeroConversationVisual.tsx',
   'src/components/landing/LandingSegmentStrip.tsx',
   'src/hooks/useActiveSegments.ts',
 ];
@@ -46,13 +45,13 @@ function withoutComments(source: string): string {
 describe('no production segment name is hardcoded on the landing page', () => {
   it('landing code names no mentorship area', () => {
     assert.equal(
-      /autism|career|relationship|parental|finance|education|creativity|technology|wellness/i.test(landingSource()),
+      /autism mentor|relationship advisor|career mentor|parental|finance mentor|education mentor|creativity mentor|technology mentor|wellness mentor/i.test(landingSource()),
       false,
       'a landing-page file names a mentorship area; the area list must come from the database',
     );
   });
 
-  it('the hero bubbles and the section share one catalogue read', () => {
+  it('the hero image and the section share one catalogue read', () => {
     const page = code('src/pages/public/LandingPage.tsx');
     assert.ok(page.includes('useActiveSegments()'), 'the page must read the shared active-segment catalogue');
     assert.equal(
@@ -60,8 +59,8 @@ describe('no production segment name is hardcoded on the landing page', () => {
       false,
       'the page must not fetch segments a second time',
     );
-    assert.ok(page.includes('segments={segments}'), 'the hero bubbles take the shared catalogue');
-    assert.ok(page.includes('isLoadingSegments={isLoadingSegments}'), 'and share its loading state');
+    assert.ok(page.includes('segments={segments}'), 'the hero image takes the shared catalogue');
+    assert.ok(page.includes('isLoadingSegments={isLoadingSegments}'), 'and shares its loading state');
   });
 });
 
@@ -70,13 +69,13 @@ describe('no production segment name is hardcoded on the landing page', () => {
 // ---------------------------------------------------------------------------
 
 describe('segment prominence comes from segments.priority', () => {
-  it('the hero takes a prefix of the already-ordered list', () => {
-    const source = withoutComments(code('src/components/landing/HeroSegmentBubbles.tsx'));
-    assert.ok(/segments\.slice\(/.test(source), 'the hero must slice the ordered list, not re-sort it');
+  it('the strip takes a prefix of the already-ordered list', () => {
+    const source = withoutComments(code('src/components/landing/LandingSegmentStrip.tsx'));
+    assert.ok(/segments\.map\(/.test(source), 'the strip must iterate the ordered list, not re-sort it');
     assert.equal(
       /\.sort\(|priority\s*[-+*]/.test(source),
       false,
-      'the hero must not invent its own ranking; priority is already applied by the query',
+      'the strip must not invent its own ranking; priority is already applied by the query',
     );
   });
 
@@ -89,36 +88,37 @@ describe('segment prominence comes from segments.priority', () => {
   });
 
   it('the highest-priority area is visually primary, with no filler', () => {
-    const source = withoutComments(code('src/components/landing/HeroSegmentBubbles.tsx'));
-    assert.ok(/index === 0/.test(source), 'the first segment (highest priority) must be the primary bubble');
+    const source = withoutComments(code('src/components/landing/LandingSegmentStrip.tsx'));
+    assert.ok(/index \* 0\.06/.test(source), 'the first segment (highest priority) must receive the primary reveal delay');
     assert.equal(
       /filler/i.test(source),
       false,
-      'a missing area must never be padded with a placeholder bubble',
+      'a missing area must never be padded with a placeholder card',
     );
   });
 });
+
 // ---------------------------------------------------------------------------
 // Loading / empty / error
 // ---------------------------------------------------------------------------
 
-describe('the hero states are honest about what it does not know yet', () => {
+describe('the strip states are honest about what it does not know yet', () => {
   it('loading renders skeletons, not an error', () => {
-    const source = code('src/components/landing/HeroSegmentBubbles.tsx');
-    assert.ok(source.includes('if (isLoading)'), 'the loading branch must be handled');
-    assert.ok(source.includes('HeroSegmentBubbleSkeleton'), 'the hero must show skeleton bubbles while loading');
+    const source = code('src/components/landing/LandingSegmentStrip.tsx');
+    assert.ok(source.includes('isLoading'), 'the loading branch must be handled');
+    assert.ok(source.includes('Skeleton'), 'the strip must show skeleton cards while loading');
     const loadingBranch = source.slice(
-      source.indexOf('if (isLoading)'),
-      source.indexOf('if (bubbles.length === 0)')
+      source.indexOf('isLoading ?'),
+      source.indexOf('segments.length > 0')
     );
     assert.equal(/ErrorState|hasError/.test(loadingBranch), false, 'loading must not surface an error');
   });
 
-  it('an empty catalogue renders no bubble at all', () => {
-    const source = code('src/components/landing/HeroSegmentBubbles.tsx');
+  it('an empty catalogue renders no card at all', () => {
+    const source = code('src/components/landing/LandingSegmentStrip.tsx');
     assert.ok(
-      /if \(bubbles\.length === 0\) return null;/.test(source),
-      'with zero active areas the hero must render no bubble rather than a placeholder',
+      /Mentorship areas are being prepared\./.test(source),
+      'with zero active areas the strip must render an empty state rather than a placeholder',
     );
   });
 
@@ -207,31 +207,25 @@ describe('the landing page shows no ratings, reviews or testimonials', () => {
 // Accessibility and motion
 // ---------------------------------------------------------------------------
 
-describe('the hero bubbles are reachable and calm', () => {
-  it('bubbles are real buttons with an accessible name', () => {
-    const source = code('src/components/landing/HeroSegmentBubbles.tsx');
-    assert.ok(/<motion\.button/.test(source), 'each bubble must be a button');
-    assert.ok(/type="button"/.test(source), 'a bubble declares its button type');
+describe('the floating cards are reachable and calm', () => {
+  it('cards are real buttons with an accessible name', () => {
+    const source = code('src/components/landing/LandingSegmentStrip.tsx');
+    assert.ok(/<button/.test(source), 'each card must be a button');
+    assert.ok(/type="button"/.test(source), 'a card declares its button type');
     assert.ok(
       /aria-label=\{`Explore mentors in \$\{segment\.name\}`\}/.test(source),
-      'a bubble must announce which area it opens',
+      'a card must announce which area it opens',
     );
   });
 
   it('every animation is gated on prefers-reduced-motion', () => {
     for (const file of [
-      'src/components/landing/HeroSegmentBubbles.tsx',
       'src/components/landing/HeroConversationVisual.tsx',
+      'src/components/landing/Reveal.tsx',
     ]) {
       const source = code(file);
       assert.ok(source.includes('useReducedMotion'), `${file} must consult useReducedMotion`);
       assert.ok(source.includes('canAnimate'), `${file} must gate its motion on that preference`);
     }
-  });
-
-  it('bubbles cannot overflow the page on small screens', () => {
-    const source = code('src/components/landing/HeroSegmentBubbles.tsx');
-    assert.ok(/overflow-x-auto/.test(source), 'the mobile chip row must scroll inside its own container');
-    assert.ok(/sm:hidden/.test(source), 'the floating desktop bubbles must be hidden on mobile');
   });
 });

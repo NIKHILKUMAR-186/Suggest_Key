@@ -1125,7 +1125,7 @@ describe('support routes are wired to the right pages', () => {
       /if \(pathname === '\/admin\/support'\) return <AdminSupportPage \/>/,
       '/admin/support must render the operational queue',
     );
-    assert.match(ROUTER, /import \{ AdminSupportPage \} from/);
+    assert.match(ROUTER, /import\('@\/src\/pages\/admin\/AdminSupportPage'/);
   });
 
   it('seeker and mentor support paths render the shared ticket page', () => {
