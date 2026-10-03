@@ -63,7 +63,7 @@ export const LandingNav: React.FC<LandingNavProps> = ({ findMentorPath, onNaviga
     <header className="sticky top-0 z-50 px-4 pt-3 sm:px-6 sm:pt-4 lg:px-8">
       <nav
         aria-label="Main navigation"
-        className="mx-auto flex h-16 max-w-[1240px] items-center justify-between gap-3 rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)]/85 px-3 shadow-[0_18px_44px_-24px_rgba(10,4,28,0.85)] backdrop-blur-xl sm:px-5"
+        className="mx-auto flex h-16 max-w-[1240px] items-center justify-between gap-3 rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)]/90 px-3 shadow-[0_18px_44px_-24px_rgba(10,4,28,0.85)] backdrop-blur-xl sm:px-5"
       >
         <button
           type="button"
@@ -110,7 +110,7 @@ export const LandingNav: React.FC<LandingNavProps> = ({ findMentorPath, onNaviga
         <div
           id="landing-mobile-menu"
           ref={panelRef}
-          className="mx-auto mt-2 max-w-[1240px] overflow-hidden rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)] px-3 py-3 shadow-[0_24px_60px_-28px_rgba(10,4,28,0.9)] lg:hidden"
+          className="mx-auto mt-2 max-w-[1240px] overflow-hidden rounded-2xl border border-[var(--sk-brand-header-border)] bg-[var(--sk-brand-plum)]/95 px-3 py-3 shadow-[0_24px_60px_-28px_rgba(10,4,28,0.9)] lg:hidden"
         >
           <ul className="space-y-0.5">
             {NAV_LINKS.map((link) => (

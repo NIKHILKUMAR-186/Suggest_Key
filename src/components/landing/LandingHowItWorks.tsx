@@ -13,7 +13,7 @@ import { JOURNEY_STEPS } from '@/src/components/landing/landingContent';
 export const LandingHowItWorks: React.FC = () => (
   <section
     id="how-it-works"
-    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-20 sm:px-6 sm:py-28 lg:px-8"
+    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
     aria-labelledby="how-it-works-heading"
   >
     <div className="mx-auto max-w-[1240px]">
@@ -23,14 +23,14 @@ export const LandingHowItWorks: React.FC = () => (
         </p>
         <h2
           id="how-it-works-heading"
-          className="mt-4 text-[30px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[40px]"
+          className="mt-4 text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[38px]"
           style={{ fontFamily: 'var(--font-aeonikpro)' }}
         >
           A simple journey from a question to a conversation that helps you move forward.
         </h2>
       </Reveal>
 
-      <ol className="mt-14 grid grid-cols-1 gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-4">
+      <ol className="mt-10 grid grid-cols-1 gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-4">
         {JOURNEY_STEPS.map((step, index) => {
           const Icon = step.icon;
           const isLast = index === JOURNEY_STEPS.length - 1;

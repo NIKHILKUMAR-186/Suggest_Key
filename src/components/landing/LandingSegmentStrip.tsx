@@ -42,7 +42,7 @@ const SegmentCard: React.FC<SegmentCardProps> = ({ segment, onOpen }) => {
       onBlur={() => setIsHighlighted(false)}
       aria-label={`Explore mentors in ${segment.name}`}
       style={variables}
-      className="group flex h-full w-full cursor-pointer flex-col rounded-[26px] border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-7 text-left shadow-[var(--sk-shadow-card)] transition-all duration-200 hover:-translate-y-1.5 hover:shadow-[var(--sk-shadow-card-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
+      className="group flex h-full w-full cursor-pointer flex-col rounded-[26px] border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-7 text-left shadow-[var(--sk-shadow-card)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[var(--sk-shadow-card-hover),var(--segment-section-glow)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
     >
       <span
         className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl transition-transform duration-200 group-hover:scale-105"
@@ -107,7 +107,7 @@ export const LandingSegmentStrip: React.FC<LandingSegmentStripProps> = ({
     className="relative z-20 bg-[var(--sk-brand-canvas)] px-4 sm:px-6 lg:px-8"
     aria-labelledby="segments-heading"
   >
-    <div className="mx-auto -mt-16 max-w-[1240px] sm:-mt-20 lg:-mt-24">
+    <div className="mx-auto -mt-20 max-w-[1240px] sm:-mt-24 lg:-mt-28">
       <h2 id="segments-heading" className="sr-only">
         Areas you can explore
       </h2>
@@ -135,17 +135,17 @@ export const LandingSegmentStrip: React.FC<LandingSegmentStripProps> = ({
           ))}
         </div>
       ) : (
-        <div className="rounded-[26px] border border-dashed border-[var(--sk-brand-border-strong)] bg-[var(--sk-brand-surface)]/60 px-6 py-10 text-center">
-          <Compass className="mx-auto h-7 w-7 text-[var(--sk-brand-text-subtle)]" aria-hidden="true" />
-          <p className="mx-auto mt-4 max-w-md text-[14px] font-semibold text-[var(--sk-brand-text)]">
+        <div className="rounded-[26px] border border-dashed border-[var(--sk-brand-border-strong)] bg-[var(--sk-brand-surface)]/60 px-6 py-8 text-center sm:py-10">
+          <Compass className="mx-auto h-6 w-6 text-[var(--sk-brand-text-subtle)]" aria-hidden="true" />
+          <p className="mx-auto mt-3 max-w-md text-[13px] font-semibold text-[var(--sk-brand-text)]">
             {hasError ? "We couldn&apos;t load mentorship areas right now." : 'Mentorship areas are being prepared.'}
           </p>
-          <p className="mx-auto mt-1.5 max-w-md text-[13px] leading-relaxed text-[var(--sk-brand-text-muted)]">
+          <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-relaxed text-[var(--sk-brand-text-muted)]">
             {hasError
               ? 'Mentors and sessions are unaffected. Head straight to mentor discovery.'
               : 'New areas appear here as the Suggest Key team publishes them. Every mentor is open to browse now.'}
           </p>
-          <div className="mt-6 flex flex-col items-center justify-center gap-2 sm:flex-row">
+          <div className="mt-5 flex flex-col items-center justify-center gap-2 sm:flex-row">
             <Button size="md" className="gap-2" onClick={onFindMentor}>
               Find a Mentor {HERO_ARROW}
             </Button>
@@ -159,7 +159,7 @@ export const LandingSegmentStrip: React.FC<LandingSegmentStripProps> = ({
       )}
     </div>
 
-    <p className="mx-auto mt-6 max-w-[1240px] px-2 pb-16 text-center text-[12px] leading-relaxed text-[var(--sk-brand-text-muted)] sm:pb-20">
+    <p className="mx-auto mt-5 max-w-[1240px] px-2 pb-14 text-center text-[12px] leading-relaxed text-[var(--sk-brand-text-muted)] sm:pb-16">
       Areas are maintained by the Suggest Key team, so this list is exactly where mentors are currently taking
       sessions. {HERO_ARROW}
     </p>

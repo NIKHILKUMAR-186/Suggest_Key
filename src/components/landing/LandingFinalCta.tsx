@@ -16,16 +16,16 @@ export interface LandingFinalCtaProps {
  * unrelated bands.
  */
 export const LandingFinalCta: React.FC<LandingFinalCtaProps> = ({ findMentorPath, onNavigate }) => (
-  <section className="relative isolate overflow-hidden bg-[var(--sk-brand-plum)] px-4 py-24 sm:px-6 sm:py-32 lg:px-8" aria-labelledby="final-cta-heading">
+  <section className="relative isolate overflow-hidden bg-[var(--sk-brand-plum)] px-4 py-20 sm:px-6 sm:py-28 lg:px-8" aria-labelledby="final-cta-heading">
     <div className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
       <div className="landing-grid absolute inset-0 opacity-50" />
       <div
-        className="absolute left-1/2 top-1/2 h-[560px] w-[900px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-        style={{ background: 'radial-gradient(ellipse, rgba(102,58,243,0.42), transparent 66%)', filter: 'blur(40px)' }}
+        className="absolute left-1/2 top-1/2 h-[640px] w-[960px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{ background: 'radial-gradient(ellipse, rgba(102,58,243,0.48), transparent 66%)', filter: 'blur(40px)' }}
       />
       <div
-        className="absolute left-1/2 top-1/2 h-[320px] w-[620px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-        style={{ background: 'radial-gradient(ellipse, rgba(247,210,67,0.14), transparent 68%)', filter: 'blur(40px)' }}
+        className="absolute left-1/2 top-1/2 h-[360px] w-[640px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{ background: 'radial-gradient(ellipse, rgba(247,210,67,0.18), transparent 68%)', filter: 'blur(40px)' }}
       />
     </div>
 
@@ -33,7 +33,7 @@ export const LandingFinalCta: React.FC<LandingFinalCtaProps> = ({ findMentorPath
       <Enter>
         <h2
           id="final-cta-heading"
-          className="text-[30px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-header-text)] sm:text-[44px]"
+          className="text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-header-text)] sm:text-[42px]"
           style={{ fontFamily: 'var(--font-aeonikpro)' }}
         >
           You don't have to figure everything out alone.

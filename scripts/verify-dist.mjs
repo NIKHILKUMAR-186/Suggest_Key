@@ -74,22 +74,35 @@ for (const file of files) {
   }
 }
 
-// 4. Google Search Console HTML-file ownership verification must survive the
-// build. Google fetches
-// https://<host>/google21eac387d38ffddc.html and compares the response body to
-// the token byte for byte, so a wrong or missing copy reports
-// "Ownership verification failed - Your verification file has the wrong
-// content." The file lives in public/ and Vite copies it to the dist/ root;
-// Vercel serves static output-directory files before applying the SPA rewrite,
-// so it is never routed to index.html.
-const VERIFICATION_FILE = 'google21eac387d38ffddc.html';
-const VERIFICATION_BODY = 'google-site-verification: google21eac387d38ffddc.html';
-
-const verificationPath = join(DIST, VERIFICATION_FILE);
-if (!existsSync(verificationPath)) {
-  problems.push(`Search Console verification file missing from dist/: ${VERIFICATION_FILE}`);
-} else if (readFileSync(verificationPath, 'utf8') !== VERIFICATION_BODY) {
-  problems.push(`Search Console verification file has wrong content: ${VERIFICATION_FILE}`);
+// 4. Google Search Console HTML-meta-tag ownership verification must survive
+// the build. Google renders the page and checks for
+// <meta name="google-site-verification" content="..."> inside <head>. Vite
+// copies index.html from source into the dist/ root, so the meta tag there is
+// the production artifact that actually proves ownership.
+const INDEX_HTML = join(DIST, 'index.html');
+if (!existsSync(INDEX_HTML)) {
+  problems.push('search-console tag: dist/index.html missing');
+} else {
+  const html = readFileSync(INDEX_HTML, 'utf8');
+  const tagMatch = html.match(
+    /<meta[^>]*\bname=["']google-site-verification["'][^>]*>/i
+  );
+  if (!tagMatch) {
+    problems.push(
+      'Google Search Console verification meta tag missing from dist/index.html'
+    );
+  } else {
+    const contentMatch = tagMatch[0].match(/\bcontent=["']([^"']+)["']/i);
+    if (
+      !contentMatch ||
+      !contentMatch[1] ||
+      !contentMatch[1].trim()
+    ) {
+      problems.push(
+        'Google Search Console verification meta tag has empty content in dist/index.html'
+      );
+    }
+  }
 }
 
 if (problems.length > 0) {

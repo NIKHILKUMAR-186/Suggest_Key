@@ -20,12 +20,12 @@ export interface LandingMentorCtaProps {
 export const LandingMentorCta: React.FC<LandingMentorCtaProps> = ({ onNavigate }) => (
   <section
     id="for-mentors"
-    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-20 sm:px-6 sm:py-28 lg:px-8"
+    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
     aria-labelledby="for-mentors-heading"
   >
     <div className="mx-auto max-w-[1240px]">
       <Reveal className="overflow-hidden rounded-[32px] border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] shadow-[var(--sk-shadow-hero)]">
-        <div className="grid grid-cols-1 gap-12 p-8 sm:p-12 lg:grid-cols-2 lg:gap-16 lg:p-16">
+        <div className="grid grid-cols-1 gap-10 p-7 sm:p-10 lg:grid-cols-2 lg:gap-12 lg:p-12">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--color-shell-accent)]">
               For Mentors

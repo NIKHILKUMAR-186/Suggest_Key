@@ -43,7 +43,7 @@ export const LandingFeaturedMentors: React.FC<LandingFeaturedMentorsProps> = ({
   return (
     <section
       id="mentors"
-      className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-20 sm:px-6 sm:py-28 lg:px-8"
+      className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
       aria-labelledby="featured-mentors-heading"
     >
       <div className="mx-auto max-w-[1240px]">
@@ -53,18 +53,18 @@ export const LandingFeaturedMentors: React.FC<LandingFeaturedMentorsProps> = ({
           </p>
           <h2
             id="featured-mentors-heading"
-            className="mt-4 text-[30px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[40px]"
+            className="mt-4 text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[38px]"
             style={{ fontFamily: 'var(--font-aeonikpro)' }}
           >
             Meet people who can help you move forward.
           </h2>
-          <p className="mt-5 text-[15px] leading-relaxed text-[var(--sk-brand-text-muted)]">
+          <p className="mt-4 text-[15px] leading-relaxed text-[var(--sk-brand-text-muted)]">
             Explore verified mentors across different areas and find someone who fits your needs. Prices and
-            availability below are the mentor's own.
+            availability below are the mentor&apos;s own.
           </p>
         </Reveal>
 
-        <div className="mt-14">
+        <div className="mt-10">
           {isLoading ? (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4" aria-busy="true">
               {[0, 1, 2, 3].map((index) => (
@@ -79,7 +79,7 @@ export const LandingFeaturedMentors: React.FC<LandingFeaturedMentorsProps> = ({
             />
           ) : mentors.length > 0 ? (
             <>
-              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 {mentors.map((entry, index) => (
                   <Reveal key={entry.mentor.id} delay={index * 0.06} className="h-full">
                     <LandingMentorCard
@@ -91,7 +91,7 @@ export const LandingFeaturedMentors: React.FC<LandingFeaturedMentorsProps> = ({
                 ))}
               </div>
 
-              <div className="mt-12 flex justify-center">
+              <div className="mt-10 flex justify-center">
                 <Button variant="outline" size="lg" className="gap-2 rounded-xl" onClick={() => onNavigate(findMentorPath)}>
                   Explore all mentors
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />

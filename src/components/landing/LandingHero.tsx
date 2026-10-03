@@ -52,9 +52,9 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
         style={{ background: 'radial-gradient(circle, rgba(247,210,67,0.11), transparent 66%)', filter: 'blur(40px)' }}
       />
     </div>
-    <div className="mx-auto grid max-w-[1280px] grid-cols-1 items-center gap-12 px-4 pb-28 pt-12 sm:px-6 sm:pb-32 sm:pt-16 lg:grid-cols-[48fr_52fr] lg:gap-8 lg:px-8 lg:pb-36 lg:pt-20">
+    <div className="mx-auto grid max-w-[1280px] grid-cols-1 items-center gap-8 px-4 pb-24 pt-10 sm:px-6 sm:pb-28 sm:pt-14 lg:grid-cols-[47fr_53fr] lg:gap-6 lg:px-8 lg:pb-32 lg:pt-16">
       {/* LEFT - the message */}
-      <div className="max-w-xl lg:pr-4">
+      <div className="max-w-xl lg:pr-2">
         <Enter>
           <span className="inline-flex items-center gap-2 rounded-full border border-[var(--sk-brand-header-border)] bg-white/[0.06] px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--sk-brand-gold)]">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--sk-brand-gold)]" aria-hidden="true" />
@@ -64,7 +64,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
 
         <Enter delay={0.06}>
           <h1
-            className="mt-6 text-[36px] font-medium leading-[1.05] tracking-tight text-[var(--sk-brand-header-text)] sm:text-[52px] lg:text-[68px]"
+            className="mt-5 text-[34px] font-medium leading-[1.05] tracking-tight text-[var(--sk-brand-header-text)] sm:text-[48px] lg:text-[64px]"
             style={{ fontFamily: 'var(--font-aeonikpro)' }}
           >
             The right mentor
@@ -76,14 +76,14 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
         </Enter>
 
         <Enter delay={0.12}>
-          <p className="mt-6 max-w-lg text-[15px] leading-relaxed text-[var(--sk-brand-header-muted)] sm:text-base">
+          <p className="mt-5 max-w-lg text-[15px] leading-relaxed text-[var(--sk-brand-header-muted)] sm:text-base">
             Find a verified mentor, choose a time that works for you, and have a private 1:1 conversation built
             around your situation.
           </p>
         </Enter>
 
         <Enter delay={0.18}>
-          <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
             <Button
               size="lg"
               onClick={() => onNavigate(findMentorPath)}
@@ -102,7 +102,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
         </Enter>
 
         <Enter delay={0.24}>
-          <ul className="mt-9 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
             {TRUST_POINTS.map(({ icon: Icon, label }) => (
               <li key={label} className="flex items-center gap-2 text-[13px] text-[var(--sk-brand-header-muted)]">
                 <Icon className="h-4 w-4 shrink-0 text-[var(--sk-brand-gold)]" aria-hidden="true" />
@@ -115,7 +115,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
 
       {/* RIGHT - the human scene, with live areas floating around it */}
       <div className="relative mx-auto w-full max-w-[560px] lg:max-w-none">
-        <HeroConversationVisual className="mx-auto aspect-[560/620] w-full max-w-[440px] lg:max-w-[520px]" />
+        <HeroConversationVisual className="mx-auto aspect-[560/620] w-full max-w-[480px] sm:max-w-[520px] lg:max-w-[560px]" />
 
         {/* The bubbles share the live catalogue with the section below, and are
             positioned against this relatively-positioned box so they orbit the

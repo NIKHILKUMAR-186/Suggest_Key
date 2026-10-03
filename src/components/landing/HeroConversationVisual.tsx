@@ -57,13 +57,24 @@ export const HeroConversationVisual: React.FC<{ className?: string }> = ({ class
     >
       {/* Ambient halo: the "light in the room" the two figures sit inside. */}
       <div
-        className="pointer-events-none absolute left-1/2 top-1/2 -z-10 h-[125%] w-[125%] -translate-x-1/2 -translate-y-1/2"
+        className="pointer-events-none absolute left-1/2 top-1/2 -z-10 h-[140%] w-[140%] -translate-x-1/2 -translate-y-1/2"
         style={{
           background:
-            'radial-gradient(ellipse at 50% 45%, rgba(124,58,237,0.42) 0%, rgba(91,33,182,0.22) 42%, transparent 68%)',
-          filter: 'blur(28px)',
+            'radial-gradient(ellipse at 50% 42%, rgba(124,58,237,0.45) 0%, rgba(91,33,182,0.22) 38%, transparent 62%)',
+          filter: 'blur(32px)',
         }}
-      />      <svg
+      />
+      {/* Subtle brand key motif: a soft geometric shape behind the figures. */}
+      <div
+        className="pointer-events-none absolute left-1/2 top-[38%] -z-10 h-[55%] w-[70%] -translate-x-1/2 -translate-y-1/2 opacity-[0.07]"
+        style={{
+          background:
+            'conic-gradient(from 45deg at 50% 50%, rgba(247,210,67,0.0) 0deg, rgba(247,210,67,0.5) 90deg, rgba(247,210,67,0.0) 180deg, rgba(247,210,67,0.3) 270deg, rgba(247,210,67,0.0) 360deg)',
+          filter: 'blur(60px)',
+        }}
+        aria-hidden="true"
+      />
+      <svg
         viewBox="0 0 560 620"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
@@ -100,27 +111,33 @@ export const HeroConversationVisual: React.FC<{ className?: string }> = ({ class
           <filter id="sk-hero-glow" x="-60%" y="-60%" width="220%" height="220%">
             <feGaussianBlur stdDeviation="20" />
           </filter>
+          <filter id="sk-hero-deep-glow" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="28" />
+          </filter>
         </defs>
 
         <motion.g {...drift(0)} style={{ transformOrigin: 'center' }}>
-          <circle cx="196" cy="188" r="86" fill="#f7d243" opacity="0.16" filter="url(#sk-hero-glow)" />
-          <circle cx="404" cy="252" r="104" fill="#8b5cf6" opacity="0.22" filter="url(#sk-hero-glow)" />
+          <circle cx="196" cy="188" r="86" fill="#f7d243" opacity="0.18" filter="url(#sk-hero-glow)" />
+          <circle cx="404" cy="252" r="104" fill="#8b5cf6" opacity="0.24" filter="url(#sk-hero-glow)" />
         </motion.g>
 
-        <ellipse cx="280" cy="470" rx="196" ry="34" fill="url(#sk-hero-key)" opacity="0.20" filter="url(#sk-hero-soft)" />
+        <ellipse cx="280" cy="470" rx="196" ry="34" fill="url(#sk-hero-key)" opacity="0.22" filter="url(#sk-hero-soft)" />
 
         <motion.g {...drift(1)} style={{ transformOrigin: 'center' }}>
           <path d="M392 620c0-84 42-136 108-136s108 52 108 136H392Z" fill="url(#sk-hero-figure-b)" opacity="0.92" />
           <circle cx="500" cy="404" r="52" fill="url(#sk-hero-figure-b)" />
-          <path d="M452 396a48 48 0 0 1 96 0" fill="#ede9fe" opacity="0.22" />
+          <path d="M452 396a48 48 0 0 1 96 0" fill="#ede9fe" opacity="0.24" />
         </motion.g>
 
         <motion.g {...drift(0)} style={{ transformOrigin: 'center' }}>
           <path d="M64 620c0-108 54-172 138-172s138 64 138 172H64Z" fill="url(#sk-hero-figure-a)" opacity="0.95" />
-          <path d="M168 452l34 46 34-46-18-12h-32l-18 12Z" fill="#fffbeb" opacity="0.30" />
+          <path d="M168 452l34 46 34-46-18-12h-32l-18 12Z" fill="#fffbeb" opacity="0.34" />
           <circle cx="202" cy="368" r="62" fill="url(#sk-hero-figure-a)" />
-          <path d="M148 350a56 56 0 0 1 108 0" stroke="#fffbeb" strokeWidth="7" strokeLinecap="round" opacity="0.34" fill="none" />
+          <path d="M148 350a56 56 0 0 1 108 0" stroke="#fffbeb" strokeWidth="7" strokeLinecap="round" opacity="0.38" fill="none" />
         </motion.g>
+
+        {/* Deep background glow — adds depth behind the figures. */}
+        <circle cx="280" cy="320" r="180" fill="#663af3" opacity="0.08" filter="url(#sk-hero-deep-glow)" aria-hidden="true" />
 
         <ellipse cx="252" cy="556" rx="230" ry="60" fill="url(#sk-hero-fade)" />
         <ellipse cx="280" cy="300" rx="300" ry="330" fill="url(#sk-hero-vignette)" />
