@@ -1,89 +1,212 @@
+import { motion, useReducedMotion, type Variants } from 'motion/react';
 import React from 'react';
-import { motion, useReducedMotion } from 'motion/react';
-import { cn } from '@/src/lib/utils';
 
 /**
- * SCROLL REVEAL — the single place entrance animation is expressed.
+ * LANDING MOTION PRIMITIVES.
  *
- * Every section on the landing page reveals through this component so the
- * motion system stays one small, consistent thing rather than a variant of
- * itself in a dozen files:
+ * The page has two levels of movement and no more: the hero announces itself,
+ * and sections settle as the reader reaches them. Anything that would keep moving
+ * while nobody is touching it is decoration, and decoration on a page like this
+ * is how a landing site ends up feeling like a template.
  *
- *   - one short rise, one short fade, once per element;
- *   - `prefers-reduced-motion` is respected at the source, so a reduced-motion
- *     visitor gets the final state immediately with no transform and no delay,
- *     rather than a page of content that has to animate to become visible;
- *   - it renders a plain element and never intercepts clicks, so wrapping an
- *     interactive card cannot swallow its own activation.
+ * `canAnimate` is the single gate for all of it. When a visitor prefers reduced
+ * motion every primitive resolves to its finished state immediately — no
+ * transform, no opacity ramp, no stagger — so the page is simply a still page
+ * with the same information in the same order. Nothing is ever hidden behind an
+ * animation that does not run, which is the failure this gating exists to prevent.
  *
- * `y` is deliberately small: transform-based reveal causes layout-independent
- * repaint only, and a large offset reads as "sliding" rather than "arriving".
+ * Only `transform` and `opacity` are animated here.
  */
-export interface RevealProps {
-  children: React.ReactNode;
-  className?: string;
-  /** Seconds of stagger. Kept under 0.3s so nothing feels slow. */
-  delay?: number;
-  /** Fraction of the element that must be visible before it plays. */
-  amount?: number;
-  /** Element to render. Defaults to a div. */
-  as?: 'div' | 'section' | 'li' | 'article' | 'header' | 'footer';
-  /** Inline CSS custom properties, e.g. a segment's runtime theme. */
-  style?: React.CSSProperties;
+
+/** Editorial easing: a long, quiet settle. No spring, no overshoot. */
+const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+
+/** False while the preference is unknown, so a first paint never animates. */
+export function useCanAnimate(): boolean {
+  const prefersReducedMotion = useReducedMotion();
+  return prefersReducedMotion !== true;
 }
 
-export const Reveal: React.FC<RevealProps> = ({
+interface RevealProps {
+  children: React.ReactNode;
+  /** Seconds. */
+  delay?: number;
+  /** Distance in pixels the block settles up from. */
+  y?: number;
+  className?: string;
+  as?: 'div' | 'section' | 'li' | 'header' | 'footer' | 'article';
+}
+
+export function Reveal({
+  children,
+  delay = 0,
+  y = 18,
+  className,
+  as = 'div',
+}: RevealProps) {
+  const canAnimate = useCanAnimate();
+  const Tag = motion[as];
+
+  if (!canAnimate) {
+    const Plain = as;
+    return <Plain className={className}>{children}</Plain>;
+  }
+
+  return (
+    <Tag
+      className={className}
+      initial={{ opacity: 0, y }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, amount: 0.2 }}
+      transition={{ duration: 0.72, delay, ease: EASE }}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+/**
+ * A group whose children arrive one after another.
+ *
+ * The stagger lives on the parent so the children carry no timing of their own,
+ * which is what keeps the whole group in step regardless of how many rows the
+ * database returned.
+ */
+type StaggerTag = 'div' | 'ul' | 'ol' | 'section';
+
+export function Stagger({
+  children,
+  className,
+  step = 0.08,
+  delay = 0,
+  as = 'div',
+}: {
+  children: React.ReactNode;
+  className?: string;
+  /** Seconds between children. */
+  step?: number;
+  /** Seconds before the first child. */
+  delay?: number;
+  /**
+   * Rendered element. This is not decoration: a list whose rows each carry a
+   * bottom rule has to be real `ul`/`li`, because an extra `div` between them
+   * changes which element the rule belongs to and how the browser counts the
+   * rows for assistive technology.
+   */
+  as?: StaggerTag;
+}) {
+  const canAnimate = useCanAnimate();
+  const Tag = motion[as];
+
+  if (!canAnimate) {
+    const Plain = as;
+    return <Plain className={className}>{children}</Plain>;
+  }
+
+  return (
+    <Tag
+      className={className}
+      initial="hidden"
+      whileInView="shown"
+      viewport={{ once: true, amount: 0.12 }}
+      variants={{
+        hidden: {},
+        shown: { transition: { staggerChildren: step, delayChildren: delay } },
+      }}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+export function StaggerItem({
+  children,
+  className,
+  y = 14,
+  as = 'div',
+}: {
+  children: React.ReactNode;
+  className?: string;
+  y?: number;
+  as?: StaggerTag | 'li';
+}) {
+  const canAnimate = useCanAnimate();
+  const Tag = motion[as];
+
+  if (!canAnimate) {
+    const Plain = as;
+    return <Plain className={className}>{children}</Plain>;
+  }
+
+  return (
+    <Tag
+      className={className}
+      variants={{
+        hidden: { opacity: 0, y },
+        shown: { opacity: 1, y: 0, transition: { duration: 0.62, ease: EASE } },
+      }}
+    >
+      {children}
+    </Tag>
+  );
+}
+
+/**
+ * A block that grows from its own left edge rather than rising.
+ *
+ * Used exactly once, on the final call, where a settle from the left reads as a
+ * page being turned rather than as another copy of the entrance that ran four
+ * sections earlier.
+ */
+export function EdgeReveal({
   children,
   className,
   delay = 0,
-  amount = 0.2,
-  as = 'div',
-  style,
-}) => {
-  const prefersReducedMotion = useReducedMotion();
-  const canAnimate = prefersReducedMotion === false;
-
-  const MotionTag = motion[as];
-
-  return (
-    <MotionTag
-      className={cn(className)}
-      style={style}
-      initial={canAnimate ? { opacity: 0, y: 16 } : false}
-      whileInView={canAnimate ? { opacity: 1, y: 0 } : undefined}
-      viewport={{ once: true, amount }}
-      transition={{ duration: 0.45, delay, ease: [0.23, 1, 0.31, 1] }}
-    >
-      {children}
-    </MotionTag>
-  );
-};
-
-/**
- * A one-shot entrance for above-the-fold content, which must not wait for a
- * scroll position the visitor has not reached yet.
- */
-export interface EnterProps extends Omit<RevealProps, 'amount'> {
-  children: React.ReactNode;
+}: {
+  /**
+   * Optional, because this also draws bare marks: the hairline rule under the
+   * closing call is revealed this way and has nothing inside it.
+   */
+  children?: React.ReactNode;
   className?: string;
   delay?: number;
-  as?: RevealProps['as'];
-}
+}) {
+  const canAnimate = useCanAnimate();
 
-export const Enter: React.FC<EnterProps> = ({ children, className, delay = 0, as = 'div' }) => {
-  const prefersReducedMotion = useReducedMotion();
-  const canAnimate = prefersReducedMotion === false;
+  if (!canAnimate) return <div className={className}>{children}</div>;
 
-  const MotionTag = motion[as];
+  /*
+   * It scales rather than clips, and that is not a style preference.
+   *
+   * `whileInView` does not fire on an element whose resting style makes it
+   * invisible, and `inset(0 100% 0 0)` is exactly that: the browser reports the
+   * element as fully in view, the observer never calls back, and the rule is
+   * never drawn at all. This component is the one the areas section and the
+   * editorial section both use for their spine rule, so the bug showed up in
+   * two places at once.
+   *
+   * `scaleX` from a left-hand origin produces the same draw, composites, and
+   * leaves the element a real box that a viewport observer can see.
+   */
+  const variants: Variants = {
+    hidden: { opacity: 0, scaleX: 0 },
+    shown: {
+      opacity: 1,
+      scaleX: 1,
+      transition: { duration: 0.95, delay, ease: EASE },
+    },
+  };
 
   return (
-    <MotionTag
-      className={cn(className)}
-      initial={canAnimate ? { opacity: 0, y: 14 } : false}
-      animate={canAnimate ? { opacity: 1, y: 0 } : undefined}
-      transition={{ duration: 0.5, delay, ease: [0.23, 1, 0.31, 1] }}
+    <motion.div
+      className={className}
+      variants={variants}
+      initial="hidden"
+      whileInView="shown"
+      viewport={{ once: true, amount: 0.3 }}
+      style={{ transformOrigin: 'left center' }}
     >
       {children}
-    </MotionTag>
+    </motion.div>
   );
-};
+}

@@ -1271,10 +1271,22 @@ export const apiSchemas = {
       .int('File size must be a whole number of bytes.')
       .positive('That file is empty.')
       .max(MAX_DOCUMENT_BYTES, `That image is larger than ${MAX_DOCUMENT_BYTES / (1024 * 1024)} MB.`),
-    adminNote: optionalText({ max: MAX_REASON_LENGTH, label: 'Admin note', multiline: true }),
-  }),
+     adminNote: optionalText({ max: MAX_REASON_LENGTH, label: 'Admin note', multiline: true }),
+   }),
 
-  mentorApplicationReject: z.strictObject({
+   /**
+    * Body of `POST /api/admin/payments/:id/initiate-refund`.
+    *
+    * The admin is starting a refund, not completing one. The amount, gateway and
+    * reason are derived from the payment row by the server; the admin may record
+    * an optional internal note for the audit trail. There is no `refundAmountInr`
+    * field - the browser must never supply the amount.
+    */
+   adminRefundInitiate: z.strictObject({
+     note: optionalText({ max: MAX_REASON_LENGTH, label: 'Note', multiline: true }),
+   }),
+
+   mentorApplicationReject: z.strictObject({
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: 'Rejection reason', multiline: true }),
   }),
 

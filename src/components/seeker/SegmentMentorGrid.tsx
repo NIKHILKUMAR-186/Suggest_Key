@@ -23,6 +23,20 @@ import { cn } from '@/src/lib/utils';
 export const SEGMENT_MENTOR_GRID_CLASS =
   'grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4';
 
+/**
+ * Adaptive grid layout based on how many mentors the API returned:
+ *  - 1 mentor  → a single wider featured card, centered on the page.
+ *  - 2-3 mentors → a balanced grid (up to 3 columns).
+ *  - 4+ mentors → the full responsive marketplace grid.
+ */
+function mentorGridClass(count: number): string {
+  if (count === 1) return 'grid grid-cols-1 gap-6';
+  if (count <= 3) return 'grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3';
+  return SEGMENT_MENTOR_GRID_CLASS;
+}
+
+const SKELETON_COUNT = 4;
+
 export interface SegmentMentorGridProps {
   mentors: TopicMentor[];
   isLoading: boolean;
@@ -39,21 +53,34 @@ export interface SegmentMentorGridProps {
 }
 
 const CardSkeleton: React.FC = () => (
-  <div className="sk-card flex flex-col overflow-hidden p-0" aria-hidden="true">
-    <div className="flex-1">
-      <div className="flex items-start gap-3.5 p-4 sm:p-5">
-        <Skeleton variant="circular" className="h-12 w-12 shrink-0" />
-        <div className="flex-1 space-y-2">
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-3 w-1/2" />
-        </div>
+  <div className="sk-mentor-card flex flex-col overflow-hidden" aria-hidden="true">
+    <div className="aspect-[4/5] w-full overflow-hidden bg-gradient-to-br from-[var(--segment-accent-soft)] to-[color-mix(in_srgb,var(--segment-accent)_8%,transparent)]" />
+    <div className="sk-mentor-card-body">
+      <Skeleton className="h-6 w-3/5" />
+      <Skeleton className="h-4 w-4/5" />
+      <Skeleton className="h-3 w-1/2" />
+      <div className="mt-2 flex items-center gap-2">
+        <Skeleton variant="circular" className="h-3.5 w-3.5" />
+        <Skeleton className="h-3 w-10" />
+        <Skeleton className="h-3 w-14" />
       </div>
-      <Skeleton className="mx-4 h-20 w-auto rounded-xl sm:mx-5" />
-      <Skeleton className="mx-4 mt-3 h-3 w-1/3 sm:mx-5" />
-    </div>
-    <div className="flex flex-col-reverse gap-2 border-t border-[var(--sk-brand-border)] p-4 sm:flex-row sm:p-5">
-      <Skeleton className="h-12 flex-1 rounded-[14px]" />
-      <Skeleton className="h-12 flex-1 rounded-[14px]" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-3/5" />
+      <div className="mt-2 space-y-2">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+      <Skeleton className="h-4 w-1/3" />
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Skeleton className="h-9 w-24 rounded-full" />
+        <Skeleton className="h-9 w-24 rounded-full" />
+        <Skeleton className="h-9 w-24 rounded-full" />
+      </div>
+      <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+        <Skeleton className="h-10 flex-1 rounded-lg" />
+        <Skeleton className="h-10 flex-1 rounded-lg" />
+      </div>
     </div>
   </div>
 );
@@ -94,12 +121,12 @@ export const SegmentMentorGrid: React.FC<SegmentMentorGridProps> = ({
       <div className={className}>
         {heading}
         <div
-          className={cn(SEGMENT_MENTOR_GRID_CLASS, 'mt-6')}
+          className={cn(mentorGridClass(SKELETON_COUNT), 'mt-6')}
           aria-busy="true"
           aria-live="polite"
         >
           <span className="sr-only">Loading mentors</span>
-          {Array.from({ length: 4 }).map((_, i) => (
+          {Array.from({ length: SKELETON_COUNT }).map((_, i) => (
             <CardSkeleton key={i} />
           ))}
         </div>
@@ -168,17 +195,29 @@ export const SegmentMentorGrid: React.FC<SegmentMentorGridProps> = ({
   return (
     <div className={className}>
       {heading}
-      <div className={cn(SEGMENT_MENTOR_GRID_CLASS, 'mt-6')}>
-        {mentors.map((mentor) => (
+      {mentors.length === 1 ? (
+        <div className="mt-6 mx-auto max-w-3xl">
           <SegmentMentorCard
-            key={mentor.id}
-            mentor={mentor}
+            mentor={mentors[0]!}
             navigate={navigate}
             selectedDate={selectedDate}
             selectedTopic={selectedTopicSlug}
+            featured
           />
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className={cn(mentorGridClass(mentors.length), 'mt-6')}>
+          {mentors.map((mentor) => (
+            <SegmentMentorCard
+              key={mentor.id}
+              mentor={mentor}
+              navigate={navigate}
+              selectedDate={selectedDate}
+              selectedTopic={selectedTopicSlug}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

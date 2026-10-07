@@ -42,6 +42,7 @@ import {
   buildExperienceQuery,
   parseExperienceQuery,
 } from '@/src/lib/segmentTopics';
+import { getDateStringInTimezone } from '@/src/lib/slotEngine';
 import type { Segment } from '@/src/types/database';
 
 export const SeekerHomePage: React.FC = () => {
@@ -100,6 +101,9 @@ const SeekerHomeContent: React.FC<{
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
+  const [selectedDate, setSelectedDate] = useState<string>(() =>
+    getDateStringInTimezone(new Date(), profile?.timezone || 'UTC')
+  );
 
   // The URL is the source of truth for BOTH selections.
   const query = useMemo(() => parseExperienceQuery(currentPath), [currentPath]);
@@ -229,12 +233,13 @@ const SeekerHomeContent: React.FC<{
               </p>
             </div>
           ) : activeSegment ? (
-            <SegmentExperiencePage
-              segment={activeSegment}
-              selectedTopic={urlTopic}
-              onSelectTopic={handleSelectTopic}
-              navigate={navigate}
-            />
+          <SegmentExperiencePage
+            segment={activeSegment}
+            selectedTopic={urlTopic}
+            onSelectTopic={handleSelectTopic}
+            selectedDate={selectedDate}
+            navigate={navigate}
+          />
           ) : (
             <EmptyState
               title="No mentorship segments are available"

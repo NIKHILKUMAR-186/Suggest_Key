@@ -1251,19 +1251,11 @@ Recommended deadline:
 
 If the deadline passes:
 
-- the booking remains active
-- the link can still be added
-- the missed deadline is surfaced operationally
-  (`GET /api/admin/bookings/overdue-links`)
+- the booking is **automatically cancelled** by the server-side `cancel_overdue_mentor_bookings()` pg_cron job (runs every minute)
+- the mentor **can no longer add a meeting link** — `confirm_booking()` rejects late submissions with `MEETING_LINK_DEADLINE_PASSED` (HTTP 409)
+- a full refund workflow is started: for Razorpay payments the gateway refund API is called; for manual UPI/QR payments the refund is queued for admin processing
 
-The deadline **never blocks booking**. It is mentor guidance, distinct from the
-booking cutoff (§18) and from the T−5 access window (§33). Do not automatically
-cancel a booking because the mentor missed it.
-
-> **Known defect:** `GET /api/admin/bookings/overdue-links` currently serves
-> hardcoded in-memory fixtures and never queries the database
-> (`server.ts:3138-3152`). An admin using it during an incident sees fabricated
-> mentors and times. See `docs/technical-audit.md` D1.
+The deadline **is a hard gate**. It is enforced by the server clock. The auto-cancellation and refund workflow are automatic — no manual intervention is required to trigger them. The admin overdue-links endpoint (`GET /api/admin/bookings/overdue-links`) now reads real database rows and shares the canonical `resolveBookingLifecycle()` resolver.
 
 ---
 
@@ -1895,7 +1887,7 @@ RAZORPAY (payment row only; the booking row is untouched until capture)
                                 (booking unchanged)  refund_status PENDING)
 
 REFUND (two shapes; both implemented)
-VERIFIED ──Razorpay refund via gateway──► refund_status REFUND_PROCESSING
+VERIFIED ──Razorpay refund via gateway──► refund_status PENDING
                                               │
                                     webhook:  REFUNDED | REFUND_FAILED
 
@@ -2117,17 +2109,22 @@ See `docs/technical-audit.md` R2.
 - mentor confirmed
 - meeting link available
 - session starting soon
+- **booking auto-cancelled (mentor missed meeting link deadline)**
 - mentor cancelled
 - booking rescheduled
 - session completed
 - workspace updated
+- refund pending (manual payment — admin processing)
+- refund initiated (gateway payment — processing)
+- refund completed
+- refund failed
 
 ## Mentor
 
 - payment captured / approved
 - new booking pending confirmation
 - meeting link deadline approaching
-- meeting link overdue
+- **booking auto-cancelled (meeting link deadline missed)**
 - session starting soon
 - seeker cancelled
 - booking rescheduled
@@ -2136,7 +2133,7 @@ See `docs/technical-audit.md` R2.
 ## Admin
 
 - payment proof submitted
-- mentor link overdue
+- **booking auto-cancelled (mentor missed meeting link deadline)**
 - mentor cancellation
 - booking requiring intervention
 - mentor application submitted / approved / rejected
@@ -2216,9 +2213,8 @@ RLS is enabled on **all 36 tables**. `platform_config` was the last exception; i
 is now admin-only via `20261009000000_phase35_platform_config_rls.sql`
 (`FOR ALL`, `USING (is_admin()) WITH CHECK (is_admin())`).
 
-`pg_cron` runs **three** jobs, all `* * * * *`:
-`expire-stale-holds-every-minute`, `complete-expired-sessions-every-minute` and
-`expire-stale-reschedule-requests-every-minute`.
+`pg_cron` runs **four** jobs, all `* * * * *`:
+`expire-stale-holds-every-minute`, `complete-expired-sessions-every-minute`, `expire-stale-reschedule-requests-every-minute`, and `cancel-overdue-mentor-bookings`.
 
 ---
 

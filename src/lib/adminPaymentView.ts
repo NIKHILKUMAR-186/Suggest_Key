@@ -96,6 +96,17 @@ export interface AdminPaymentSource {
 export const isRefundOwed = (p: AdminPaymentRow) => p.refundStatus === 'PENDING';
 
 /**
+ * Whether an admin may START a refund for this payment.
+ *
+ * True only when the payment has been captured (`VERIFIED`) and no refund has
+ * yet been initiated or settled. A refund that is `PENDING` (in flight at the
+ * gateway, or queued for manual completion) and one that is terminal
+ * (`REFUNDED`) are both refused, so the action cannot be offered twice.
+ */
+export const canInitiateRefund = (p: AdminPaymentRow): boolean =>
+  p.status === 'VERIFIED' && p.refundStatus !== 'PENDING' && p.refundStatus !== 'REFUNDED';
+
+/**
  * Projects a raw `payments` row plus its joined booking into the admin view.
  *
  * `names` is supplied by the caller because resolving profiles is an async

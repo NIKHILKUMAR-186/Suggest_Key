@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Globe, Bell, Shield, Check, Briefcase, Layers, ArrowRight, KeyRound } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Globe, Bell, Shield, Check, Briefcase, Layers, ArrowRight, KeyRound, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
@@ -7,16 +7,28 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
-import { upsertUserProfile } from '@/src/lib/supabase';
+import { cn } from '@/src/lib/utils';
+import {
+  upsertUserProfile,
+  uploadProfilePhoto,
+  deleteProfilePhoto,
+  getProfilePhotoSignedUrl,
+  validateProfilePhoto,
+} from '@/src/lib/supabase';
 import { SupportPage } from '@/src/components/support/SupportPage';
 
 export const MentorSettingsPage: React.FC = () => {
   const { navigate } = useNavigation();
-  const { profile, user } = useAuth();
+  const { profile, user, refreshProfile } = useAuth();
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'support'>('profile');
   const [isSaving, setIsSaving] = useState(false);
   const [savedMessage, setSavedMessage] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [isAvatarAction, setIsAvatarAction] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [displayName, setDisplayName] = useState<string>(profile?.full_name || '');
   const [timezone, setTimezone] = useState<string>(profile?.timezone || 'Asia/Kolkata');
@@ -25,22 +37,99 @@ export const MentorSettingsPage: React.FC = () => {
     if (profile) {
       setDisplayName(profile.full_name || '');
       setTimezone(profile.timezone || 'Asia/Kolkata');
+      setAvatarPreview(profile.avatar_url || null);
     }
   }, [profile]);
 
+  const openFilePicker = () => fileInputRef.current?.click();
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    e.target.value = '';
+    if (!file) return;
+    const validation = validateProfilePhoto(file);
+    if (!validation.ok) {
+      setAvatarError(validation.error);
+      setAvatarFile(null);
+      return;
+    }
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+    setAvatarError(null);
+  };
+
+  const handleCancelAvatar = () => {
+    setAvatarFile(null);
+    setAvatarPreview(profile?.avatar_url || null);
+    setAvatarError(null);
+  };
+
+  const handleRemoveAvatar = async () => {
+    if (!user?.id || isAvatarAction) return;
+    setAvatarError(null);
+    setIsAvatarAction(true);
+    try {
+      const { error: storageError } = await deleteProfilePhoto(user.id);
+      if (storageError) throw storageError;
+      const { error } = await upsertUserProfile({
+        id: user.id,
+        email: profile?.email || user.email || '',
+        full_name: displayName.trim(),
+        timezone,
+        avatar_url: null,
+      });
+      if (error) throw error;
+      setAvatarPreview(null);
+      setAvatarFile(null);
+      await refreshProfile();
+      toast.success('Profile photo removed.', { title: 'Avatar removed' });
+    } catch (err: unknown) {
+      toast.error(
+        toUserMessage(err, 'We could not remove your photo. Please try again.', { action: 'remove-mentor-avatar' }),
+        { title: 'Remove failed' }
+      );
+    } finally {
+      setIsAvatarAction(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!profile) return;
+    if (!profile || !user?.id) return;
     setIsSaving(true);
+    setAvatarError(null);
     try {
+      let avatarUrl = profile.avatar_url || null;
+      let uploadedPath: string | null | undefined;
+
+      if (avatarFile) {
+        const { path, error: uploadError } = await uploadProfilePhoto(user.id, avatarFile);
+        if (uploadError) throw uploadError;
+        uploadedPath = path;
+        if (path) {
+          const url = await getProfilePhotoSignedUrl(path);
+          avatarUrl = url;
+        }
+      }
+
       const { error } = await upsertUserProfile({
         id: profile.id,
         email: profile.email || '',
         full_name: displayName.trim(),
         timezone,
+        avatar_url: avatarUrl,
       });
       if (error) throw error;
+
+      // Only after the DB points at the new avatar do we remove the previous
+      // object, so a failed upload or write never loses the mentor's old photo.
+      if (uploadedPath) {
+        await deleteProfilePhoto(user.id, uploadedPath);
+      }
+
       setSavedMessage(true);
+      setAvatarFile(null);
+      await refreshProfile();
       toast.success('Your name and timezone are up to date.', { title: 'Profile updated' });
     } catch (err: unknown) {
       toast.error(
@@ -143,6 +232,82 @@ export const MentorSettingsPage: React.FC = () => {
             Your name and timezone appear on your mentor profile and drive your availability.
           </p>
 
+          <div className="flex items-start gap-5">
+            <button
+              type="button"
+              onClick={openFilePicker}
+              disabled={isSaving || isAvatarAction}
+              aria-disabled={isSaving || isAvatarAction}
+              aria-label={avatarFile ? 'Change selected photo' : 'Change profile photo'}
+              className={cn(
+                'relative flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-full',
+                'ring-1 ring-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]',
+                'transition-transform duration-200 hover:scale-105',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-shell-focus)]',
+                isSaving || isAvatarAction ? 'opacity-60' : '',
+                avatarError ? 'ring-[var(--color-shell-error)]' : ''
+              )}
+            >
+              {avatarPreview ? (
+                <img src={avatarPreview} alt="" className="h-full w-full object-cover" aria-hidden="true" />
+              ) : (
+                <User className="h-7 w-7 text-[var(--color-shell-text-subtle)]" aria-hidden="true" />
+              )}
+            </button>
+
+            <input
+              ref={fileInputRef}
+              id="mentor-avatar-input"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={openFilePicker}
+                  disabled={isSaving || isAvatarAction}
+                  className="text-sm font-semibold text-[var(--color-shell-primary)] hover:underline disabled:opacity-50"
+                >
+                  Change photo
+                </button>
+                {avatarFile && (
+                  <button
+                    type="button"
+                    onClick={handleCancelAvatar}
+                    disabled={isSaving}
+                    className="text-sm text-[var(--color-shell-text-subtle)] hover:underline disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                )}
+                {profile?.avatar_url && !avatarFile && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveAvatar}
+                    disabled={isAvatarAction}
+                    className="text-sm text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-error)] disabled:opacity-50"
+                  >
+                    Remove photo
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
+                JPG, PNG, or WebP up to 5 MB.
+              </p>
+              {avatarError && (
+                <p className="text-[11px] text-[var(--color-shell-error)]" role="alert">
+                  {avatarError}
+                </p>
+              )}
+              {isSaving && avatarFile && (
+                <p className="text-[11px] text-[var(--color-shell-text-subtle)]">Saving photo…</p>
+              )}
+            </div>
+          </div>
           <div className="space-y-1.5">
             <label htmlFor="mentor-settings-email" className="block text-xs font-medium text-[var(--color-shell-text-muted)]">
               Email

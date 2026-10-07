@@ -64,4 +64,11 @@ export interface AuthContextType {
   signOut: () => Promise<void>;
   hasRole: (role: UserRole) => boolean;
   clearError: () => void;
+  /**
+   * Re-reads the authoritative profile row and refreshes context state.
+   * Used after writes that mutate profile fields (avatar upload, name,
+   * timezone) so the UI reflects the canonical row rather than a stale
+   * local copy. Never invents a profile: a failed read leaves state untouched.
+   */
+  refreshProfile: () => Promise<void>;
 }

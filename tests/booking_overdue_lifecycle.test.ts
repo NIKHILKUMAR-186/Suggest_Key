@@ -19,9 +19,9 @@
  * stamp. A browser clock therefore has no way to move a booking between
  * sections, which sections D and E pin directly.
  *
- * Section J documents a negative: the existing business rule is that a missed
- * deadline does NOT cancel a booking, so there is no Overdue -> Cancelled ->
- * refund path to verify, and inventing one would be a behaviour change.
+ * Section J documents the new auto-cancellation path: a missed deadline IS
+ * cancelled by `cancel_overdue_mentor_bookings()` and a refund IS started by
+ * the server-side reader.
  */
 
 import { describe, it } from 'node:test';
@@ -300,7 +300,7 @@ describe('E. the client cannot decide the deadline, so it cannot forge the state
 // F. Confirming after the deadline
 // ===========================================================================
 
-describe('F. a late confirmation follows the existing server policy', () => {
+describe('F. a late confirmation is rejected by the hard deadline gate', () => {
   const context = (b: Booking): BookingEngineContext =>
     ({
       profiles: [],
@@ -317,11 +317,11 @@ describe('F. a late confirmation follows the existing server policy', () => {
       notifications: [],
     }) as unknown as BookingEngineContext;
 
-  it('the recorded policy is soft: the deadline is audit, not a hard gate', async () => {
-    // `docs/rules.md` M4 - "MENTOR_PENDING is the mentor's action queue. It has
-    // no timer" - and phase 8's "audit/overdue only; it never blocks booking and
-    // never cancels one". So a late link is ACCEPTED and recorded late. Refusing
-    // it would strand a paid seeker with no room.
+  it('the deadline is a hard gate: a late link is refused, not accepted', async () => {
+    // Phase 43 — `confirm_booking()` and `confirmSessionByMentor()` both raise
+    // MEETING_LINK_DEADLINE_PASSED once start_time - 5min has elapsed. The
+    // booking is no longer confirmable by the mentor; the pg_cron job will
+    // auto-cancel it and the refund reader will start the refund.
     const result = await confirmSessionByMentor(
       {
         bookingId: 'bk-1',
@@ -331,40 +331,51 @@ describe('F. a late confirmation follows the existing server policy', () => {
       },
       context(booking()),
     );
-    assert.equal(result.success, true, 'a late link is still accepted');
-    assert.equal(result.booking?.status, 'CONFIRMED');
-    assert.equal(result.isOverdue, true, 'and is recorded as overdue for audit');
-    assert.equal(result.booking?.cancellation_reason, null, 'never cancelled');
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
+    // On rejection, no booking is returned (the status didn't change).
+    assert.equal(result.booking, undefined);
   });
 
-  it('does not cancel the booking or invent a refund', () => {
-    const cancelled = booking({ status: 'CANCELLED', cancellation_reason: 'Cancelled by mentor' });
-    assert.equal(resolveBookingLifecycle(cancelled, T0.getTime() + 60 * MINUTE).bucket, 'CANCELLED');
-    // Cancellation remains an explicit mentor/admin action, never a side effect
-    // of a deadline passing.
-    assert.equal(resolveBookingLifecycle(booking(), T0.getTime()).bucket, 'OVERDUE');
-  });
-
-  it('still refuses a non-HTTPS link after the deadline', () => {
-    const result = resolveBookingLifecycle(booking(), T0.getTime() + 10 * MINUTE);
-    assert.equal(result.canAddMeetingLink, true);
-    assert.equal(
-      resolveBookingLifecycle(booking({ meeting_url: 'http://insecure.example/x' }), T0.getTime())
-        .bucket,
-      'PENDING_CONFIRMATION',
+  it('an on-time link is still accepted and clears the overdue flag', async () => {
+    const result = await confirmSessionByMentor(
+      {
+        bookingId: 'bk-1',
+        mentorId: 'mentor-1',
+        meetingUrl: 'https://meet.google.com/on-time',
+        currentUtcTime: new Date(at(-10 * MINUTE)),
+      },
+      context(booking()),
     );
+    assert.equal(result.success, true);
+    assert.equal(result.booking?.status, 'CONFIRMED');
+    assert.equal(result.isOverdue, false, 'on-time confirmation is not overdue');
   });
 
-  it('the confirm handler reports measured lateness instead of a hardcoded false', () => {
-    // This handler used to answer `isOverdue: false` unconditionally, so an
-    // hours-late confirmation was reported to the mentor as on time.
+  it('still refuses a non-HTTPS link even before the deadline', async () => {
+    const result = await confirmSessionByMentor(
+      {
+        bookingId: 'bk-1',
+        mentorId: 'mentor-1',
+        meetingUrl: 'http://insecure-meeting.com',
+        currentUtcTime: new Date(at(-10 * MINUTE)),
+      },
+      context(booking()),
+    );
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'INVALID_MEETING_URL');
+  });
+
+  it('the confirm handler refuses the deadline error before the RPC write', async () => {
+    // The server reads the booking, measures lateness against its own clock,
+    // and returns 409 BEFORE the RPC transition is attempted. `confirmNowMs`
+    // is sampled inline and never trusts client-supplied time.
     const src = route(
       "app.post('/api/mentor/bookings/:id/confirm'",
       "app.post('/api/mentor/bookings/:id/cancel'",
     );
-    assert.match(src, /isMeetingLinkDeadlineOpen\(prior, confirmNowMs\)/);
-    assert.match(src, /isOverdue: deadlineOpen === false/);
-    assert.doesNotMatch(src, /isOverdue: false,/);
+    assert.match(src, /MEETING_LINK_DEADLINE_PASSED/);
+    assert.match(src, /res\.status\(409\)/);
   });
 });
 
@@ -522,49 +533,59 @@ describe('I. the Pending -> Overdue transition does not need a browser refresh',
 });
 
 // ===========================================================================
-// J. Automatic cancellation: the rule does not exist, and none was invented
+// J. Automatic cancellation of overdue mentor bookings
 // ===========================================================================
 
-describe('J. a missed deadline does not auto-cancel, so no refund path was added', () => {
-  it('nothing in the resolver mutates a status', () => {
+describe('J. a missed deadline auto-cancels via pg_cron with a refund workflow', () => {
+  it('the resolver itself stays a pure classifier (no writes)', () => {
+    // The DERIVED bucket is still read-only; the WRITER is the DB function
+    // `cancel_overdue_mentor_bookings()`, not this module.
     const src = read('src/lib/bookingLifecycle.ts');
     const body = src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
-    // It is a pure classifier. If it ever started writing, "overdue" would
-    // become a persisted state and this whole design would have to change.
     assert.doesNotMatch(body, /\.status\s*=/);
     assert.doesNotMatch(body, /\bupdate\b|\.insert\(|rpc\(/);
   });
 
-  it('no OVERDUE status was added to the database', () => {
-    // The status CHECK constraint is unchanged: deriving beats duplicating.
+  it('the auto-cancel writes CANCELLED with the right reason, no OVERDUE status', () => {
+    // Phase 43 adds `cancel_overdue_mentor_bookings()` but does NOT add an
+    // OVERDUE status to the CHECK constraint. The booking moves straight to
+    // CANCELLED.
     const schema = read('supabase/migrations/20260920000001_phase4_mvp_schema.sql');
     const constraint = schema.slice(
       schema.indexOf('status IN ('),
       schema.indexOf('status IN (') + 400,
     );
     assert.doesNotMatch(constraint, /OVERDUE/);
+    const migration = read('supabase/migrations/20261007000000_phase43_auto_cancel_overdue_mentors.sql');
+    assert.match(migration, /cancel_overdue_mentor_bookings/);
+    assert.match(migration, /cancellation_reason = 'MENTOR_MEETING_LINK_DEADLINE_MISSED'/);
   });
 
-  it('the mentor ledger documents that nothing was cancelled or refunded', () => {
-    // The card copy is the only place a mentor is told what did NOT happen, so
-    // it is worth pinning: without it, "Overdue" reads as "already handled".
+  it('the mentor ledger card now says the booking IS being auto-cancelled', async () => {
+    // Where §J previously asserted the card says "has not been cancelled and
+    // nothing has been refunded", the Phase 43 card says the opposite: the
+    // booking is being auto-cancelled and a refund is processing.
     const card = read('src/components/mentor/MentorBookingCard.tsx');
-    assert.match(card, /has not been cancelled and nothing has been refunded/);
+    assert.doesNotMatch(card, /has not been cancelled and nothing has been refunded/);
+    assert.match(card, /auto-cancelled|automatically cancelled|refund.*processing/i);
   });
 
-  it('cancellation still routes through the existing refund workflow', () => {
-    // Untouched: mentor cancellation -> REFUND via runCreateRazorpayRefund plus
-    // the CANCELLATION / MENTOR_CANCELLATION notifications and a refund-state
-    // notice. Overdue adds no writer and removes none of these.
-    const src = route(
-      "app.post('/api/mentor/bookings/:id/cancel'",
-      'app.get',
-    );
-    assert.match(src, /cancellableStatuses = \[[^\]]*'MENTOR_PENDING'/);
+  it('auto-cancellation triggers the existing refund workflow', () => {
+    // The cron function sets refund_status='PENDING' + refund_reason='mentor_rejection'
+    // on the payment, then the server-side reader calls runCreateRazorpayRefund.
+    const migration = read('supabase/migrations/20261007000000_phase43_auto_cancel_overdue_mentors.sql');
+    assert.match(migration, /refund_status = 'PENDING'/);
+    assert.match(migration, /refund_reason = v_refund_reason/);
+    assert.match(migration, /BOOKING_AUTO_CANCELLED/);
+    assert.match(migration, /cron\.schedule[\s\S]*cancel-overdue-mentor-bookings/);
+
+    // The server-side reconcile reader that calls the gateway API.
+    const src = read('server.ts');
+    assert.match(src, /reconcileAutoCancelledRefunds/);
+    assert.match(src, /refund_reason.*mentor_rejection/);
     assert.match(src, /runCreateRazorpayRefund/);
-    assert.match(src, /status: 'CANCELLED'/);
-    assert.match(src, /event_type: 'CANCELLATION'/);
-    assert.match(src, /notifyRefundState/);
+    // The admin endpoint that triggers it on demand.
+    assert.match(src, /POST.*api\/admin\/payments\/reconcile-auto-cancelled/);
   });
 });
 

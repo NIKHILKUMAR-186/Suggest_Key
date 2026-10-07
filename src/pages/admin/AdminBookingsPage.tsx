@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Filter, Clock, Video, CheckCircle2, AlertCircle, AlertTriangle, Eye, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Calendar, Filter, Clock, Video, CheckCircle2, AlertCircle, AlertTriangle, Eye, ShieldCheck, RefreshCw, Undo2, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
@@ -9,6 +9,21 @@ import { toUserMessage } from '@/src/lib/errorMessages';
 import { apiFetch } from '@/src/lib/apiClient';
 import { APP_CONFIG, MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import { formatOverdueDuration, type BookingLifecycle } from '@/src/lib/bookingLifecycle';
+import { useToast } from '@/src/context/ToastContext';
+import { formatInr } from '@/src/lib/seekerFormat';
+import {
+  canInitiateRefund,
+  type AdminPaymentRow,
+} from '@/src/lib/adminPaymentView';
+import {
+  REFUND_METHODS,
+  canProcessManualRefund,
+  fromPaise,
+  refundMethodLabel,
+  refundStatusLabel,
+  validateRefundProofFile,
+} from '@/src/lib/refundCompletion';
+import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
 
 interface EnrichedBookingRecord {
   id: string;
@@ -39,6 +54,17 @@ interface EnrichedBookingRecord {
     verified_at: string | null;
     proof_storage_path: string | null;
     transaction_reference: string | null;
+    gateway: string | null;
+    refund_status: string | null;
+    refund_id: string | null;
+    refund_amount_paise: number | null;
+    refund_method: string | null;
+    refund_reference: string | null;
+    refunded_at: string | null;
+    refunded_by: string | null;
+    refund_admin_note: string | null;
+    failure_reason: string | null;
+    manual_refund_required: boolean | null;
   } | null;
   deadlineInfo?: {
     deadlineUtc: string;
@@ -64,6 +90,12 @@ export const AdminBookingsPage: React.FC = () => {
   const [overdueCount, setOverdueCount] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [isConfirmingRefund, setIsConfirmingRefund] = useState(false);
+  const [isInitiatingRefund, setIsInitiatingRefund] = useState(false);
+  const [isRefunding, setIsRefunding] = useState(false);
+  const [refundForm, setRefundForm] = useState({ amount: '', method: 'UPI', reference: '', note: '' });
+  const [refundFile, setRefundFile] = useState<File | null>(null);
+  const [isSubmittingRefund, setIsSubmittingRefund] = useState(false);
 
   const loadBookings = async () => {
     setLoading(true);
@@ -121,6 +153,89 @@ export const AdminBookingsPage: React.FC = () => {
     } catch {
       return isoString;
     }
+  };
+
+  const toast = useToast();
+
+  const handleInitiateRefund = async (booking: EnrichedBookingRecord) => {
+    if (!booking.payment?.id) return;
+    setIsConfirmingRefund(false);
+    setIsInitiatingRefund(true);
+    try {
+      const res = await apiFetch(`/api/admin/payments/${booking.payment.id}/initiate-refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error?.message || 'The refund could not be initiated.');
+      await loadBookings();
+      toast.success(data.refund?.message ?? 'The refund has been initiated.', { title: 'Refund initiated' });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'The refund could not be initiated. Nothing was recorded.', { action: 'initiate-refund' }), { title: 'Refund not initiated' });
+    } finally {
+      setIsInitiatingRefund(false);
+    }
+  };
+
+  const handleCompleteRefund = async (booking: EnrichedBookingRecord) => {
+    if (!booking.payment?.id) return;
+    const checked = validateRefundProofFile(refundFile ? { name: refundFile.name, type: refundFile.type, size: refundFile.size } : null);
+    if (!checked.ok) {
+      toast.error(checked.message, { title: 'Proof required' });
+      return;
+    }
+    const amount = Number(refundForm.amount);
+    if (!Number.isFinite(amount)) {
+      toast.error('Enter the refund amount as a number.', { title: 'Amount required' });
+      return;
+    }
+    const reference = refundForm.reference.trim();
+    if (!reference) {
+      toast.error('Enter the refund reference / UTR from the transfer receipt.', { title: 'Reference required' });
+      return;
+    }
+    setIsSubmittingRefund(true);
+    let storagePath: string | null = null;
+    try {
+      const random = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+      storagePath = `refunds/${booking.payment.id}/${random}-${refundFile!.name}`;
+      const { error: uploadErr } = await supabase.storage.from('payment-proofs').upload(storagePath, refundFile!, { contentType: refundFile!.type, upsert: false, cacheControl: '3600' });
+      if (uploadErr) throw uploadErr;
+      const res = await apiFetch(`/api/admin/payments/${booking.payment.id}/complete-manual-refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          refundAmountInr: amount,
+          refundMethod: refundForm.method,
+          refundReference: reference,
+          storagePath,
+          fileName: refundFile!.name,
+          mimeType: refundFile!.type,
+          fileSize: refundFile!.size,
+          ...(refundForm.note.trim() ? { adminNote: refundForm.note.trim() } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error?.message || 'The refund could not be completed.');
+      setSelectedBooking(null);
+      setIsRefunding(false);
+      setRefundFile(null);
+      setRefundForm({ amount: '', method: 'UPI', reference: '', note: '' });
+      await loadBookings();
+      toast.success(`The refund of ₹${amount.toLocaleString('en-IN')} has been recorded as completed and the seeker has been notified.`, { title: 'Refund completed' });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'The refund could not be completed. Nothing was recorded.', { action: 'complete-refund' }), { title: 'Refund not completed' });
+    } finally {
+      setIsSubmittingRefund(false);
+    }
+  };
+
+  const openRefundForm = () => {
+    const payment = selectedBooking?.payment;
+    setRefundForm({ amount: payment ? String(payment.amount_inr) : '', method: 'UPI', reference: '', note: '' });
+    setRefundFile(null);
+    setIsRefunding(true);
   };
 
   return (
@@ -434,12 +549,186 @@ const isOverdue = b.lifecycle?.bucket === 'OVERDUE';
               </div>
             </div>
 
+            {selectedBooking.payment && (
+              <div className="rounded-lg border border-zinc-200 p-3 space-y-2">
+                <span className="font-semibold text-zinc-700 block text-xs">Payment & Refund</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Payment Status</span>
+                    <Badge variant={selectedBooking.payment.status === 'VERIFIED' ? 'success' : selectedBooking.payment.status === 'PENDING_VERIFICATION' ? 'warning' : 'secondary'} className="text-[10px]">
+                      {selectedBooking.payment.status}
+                    </Badge>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Refund Status</span>
+                    {selectedBooking.payment.refund_status ? (
+                      <Badge variant={selectedBooking.payment.refund_status === 'REFUNDED' ? 'success' : selectedBooking.payment.refund_status === 'PENDING' ? 'warning' : 'destructive'} className="text-[10px]">
+                        {refundStatusLabel(selectedBooking.payment.refund_status)}
+                      </Badge>
+                    ) : (
+                      <span className="text-zinc-500">—</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Amount</span>
+                    <span className="font-bold text-zinc-900">{formatInr(selectedBooking.payment.amount_inr)}</span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-400 block text-[11px]">Gateway</span>
+                    <span className="text-zinc-900">{selectedBooking.payment.gateway === 'razorpay' ? 'Razorpay' : 'Manual UPI / QR'}</span>
+                  </div>
+                  {selectedBooking.payment.transaction_reference && (
+                    <div className="col-span-2">
+                      <span className="text-zinc-400 block text-[11px]">Transaction Reference</span>
+                      <span className="font-mono text-zinc-900 break-all">{selectedBooking.payment.transaction_reference}</span>
+                    </div>
+                  )}
+                  {selectedBooking.payment.refund_status === 'REFUNDED' && (
+                    <>
+                      <div>
+                        <span className="text-zinc-400 block text-[11px]">Refund Amount</span>
+                        <span className="font-bold text-zinc-900">{formatInr(fromPaise(selectedBooking.payment.refund_amount_paise) ?? selectedBooking.payment.amount_inr)}</span>
+                      </div>
+                      <div>
+                        <span className="text-zinc-400 block text-[11px]">Refund Method</span>
+                        <span className="text-zinc-900">{selectedBooking.payment.refund_method ? refundMethodLabel(selectedBooking.payment.refund_method) : '—'}</span>
+                      </div>
+                      {selectedBooking.payment.refund_reference && (
+                        <div className="col-span-2">
+                          <span className="text-zinc-400 block text-[11px]">Refund Reference</span>
+                          <span className="font-mono text-zinc-900 break-all">{selectedBooking.payment.refund_reference}</span>
+                        </div>
+                      )}
+                      {selectedBooking.payment.refunded_at && (
+                        <div>
+                          <span className="text-zinc-400 block text-[11px]">Refunded At</span>
+                          <span className="text-zinc-900">{new Date(selectedBooking.payment.refunded_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                        </div>
+                      )}
+                      {selectedBooking.payment.refund_admin_note && (
+                        <div className="col-span-2">
+                          <span className="text-zinc-400 block text-[11px]">Admin Note</span>
+                          <span className="text-zinc-900">{selectedBooking.payment.refund_admin_note}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {selectedBooking.payment.failure_reason && (
+                    <div className="col-span-2">
+                      <span className="text-zinc-400 block text-[11px]">Failure Reason</span>
+                      <span className="text-rose-700">{selectedBooking.payment.failure_reason}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Refund confirmation dialog */}
+            {isConfirmingRefund && selectedBooking.payment && (
+              <div className="space-y-3 pt-2 border-t border-zinc-100">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    {selectedBooking.payment.gateway === 'razorpay'
+                      ? 'This will call the payment gateway to issue a refund of the full captured amount. The seeker will be notified that the refund is pending. The original payment method will be credited — this can take several business days. This action cannot be undone.'
+                      : 'This will queue a manual refund. You must transfer the money yourself, then use "Process Refund" to record the transfer with the UTR and receipt. The seeker is notified only once the transfer is recorded.'}
+                  </span>
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => setIsConfirmingRefund(false)} disabled={isInitiatingRefund}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" className="gap-1 bg-amber-600 hover:bg-amber-700 text-white" disabled={isInitiatingRefund} onClick={() => handleInitiateRefund(selectedBooking)}>
+                    {isInitiatingRefund ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                    {isInitiatingRefund ? 'Initiating…' : 'Confirm Refund'}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Manual refund form */}
+            {isRefunding && selectedBooking.payment && (
+              <div className="space-y-3 pt-2 border-t border-zinc-100">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    Record this <strong>after</strong> you have transferred the money yourself. The money does not move through Suggest Key — this form records the transfer as evidence. The seeker is notified only once it is saved.
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="font-semibold text-zinc-900">Refund amount *</span>
+                    <input type="number" min="1" step="0.01" value={refundForm.amount} onChange={(e) => setRefundForm((f) => ({ ...f, amount: e.target.value }))} className="mt-1 w-full rounded-md border border-zinc-200 px-3 py-1.5 text-xs text-zinc-900" />
+                    <span className="text-[11px] text-zinc-500 block mt-0.5">Full refunds only. Must equal ₹{selectedBooking.payment.amount_inr.toLocaleString('en-IN')}.</span>
+                  </label>
+                  <label className="block">
+                    <span className="font-semibold text-zinc-900">Refund method *</span>
+                    <select value={refundForm.method} onChange={(e) => setRefundForm((f) => ({ ...f, method: e.target.value }))} className="mt-1 w-full rounded-md border border-zinc-200 px-3 py-1.5 text-xs text-zinc-900">
+                      {REFUND_METHODS.map((m) => (
+                        <option key={m} value={m}>{refundMethodLabel(m)}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="font-semibold text-zinc-900">Refund reference / UTR *</span>
+                  <input type="text" maxLength={64} placeholder="Copy the reference from your transfer receipt" value={refundForm.reference} onChange={(e) => setRefundForm((f) => ({ ...f, reference: e.target.value }))} className="mt-1 w-full rounded-md border border-zinc-200 px-3 py-1.5 text-xs text-zinc-900" />
+                </label>
+                <label className="block">
+                  <span className="font-semibold text-zinc-900">Refund proof *</span>
+                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setRefundFile(e.target.files?.[0] ?? null)} className="mt-1 w-full text-xs text-zinc-700" />
+                  <span className="text-[11px] text-zinc-500 block mt-0.5">Screenshot of the transfer confirmation, up to 5 MB. Stored in a private bucket, viewable by admins only.</span>
+                </label>
+                <label className="block">
+                  <span className="font-semibold text-zinc-900">Admin note (optional)</span>
+                  <textarea rows={2} maxLength={500} value={refundForm.note} onChange={(e) => setRefundForm((f) => ({ ...f, note: e.target.value }))} className="mt-1 w-full rounded-md border border-zinc-200 px-3 py-1.5 text-xs text-zinc-900" />
+                  <span className="text-[11px] text-zinc-500 block mt-0.5">Internal only. Never shown to the seeker.</span>
+                </label>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => { setIsRefunding(false); setRefundFile(null); setRefundForm({ amount: '', method: 'UPI', reference: '', note: '' }); }} disabled={isSubmittingRefund}>
+                    Back
+                  </Button>
+                  <Button size="sm" className="gap-1 bg-emerald-600 hover:bg-emerald-700 text-white" disabled={isSubmittingRefund} onClick={() => handleCompleteRefund(selectedBooking)}>
+                    {isSubmittingRefund ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                    {isSubmittingRefund ? 'Recording…' : 'Confirm refund completed'}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="p-3 bg-zinc-100 rounded-lg text-[11px] text-zinc-600 space-y-1">
               <span className="font-semibold text-zinc-800 block">Platform Security Invariant:</span>
               <p>
                 Only valid HTTPS meeting links are accepted. Direct meeting link is concealed from seeker until 5 minutes before scheduled start time.
               </p>
             </div>
+
+            {selectedBooking.payment && !isConfirmingRefund && !isRefunding && (
+              <div className="flex justify-end gap-2 pt-2">
+                {canInitiateRefund({
+                  status: selectedBooking.payment.status,
+                  refundStatus: selectedBooking.payment.refund_status,
+                  gateway: selectedBooking.payment.gateway ?? 'manual',
+                  manualRefundRequired: selectedBooking.payment.manual_refund_required ?? false,
+                } as any) && (
+                  <Button size="sm" variant="outline" className="gap-1 border-amber-200 text-amber-700 hover:bg-amber-50" onClick={() => setIsConfirmingRefund(true)}>
+                    <Undo2 className="h-3.5 w-3.5" />
+                    Initiate Refund
+                  </Button>
+                )}
+                {canProcessManualRefund({
+                  gateway: selectedBooking.payment.gateway ?? 'manual',
+                  status: selectedBooking.payment.status,
+                  refundStatus: selectedBooking.payment.refund_status,
+                  manualRefundRequired: selectedBooking.payment.manual_refund_required ?? false,
+                } as any) && (
+                  <Button size="sm" variant="outline" className="gap-1 border-emerald-200 text-emerald-700 hover:bg-emerald-50" onClick={openRefundForm}>
+                    <Undo2 className="h-3.5 w-3.5" />
+                    Process Refund
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </Modal>
       )}

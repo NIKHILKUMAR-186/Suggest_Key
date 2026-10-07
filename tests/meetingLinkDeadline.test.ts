@@ -25,7 +25,10 @@ import type { Booking } from '@/src/types/database';
 //   * submission deadline  - when the mentor may still provide a link (T-5m)
 //   * seeker visibility    - when the seeker can read the link (T-5m)
 // They happen to share a boundary, but they are enforced by different code.
-// Nothing here cancels a booking for a missed deadline.
+//
+// Phase 43: the submission deadline is now a HARD gate. Once it elapses the
+// mentor cannot confirm (HTTP 409 MEETING_LINK_DEADLINE_PASSED) and the
+// pg_cron job cancels the booking with a refund workflow.
 // ---------------------------------------------------------------------------
 
 const SEEKER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -137,23 +140,26 @@ describe('Meeting-link deadline rule', () => {
     assert.equal(info.hoursUntilSession, 2);
   });
 
-  it('C. accepts a valid HTTPS link at T-4m, where only the 5-minute rule applies', async () => {
+  it('C. rejects a link submitted at T-4m (deadline was T-5m)', async () => {
+    // Phase 43: the 5-minute deadline is a HARD gate. At T-4m the deadline has
+    // already elapsed, so the mentor cannot confirm. The booking is being
+    // auto-cancelled by the pg_cron job.
     const result = await confirmSessionByMentor(
       { bookingId: 'bk-1', mentorId: MENTOR_ID, meetingUrl: 'https://meet.google.com/t-4m', currentUtcTime: at(-4 * MINUTE) },
       context(booking()),
     );
-    assert.equal(result.success, true, 'the old 2-hour rule must not block a late submission');
-    assert.equal(result.booking?.status, 'CONFIRMED');
-    assert.equal(result.isOverdue, true, 'but it is recorded as overdue for audit');
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
+    assert.equal(result.booking, undefined, 'no booking returned on rejection');
   });
 
-  it('C. never auto-cancels a booking for a missed deadline', async () => {
+  it('C. rejects a link submitted at T-2m (well past the deadline)', async () => {
     const result = await confirmSessionByMentor(
       { bookingId: 'bk-1', mentorId: MENTOR_ID, meetingUrl: 'https://meet.google.com/late', currentUtcTime: at(-2 * MINUTE) },
       context(booking()),
     );
-    assert.equal(result.booking?.status, 'CONFIRMED');
-    assert.equal(result.booking?.cancellation_reason, null);
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
   });
 
   // D/E: seeker visibility is a separate gate at the same boundary.
@@ -201,26 +207,27 @@ describe('Meeting-link deadline rule', () => {
   });
 
   // F: a missing link inside the window produces the existing overdue state.
-  it('F. flags a missing link at T-4m as overdue, and stops once confirmed', async () => {
+  it('F. flags a missing link at T-4m as overdue, and is no longer confirmable', async () => {
     const now = at(-4 * MINUTE);
     const db = context(booking());
     assert.deepEqual(getOverdueBookings(db, now).map((b) => b.id), ['bk-1']);
 
-    // Supplying the link and confirming is what clears the overdue state; the
-    // booking is never cancelled for missing the deadline.
+    // Phase 43: the deadline has elapsed, so the mentor can no longer confirm.
+    // The booking is being auto-cancelled by the pg_cron job.
     const result = await confirmSessionByMentor(
       { bookingId: 'bk-1', mentorId: MENTOR_ID, meetingUrl: 'https://meet.google.com/fixed', currentUtcTime: now },
       db,
     );
-    assert.equal(result.success, true);
-    assert.deepEqual(getOverdueBookings(db, now), []);
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
+    assert.deepEqual(getOverdueBookings(db, now).map((b) => b.id), ['bk-1'], 'still overdue since it was not confirmed');
   });
 
   it('F. surfaces the same overdue state in the admin exception centre', () => {
     const exceptions = buildDashboardExceptions([booking()], [], at(-4 * MINUTE));
     assert.equal(exceptions[0].kind, 'MEETING_LINK_OVERDUE');
     assert.equal(exceptions[0].severity, 'critical');
-    assert.match(exceptions[0].detail, /NOT auto-cancelled/);
+    assert.match(exceptions[0].detail, /auto-cancelled|auto-cancellation/);
   });
 
   it('F. does not raise an overdue exception before the boundary', () => {

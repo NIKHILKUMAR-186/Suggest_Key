@@ -220,6 +220,7 @@ export function mentorDetailPath(input: {
   topic?: string | null;
   origin?: MentorOrigin | null;
   intent?: MentorIntent | null;
+  slotTime?: string | null;
 }): string {
   const params = new URLSearchParams({ mentorId: input.mentorId });
   const slug = (input.segmentSlug || '').trim();
@@ -232,6 +233,8 @@ export function mentorDetailPath(input: {
   }
   if (input.origin) params.set('source', input.origin);
   if (input.intent) params.set('intent', input.intent);
+  const slotTime = (input.slotTime || '').trim();
+  if (slotTime) params.set('slotTime', slotTime);
   return `${MENTOR_DETAIL_ROUTE}?${params.toString()}`;
 }
 

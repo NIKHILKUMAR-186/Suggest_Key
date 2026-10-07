@@ -8,7 +8,7 @@ import { ProtectedRoute } from '@/src/components/auth/ProtectedRoute';
 // every anonymous visitor, and login/signup are the entry point for every
 // returning user, so deferring them would trade a larger download for a worse
 // first meaningful paint. Everything else is lazy.
-import { LandingPage } from '@/src/pages/public/LandingPage';
+import { LandingPageNew } from '@/src/pages/public/LandingPageNew';
 import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 import { LoginPage } from '@/src/pages/auth/LoginPage';
 import { SignUpPage } from '@/src/pages/auth/SignUpPage';
@@ -65,6 +65,10 @@ const AdminMentorVerificationPage = lazy(() => import('@/src/pages/admin/AdminMe
 const AdminMentorVerificationDetailPage = lazy(() => import('@/src/pages/admin/AdminMentorVerificationDetailPage').then((m) => ({ default: m.AdminMentorVerificationDetailPage })));
 const AdminSegmentsPage = lazy(() => import('@/src/pages/admin/AdminSegmentsPage').then((m) => ({ default: m.AdminSegmentsPage })));
 const AdminCouponsPage = lazy(() => import('@/src/pages/admin/AdminCouponsPage').then((m) => ({ default: m.AdminCouponsPage })));
+const AdminGigsPage = lazy(() => import('@/src/pages/admin/AdminGigsPage').then((m) => ({ default: m.AdminGigsPage })));
+const AdminSlotExplorerPage = lazy(() => import('@/src/pages/admin/AdminSlotExplorerPage').then((m) => ({ default: m.AdminSlotExplorerPage })));
+const AdminHoldsPage = lazy(() => import('@/src/pages/admin/AdminHoldsPage').then((m) => ({ default: m.AdminHoldsPage })));
+const AdminReschedulesPage = lazy(() => import('@/src/pages/admin/AdminReschedulesPage').then((m) => ({ default: m.AdminReschedulesPage })));
 const AdminSegmentDetailPage = lazy(() => import('@/src/pages/admin/AdminSegmentDetailPage').then((m) => ({ default: m.AdminSegmentDetailPage })));
 const AdminBookingsPage = lazy(() => import('@/src/pages/admin/AdminBookingsPage').then((m) => ({ default: m.AdminBookingsPage })));
 const AdminWorkspacesPage = lazy(() => import('@/src/pages/admin/AdminWorkspacesPage').then((m) => ({ default: m.AdminWorkspacesPage })));
@@ -95,9 +99,9 @@ const RouterRoutes: React.FC = () => {
   const { activeRole, isAuthenticated } = useAuth();
   const pathname = currentPath.split('?')[0];
 
-  // 1. Public Landing Page (always accessible)
+  // 1. Public Landing Page (always accessible) - NEW REBUILT LANDING PAGE
   if (pathname === '/') {
-    return <LandingPage />;
+    return <LandingPageNew />;
   }
 
   // 2. Dedicated Authentication Routes (always accessible)
@@ -152,6 +156,11 @@ if (pathname.startsWith('/admin')) {
           // treated as a segment slug by the detail page.
           if (/^\/admin\/segments\/[^/]+$/.test(pathname)) return <AdminSegmentDetailPage />;
           if (pathname === '/admin/bookings') return <AdminBookingsPage />;
+          if (pathname === '/admin/slot-explorer') return <AdminSlotExplorerPage />;
+          if (pathname === '/admin/holds') return <AdminHoldsPage />;
+          if (pathname === '/admin/reschedules') return <AdminReschedulesPage />;
+          // Gigs stay inside Marketplace order: segments, gigs, then coupons.
+          if (pathname === '/admin/gigs') return <AdminGigsPage />;
           if (pathname === '/admin/workspaces') return <AdminWorkspacesPage />;
           if (pathname === '/admin/payments') return <AdminPaymentsPage />;
           if (pathname === '/admin/coupons') return <AdminCouponsPage />;
@@ -191,7 +200,7 @@ if (pathname.startsWith('/admin')) {
           if (pathname === '/mentor/settings') return <MentorSettingsPage />;
           if (pathname === '/mentor/support') return <SupportPage />;
           if (pathname === '/mentor') return <MentorHomePage />;
-          // Any other /mentor/* path is not a route. Returning the home page
+          // Any other path under /mentor is not a route. Returning the home page
           // here made a stale or mistyped link look like a successful
           // navigation to a real, populated screen, which is how the dead
           // `/seeker/reschedule` link survived. The 404 is rendered inside the

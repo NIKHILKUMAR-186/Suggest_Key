@@ -1,4 +1,4 @@
-﻿import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+﻿import { supabase, isSupabaseConfigured, getProfilePhotoSignedUrl } from '@/src/lib/supabase';
 import { apiFetch } from '@/src/lib/apiClient';
 import { logSanitizer } from '@/src/lib/logSanitizer';
 import {
@@ -353,7 +353,7 @@ export async function fetchDiscoverableMentors(
       discoverableMentors.push({
         id: mp.id,
         full_name: profile.full_name,
-        avatar_url: profile.avatar_url,
+        avatar_url: await getProfilePhotoSignedUrl(profile.avatar_url ?? null),
         timezone: slotResult.timezone,
         headline: mp.headline,
         about: mp.about,
@@ -508,7 +508,7 @@ export async function fetchMentorDetail(
       mentor: {
         id: mentorId,
         full_name: profile.full_name,
-        avatar_url: profile.avatar_url,
+        avatar_url: await getProfilePhotoSignedUrl(profile.avatar_url ?? null),
         timezone: slotResult.timezone,
         headline: mpData.headline,
         about: mpData.about,
@@ -862,7 +862,7 @@ export async function fetchAllMentors(
         return {
           id: mp.id,
           full_name: profile.full_name || 'Mentor',
-          avatar_url: profile.avatar_url || null,
+          avatar_url: profile.avatar_url ?? null,
           timezone: profile.timezone || 'Asia/Kolkata',
           headline: mp.headline || '',
           about: mp.about || null,
@@ -878,6 +878,13 @@ export async function fetchAllMentors(
           starting_price_inr: prices.length > 0 ? Math.min(...prices) : null,
         };
       });
+
+    // Generate signed URLs for profile photos in the private bucket.
+    await Promise.all(
+      mentors.map(async (m) => {
+        m.avatar_url = await getProfilePhotoSignedUrl(m.avatar_url);
+      }),
+    );
 
     return { mentors, pagination, error: null };
   } catch (err: any) {

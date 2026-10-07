@@ -246,17 +246,14 @@ export function bucketToMentorTab(bucket: BookingLifecycleBucket): MentorBooking
  * Whether a confirmation request is still inside its window, evaluated against
  * a SERVER clock reading.
  *
- * This answers "did the mentor submit inside the window?", NOT "may they still
- * submit?". Those are different questions and the existing product rule makes
- * them different on purpose: `docs/rules.md` M4 records that `MENTOR_PENDING`
- * "has no timer" and "nothing in code moves it automatically", and phase 8
- * states that a missed meeting-link deadline "never cancels the booking". A
- * mentor who supplies a valid HTTPS link late is therefore still allowed to
- * confirm, because refusing would strand a paid seeker with no room - and the
- * lateness is recorded for audit instead.
+ * Phase 43 makes the 5-minute meeting-link deadline a HARD gate: once this
+ * returns `false` the booking is no longer confirmable by the mentor. The
+ * pg_cron job will auto-cancel it and the refund reader will start the refund.
  *
- * What this DOES guarantee is that the answer comes from the server's `now`, so
- * a browser with a rewound clock gains nothing and cannot extend its own window.
+ * The function remains the single server-side clock source for the deadline
+ * so a browser with a rewound clock gains nothing and cannot extend its own
+ * window. `confirm_booking()` (DB RPC) and `confirmSessionByMentor()` (dev
+ * engine) both enforce the same `MEETING_LINK_DEADLINE_PASSED` refusal.
  */
 export function isMeetingLinkDeadlineOpen(
   booking: Pick<BookingLifecycleInput, 'start_time'>,

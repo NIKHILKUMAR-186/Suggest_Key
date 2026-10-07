@@ -55,3 +55,10 @@ memory.md
 aut_design.md
 .vercel
 .env*
+
+graphify-out/
+
+helpers/
+tests/
+production-clone-backup/
+supabase-clone backup/

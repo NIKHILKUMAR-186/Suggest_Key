@@ -8,7 +8,6 @@ import { ROLE_NAVIGATION } from '@/src/config/navigation';
 import { cn } from '@/src/lib/utils';
 import type { UserRole } from '@/src/types/navigation';
 import { Button } from '@/src/components/ui/Button';
-import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 
 export const TopNavigation: React.FC = () => {
   const { currentPath, currentRole, navigate } = useNavigation();
@@ -16,8 +15,18 @@ export const TopNavigation: React.FC = () => {
   const { unreadCount } = useNotifications();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [isScrolled, setIsScrolled] = useState(false);
 
   const userDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Track scroll position for navbar transition
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 60);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // `currentRole` is null when the database has no role row for the account.
   // Navigation links still need a concrete path prefix, so the display prefix
@@ -79,9 +88,16 @@ export const TopNavigation: React.FC = () => {
   }, [mobileMenuOpen]);
 
   const handleNavClick = (href: string) => {
+    // Home button on landing page should scroll to top
+    if (href === '/' && currentPath === '/') {
+      window.scrollTo({ top: 0, behavior: scrollBehavior });
+      return;
+    }
     navigate(href);
     setMobileMenuOpen(false);
   };
+
+  const scrollBehavior: ScrollBehavior = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
 
   const handleSignOut = async () => {
     await signOut();
@@ -91,12 +107,19 @@ export const TopNavigation: React.FC = () => {
   };
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)]/80 shadow-[0_1px_0_rgba(186,215,247,0.04),0_10px_30px_-24px_rgba(0,0,0,0.9)] backdrop-blur-xl backdrop-saturate-150">
+    <header
+      className={cn(
+        'sticky top-0 z-40 w-full transition-all duration-300 ease-out',
+        isScrolled
+          ? 'bg-[var(--sk-brand-plum)]/90 backdrop-blur-xl backdrop-saturate-150 border-b border-[var(--sk-brand-border)] shadow-[0_4px_24px_-4px_rgba(0,0,0,0.4)]'
+          : 'bg-transparent border-b border-transparent shadow-none'
+      )}
+    >
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:h-[68px] sm:px-6 lg:px-8">
         {/* Brand & Logo */}
         <div className="flex items-center gap-4 sm:gap-7">
           <button
-            onClick={() => handleNavClick(config.navItems[0].href)}
+            onClick={() => handleNavClick('/')}
             className="flex cursor-pointer items-center gap-3 rounded-xl p-1 text-left transition-transform duration-150 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-[var(--color-shell-focus)] focus-visible:outline-offset-2"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-gradient-to-br from-[var(--color-shell-primary)] to-[var(--color-shell-accent)] font-bold text-white shadow-[var(--shadow-sm)] ring-1 ring-inset ring-white/25">
@@ -159,9 +182,8 @@ export const TopNavigation: React.FC = () => {
           </nav>
         </div>
 
-        {/* Right Section: Theme Toggle + User Profile or Sign In */}
+        {/* Right Section: User Profile or Sign In */}
         <div className="hidden md:flex items-center gap-3">
-          <ThemeToggle />
           {isAuthenticated ? (
             <div className="relative" ref={userDropdownRef}>
               <button
@@ -251,7 +273,6 @@ export const TopNavigation: React.FC = () => {
 
         {/* Mobile Hamburger Button */}
         <div className="flex md:hidden items-center gap-2">
-          <ThemeToggle />
           {unreadCount > 0 && (
             <button
               onClick={() => handleNavClick(`/${rolePrefix}/notifications`)}
@@ -376,12 +397,31 @@ export const TopNavigation: React.FC = () => {
                 )}
               </div>
 
-              {/* Mobile theme selection */}
-              <div className="pt-1 pb-1 flex items-center justify-between gap-3">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
-                  Theme
-                </span>
-                <ThemeToggle variant="labeled" />
+              {/* Mobile Sign Out / Sign In */}
+              <div className="pt-3 border-t border-[var(--color-shell-border)] space-y-2">
+                {isAuthenticated ? (
+                  <Button
+                    variant="outline"
+                    size="md"
+                    onClick={handleSignOut}
+                    className="w-full text-xs text-[var(--color-shell-error)] hover:bg-[var(--color-shell-error-soft)] border-[var(--color-shell-error)]/30 gap-2 min-h-[44px]"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    <span>Sign Out ({profile?.full_name || user?.email})</span>
+                  </Button>
+                ) : (
+                  <Button
+                    size="md"
+                    onClick={() => {
+                      navigate('/auth/login');
+                      setMobileMenuOpen(false);
+                    }}
+                    className="w-full text-xs gap-2 min-h-[44px]"
+                  >
+                    <LogIn className="h-4 w-4" />
+                    <span>Sign In to Suggest Key</span>
+                  </Button>
+                )}
               </div>
             </motion.div>
           </div>

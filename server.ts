@@ -250,6 +250,32 @@ async function signQrImageUrl(admin: SupabaseClient, storagePath: string | null)
 }
 
 /**
+ * Mints a short-lived signed URL for a profile photo in the private
+ * profile-photos bucket.
+ *
+ * The bucket is private, so this is the ONLY way to serve the image to clients.
+ * The signed URL expires after 1 hour (3600 seconds).
+ *
+ * A signing failure yields `null` and is logged.
+ */
+async function signProfilePhotoUrl(admin: SupabaseClient, storagePath: string | null): Promise<string | null> {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await admin.storage
+      .from('profile-photos')
+      .createSignedUrl(storagePath, 3600);
+    if (error) {
+      console.error('Failed to sign the profile photo URL:', error.message);
+      return null;
+    }
+    return data?.signedUrl ?? null;
+  } catch (signErr) {
+    console.error('Failed to sign the profile photo URL:', logSanitizer.safeMessage(signErr));
+    return null;
+  }
+}
+
+/**
  * How many admin accounts are currently OPERATIONAL.
  *
  * Counted through the shared `deriveAccountState` so a time-boxed suspension
@@ -523,6 +549,83 @@ function refundCompletionFailureReason(code: string): string {
     REFUND_COMPLETION_FAILED: 'The refund could not be completed. Nothing was recorded; please try again.',
   };
   return reasons[code] ?? reasons.REFUND_COMPLETION_FAILED;
+}
+
+/**
+ * Reconciliation reader for payments queued by `cancel_overdue_mentor_bookings()`.
+ *
+ * The pg_cron function cancels overdue MENTOR_PENDING bookings and parks their
+ * payments in `refund_status = 'PENDING'` + `refund_reason = 'mentor_rejection'`,
+ * leaving `refund_id = NULL`. PL/pgSQL cannot make outbound HTTP calls, so the
+ * gateway refund is started here, on the server, the next time an admin page
+ * reads the ledger.
+ *
+ * Two payment classes reach this reader:
+ *   - razorpay: `runCreateRazorpayRefund` is called to hit the gateway API.
+ *     Idempotency is guaranteed because `runCreateRazorpayRefund` itself refuses
+ *     when `refund_status = 'PENDING' AND refund_id IS NOT NULL` — i.e. a prior
+ *     successful attempt already recorded the gateway refund id.
+ *   - manual UPI/QR: the migration already set `manual_refund_required = TRUE`,
+ *     so the reader skips them; the admin "complete-manual-refund" endpoint is
+ *     their path to completion.
+ *
+ * `payments.status` is never advanced to REFUNDED here — only `refund_id` and
+ * `refund_status = 'REFUNDED'/'FAILED'` are, by `runCreateRazorpayRefund` via
+ * the store. A failed gateway call leaves `refund_id` NULL so a later read
+ * retries.
+ */
+async function reconcileAutoCancelledRefunds(
+  admin: SupabaseClient,
+  now: Date = new Date(),
+): Promise<{ attempted: number; succeeded: number; failed: number; skipped: number }> {
+  const result = { attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
+
+  const { data: pending, error: queryErr } = await admin
+    .from('payments')
+    .select(
+      'id, booking_id, seeker_id, amount_inr, gateway, refund_status, refund_id, status, booking:bookings!inner(booking_code)',
+    )
+    .eq('refund_status', 'PENDING')
+    .eq('refund_reason', 'mentor_rejection')
+    .is('refund_id', null)
+    .eq('status', 'VERIFIED');
+
+  if (queryErr) throw queryErr;
+
+  const gatewayClient = createRazorpayGatewayClient();
+  const store = createSupabaseRazorpayStore(admin);
+
+  for (const payment of pending || []) {
+    if (payment.gateway === 'manual') {
+      // Already flagged for the admin queue by the migration. Nothing to do.
+      result.skipped++;
+      continue;
+    }
+
+    result.attempted++;
+    const refundResult = await runCreateRazorpayRefund({
+      bookingId: payment.booking_id,
+      callerId: 'system-auto-cancel',
+      reason: 'mentor_rejection',
+      gateway: gatewayClient,
+      store,
+      now,
+    });
+
+    if (refundResult.ok) {
+      result.succeeded++;
+      // Notify the seeker that a gateway refund was initiated.
+      await notifyRefundState(admin, {
+        booking: { seeker_id: payment.seeker_id, booking_code: payment.booking?.[0]?.booking_code ?? '' },
+        refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
+        kind: refundResult.value.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
+      }).catch((err) => console.error('Auto-cancel refund notification failed:', err.message));
+    } else {
+      result.failed++;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -3953,66 +4056,71 @@ async function startServer() {
 
   // POST /api/mentor/bookings/:id/confirm: Server-side mentor confirmation
   //
-  // Deadlines are evaluated here, on the server clock, BEFORE the transition.
-  // Two rules, deliberately different:
+  // Phase 43 makes the 5-minute meeting-link deadline a HARD gate at both layers:
   //
-  //   * A late link is still ACCEPTED. `docs/rules.md` M4 records that
-  //     `MENTOR_PENDING` "has no timer" and nothing moves it automatically;
-  //     phase 8 states a missed meeting-link deadline "never cancels the
-  //     booking". Refusing here would strand a paid seeker with no room, so
-  //     the mentor may still confirm and the lateness is recorded for audit.
-  //   * A booking that is no longer MENTOR_PENDING is refused. That is the
-  //     real gate, and it lives in `confirm_booking` (ownership + status), not
-  //     in any client-side check.
+  //   1. `confirm_booking()` (the DB RPC) raises MEETING_LINK_DEADLINE_PASSED
+  //      when `start_time - 5min <= now()`, refusing the transition.
+  //   2. `confirmSessionByMentor()` (the dev-engine fallback) rejects the same
+  //      way so the local path never diverges.
   //
-  // Nothing the client sends influences either verdict: `nowMs` is sampled
-  // here, and the request body carries only the URL.
+  // Once the deadline elapses the booking is no longer confirmable; the
+  // pg_cron job will auto-cancel it and the server-side refund reader will
+  // start the refund. The deadline is therefore measured against the server
+  // clock BEFORE the RPC write: `confirmNowMs` is sampled here, and the request
+  // body carries only the URL.
   app.post('/api/mentor/bookings/:id/confirm', requireAuth, requireRole('mentor'), validateBody(apiSchemas.mentorBookingConfirm), async (req: AuthRequest, res) => {
     try {
       const bookingId = req.params.id;
       const mentorId = req.auth!.user.id;
-      // The schema guarantees a real http(s) URL, so `javascript:` and other
-      // script-bearing schemes can never be stored as the session's meeting link.
       const { meetingUrl } = req.body as { meetingUrl: string };
 
       const admin = getSupabaseAdmin();
       if (admin) {
         const confirmNowMs = Date.now();
 
-        // Read the booking first purely to measure lateness against the server
-        // clock. The authoritative write is still `confirm_booking`, which
-        // re-checks ownership and status inside its own transaction; this read
-        // grants no authority and is not trusted for the transition.
         const { data: prior } = await admin
           .from('bookings')
           .select('start_time, status, meeting_url')
           .eq('id', bookingId)
+          .eq('mentor_id', mentorId)
           .maybeSingle();
-
-        const deadlineOpen = prior
-          ? isMeetingLinkDeadlineOpen(prior, confirmNowMs)
-          : null;
 
         const { data: booking, error } = await admin.rpc('confirm_booking', {
           p_booking_id: bookingId,
           p_meeting_url: meetingUrl,
           p_mentor_id: mentorId,
         });
-        if (error) throw error;
 
-        // `isOverdue` previously answered a hardcoded `false` on this path,
-        // which reported even an hours-late confirmation as on time. It is now
-        // the measured fact, and it is what the mentor UI shows as
-        // "confirmed after the deadline".
+        if (error) {
+          const codeMatch = error.message?.match(/code:\s*([A-Z0-9_]+)/i);
+          const rpcCode = codeMatch ? codeMatch[1].toUpperCase() : null;
+
+          if (rpcCode === 'MEETING_LINK_DEADLINE_PASSED') {
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: 'MEETING_LINK_DEADLINE_PASSED',
+                message: 'The meeting link deadline has passed. This booking is being auto-cancelled.',
+              },
+              isOverdue: true,
+              confirmedAfterDeadline: true,
+            });
+          }
+          if (rpcCode === 'BOOKING_NOT_FOUND') {
+            return res.status(404).json({ success: false, error: { code: 'BOOKING_NOT_FOUND', message: 'Booking not found.' } });
+          }
+          if (rpcCode === 'INVALID_STATE_TRANSITION' || rpcCode === 'INVALID_MEETING_URL') {
+            return res.status(400).json({ success: false, error: { code: rpcCode, message: error.message } });
+          }
+          throw error;
+        }
+
         return res.json({
           success: true,
           booking,
-          isOverdue: deadlineOpen === false,
-          confirmedAfterDeadline: deadlineOpen === false,
-          message:
-            deadlineOpen === false
-              ? 'Session confirmed after the recommended meeting-link deadline.'
-              : 'Session confirmed.',
+          isOverdue: false,
+          confirmedAfterDeadline: false,
+          message: 'Session confirmed.',
         });
       }
 
@@ -4038,7 +4146,10 @@ async function startServer() {
         if (code === 'ALREADY_CONFIRMED') {
           return res.status(409).json(result);
         }
-        return res.status(400).json(result);
+        if (code === 'MEETING_LINK_DEADLINE_PASSED') {
+          return res.status(409).json(result);
+        }
+        throw result.error ?? new Error(result.message);
       }
 
       const enriched = enrichBooking(result.booking!, db);
@@ -4325,6 +4436,17 @@ async function startServer() {
             verified_at: payment.verified_at,
             proof_storage_path: payment.proof_storage_path,
             transaction_reference: payment.transaction_reference,
+            gateway: payment.gateway,
+            refund_status: payment.refund_status,
+            refund_id: payment.refund_id,
+            refund_amount_paise: payment.refund_amount_paise,
+            refund_method: payment.refund_method,
+            refund_reference: payment.refund_reference,
+            refunded_at: payment.refunded_at,
+            refunded_by: payment.refunded_by,
+            refund_admin_note: payment.refund_admin_note,
+            failure_reason: payment.failure_reason,
+            manual_refund_required: payment.manual_refund_required,
           } : null,
           lifecycle,
           // Retained for the admin UI's raw deadline readout. `lifecycle` is
@@ -4355,6 +4477,247 @@ async function startServer() {
         context: 'GET /api/admin/bookings',
         clientMessage: 'Unable to load admin bookings.',
       });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin Control Center: read-only operational ledgers
+  // ---------------------------------------------------------------------------
+
+  // GET /api/admin/gigs: the platform-wide gig ledger.
+  //
+  // Per-segment and per-mentor gig reads already existed; an operator scanning
+  // "every gig, who owns it, is it live" had no single surface. Read-only: the
+  // mutations (toggle, edit, topics) keep their own audited endpoints, and no
+  // price, duration or eligibility rule is decided here.
+  app.get('/api/admin/gigs', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { segmentId, mentorId, active, q } = req.query as Record<string, string | undefined>;
+
+      let query = admin
+        .from('gigs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(500);
+      if (segmentId) query = query.eq('segment_id', segmentId);
+      if (mentorId) query = query.eq('mentor_id', mentorId);
+      if (active === 'true' || active === 'false') query = query.eq('is_active', active === 'true');
+
+      const { data: gigs, error: gigsErr } = await query;
+      if (gigsErr) throw gigsErr;
+
+      // Manual joins, not a PostgREST embed: two `in()` lookups against the
+      // bounded result set cannot fail on a relationship hint the way an
+      // embed with a wrong constraint name would.
+      const mentorIds = [...new Set((gigs ?? []).map((g: any) => g.mentor_id))];
+      const segmentIds = [...new Set((gigs ?? []).map((g: any) => g.segment_id))];
+
+      let mentors: any[] = [];
+      if (mentorIds.length) {
+        const { data, error } = await admin.from('profiles').select('id, full_name, email').in('id', mentorIds);
+        if (error) throw error;
+        mentors = data ?? [];
+      }
+
+      let segments: any[] = [];
+      if (segmentIds.length) {
+        const { data, error } = await admin.from('segments').select('id, name, slug').in('id', segmentIds);
+        if (error) throw error;
+        segments = data ?? [];
+      }
+
+      // Topic names for the bounded result set: two lookups, no N+1.
+      let gigTopics: any[] = [];
+      const gigIds = (gigs ?? []).map((g: any) => g.id);
+      if (gigIds.length) {
+        const { data, error } = await admin.from('gig_topics').select('gig_id, topic_id').in('gig_id', gigIds);
+        if (error) throw error;
+        gigTopics = data ?? [];
+      }
+
+      let topicNames = new Map<string, string>();
+      const topicIds = [...new Set(gigTopics.map((t: any) => t.topic_id))];
+      if (topicIds.length) {
+        const { data, error } = await admin.from('segment_topics').select('id, name').in('id', topicIds);
+        if (error) throw error;
+        topicNames = new Map((data ?? []).map((t: any) => [t.id, t.name]));
+      }
+
+      const mentorById = new Map(mentors.map((m) => [m.id, m]));
+      const segmentById = new Map(segments.map((s) => [s.id, s]));
+
+      // Text search is filtered here rather than with `ilike`: the bounded
+      // set is already in memory, and a client-supplied needle can never be
+      // interpreted as a wildcard pattern this way.
+      const needle = (q ?? '').trim().toLowerCase();
+      const topicNamesByGig = new Map<string, string[]>();
+      for (const gt of gigTopics) {
+        const name = topicNames.get(gt.topic_id);
+        if (!name) continue;
+        const list = topicNamesByGig.get(gt.gig_id) ?? [];
+        if (!list.includes(name)) list.push(name);
+        topicNamesByGig.set(gt.gig_id, list);
+      }
+      const rows = (gigs ?? [])
+        .map((g: any) => ({
+          ...g,
+          topics: topicNamesByGig.get(g.id) ?? [],
+          mentor: mentorById.get(g.mentor_id) ?? null,
+          segment: segmentById.get(g.segment_id) ?? null,
+        }))
+        .filter((g: any) =>
+          !needle ||
+          (g.title ?? '').toLowerCase().includes(needle) ||
+          (g.mentor?.full_name ?? '').toLowerCase().includes(needle) ||
+          (g.segment?.name ?? '').toLowerCase().includes(needle),
+        );
+
+      return res.json({ success: true, gigs: rows, count: rows.length });
+    } catch (err: any) {
+      console.error('Failed to list gigs:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // GET /api/admin/reschedules: the reschedule request queue.
+  //
+  // The participant reader (`get_reschedule_request_for_booking`) answers one
+  // booking at a time; an operator needs the whole queue — what is PENDING,
+  // what expired unanswered, who rejected what. Decisions stay with the mentor
+  // through the audited RPC; this route reads, and only reads.
+  app.get('/api/admin/reschedules', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { status } = req.query as Record<string, string | undefined>;
+      const allowed = ['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CANCELLED'];
+      if (status && !allowed.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: `status must be one of: ${allowed.join(', ')}.` },
+        });
+      }
+
+      let query = admin
+        .from('reschedule_requests')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (status) query = query.eq('status', status);
+
+      const { data: requests, error: requestsErr } = await query;
+      if (requestsErr) throw requestsErr;
+
+      const profileIds = [...new Set((requests ?? []).flatMap((r: any) => [r.seeker_id, r.mentor_id]))];
+      const bookingIds = [...new Set((requests ?? []).map((r: any) => r.booking_id))];
+
+      let profiles: any[] = [];
+      if (profileIds.length) {
+        const { data, error } = await admin.from('profiles').select('id, full_name, email').in('id', profileIds);
+        if (error) throw error;
+        profiles = data ?? [];
+      }
+
+      let bookings: any[] = [];
+      if (bookingIds.length) {
+        const { data, error } = await admin
+          .from('bookings')
+          .select('id, booking_code, start_time, end_time, status')
+          .in('id', bookingIds);
+        if (error) throw error;
+        bookings = data ?? [];
+      }
+
+      const profileById = new Map(profiles.map((p) => [p.id, p]));
+      const bookingById = new Map(bookings.map((b) => [b.id, b]));
+
+      const rows = (requests ?? []).map((r: any) => ({
+        ...r,
+        seeker: profileById.get(r.seeker_id) ?? null,
+        mentor: profileById.get(r.mentor_id) ?? null,
+        booking: bookingById.get(r.booking_id) ?? null,
+      }));
+
+      return res.json({ success: true, requests: rows, count: rows.length });
+    } catch (err: any) {
+      console.error('Failed to list reschedule requests:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // GET /api/admin/holds: slot holds, ACTIVE by default.
+  //
+  // Holds are the short-lived reservations that subtract availability from
+  // the slot engine (5-minute payment holds, 24-hour reschedule holds). They
+  // are swept by cron, so the operational question is always "what is held
+  // right now, and until when" — which is why the default status is ACTIVE
+  // and ACTIVE rows are ordered by the moment they stop mattering.
+  app.get('/api/admin/holds', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const { status } = req.query as Record<string, string | undefined>;
+      const allowed = ['ACTIVE', 'CONVERTED', 'EXPIRED', 'RELEASED', 'ALL'];
+      const wanted = (status ?? 'ACTIVE').toUpperCase();
+      if (!allowed.includes(wanted)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: `status must be one of: ${allowed.join(', ')}.` },
+        });
+      }
+
+      let query = admin.from('slot_holds').select('*').limit(200);
+      if (wanted !== 'ALL') query = query.eq('status', wanted);
+      query =
+        wanted === 'ACTIVE'
+          ? query.order('expires_at', { ascending: true })
+          : query.order('created_at', { ascending: false });
+
+      const { data: holds, error: holdsErr } = await query;
+      if (holdsErr) throw holdsErr;
+
+      const profileIds = [...new Set((holds ?? []).flatMap((h: any) => [h.mentor_id, h.seeker_id]))];
+      const gigIds = [...new Set((holds ?? []).map((h: any) => h.gig_id))];
+
+      let profiles: any[] = [];
+      if (profileIds.length) {
+        const { data, error } = await admin.from('profiles').select('id, full_name, email').in('id', profileIds);
+        if (error) throw error;
+        profiles = data ?? [];
+      }
+
+      let gigs: any[] = [];
+      if (gigIds.length) {
+        const { data, error } = await admin.from('gigs').select('id, title, duration_minutes').in('id', gigIds);
+        if (error) throw error;
+        gigs = data ?? [];
+      }
+
+      const profileById = new Map(profiles.map((p) => [p.id, p]));
+      const gigById = new Map(gigs.map((g) => [g.id, g]));
+
+      const rows = (holds ?? []).map((h: any) => ({
+        ...h,
+        mentor: profileById.get(h.mentor_id) ?? null,
+        seeker: profileById.get(h.seeker_id) ?? null,
+        gig: gigById.get(h.gig_id) ?? null,
+      }));
+
+      return res.json({ success: true, holds: rows, count: rows.length, serverNow: new Date().toISOString() });
+    } catch (err: any) {
+      console.error('Failed to list slot holds:', logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
     }
   });
 
@@ -5946,6 +6309,9 @@ async function startServer() {
         createdByAdmin = creator || null;
       }
 
+      // Generate signed URL for the mentor's profile photo
+      const avatarUrl = await signProfilePhotoUrl(admin, profile.avatar_url ?? null);
+
       return res.json({
         success: true,
         mentor: {
@@ -5956,7 +6322,7 @@ async function startServer() {
             email: profile.email,
             // `profiles.phone` verified to exist in the live schema.
             phone: profile.phone ?? null,
-            avatarUrl: profile.avatar_url,
+            avatarUrl,
             timezone: profile.timezone,
             createdAt: profile.created_at,
             updatedAt: profile.updated_at,
@@ -7791,7 +8157,7 @@ async function startServer() {
         const row: any = {
           id: mp.id,
           full_name: profile.full_name,
-          avatar_url: profile.avatar_url ?? null,
+          avatar_url: await signProfilePhotoUrl(admin, profile.avatar_url ?? null),
           timezone: profile.timezone || 'Asia/Kolkata',
           headline: mp.headline,
           about: mp.about ?? null,
@@ -7801,6 +8167,9 @@ async function startServer() {
           rating: Number(mp.rating) || 0,
           review_count: mp.review_count || 0,
           session_count: mp.session_count || 0,
+          // The verification source, carried explicitly so the card reads the
+          // real column rather than inferring approval from an unrelated field.
+          is_approved: !!mp.is_approved,
           is_featured: !!mp.is_featured,
           is_primary_segment: !!membership?.is_primary,
           segment,
@@ -7999,12 +8368,15 @@ async function startServer() {
             a.gigId.localeCompare(b.gigId),
         );
 
+      // Generate signed URL for the mentor's profile photo
+      const avatarUrl = await signProfilePhotoUrl(admin, identity.avatar_url ?? null);
+
       return res.json({
         success: true,
         mentor: {
           id: mp.id,
           fullName: identity.full_name,
-          avatarUrl: identity.avatar_url ?? null,
+          avatarUrl,
           timezone: identity.timezone || 'Asia/Kolkata',
           headline: mp.headline ?? '',
           about: mp.about ?? null,
@@ -9789,9 +10161,39 @@ async function startServer() {
       );
 
       return res.json({ success: true, payments: formattedPayments });
-    } catch (err: any) {
+     } catch (err: any) {
       console.error('Failed to fetch admin payments:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
+    }
+  });
+
+  // POST /api/admin/payments/reconcile-auto-cancelled
+  // --------------------------------------------------------------------------
+  // Drives `reconcileAutoCancelledRefunds()` on demand: for every payment
+  // parked by `cancel_overdue_mentor_bookings()` with refund_status='PENDING'
+  // and refund_reason='mentor_rejection', the server calls the Razorpay refund
+  // API (or, for manual payments, they are already queued for the
+  // complete-manual-refund endpoint). The pg_cron function is the primary
+  // trigger; this endpoint is a manual re-run for diagnostics or after a
+  // downtime window.
+  app.post('/api/admin/payments/reconcile-auto-cancelled', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+      }
+
+      const stats = await reconcileAutoCancelledRefunds(admin);
+
+      auditAction(req.auth, 'refund_auto_cancelled_reconciled', {
+        entityType: 'payment',
+        requestId: req.requestId,
+        metadata: stats,
+      });
+
+      return res.json({ success: true, ...stats });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/admin/payments/reconcile-auto-cancelled' });
     }
   });
 
@@ -10377,6 +10779,135 @@ async function startServer() {
       return res.json({ success: true, url: signed?.signedUrl ?? null });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/payments/:id/refund-proof' });
+    }
+  });
+
+  // POST /api/admin/payments/:id/initiate-refund
+  //
+  // Lets an admin explicitly START a refund for a captured payment — for both
+  // Razorpay and manual UPI/QR payments. For Razorpay payments this calls the
+  // gateway's refund API; for manual payments it queues the refund (sets
+  // refund_status='PENDING' + manual_refund_required=true), which the admin then
+  // completes externally via the existing complete-manual-refund endpoint.
+  //
+  // This is the gap the booking-cancellation flow never covered: until now, the
+  // only trigger for runCreateRazorpayRefund was a booking cancellation. An admin
+  // had no way to refund a payment whose booking was not (or could not be)
+  // cancelled — e.g. a service issue, a duplicate charge, or a post-hoc
+  // correction.
+  //
+  // The amount, gateway and reason are derived from the payment row by the
+  // server and the refund is FULL (100% of the captured amount) per policy. The
+  // browser never supplies an amount or a status: the request body carries at
+  // most an optional internal note for the audit trail.
+  //
+  // The gateway call is made here, on the server, using the service-role client.
+  // The webhook (refund.processed / refund.failed) remains the authoritative
+  // async path that confirms or fails the refund — the admin click must NOT
+  // mark REFUNDED for a gateway payment because the gateway has not confirmed it.
+  app.post('/api/admin/payments/:id/initiate-refund', requireAuth, requireAdmin, validateBody(apiSchemas.adminRefundInitiate), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
+    }
+
+    try {
+      // 1. Load the payment and verify it is eligible for a refund.
+      const { data: payment, error: paymentErr } = await admin
+        .from('payments')
+        .select('id, booking_id, status, gateway, amount_inr, refund_status, refund_id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (paymentErr) throw paymentErr;
+      if (!payment) {
+        return res.status(404).json({ success: false, error: { code: 'PAYMENT_NOT_FOUND', message: 'Payment not found.' } });
+      }
+
+      if (payment.status !== 'VERIFIED') {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'PAYMENT_NOT_VERIFIED',
+            message: 'This payment has not been captured and cannot be refunded.',
+          },
+        });
+      }
+
+      if (payment.refund_status === 'REFUNDED') {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'ALREADY_REFUNDED', message: 'This payment has already been refunded.' },
+        });
+      }
+
+      if (payment.refund_status === 'PENDING') {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'REFUND_ALREADY_INITIATED', message: 'A refund has already been initiated for this payment.' },
+        });
+      }
+
+      // 2. Delegate to the shared refund service. The same function that the
+      //    booking-cancellation flow uses handles both gateway types:
+      //    - Razorpay: calls the gateway's refund API (server-side).
+      //    - Manual:   marks the payment as PENDING + manual_refund_required,
+      //                queuing it for the existing complete-manual-refund flow.
+      const gatewayClient = createRazorpayGatewayClient();
+      const store = createSupabaseRazorpayStore(admin);
+
+      const refundResult = await runCreateRazorpayRefund({
+        bookingId: payment.booking_id,
+        callerId: req.auth!.user.id,
+        reason: 'admin_refund',
+        gateway: gatewayClient,
+        store,
+      });
+
+      if (!refundResult.ok) {
+        const error = refundResult.error;
+        return res.status(error.httpStatus).json({
+          success: false,
+          error: { code: error.code, message: error.message },
+        });
+      }
+
+      // 3. Tell the seeker their refund is PENDING — not initiated. The wording
+      //    comes from refundNotice, and the same invariant applies: a manual
+      //    refund is pending admin processing, a gateway refund is pending
+      //    gateway confirmation.
+      const { data: booking, error: bookingErr } = await admin
+        .from('bookings')
+        .select('seeker_id, booking_code')
+        .eq('id', payment.booking_id)
+        .maybeSingle();
+
+      if (!bookingErr && booking) {
+        await notifyRefundState(admin, {
+          booking,
+          refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
+          kind: refundResult.value.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
+        });
+      }
+
+      // 4. Audit.
+      auditAction(req.auth, 'admin_refund_initiated', {
+        entityType: 'payment',
+        entityId: id,
+        requestId: req.requestId,
+        metadata: {
+          bookingId: payment.booking_id,
+          gateway: payment.gateway,
+          amountInr: payment.amount_inr,
+          refundStatus: refundResult.value.status,
+          note: (req.body as { note?: string }).note ?? null,
+        },
+      });
+
+      return res.json({ success: true, refund: refundResult.value });
+    } catch (err: any) {
+      return respondWithInternalError({ req, res, error: err, context: 'POST /api/admin/payments/:id/initiate-refund' });
     }
   });
 
@@ -12933,6 +13464,16 @@ async function startServer() {
         auditLog: auditMap.get(row.id) ?? [],
       }));
 
+      // Generate signed URLs for applicant profile photos in the private bucket.
+      await Promise.all(
+        applications.map(async (app) => {
+          const profile = app.profile as { avatar_url?: string | null } | null;
+          if (profile?.avatar_url) {
+            profile.avatar_url = await signProfilePhotoUrl(admin, profile.avatar_url) ?? profile.avatar_url;
+          }
+        }),
+      );
+
       return res.json({
         success: true,
         applications,
@@ -12968,10 +13509,18 @@ async function startServer() {
       if (appErr) throw appErr;
 
       const rawApplication = applicationData ?? null;
+      const profile = rawApplication
+        ? (await admin.from('profiles').select('id, full_name, email, avatar_url, timezone, created_at').eq('id', rawApplication.user_id).maybeSingle()).data || null
+        : null;
+
+      if (profile?.avatar_url) {
+        profile.avatar_url = await signProfilePhotoUrl(admin, profile.avatar_url) ?? profile.avatar_url;
+      }
+
       const application = rawApplication
         ? ({
             ...rawApplication,
-            profile: (await admin.from('profiles').select('id, full_name, email, avatar_url, timezone, created_at').eq('id', rawApplication.user_id).maybeSingle()).data || null,
+            profile,
           } as unknown as MentorApplicationDetailRow)
         : null;
       if (!application) {

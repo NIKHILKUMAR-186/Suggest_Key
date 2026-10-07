@@ -663,6 +663,15 @@ async function confirmSessionByMentor(input, db) {
     };
   }
   const deadlineInfo = calculateMeetingLinkDeadline(booking.start_time, currentUtcTime);
+  if (deadlineInfo.isOverdue) {
+    return {
+      success: false,
+      error: {
+        code: "MEETING_LINK_DEADLINE_PASSED",
+        message: "The meeting link deadline has passed. This booking will be (or has been) auto-cancelled."
+      }
+    };
+  }
   booking.status = "CONFIRMED";
   booking.meeting_url = urlValidation.normalizedUrl;
   booking.updated_at = currentUtcTime.toISOString();
@@ -1120,11 +1129,6 @@ function resolveBookingLifecycle(booking, nowMs = Date.now()) {
   const bucket = status === "PENDING_VERIFICATION" ? "AWAITING_VERIFICATION" : "AWAITING_PAYMENT";
   return { ...base, bucket, isOverdue: false, overdueByMs: 0, canAddMeetingLink: false };
 }
-function isMeetingLinkDeadlineOpen(booking, nowMs = Date.now()) {
-  const startMs = parseMs(booking.start_time);
-  if (startMs === null) return false;
-  return nowMs <= startMs - APP_CONFIG.MEETING_LINK_DEADLINE_MS;
-}
 
 // src/lib/supabase.ts
 var import_supabase_js = require("@supabase/supabase-js");
@@ -1387,6 +1391,7 @@ var supabase = (0, import_supabase_js.createClient)(safeUrl, safeKey, {
     detectSessionInUrl: true
   }
 });
+var PROFILE_PHOTOS_MAX_BYTES = 5 * 1024 * 1024;
 
 // src/lib/sessionState.ts
 var SESSION_ACCESS_WINDOW_MS2 = APP_CONFIG.SESSION_ACCESS_WINDOW_MS;
@@ -5596,7 +5601,7 @@ var buildDashboardExceptions = (candidates, staleHolds, nowUtc, options = {}) =>
         kind: "MEETING_LINK_OVERDUE",
         severity: "critical",
         title: sessionStillUpcoming ? "Meeting link deadline missed" : "Session reached without a meeting link",
-        detail: sessionStillUpcoming ? `No meeting link ${minutesUntilSession}m before session start. The booking is NOT auto-cancelled \u2014 mentor follow-up is required.` : "The session start time has passed while the booking is still MENTOR_PENDING with no meeting link.",
+        detail: sessionStillUpcoming ? `No meeting link was provided before the deadline. The booking is being auto-cancelled and a refund is being processed.` : "The session start time has passed while the booking is still MENTOR_PENDING with no meeting link.",
         bookingCode: code,
         bookingId: booking.id,
         startTimeUtc: booking.start_time,
@@ -7157,6 +7162,17 @@ var apiSchemas = {
     fileSize: import_zod.z.int("File size must be a whole number of bytes.").positive("That file is empty.").max(MAX_DOCUMENT_BYTES, `That image is larger than ${MAX_DOCUMENT_BYTES / (1024 * 1024)} MB.`),
     adminNote: optionalText({ max: MAX_REASON_LENGTH, label: "Admin note", multiline: true })
   }),
+  /**
+   * Body of `POST /api/admin/payments/:id/initiate-refund`.
+   *
+   * The admin is starting a refund, not completing one. The amount, gateway and
+   * reason are derived from the payment row by the server; the admin may record
+   * an optional internal note for the audit trail. There is no `refundAmountInr`
+   * field - the browser must never supply the amount.
+   */
+  adminRefundInitiate: import_zod.z.strictObject({
+    note: optionalText({ max: MAX_REASON_LENGTH, label: "Note", multiline: true })
+  }),
   mentorApplicationReject: import_zod.z.strictObject({
     rejectionReason: text({ min: 1, max: MAX_REASON_LENGTH, label: "Rejection reason", multiline: true })
   }),
@@ -7440,6 +7456,20 @@ async function signQrImageUrl(admin, storagePath) {
     return null;
   }
 }
+async function signProfilePhotoUrl(admin, storagePath) {
+  if (!storagePath) return null;
+  try {
+    const { data, error } = await admin.storage.from("profile-photos").createSignedUrl(storagePath, 3600);
+    if (error) {
+      console.error("Failed to sign the profile photo URL:", error.message);
+      return null;
+    }
+    return data?.signedUrl ?? null;
+  } catch (signErr) {
+    console.error("Failed to sign the profile photo URL:", logSanitizer.safeMessage(signErr));
+    return null;
+  }
+}
 async function countActiveAdminAccounts(admin) {
   const { data: adminRoleRows, error: adminRoleErr } = await admin.from("user_roles").select("user_id").eq("role", "admin");
   if (adminRoleErr) throw adminRoleErr;
@@ -7587,6 +7617,41 @@ function refundCompletionFailureReason(code) {
     REFUND_COMPLETION_FAILED: "The refund could not be completed. Nothing was recorded; please try again."
   };
   return reasons[code] ?? reasons.REFUND_COMPLETION_FAILED;
+}
+async function reconcileAutoCancelledRefunds(admin, now = /* @__PURE__ */ new Date()) {
+  const result = { attempted: 0, succeeded: 0, failed: 0, skipped: 0 };
+  const { data: pending, error: queryErr } = await admin.from("payments").select(
+    "id, booking_id, seeker_id, amount_inr, gateway, refund_status, refund_id, status, booking:bookings!inner(booking_code)"
+  ).eq("refund_status", "PENDING").eq("refund_reason", "mentor_rejection").is("refund_id", null).eq("status", "VERIFIED");
+  if (queryErr) throw queryErr;
+  const gatewayClient = createRazorpayGatewayClient();
+  const store = createSupabaseRazorpayStore(admin);
+  for (const payment of pending || []) {
+    if (payment.gateway === "manual") {
+      result.skipped++;
+      continue;
+    }
+    result.attempted++;
+    const refundResult = await runCreateRazorpayRefund({
+      bookingId: payment.booking_id,
+      callerId: "system-auto-cancel",
+      reason: "mentor_rejection",
+      gateway: gatewayClient,
+      store,
+      now
+    });
+    if (refundResult.ok) {
+      result.succeeded++;
+      await notifyRefundState(admin, {
+        booking: { seeker_id: payment.seeker_id, booking_code: payment.booking?.[0]?.booking_code ?? "" },
+        refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
+        kind: refundResult.value.status === "REFUND_INITIATED" ? "GATEWAY_PENDING" : "MANUAL_PENDING"
+      }).catch((err) => console.error("Auto-cancel refund notification failed:", err.message));
+    } else {
+      result.failed++;
+    }
+  }
+  return result;
 }
 async function notifyMentorOfPaymentCaptured(admin, input) {
   try {
@@ -9583,20 +9648,40 @@ async function startServer() {
       const admin = getSupabaseAdmin();
       if (admin) {
         const confirmNowMs = Date.now();
-        const { data: prior } = await admin.from("bookings").select("start_time, status, meeting_url").eq("id", bookingId).maybeSingle();
-        const deadlineOpen = prior ? isMeetingLinkDeadlineOpen(prior, confirmNowMs) : null;
+        const { data: prior } = await admin.from("bookings").select("start_time, status, meeting_url").eq("id", bookingId).eq("mentor_id", mentorId).maybeSingle();
         const { data: booking, error } = await admin.rpc("confirm_booking", {
           p_booking_id: bookingId,
           p_meeting_url: meetingUrl,
           p_mentor_id: mentorId
         });
-        if (error) throw error;
+        if (error) {
+          const codeMatch = error.message?.match(/code:\s*([A-Z0-9_]+)/i);
+          const rpcCode = codeMatch ? codeMatch[1].toUpperCase() : null;
+          if (rpcCode === "MEETING_LINK_DEADLINE_PASSED") {
+            return res.status(409).json({
+              success: false,
+              error: {
+                code: "MEETING_LINK_DEADLINE_PASSED",
+                message: "The meeting link deadline has passed. This booking is being auto-cancelled."
+              },
+              isOverdue: true,
+              confirmedAfterDeadline: true
+            });
+          }
+          if (rpcCode === "BOOKING_NOT_FOUND") {
+            return res.status(404).json({ success: false, error: { code: "BOOKING_NOT_FOUND", message: "Booking not found." } });
+          }
+          if (rpcCode === "INVALID_STATE_TRANSITION" || rpcCode === "INVALID_MEETING_URL") {
+            return res.status(400).json({ success: false, error: { code: rpcCode, message: error.message } });
+          }
+          throw error;
+        }
         return res.json({
           success: true,
           booking,
-          isOverdue: deadlineOpen === false,
-          confirmedAfterDeadline: deadlineOpen === false,
-          message: deadlineOpen === false ? "Session confirmed after the recommended meeting-link deadline." : "Session confirmed."
+          isOverdue: false,
+          confirmedAfterDeadline: false,
+          message: "Session confirmed."
         });
       }
       const db = getLocalBookingEngineContext();
@@ -9620,7 +9705,10 @@ async function startServer() {
         if (code === "ALREADY_CONFIRMED") {
           return res.status(409).json(result);
         }
-        return res.status(400).json(result);
+        if (code === "MEETING_LINK_DEADLINE_PASSED") {
+          return res.status(409).json(result);
+        }
+        throw result.error ?? new Error(result.message);
       }
       const enriched = enrichBooking(result.booking, db);
       return res.json({
@@ -9809,7 +9897,18 @@ async function startServer() {
             amount_inr: payment.amount_inr,
             verified_at: payment.verified_at,
             proof_storage_path: payment.proof_storage_path,
-            transaction_reference: payment.transaction_reference
+            transaction_reference: payment.transaction_reference,
+            gateway: payment.gateway,
+            refund_status: payment.refund_status,
+            refund_id: payment.refund_id,
+            refund_amount_paise: payment.refund_amount_paise,
+            refund_method: payment.refund_method,
+            refund_reference: payment.refund_reference,
+            refunded_at: payment.refunded_at,
+            refunded_by: payment.refunded_by,
+            refund_admin_note: payment.refund_admin_note,
+            failure_reason: payment.failure_reason,
+            manual_refund_required: payment.manual_refund_required
           } : null,
           lifecycle,
           // Retained for the admin UI's raw deadline readout. `lifecycle` is
@@ -9841,6 +9940,166 @@ async function startServer() {
         context: "GET /api/admin/bookings",
         clientMessage: "Unable to load admin bookings."
       });
+    }
+  });
+  app.get("/api/admin/gigs", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+      }
+      const { segmentId, mentorId, active, q } = req.query;
+      let query = admin.from("gigs").select("*").order("created_at", { ascending: false }).limit(500);
+      if (segmentId) query = query.eq("segment_id", segmentId);
+      if (mentorId) query = query.eq("mentor_id", mentorId);
+      if (active === "true" || active === "false") query = query.eq("is_active", active === "true");
+      const { data: gigs, error: gigsErr } = await query;
+      if (gigsErr) throw gigsErr;
+      const mentorIds = [...new Set((gigs ?? []).map((g) => g.mentor_id))];
+      const segmentIds = [...new Set((gigs ?? []).map((g) => g.segment_id))];
+      let mentors = [];
+      if (mentorIds.length) {
+        const { data, error } = await admin.from("profiles").select("id, full_name, email").in("id", mentorIds);
+        if (error) throw error;
+        mentors = data ?? [];
+      }
+      let segments = [];
+      if (segmentIds.length) {
+        const { data, error } = await admin.from("segments").select("id, name, slug").in("id", segmentIds);
+        if (error) throw error;
+        segments = data ?? [];
+      }
+      let gigTopics = [];
+      const gigIds = (gigs ?? []).map((g) => g.id);
+      if (gigIds.length) {
+        const { data, error } = await admin.from("gig_topics").select("gig_id, topic_id").in("gig_id", gigIds);
+        if (error) throw error;
+        gigTopics = data ?? [];
+      }
+      let topicNames = /* @__PURE__ */ new Map();
+      const topicIds = [...new Set(gigTopics.map((t) => t.topic_id))];
+      if (topicIds.length) {
+        const { data, error } = await admin.from("segment_topics").select("id, name").in("id", topicIds);
+        if (error) throw error;
+        topicNames = new Map((data ?? []).map((t) => [t.id, t.name]));
+      }
+      const mentorById = new Map(mentors.map((m) => [m.id, m]));
+      const segmentById = new Map(segments.map((s) => [s.id, s]));
+      const needle = (q ?? "").trim().toLowerCase();
+      const topicNamesByGig = /* @__PURE__ */ new Map();
+      for (const gt of gigTopics) {
+        const name = topicNames.get(gt.topic_id);
+        if (!name) continue;
+        const list = topicNamesByGig.get(gt.gig_id) ?? [];
+        if (!list.includes(name)) list.push(name);
+        topicNamesByGig.set(gt.gig_id, list);
+      }
+      const rows = (gigs ?? []).map((g) => ({
+        ...g,
+        topics: topicNamesByGig.get(g.id) ?? [],
+        mentor: mentorById.get(g.mentor_id) ?? null,
+        segment: segmentById.get(g.segment_id) ?? null
+      })).filter(
+        (g) => !needle || (g.title ?? "").toLowerCase().includes(needle) || (g.mentor?.full_name ?? "").toLowerCase().includes(needle) || (g.segment?.name ?? "").toLowerCase().includes(needle)
+      );
+      return res.json({ success: true, gigs: rows, count: rows.length });
+    } catch (err) {
+      console.error("Failed to list gigs:", logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+  app.get("/api/admin/reschedules", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+      }
+      const { status } = req.query;
+      const allowed = ["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"];
+      if (status && !allowed.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: "VALIDATION_ERROR", message: `status must be one of: ${allowed.join(", ")}.` }
+        });
+      }
+      let query = admin.from("reschedule_requests").select("*").order("created_at", { ascending: false }).limit(200);
+      if (status) query = query.eq("status", status);
+      const { data: requests, error: requestsErr } = await query;
+      if (requestsErr) throw requestsErr;
+      const profileIds = [...new Set((requests ?? []).flatMap((r) => [r.seeker_id, r.mentor_id]))];
+      const bookingIds = [...new Set((requests ?? []).map((r) => r.booking_id))];
+      let profiles = [];
+      if (profileIds.length) {
+        const { data, error } = await admin.from("profiles").select("id, full_name, email").in("id", profileIds);
+        if (error) throw error;
+        profiles = data ?? [];
+      }
+      let bookings = [];
+      if (bookingIds.length) {
+        const { data, error } = await admin.from("bookings").select("id, booking_code, start_time, end_time, status").in("id", bookingIds);
+        if (error) throw error;
+        bookings = data ?? [];
+      }
+      const profileById = new Map(profiles.map((p) => [p.id, p]));
+      const bookingById = new Map(bookings.map((b) => [b.id, b]));
+      const rows = (requests ?? []).map((r) => ({
+        ...r,
+        seeker: profileById.get(r.seeker_id) ?? null,
+        mentor: profileById.get(r.mentor_id) ?? null,
+        booking: bookingById.get(r.booking_id) ?? null
+      }));
+      return res.json({ success: true, requests: rows, count: rows.length });
+    } catch (err) {
+      console.error("Failed to list reschedule requests:", logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
+    }
+  });
+  app.get("/api/admin/holds", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+      }
+      const { status } = req.query;
+      const allowed = ["ACTIVE", "CONVERTED", "EXPIRED", "RELEASED", "ALL"];
+      const wanted = (status ?? "ACTIVE").toUpperCase();
+      if (!allowed.includes(wanted)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: "VALIDATION_ERROR", message: `status must be one of: ${allowed.join(", ")}.` }
+        });
+      }
+      let query = admin.from("slot_holds").select("*").limit(200);
+      if (wanted !== "ALL") query = query.eq("status", wanted);
+      query = wanted === "ACTIVE" ? query.order("expires_at", { ascending: true }) : query.order("created_at", { ascending: false });
+      const { data: holds, error: holdsErr } = await query;
+      if (holdsErr) throw holdsErr;
+      const profileIds = [...new Set((holds ?? []).flatMap((h) => [h.mentor_id, h.seeker_id]))];
+      const gigIds = [...new Set((holds ?? []).map((h) => h.gig_id))];
+      let profiles = [];
+      if (profileIds.length) {
+        const { data, error } = await admin.from("profiles").select("id, full_name, email").in("id", profileIds);
+        if (error) throw error;
+        profiles = data ?? [];
+      }
+      let gigs = [];
+      if (gigIds.length) {
+        const { data, error } = await admin.from("gigs").select("id, title, duration_minutes").in("id", gigIds);
+        if (error) throw error;
+        gigs = data ?? [];
+      }
+      const profileById = new Map(profiles.map((p) => [p.id, p]));
+      const gigById = new Map(gigs.map((g) => [g.id, g]));
+      const rows = (holds ?? []).map((h) => ({
+        ...h,
+        mentor: profileById.get(h.mentor_id) ?? null,
+        seeker: profileById.get(h.seeker_id) ?? null,
+        gig: gigById.get(h.gig_id) ?? null
+      }));
+      return res.json({ success: true, holds: rows, count: rows.length, serverNow: (/* @__PURE__ */ new Date()).toISOString() });
+    } catch (err) {
+      console.error("Failed to list slot holds:", logSanitizer.safeMessage(err));
+      return respondWithInternalError({ req, res, error: err });
     }
   });
   app.get("/api/mentor/segments", requireAuth, requireRole("mentor"), async (req, res) => {
@@ -10816,6 +11075,7 @@ async function startServer() {
         const { data: creator } = await admin.from("profiles").select("id, full_name, email").eq("id", creationEvent.actor_user_id).maybeSingle();
         createdByAdmin = creator || null;
       }
+      const avatarUrl = await signProfilePhotoUrl(admin, profile.avatar_url ?? null);
       return res.json({
         success: true,
         mentor: {
@@ -10826,7 +11086,7 @@ async function startServer() {
             email: profile.email,
             // `profiles.phone` verified to exist in the live schema.
             phone: profile.phone ?? null,
-            avatarUrl: profile.avatar_url,
+            avatarUrl,
             timezone: profile.timezone,
             createdAt: profile.created_at,
             updatedAt: profile.updated_at
@@ -12005,7 +12265,7 @@ async function startServer() {
         const row = {
           id: mp.id,
           full_name: profile.full_name,
-          avatar_url: profile.avatar_url ?? null,
+          avatar_url: await signProfilePhotoUrl(admin, profile.avatar_url ?? null),
           timezone: profile.timezone || "Asia/Kolkata",
           headline: mp.headline,
           about: mp.about ?? null,
@@ -12015,6 +12275,9 @@ async function startServer() {
           rating: Number(mp.rating) || 0,
           review_count: mp.review_count || 0,
           session_count: mp.session_count || 0,
+          // The verification source, carried explicitly so the card reads the
+          // real column rather than inferring approval from an unrelated field.
+          is_approved: !!mp.is_approved,
           is_featured: !!mp.is_featured,
           is_primary_segment: !!membership?.is_primary,
           segment,
@@ -12110,12 +12373,13 @@ async function startServer() {
       }).sort(
         (a, b) => Number(b.isPrimarySegment) - Number(a.isPrimarySegment) || a.segmentName.localeCompare(b.segmentName) || a.gigId.localeCompare(b.gigId)
       );
+      const avatarUrl = await signProfilePhotoUrl(admin, identity.avatar_url ?? null);
       return res.json({
         success: true,
         mentor: {
           id: mp.id,
           fullName: identity.full_name,
-          avatarUrl: identity.avatar_url ?? null,
+          avatarUrl,
           timezone: identity.timezone || "Asia/Kolkata",
           headline: mp.headline ?? "",
           about: mp.about ?? null,
@@ -13335,6 +13599,23 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err });
     }
   });
+  app.post("/api/admin/payments/reconcile-auto-cancelled", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const admin = getSupabaseAdmin();
+      if (!admin) {
+        return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+      }
+      const stats = await reconcileAutoCancelledRefunds(admin);
+      auditAction(req.auth, "refund_auto_cancelled_reconciled", {
+        entityType: "payment",
+        requestId: req.requestId,
+        metadata: stats
+      });
+      return res.json({ success: true, ...stats });
+    } catch (err) {
+      return respondWithInternalError({ req, res, error: err, context: "POST /api/admin/payments/reconcile-auto-cancelled" });
+    }
+  });
   const COUPON_COLUMNS = {
     code: "code",
     description: "description",
@@ -13706,6 +13987,80 @@ async function startServer() {
       return res.json({ success: true, url: signed?.signedUrl ?? null });
     } catch (err) {
       return respondWithInternalError({ req, res, error: err, context: "GET /api/admin/payments/:id/refund-proof" });
+    }
+  });
+  app.post("/api/admin/payments/:id/initiate-refund", requireAuth, requireAdmin, validateBody(apiSchemas.adminRefundInitiate), async (req, res) => {
+    const { id } = req.params;
+    const admin = getSupabaseAdmin();
+    if (!admin) {
+      return res.status(503).json({ success: false, error: { code: "SERVICE_UNAVAILABLE", message: "Admin client not configured." } });
+    }
+    try {
+      const { data: payment, error: paymentErr } = await admin.from("payments").select("id, booking_id, status, gateway, amount_inr, refund_status, refund_id").eq("id", id).maybeSingle();
+      if (paymentErr) throw paymentErr;
+      if (!payment) {
+        return res.status(404).json({ success: false, error: { code: "PAYMENT_NOT_FOUND", message: "Payment not found." } });
+      }
+      if (payment.status !== "VERIFIED") {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: "PAYMENT_NOT_VERIFIED",
+            message: "This payment has not been captured and cannot be refunded."
+          }
+        });
+      }
+      if (payment.refund_status === "REFUNDED") {
+        return res.status(409).json({
+          success: false,
+          error: { code: "ALREADY_REFUNDED", message: "This payment has already been refunded." }
+        });
+      }
+      if (payment.refund_status === "PENDING") {
+        return res.status(409).json({
+          success: false,
+          error: { code: "REFUND_ALREADY_INITIATED", message: "A refund has already been initiated for this payment." }
+        });
+      }
+      const gatewayClient = createRazorpayGatewayClient();
+      const store = createSupabaseRazorpayStore(admin);
+      const refundResult = await runCreateRazorpayRefund({
+        bookingId: payment.booking_id,
+        callerId: req.auth.user.id,
+        reason: "admin_refund",
+        gateway: gatewayClient,
+        store
+      });
+      if (!refundResult.ok) {
+        const error = refundResult.error;
+        return res.status(error.httpStatus).json({
+          success: false,
+          error: { code: error.code, message: error.message }
+        });
+      }
+      const { data: booking, error: bookingErr } = await admin.from("bookings").select("seeker_id, booking_code").eq("id", payment.booking_id).maybeSingle();
+      if (!bookingErr && booking) {
+        await notifyRefundState(admin, {
+          booking,
+          refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
+          kind: refundResult.value.status === "REFUND_INITIATED" ? "GATEWAY_PENDING" : "MANUAL_PENDING"
+        });
+      }
+      auditAction(req.auth, "admin_refund_initiated", {
+        entityType: "payment",
+        entityId: id,
+        requestId: req.requestId,
+        metadata: {
+          bookingId: payment.booking_id,
+          gateway: payment.gateway,
+          amountInr: payment.amount_inr,
+          refundStatus: refundResult.value.status,
+          note: req.body.note ?? null
+        }
+      });
+      return res.json({ success: true, refund: refundResult.value });
+    } catch (err) {
+      return respondWithInternalError({ req, res, error: err, context: "POST /api/admin/payments/:id/initiate-refund" });
     }
   });
   app.get("/api/admin/platform-config", requireAuth, requireAdmin, async (req, res) => {
@@ -15381,6 +15736,14 @@ async function startServer() {
         profile: applicantProfileMap.get(row.user_id) || null,
         auditLog: auditMap.get(row.id) ?? []
       }));
+      await Promise.all(
+        applications.map(async (app2) => {
+          const profile = app2.profile;
+          if (profile?.avatar_url) {
+            profile.avatar_url = await signProfilePhotoUrl(admin, profile.avatar_url) ?? profile.avatar_url;
+          }
+        })
+      );
       return res.json({
         success: true,
         applications,
@@ -15407,9 +15770,13 @@ async function startServer() {
       const { data: applicationData, error: appErr } = await admin.from("mentor_applications").select(MENTOR_APPLICATION_DETAIL_SELECT).eq("id", id).maybeSingle();
       if (appErr) throw appErr;
       const rawApplication = applicationData ?? null;
+      const profile = rawApplication ? (await admin.from("profiles").select("id, full_name, email, avatar_url, timezone, created_at").eq("id", rawApplication.user_id).maybeSingle()).data || null : null;
+      if (profile?.avatar_url) {
+        profile.avatar_url = await signProfilePhotoUrl(admin, profile.avatar_url) ?? profile.avatar_url;
+      }
       const application = rawApplication ? {
         ...rawApplication,
-        profile: (await admin.from("profiles").select("id, full_name, email, avatar_url, timezone, created_at").eq("id", rawApplication.user_id).maybeSingle()).data || null
+        profile
       } : null;
       if (!application) {
         return res.status(404).json({ success: false, error: { code: "NOT_FOUND", message: "Application not found." } });

@@ -1,138 +1,57 @@
 /**
- * A marketplace card for one mentor inside one segment.
+ * THE SEGMENT MENTOR CARD.
  *
- * Built for the new topic-driven grid rather than adapting the legacy
- * availability card: the data here is a mentor, their gig in this segment,
- * and real slot information - so every field rendered is a field that exists.
- *
- * What it deliberately does NOT show: invented achievements, invented
- * specialisms, "top mentor" badges, a "verified" tick the API never sends, or
- * any statistic the data did not return. `rating` and `review_count` render
- * only when the record actually carries them, and a mentor with no reviews
- * shows no rating at all rather than a fabricated 5.0.
- *
- * The two actions go to two DIFFERENT pages, because they are two different
- * questions. "Book a session" opens mentor detail - the existing date/slot/hold
- * experience - carrying this card's exact gig. "View profile" opens the public
- * mentor profile, which is about the mentor and every ACTIVE offer they sell.
- * See `mentorNav.ts` for the two route builders.
- *
- * Styling is composed entirely from the Suggest Key tokens and the existing
- * `sk-card` / `sk-btn` classes, so the segment accent keeps driving the card.
+ * A premium editorial profile-preview for one mentor on a segment
+ * landing page. Every value comes from the topic-filtered marketplace
+ * endpoint. Nothing is invented.
  */
 
 import React from 'react';
-import { ArrowRight, CalendarClock, Clock, Globe, MapPin, Star } from 'lucide-react';
-import type { TopicMentor } from '@/src/lib/segmentTopics';
-import { mentorDetailPath, mentorProfilePath, type MentorIntent } from '@/src/lib/mentorNav';
-import { formatNextAvailableLabel } from '@/src/lib/seekerFormat';
+import { ArrowRight, BadgeCheck, Globe } from 'lucide-react';
+import { motion } from 'motion/react';
+import { getInitials } from '@/src/lib/avatar';
+import {
+  formatInr,
+  formatOriginalPrice,
+  genuineOriginalPrice,
+} from '@/src/lib/seekerFormat';
 import {
   formatLocalTimeLabel,
   getDateStringInTimezone,
 } from '@/src/lib/slotEngine';
+import {
+  mentorDetailPath,
+  mentorProfilePath,
+} from '@/src/lib/mentorNav';
 import { cn } from '@/src/lib/utils';
+import type { TopicMentor } from '@/src/lib/segmentTopics';
+
+const segmentMentorDetailPath = (
+  input: Parameters<typeof mentorDetailPath>[0],
+): string => mentorDetailPath(input);
+
+const segmentMentorProfilePath = (
+  input: Parameters<typeof mentorProfilePath>[0],
+): string => mentorProfilePath(input);
 
 export interface SegmentMentorCardProps {
   mentor: TopicMentor;
   navigate: (path: string) => void;
-  /** The date the segment landing page is currently scoped to, if any. */
   selectedDate?: string | null;
-  /** The topic currently selected on the landing page, so Back restores it. */
   selectedTopic?: string | null;
   className?: string;
+  featured?: boolean;
 }
 
-function formatPrice(value: number): string {
-  return `₹${Number(value || 0).toLocaleString('en-IN')}`;
+const EASE = [0.23, 1, 0.31, 1] as const;
+
+function locationFromTimezone(timezone: string | null | undefined): string | null {
+  const tz = (timezone || '').trim();
+  if (!tz) return null;
+  const city = tz.split('/').pop();
+  if (!city) return null;
+  return city.replace(/_/g, ' ');
 }
-
-/**
- * The BOOKING route: mentor detail, so booking is completely unchanged.
- *
- * The parameter is `segmentSlug`, which is what
- * `SeekerMentorDetailPage` reads (`mentorId` + `segmentSlug`/`segmentId`).
- * Sending a key it does not understand made every card a dead end: the page
- * loaded with no segment and rendered "Mentor not found".
- *
- * `source=segment` is what makes Back contextual: it tells the detail page the
- * seeker arrived from a segment landing page, so Back returns to that landing
- * page instead of the mentor list.
- */
-export function segmentMentorDetailPath(
-  mentor: TopicMentor,
-  context: {
-    date?: string | null;
-    topic?: string | null;
-    intent?: MentorIntent;
-  } = {}
-): string {
-  return mentorDetailPath({
-    mentorId: mentor.id,
-    segmentSlug: mentor.segment?.slug ?? '',
-    gigId: mentor.gig?.id ?? null,
-    date: context.date ?? null,
-    topic: context.topic ?? null,
-    origin: 'segment',
-    intent: context.intent ?? null,
-  });
-}
-
-/**
- * The PUBLIC PROFILE route: the same mentor and the same discovery context, but
- * a different page, so the two card actions can no longer be indistinguishable.
- *
- * The profile shows every ACTIVE offer this mentor has, so it takes no `gigId`:
- * naming one gig would claim the page is about that gig when it is about the
- * mentor. The seeker picks an offer on the page, and that choice carries the
- * exact gig into booking.
- */
-export function segmentMentorProfilePath(
-  mentor: TopicMentor,
-  context: {
-    date?: string | null;
-    topic?: string | null;
-  } = {}
-): string {
-  return mentorProfilePath({
-    mentorId: mentor.id,
-    segmentSlug: mentor.segment?.slug ?? '',
-    date: context.date ?? null,
-    topic: context.topic ?? null,
-    origin: 'segment',
-  });
-}
-
-const Avatar: React.FC<{ mentor: TopicMentor }> = ({ mentor }) => {
-  const initials = (mentor.full_name || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((p) => p[0])
-    .join('')
-    .toUpperCase();
-
-  if (mentor.avatar_url) {
-    return (
-      <img
-        src={mentor.avatar_url}
-        alt=""
-        loading="lazy"
-        decoding="async"
-        className="h-12 w-12 shrink-0 rounded-2xl object-cover ring-1 ring-[var(--sk-brand-border)]"
-      />
-    );
-  }
-  return (
-    <span
-      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-sm font-bold"
-      style={{ background: 'var(--segment-accent-soft)', color: 'var(--segment-accent)' }}
-      aria-hidden="true"
-    >
-      {initials || 'SK'}
-    </span>
-  );
-};
 
 export const SegmentMentorCard: React.FC<SegmentMentorCardProps> = ({
   mentor,
@@ -140,193 +59,219 @@ export const SegmentMentorCard: React.FC<SegmentMentorCardProps> = ({
   selectedDate = null,
   selectedTopic = null,
   className,
+  featured = false,
 }) => {
   const gig = mentor.gig;
+  const isVerified = mentor.is_approved === true;
   const hasRating = Number(mentor.review_count) > 0;
-  // Two DIFFERENT pages, not one page with two moods.
-  //
-  //   "Book a session" -> mentor detail, the slot-selection experience, landing
-  //                      on the date/time grid with THIS card's gig.
-  //   "View profile"   -> the public mentor profile, which lists every active
-  //                      offer this mentor sells and books a chosen one.
-  //
-  // The gig on the card is the booking context, so it travels with the book
-  // action only. It is the card's own `gig`, never a lookup and never a
-  // "first gig" default.
-  const bookPath = segmentMentorDetailPath(mentor, {
+  const openSlots = (mentor.available_slots || []).filter((s) => s.is_available);
+  const today = getDateStringInTimezone(new Date(), mentor.timezone || 'UTC');
+
+  const location = locationFromTimezone(mentor.timezone);
+  const languages = (mentor.languages || []).filter(Boolean);
+  const experienceYears = Number(mentor.experience_years) || 0;
+  const originalPrice = genuineOriginalPrice(gig.price_inr, gig.original_price_inr);
+  const originalPriceLabel = formatOriginalPrice(gig.price_inr, gig.original_price_inr);
+
+  const bookPath = segmentMentorDetailPath({
+    mentorId: mentor.id,
+    segmentSlug: mentor.segment?.slug ?? null,
+    gigId: mentor.gig?.id ?? null,
     date: selectedDate,
     topic: selectedTopic,
+    origin: 'segment',
     intent: 'book',
   });
-  const profilePath = segmentMentorProfilePath(mentor, {
+
+  const profilePath = segmentMentorProfilePath({
+    mentorId: mentor.id,
+    segmentSlug: mentor.segment?.slug ?? null,
     date: selectedDate,
     topic: selectedTopic,
+    origin: 'segment',
   });
-  // Only the timezone exists as a place on the record; there is no separate
-  // location field, so the card never claims a city the data does not carry.
-  const location = mentor.timezone
-    ? (mentor.timezone.split('/').pop()?.replace(/_/g, ' ') ?? mentor.timezone)
-    : null;
-  // Real slot data only. The server returns the generated slots themselves,
-  // so the earliest open one IS the next available time - nothing is inferred,
-  // and with no slot data the card says nothing about availability at all.
-  const openSlots = (mentor.available_slots || []).filter((s) => s.is_available);
-  const earliest = openSlots[0];
-  const nextAvailableLabel = earliest?.date
-    ? formatNextAvailableLabel(
-        earliest.date,
-        earliest.local_start_time
-          ? formatLocalTimeLabel(earliest.local_start_time)
-          : null,
-        getDateStringInTimezone(new Date(), mentor.timezone || 'UTC')
-      )
-    : null;
-  const availability = nextAvailableLabel
-    ? `Next available ${nextAvailableLabel}`
-    : openSlots.length > 0
-      ? `${openSlots.length} open ${openSlots.length === 1 ? 'slot' : 'slots'}`
-      : null;
-  const languages = (mentor.languages || []).slice(0, 3);
+
+  const metadata: string[] = [];
+  if (languages.length > 0) metadata.push(languages.join(' · '));
+  if (location) metadata.push(location);
+  if (experienceYears > 0) metadata.push(`${experienceYears} yr${experienceYears === 1 ? '' : 's'}`);
+
+  // Show up to 3 slot chips. If more are available, show "+N more".
+  const MAX_VISIBLE_SLOTS = 3;
+  const visibleSlots = openSlots.slice(0, MAX_VISIBLE_SLOTS);
+  const remainingCount = openSlots.length - MAX_VISIBLE_SLOTS;
 
   return (
-    <article
-      className={cn(
-        'sk-card group flex h-full flex-col overflow-hidden transition-[box-shadow,border-color] duration-200 focus-within:border-[var(--segment-border-accent)]',
-        className,
-      )}
+    <motion.article
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: EASE }}
+      className={cn('sk-mentor-card group', featured && 'sk-mentor-card--featured', className)}
     >
-      {/* Header ------------------------------------------------------------ */}
-      <div className="flex items-start gap-3.5 p-4 sm:p-5">
-        <Avatar mentor={mentor} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <h3 className="truncate font-display text-[16px] font-bold leading-tight tracking-tight text-[var(--sk-brand-text)]">
-              {mentor.full_name}
-            </h3>
-            {mentor.is_featured && (
-              <span
-                className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-                style={{ background: 'var(--segment-accent-soft)', color: 'var(--segment-accent)' }}
-              >
-                Featured
-              </span>
-            )}
-          </div>
+      {/* Portrait / editorial image area */}
+      <div className="sk-mentor-card-media">
+        {mentor.avatar_url ? (
+          <img
+            src={mentor.avatar_url}
+            alt={`${mentor.full_name} profile photo`}
+            loading="lazy"
+            decoding="async"
+            className="sk-mentor-card-media-img"
+          />
+        ) : (
+          <span className="sk-mentor-card-media-fallback" aria-hidden="true">
+            {getInitials(mentor.full_name)}
+          </span>
+        )}
 
-          {mentor.headline && (
-            <p className="mt-0.5 truncate text-[13px] leading-snug text-[var(--sk-brand-text-muted)]">
-              {mentor.headline}
-            </p>
-          )}
-
-          {/* Real fields only. No rating appears unless reviews exist. */}
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-[var(--sk-brand-text-muted)]">
-            {location && (
-              <span className="flex items-center gap-1">
-                <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                {location}
-              </span>
-            )}
-            {hasRating && (
-              <span className="flex items-center gap-1 font-semibold text-[var(--sk-brand-text)]">
-                <Star
-                  className="h-3.5 w-3.5 shrink-0"
-                  style={{ color: 'var(--segment-accent)' }}
-                  aria-hidden="true"
-                />
-                {Number(mentor.rating).toFixed(1)}
-                <span className="font-normal text-[var(--sk-brand-text-muted)]">
-                  ({mentor.review_count})
-                </span>
-              </span>
-            )}
-            {mentor.experience_years > 0 && (
-              <span className="flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                {mentor.experience_years} yr{mentor.experience_years === 1 ? '' : 's'}
-              </span>
-            )}
-          </div>
-        </div>
+        {isVerified && (
+          <span className="sk-mentor-card-verified">
+            <BadgeCheck className="h-3.5 w-3.5" aria-hidden="true" />
+            Verified
+          </span>
+        )}
+        {mentor.segment?.name && (
+          <span className="sk-mentor-card-segment">{mentor.segment.name}</span>
+        )}
       </div>
 
-      {/* Session offer ---------------------------------------------------- */}
-      {gig && (
-        <div className="mx-4 rounded-xl border border-[var(--sk-brand-border)] bg-[var(--sk-brand-canvas)] p-3.5 sm:mx-5">
-          {/* The segment this gig belongs to, from the record itself. */}
-          {mentor.segment?.name && (
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--sk-brand-text-muted)]">
-              {mentor.segment.name}
-            </p>
-          )}
-          <p className="text-[14px] font-semibold leading-snug text-[var(--sk-brand-text)]">
-            {gig.title}
+      {/* Body */}
+      <div className="sk-mentor-card-body">
+        <h3 className="sk-mentor-card-name">{mentor.full_name}</h3>
+        {mentor.headline && <p className="sk-mentor-card-headline">{mentor.headline}</p>}
+
+        {metadata.length > 0 && (
+          <p className="sk-mentor-card-meta">
+            {metadata.map((part, i) => (
+              <span key={part}>
+                {i > 0 && <span className="sk-mentor-card-meta-sep" aria-hidden="true">·</span>}
+                {part}
+              </span>
+            ))}
           </p>
-          {gig.description && (
-            <p className="mt-1 line-clamp-2 text-[12.5px] leading-snug text-[var(--sk-brand-text-muted)]">
-              {gig.description}
-            </p>
-          )}
-          <div className="mt-2.5 flex items-end justify-between gap-3">
-            <span className="flex items-center gap-1 text-[12px] text-[var(--sk-brand-text-muted)]">
-              <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {gig.duration_minutes} min
+        )}
+
+        {hasRating && (
+          <p className="sk-mentor-card-rating">
+            <span className="sk-mentor-card-rating-value">{Number(mentor.rating).toFixed(1)}</span>
+            <span className="sk-mentor-card-rating-count">
+              {mentor.review_count} review{mentor.review_count === 1 ? '' : 's'}
             </span>
-            <span className="text-right">
-              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--sk-brand-text-muted)]">
-                Price
+          </p>
+        )}
+
+        {mentor.about && mentor.about.trim() && (
+          <p className="sk-mentor-card-bio line-clamp-3">{mentor.about.trim()}</p>
+        )}
+
+        {gig && (
+          <div className="sk-mentor-card-offer">
+            <div className="sk-mentor-card-offer-top">
+              <p className="sk-mentor-card-offer-title">{gig.title}</p>
+              {gig.description && (
+                <p className="sk-mentor-card-offer-desc line-clamp-2">{gig.description}</p>
+              )}
+            </div>
+            <div className="sk-mentor-card-offer-row">
+              <span className="sk-mentor-card-duration">
+                {gig.duration_minutes} min
               </span>
-              <span
-                className="font-display text-[17px] font-bold leading-tight"
-                style={{ color: 'var(--segment-accent)' }}
-              >
-                {formatPrice(gig.price_inr)}
+              <span className="sk-mentor-card-price">
+                {originalPriceLabel && (
+                  <span className="sk-mentor-card-price-original">{originalPriceLabel}</span>
+                )}
+                <span className="sk-mentor-card-price-amount">{formatInr(gig.price_inr)}</span>
+                <span className="sk-mentor-card-price-unit">/ session</span>
               </span>
-            </span>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Availability + language ------------------------------------------ */}
-      {(availability || languages.length > 0) && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 text-[12px] text-[var(--sk-brand-text-muted)] sm:px-5">
-          {availability && (
-            <span className="flex items-center gap-1.5 font-medium">
-              <CalendarClock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {availability}
-            </span>
-          )}
-          {languages.length > 0 && (
-            <span className="flex items-center gap-1.5">
-              <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {languages.join(', ')}
-              {mentor.languages.length > 3 ? ` +${mentor.languages.length - 3}` : ''}
-            </span>
+        {/* Slot chips — real, server-generated bookable times. */}
+        <div className="sk-mentor-card-availability">
+          {openSlots.length > 0 ? (
+            <>
+              <span className="sk-mentor-card-avail-label">Available times</span>
+              <div className="sk-slot-chips">
+                {visibleSlots.map((slot) => {
+                  const slotDate = slot.date || today;
+                  const timeLabel = slot.local_start_time
+                    ? formatLocalTimeLabel(slot.local_start_time)
+                    : null;
+                  const isToday = slotDate === today;
+                  const dateLabel = isToday ? 'Today' : slotDate;
+
+                  return (
+                    <button
+                      key={`${slot.date || today}-${slot.local_start_time || 'tbd'}`}
+                      type="button"
+                      onClick={() => {
+                        const path = segmentMentorDetailPath({
+                          mentorId: mentor.id,
+                          segmentSlug: mentor.segment?.slug ?? null,
+                          gigId: mentor.gig?.id ?? null,
+                          date: slotDate,
+                          topic: selectedTopic,
+                          origin: 'segment',
+                          intent: 'book',
+                          slotTime: slot.local_start_time || undefined,
+                        });
+                        navigate(path);
+                      }}
+                      className="sk-slot-chip"
+                      aria-label={`${dateLabel} at ${timeLabel || 'TBD'}`}
+                    >
+                      <span className="sk-slot-chip-time">{timeLabel}</span>
+                      {!isToday && (
+                        <span className="sk-slot-chip-date">{dateLabel}</span>
+                      )}
+                    </button>
+                  );
+                })}
+                {remainingCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(bookPath)}
+                    className="sk-slot-chip"
+                    aria-label={`${remainingCount} more available times`}
+                  >
+                    +{remainingCount} more
+                  </button>
+                )}
+              </div>
+              {location && (
+                <span className="sk-slot-context">
+                  <Globe className="sk-slot-context-icon h-3 w-3" aria-hidden="true" />
+                  {location}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="sk-slot-empty">No upcoming slots</span>
           )}
         </div>
-      )}
 
-      {/* Actions ----------------------------------------------------------- */}
-      <div className="mt-auto flex flex-col-reverse gap-2 border-t border-[var(--sk-brand-border)] p-4 sm:flex-row sm:p-5">
-        <button
-          type="button"
-          onClick={() => navigate(bookPath)}
-          className="sk-btn sk-btn-primary flex-1"
-          aria-label={`Book a session with ${mentor.full_name}`}
-        >
-          Book a session
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate(profilePath)}
-          className="sk-btn sk-btn-secondary flex-1"
-          aria-label={`View ${mentor.full_name}'s full profile`}
-        >
-          View profile
-        </button>
+        <div className="sk-mentor-card-cta">
+          <button
+            type="button"
+            onClick={() => navigate(profilePath)}
+            aria-label={`View ${mentor.full_name}'s full profile`}
+            className="sk-mentor-card-view"
+          >
+            View profile
+            <ArrowRight className="sk-mentor-card-arrow" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate(bookPath)}
+            aria-label={`Book a session with ${mentor.full_name}`}
+            className="sk-mentor-card-book"
+          >
+            Book a session
+          </button>
+        </div>
       </div>
-    </article>
+    </motion.article>
   );
 };
 

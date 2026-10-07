@@ -18,6 +18,7 @@ import {
   toPaise,
   validateRefundProofFile,
 } from '../src/lib/refundCompletion';
+import { canInitiateRefund } from '../src/lib/adminPaymentView';
 import { PAYMENT_PROOF_BUCKET, PAYMENT_PROOF_MAX_BYTES } from '../src/lib/paymentProof';
 import { apiSchemas } from '../src/lib/validation';
 
@@ -91,8 +92,8 @@ describe('A/B — a pending refund never claims it was initiated', () => {
     assert.ok(uses > 0, 'the existing gateway result vocabulary must not be renamed');
     for (const use of serverSrc.split('REFUND_INITIATED').slice(0, -1)) {
       assert.match(
-        use.slice(-25),
-        /refundInfo\.status === '$/,
+        use.slice(-40),
+        /(?:refundInfo\.status|refundResult\.value\.status) === '$/,
         'REFUND_INITIATED may only appear as the gateway result discriminator',
       );
     }
@@ -138,8 +139,9 @@ describe('A/B — a pending refund never claims it was initiated', () => {
     // Only the cancellation handlers call it, and only after the refund actually
     // entered PENDING. No route that merely reads a payment may call it.
     const calls = serverSrc.match(/notifyRefundState\(/g) ?? [];
-    // 2 definitions/uses: the helper declaration plus the two cancel handlers.
-    assert.equal(calls.length, 3);
+    // 1 function declaration + 3 cancellation/refund handlers + 1 admin-initiated
+    // refund endpoint. All are state transitions, never reads.
+    assert.equal(calls.length, 5);
     assert.doesNotMatch(serverSrc, /app\.get\([^)]*notifyRefundState/);
   });
 });
@@ -742,3 +744,86 @@ describe('existing flows are untouched', () => {
 const REFUND_PROOF_MAX_BYTES_FOR_TEST = PAYMENT_PROOF_MAX_BYTES;
 const REFUND_PROOF_BUCKET_FOR_TEST = PAYMENT_PROOF_BUCKET;
 const isRefundOwedForTest = (row: { refundStatus: string | null }): boolean => row.refundStatus === 'PENDING';
+
+// ===========================================================================
+// Admin-initiated refund endpoint
+// ===========================================================================
+
+describe('POST /api/admin/payments/:id/initiate-refund', () => {
+  const routeStart = serverSrc.indexOf("app.post('/api/admin/payments/:id/initiate-refund'");
+
+  it('the route exists and is guarded by requireAuth and requireAdmin', () => {
+    assert.notEqual(routeStart, -1, 'initiate-refund route must exist');
+    const header = serverSrc.slice(routeStart, serverSrc.indexOf('async (req', routeStart));
+    assert.match(header, /requireAuth/);
+    assert.match(header, /requireAdmin/);
+  });
+
+  it('the request body carries no amount or status from the browser', () => {
+    // The schema is a strict object accepting only an optional note, so it
+    // rejects any amount, status, or gateway field the browser might send.
+    const result = runValidation(apiSchemas.adminRefundInitiate, {
+      refundAmountInr: 499,
+      refundStatus: 'REFUNDED',
+      amount: 100,
+      note: 'ok',
+    });
+    assert.equal(result.ok, false);
+  });
+
+  it('delegates to runCreateRazorpayRefund with reason admin_refund', () => {
+    const route = serverSrc.slice(routeStart, serverSrc.indexOf('app.get(', routeStart));
+    assert.match(route, /runCreateRazorpayRefund\(/);
+    assert.match(route, /reason:\s*'admin_refund'/);
+  });
+
+  it('refuses a payment whose status is not VERIFIED', () => {
+    assert.match(serverSrc, /code: 'PAYMENT_NOT_VERIFIED'/);
+    assert.match(serverSrc, /'This payment has not been captured and cannot be refunded\.'/);
+  });
+
+  it('refuses a refund that is already REFUNDED', () => {
+    assert.match(serverSrc, /code: 'ALREADY_REFUNDED'/);
+  });
+
+  it('refuses a refund that is already PENDING', () => {
+    assert.match(serverSrc, /code: 'REFUND_ALREADY_INITIATED'/);
+  });
+
+  it('notifies the seeker via notifyRefundState with the correct kind', () => {
+    const route = serverSrc.slice(routeStart, serverSrc.indexOf('app.get(', routeStart));
+    assert.match(route, /notifyRefundState\(/);
+    assert.match(route, /GATEWAY_PENDING/);
+    assert.match(route, /MANUAL_PENDING/);
+  });
+
+  it('writes an admin audit event with the gateway, amount and optional note', () => {
+    const route = serverSrc.slice(routeStart, serverSrc.indexOf('app.get(', routeStart));
+    assert.match(route, /auditAction\(req\.auth, 'admin_refund_initiated'/);
+    assert.match(route, /gateway:/);
+    assert.match(route, /amountInr:/);
+    assert.match(route, /note:/);
+  });
+
+  it('returns the refund result from runCreateRazorpayRefund on success', () => {
+    const route = serverSrc.slice(routeStart, serverSrc.indexOf('app.get(', routeStart));
+    assert.match(route, /success: true, refund: refundResult\.value/);
+  });
+});
+
+describe('canInitiateRefund', () => {
+  it('is true for a VERIFIED payment with no refund in flight or settled', () => {
+    assert.equal(canInitiateRefund({ status: 'VERIFIED', refundStatus: null } as any), true);
+    assert.equal(canInitiateRefund({ status: 'VERIFIED', refundStatus: 'FAILED' } as any), true);
+  });
+
+  it('is false for a payment that is not VERIFIED', () => {
+    assert.equal(canInitiateRefund({ status: 'PENDING_VERIFICATION', refundStatus: null } as any), false);
+    assert.equal(canInitiateRefund({ status: 'REFUNDED', refundStatus: null } as any), false);
+  });
+
+  it('is false when a refund is already PENDING or REFUNDED', () => {
+    assert.equal(canInitiateRefund({ status: 'VERIFIED', refundStatus: 'PENDING' } as any), false);
+    assert.equal(canInitiateRefund({ status: 'VERIFIED', refundStatus: 'REFUNDED' } as any), false);
+  });
+});

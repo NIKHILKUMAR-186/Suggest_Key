@@ -368,7 +368,7 @@ export const buildDashboardExceptions = (
           ? 'Meeting link deadline missed'
           : 'Session reached without a meeting link',
         detail: sessionStillUpcoming
-          ? `No meeting link ${minutesUntilSession}m before session start. The booking is NOT auto-cancelled — mentor follow-up is required.`
+          ? `No meeting link was provided before the deadline. The booking is being auto-cancelled and a refund is being processed.`
           : 'The session start time has passed while the booking is still MENTOR_PENDING with no meeting link.',
         bookingCode: code,
         bookingId: booking.id,

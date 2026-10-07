@@ -1,167 +1,229 @@
-import React, { useState } from 'react';
-import { ArrowUpRight, Compass } from 'lucide-react';
-import { Button } from '@/src/components/ui/Button';
-import { Skeleton } from '@/src/components/ui/Skeleton';
-import { Reveal } from '@/src/components/landing/Reveal';
-import { resolveSegmentIcon } from '@/src/lib/segmentIcons';
-import { deriveSegmentTheme } from '@/src/lib/segmentTheme';
-import { HERO_ARROW } from '@/src/components/landing/landingContent';
+import { motion, useReducedMotion } from 'motion/react';
+import { ArrowUpRight } from 'lucide-react';
+import React from 'react';
 import type { Segment } from '@/src/types/database';
-
-interface SegmentCardProps {
-  segment: Segment;
-  onOpen: (segment: Segment) => void;
-}
+import { deriveSegmentTheme } from '@/src/lib/segmentTheme';
+import { resolveSegmentIcon } from '@/src/lib/segmentIcons';
+import { useTheme } from '@/src/context/ThemeContext';
+import { EdgeReveal, Stagger, StaggerItem } from '@/src/components/landing/Reveal';
+import { AREAS_ACTION_LABEL, AREAS_BODY, AREAS_EMPTY_LABEL, AREAS_RETRY_LABEL, AREAS_TITLE } from '@/src/components/landing/landingContent';
 
 /**
- * One segment, one card.
- *
- * The segment's own runtime theme is applied through the CSS custom properties
- * `deriveSegmentTheme` produces, so an admin-configured accent is honoured here
- * exactly as it is on the seeker's segment experience — with no per-segment
- * code and no slug lookup. The accent is only ever used for a soft tint, an
- * icon and an arrow on this light canvas, so the light palette is the right
- * one to derive here.
+ * The catalogue's failure sentence. It lives here rather than in the
+ * shared copy file because this section is the only place it renders.
  */
-const SegmentCard: React.FC<SegmentCardProps> = ({ segment, onOpen }) => {
-  const [isHighlighted, setIsHighlighted] = useState(false);
-  const theme = deriveSegmentTheme(segment.experience_config, 'light');
-  // A `segments` row configures its icon per experience item, not per area, so
-  // the shared neutral mark is used and tinted with that segment's own accent.
-  // A distinct icon per area would be decoration masquerading as configuration.
-  const Icon = resolveSegmentIcon(null);
-  const { variables, accent } = theme;
+const AREAS_ERROR_LABEL = 'Couldn’t load mentorship areas.';
 
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(segment)}
-      onMouseEnter={() => setIsHighlighted(true)}
-      onMouseLeave={() => setIsHighlighted(false)}
-      onFocus={() => setIsHighlighted(true)}
-      onBlur={() => setIsHighlighted(false)}
-      aria-label={`Explore mentors in ${segment.name}`}
-      style={variables}
-      className="group flex h-full w-full cursor-pointer flex-col rounded-[26px] border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-7 text-left shadow-[var(--sk-shadow-card)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[var(--sk-shadow-card-hover),var(--segment-section-glow)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] focus-visible:ring-offset-2"
-    >
-      <span
-        className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl transition-transform duration-200 group-hover:scale-105"
-        style={{ backgroundColor: variables['--segment-accent-soft'], color: accent }}
-        aria-hidden="true"
-      >
-        <Icon className="h-5 w-5" />
-      </span>
+/**
+ * MENTORSHIP AREAS — the index.
+ *
+ * The catalogue is database data. It arrives through the page's single
+ * `useActiveSegments()` read — ordered by the CMS `priority` column, live over the
+ * existing realtime publication — and nothing here re-ranks it, filters it, pads
+ * it or names an area. An empty catalogue renders a sentence, not a placeholder,
+ * because a made-up area is a promise the platform cannot keep.
+ *
+ * THIS IS THE ONLY SEGMENT NAVIGATION ON THE PAGE.
+ *
+ * The hero's orbit shows the same area names as decoration — it carries no href,
+ * no click and no focus — so these rows carry the entire route into every live
+ * area. That is why they are real buttons with a real accessible name and a real
+ * focus ring rather than a decorated list.
+ *
+ * THE HEADING IS A QUESTION, BECAUSE THE SECTION IS AN OFFER.
+ *
+ * "Who do you want to talk to?" is what a visitor is actually in the middle of
+ * when they arrive, and asking it makes the list below an answer rather than a
+ * catalogue. The subtext is one sentence and does not describe the review process:
+ * that claim belongs to the trust section, and repeating it here is how a page
+ * ends up explaining the same thing in three places.
+ *
+ * NO ORDINAL, NO PANEL, NO HEADING-SIZED FAILURE.
+ *
+ * The "01" this section used to carry is gone: numbering a page whose sections are
+ * already named by their own headings only adds a second thing to read. And a
+ * failed read is one sentence at caption weight with a retry beside it, never a
+ * card — an error that renders louder than the real content it replaced makes the
+ * whole page look broken when one request timed out.
+ *
+ * THE ACCENT IS DATA, NOT DECORATION.
+ *
+ * Each row carries its own admin-configured colour, used once, on the mark. A page
+ * of six differently coloured panels would read as decoration; six small marks
+ * inside one rule read as data — and an area added in the CMS appears here in its
+ * own colour with no frontend change at all.
+ */
 
-      <h3 className="text-lg font-semibold leading-snug tracking-tight text-[var(--sk-brand-text)]">
-        {segment.name}
-      </h3>
-
-      {segment.description ? (
-        <p className="mt-2.5 line-clamp-3 text-[13px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-          {segment.description}
-        </p>
-      ) : null}
-
-      <span
-        className={[
-          'mt-6 inline-flex items-center gap-1.5 text-[13px] font-semibold transition-opacity duration-200',
-          isHighlighted ? 'opacity-100' : 'opacity-0 group-focus-visible:opacity-100',
-        ].join(' ')}
-        style={{ color: accent }}
-      >
-        Explore mentors
-        <ArrowUpRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5" aria-hidden="true" />
-      </span>
-    </button>
-  );
-};
 export interface LandingSegmentStripProps {
   segments: Segment[];
-  isLoading: boolean;
+  isLoadingSegments: boolean;
   hasError: boolean;
-  onOpen: (segment: Segment) => void;
-  /** Keeps the primary CTA reachable from the empty and error states. */
-  onFindMentor: () => void;
-  /** Re-runs the catalogue fetch after a failed load. */
-  onRetry?: () => void;
+  onOpenArea: (segment: Segment) => void;
+  onRetry: () => void;
 }
 
 /**
- * SEGMENTS — the CMS-driven row that overlaps the hero.
+ * A skeleton that is the shape of a real row.
  *
- * Every name, description and icon comes from the active segment rows the
- * whole app already reads (`useActiveSegments`). No area is hardcoded: retire a
- * segment and it leaves this row, publish one and it arrives, with no frontend
- * change. The skeleton mirrors the final card's structure so the row does not
- * resize when data lands, and it carries no placeholder area names.
+ * Four lines rather than three equal tiles, because the thing loading is a list of
+ * ruled rows and a skeleton of tiles would make the layout jump when the rows
+ * arrive — which is the failure a skeleton exists to prevent.
  */
+const SectionSkeleton: React.FC = () => (
+  <ul className="sk-lg-areas" aria-hidden="true">
+    {[0, 1, 2, 3].map((key) => (
+      <li key={key} className="sk-lg-area">
+        <div style={{ padding: '28px 10px', display: 'grid', gap: 12 }}>
+          <span className="sk-lg-skeleton sk-lg-skeleton--line" style={{ width: '26%' }} />
+          <span className="sk-lg-skeleton sk-lg-skeleton--line" style={{ width: '58%' }} />
+        </div>
+      </li>
+    ))}
+  </ul>
+);
+
 export const LandingSegmentStrip: React.FC<LandingSegmentStripProps> = ({
   segments,
-  isLoading,
+  isLoadingSegments,
   hasError,
-  onOpen,
-  onFindMentor,
+  onOpenArea,
   onRetry,
-}) => (
-  <section
-    className="relative z-20 bg-[var(--sk-brand-canvas)] px-4 sm:px-6 lg:px-8"
-    aria-labelledby="segments-heading"
-  >
-    <div className="mx-auto -mt-20 max-w-[1240px] sm:-mt-24 lg:-mt-28">
-      <h2 id="segments-heading" className="sr-only">
-        Areas you can explore
-      </h2>
+}) => {
+  const { theme } = useTheme();
+  const canAnimate = useReducedMotion() !== true;
 
-      {isLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
-          {[0, 1, 2].map((index) => (
-            <div
-              key={index}
-              className="rounded-[26px] border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-7 shadow-[var(--sk-shadow-card)]"
+  return (
+    <section id="areas" className="sk-lg-band sk-lg-areas-band" aria-labelledby="areas-title">
+      <span className="sk-lg-margin" aria-hidden="true" />
+
+      <div className="sk-lg__wrap">
+        {/*
+          The heading is set beside the rows rather than above them on a wide
+          viewport, so the list starts at the top of the section and a visitor
+          scanning for a specific area never has to scroll past four lines of
+          prose to reach it.
+        */}
+        <div className="sk-lg-areas__layout">
+          <div className="sk-lg-areas__intro">
+            {/*
+              Revealed on the elements themselves, not inside wrappers: the CSS
+              sizes this column with `position: sticky` and reads the heading and
+              lead as its own direct children, so a motion div around either of
+              them would change what the sticky box contains.
+            */}
+            <motion.h2
+              id="areas-title"
+              className="sk-lg-display sk-lg-display--section"
+              initial={canAnimate ? { opacity: 0, y: 22 } : false}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, amount: 0.4 }}
+              transition={{ duration: 0.78, ease: [0.22, 1, 0.36, 1] }}
             >
-              <Skeleton className="h-12 w-12 rounded-2xl" />
-              <Skeleton className="mt-6 h-5 w-2/3" />
-              <Skeleton className="mt-3 h-3.5 w-full" />
-              <Skeleton className="mt-2 h-3.5 w-4/5" />
-            </div>
-          ))}
-        </div>
-      ) : segments.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {segments.map((segment, index) => (
-            <Reveal key={segment.id} delay={index * 0.06} className="h-full">
-              <SegmentCard segment={segment} onOpen={onOpen} />
-            </Reveal>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-[26px] border border-dashed border-[var(--sk-brand-border-strong)] bg-[var(--sk-brand-surface)]/60 px-6 py-8 text-center sm:py-10">
-          <Compass className="mx-auto h-6 w-6 text-[var(--sk-brand-text-subtle)]" aria-hidden="true" />
-          <p className="mx-auto mt-3 max-w-md text-[13px] font-semibold text-[var(--sk-brand-text)]">
-            {hasError ? "We couldn&apos;t load mentorship areas right now." : 'Mentorship areas are being prepared.'}
-          </p>
-          <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-            {hasError
-              ? 'Mentors and sessions are unaffected. Head straight to mentor discovery.'
-              : 'New areas appear here as the Suggest Key team publishes them. Every mentor is open to browse now.'}
-          </p>
-          <div className="mt-5 flex flex-col items-center justify-center gap-2 sm:flex-row">
-            <Button size="md" className="gap-2" onClick={onFindMentor}>
-              Find a Mentor {HERO_ARROW}
-            </Button>
-            {hasError && onRetry ? (
-              <Button size="md" variant="outline" onClick={onRetry}>
-                Try Again
-              </Button>
-            ) : null}
+              {AREAS_TITLE}
+            </motion.h2>
+            <motion.p
+              className="sk-lg-lead"
+              initial={canAnimate ? { opacity: 0, y: 20 } : false}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, amount: 0.4 }}
+              transition={{ duration: 0.78, delay: 0.09, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {AREAS_BODY}
+            </motion.p>
+            <EdgeReveal className="sk-lg-head__rule sk-lg-head__rule--edge" delay={0.16} />
+          </div>
+
+          <div className="sk-lg-areas__list">
+            {isLoadingSegments ? (
+              <SectionSkeleton />
+            ) : segments.length > 0 ? (
+              <Stagger step={0.055} as="ul" className="sk-lg-areas">
+                {segments.map((segment) => {
+                  /**
+                   * The area's own configured accent, derived from data rather than
+                   * from a slug lookup, so a new area gets its colour from the admin
+                   * panel with no frontend change.
+                   */
+                  const accent = deriveSegmentTheme(segment.experience_config, theme).accent;
+                  const Icon = resolveSegmentIcon(
+                    segment.experience_config?.topics?.find((topic) => topic.enabled !== false)?.icon
+                  );
+                  const description = segment.description?.trim();
+
+                  return (
+                    <StaggerItem key={segment.id} y={16} as="li" className="sk-lg-area">
+                      <motion.button
+                        type="button"
+                        className="sk-lg-area__link"
+                        style={{ '--sk-area-accent': accent } as React.CSSProperties}
+                        aria-label={`${AREAS_ACTION_LABEL} mentors in ${segment.name}`}
+                        onClick={() => onOpenArea(segment)}
+                        /**
+                         * A three-degree tilt toward the pointer, on the row's own
+                         * plane. It is the page's one piece of 3D on paper, and it
+                         * is here rather than on the mentor cards because a mentor
+                         * card is a link into a person and this is a link into a
+                         * catalogue — the smaller gesture belongs to the smaller
+                         * decision.
+                         *
+                         * Rotating a full-width ruled row is a large area, so this
+                         * is deliberately shallow: enough that the rule's far end
+                         * moves 3px, not enough that the text leaves its baseline.
+                         */
+                        whileHover={canAnimate ? { rotateX: 3, rotateY: -1.5 } : undefined}
+                        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                      >
+                        <span className="sk-lg-area__mark" aria-hidden="true">
+                          <Icon className="h-4 w-4" strokeWidth={1.7} />
+                        </span>
+
+                        <span className="sk-lg-area__name">{segment.name}</span>
+
+                        {description && <span className="sk-lg-area__desc">{description}</span>}
+
+                        <span className="sk-lg-area__go" aria-hidden="true">
+                          {AREAS_ACTION_LABEL}
+                          <ArrowUpRight className="h-4 w-4" />
+                        </span>
+                      </motion.button>
+                    </StaggerItem>
+                  );
+                })}
+              </Stagger>
+            ) : hasError ? (
+              /*
+                One sentence and a retry, at caption weight. This state used to be a
+                titled panel, which made a single failed request look like the page
+                had failed; it is now deliberately quieter than the rows it failed
+                to draw, because that is the correct hierarchy.
+              */
+              <div className="sk-lg-state">
+                <p className="sk-lg-state__title">{AREAS_ERROR_LABEL}</p>
+                <button type="button" className="sk-lg-link sk-lg-state__action" onClick={onRetry}>
+                  {AREAS_RETRY_LABEL}
+                  <span className="sk-lg-link__arrow" aria-hidden="true">
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path
+                        d="M2 7h9.5M8 3.4 11.8 7 8 10.6"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </span>
+                </button>
+              </div>
+            ) : (
+              <p className="sk-lg-lead" style={{ maxWidth: '46ch' }}>
+                {AREAS_EMPTY_LABEL}
+              </p>
+            )}
           </div>
         </div>
-      )}
-    </div>
+      </div>
+    </section>
+  );
+};
 
-    <p className="mx-auto mt-5 max-w-[1240px] px-2 pb-14 text-center text-[12px] leading-relaxed text-[var(--sk-brand-text-muted)] sm:pb-16">
-      Areas are maintained by the Suggest Key team, so this list is exactly where mentors are currently taking
-      sessions. {HERO_ARROW}
-    </p>
-  </section>
-);
+export default LandingSegmentStrip;

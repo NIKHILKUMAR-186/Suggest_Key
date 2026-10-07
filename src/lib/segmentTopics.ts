@@ -60,6 +60,14 @@ export interface TopicGig {
   description: string;
   duration_minutes: number;
   price_inr: number;
+  /**
+   * Pre-discount price, or null when the gig was never reduced. The database
+   * constrains this to be strictly greater than `price_inr`, so a non-null
+   * value always describes a genuine saving and a card may show it struck
+   * through. Optional in the type only because older read paths selected a
+   * narrower column list; `formatOriginalPrice` treats undefined as null.
+   */
+  original_price_inr?: number | null;
 }
 
 /** A mentor as the topic-filtered marketplace endpoint returns them. */
@@ -76,6 +84,14 @@ export interface TopicMentor {
   rating: number;
   review_count: number;
   session_count: number;
+  /**
+   * The verification source. The marketplace endpoint filters its result to
+   * mentors whose application was approved and whose profile is active, so a
+   * card may show "Verified" from this field rather than inferring it from an
+   * unrelated one. It is carried explicitly so the card's decision is a read
+   * of the real column, never a guess.
+   */
+  is_approved: boolean;
   is_featured: boolean;
   is_primary_segment: boolean;
   segment: { id: string; name: string; slug: string };

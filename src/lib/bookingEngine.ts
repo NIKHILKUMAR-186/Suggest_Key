@@ -687,8 +687,21 @@ export async function confirmSessionByMentor(
     };
   }
 
-  // 5. Check deadline status (for reporting / notification)
+  // 5. Check the meeting-link deadline. Phase 43 makes this a HARD gate: once
+  //    `start_time - MEETING_LINK_DEADLINE_MS` has elapsed, the booking is no
+  //    longer confirmable by the mentor - it is being auto-cancelled by the
+  //    pg_cron job and a refund is being initiated server-side. This mirrors the
+  //    `MEETING_LINK_DEADLINE_PASSED` raise in `confirm_booking()`.
   const deadlineInfo = calculateMeetingLinkDeadline(booking.start_time, currentUtcTime);
+  if (deadlineInfo.isOverdue) {
+    return {
+      success: false,
+      error: {
+        code: 'MEETING_LINK_DEADLINE_PASSED',
+        message: 'The meeting link deadline has passed. This booking will be (or has been) auto-cancelled.',
+      },
+    };
+  }
 
   // 6. Transition state to CONFIRMED
   booking.status = 'CONFIRMED';

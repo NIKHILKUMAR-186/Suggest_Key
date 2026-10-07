@@ -11,16 +11,19 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
-import { ROLE_NAVIGATION } from '@/src/config/navigation';
+import { ADMIN_NAV_GROUPS, ROLE_NAVIGATION } from '@/src/config/navigation';
 import { cn } from '@/src/lib/utils';
 import { Button } from '@/src/components/ui/Button';
-import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 
 export const AdminSidebar: React.FC = () => {
   const { currentPath, navigate } = useNavigation();
   const { user, profile, signOut } = useAuth();
   const { unreadCount } = useNotifications();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Explicit collapse/expand decisions the operator made. Absent means
+  // "use the default, but open if this group holds the active route".
+  const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
 
   const baseConfig = ROLE_NAVIGATION.admin;
   const config = {
@@ -32,6 +35,56 @@ export const AdminSidebar: React.FC = () => {
       return item;
     }),
   };
+
+  // The path without its query string: `/admin/system-health?tab=audit` lives
+  // at `/admin/system-health`, but the Security items deep-link to its tabs.
+  const pathname = currentPath.split('?')[0];
+
+  /**
+   * Which item is active, resolved once for the whole sidebar.
+   *
+   * An exact match wins (so `?tab=audit` selects Audit Logs over the bare
+   * System Health entry). Otherwise the longest query-less href that prefixes
+   * the path wins, which keeps `/admin/users/123` on Users instead of also
+   * lighting up Dashboard — a plain `startsWith` would match both.
+   */
+  const activeHref = (() => {
+    const exact = config.navItems.find((item) => item.href === currentPath);
+    if (exact) return exact.href;
+    let best = '';
+    for (const item of config.navItems) {
+      if (item.href.includes('?')) continue;
+      if (pathname === item.href || pathname.startsWith(`${item.href}/`)) {
+        if (item.href.length > best.length) best = item.href;
+      }
+    }
+    return best;
+  })();
+
+  const activeGroupId =
+    ADMIN_NAV_GROUPS.find((group) => group.items.some((item) => item.href === activeHref))?.id ?? null;
+
+  // Navigating into a group opens it, so the operator never lands on a
+  // highlighted item hidden inside a collapsed section. A manual collapse
+  // made *while staying on the route* is still honoured.
+  useEffect(() => {
+    if (!activeGroupId) return;
+    setGroupOverrides((prev) => {
+      if (!(activeGroupId in prev)) return prev;
+      const next = { ...prev };
+      delete next[activeGroupId];
+      return next;
+    });
+  }, [activeGroupId]);
+
+  const isGroupExpanded = (groupId: string, defaultExpanded?: boolean): boolean => {
+    if (groupId in groupOverrides) return groupOverrides[groupId];
+    if (groupId === activeGroupId) return true;
+    return defaultExpanded ?? false;
+  };
+
+  const toggleGroup = (groupId: string, expanded: boolean) =>
+    setGroupOverrides((prev) => ({ ...prev, [groupId]: !expanded }));
 
   // Close on Escape key and whenever the route changes, so the drawer is never
   // left open over a page the user has already navigated away from.
@@ -102,46 +155,82 @@ export const AdminSidebar: React.FC = () => {
           )}
         </div>
 
-        {/* Navigation List */}
+        {/* Navigation List: grouped, collapsible Control Center sections */}
         <div className="space-y-1">
           <div className="px-2.5 py-1 text-[10px] font-bold text-[var(--color-shell-text-subtle)] uppercase tracking-wider">
-            Operations & Governance
+            Control Center
           </div>
-          <nav className="space-y-1" aria-label="Admin Navigation">
-            {config.navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive =
-                item.href === currentPath ||
-                (item.href !== '/admin' && currentPath.startsWith(item.href));
+          <nav className="space-y-3" aria-label="Admin Navigation">
+            {ADMIN_NAV_GROUPS.map((group) => {
+              const GroupIcon = group.icon;
+              const expanded = isGroupExpanded(group.id, group.defaultExpanded);
+              const groupHasActive = group.items.some((item) => item.href === activeHref);
 
               return (
-                <button
-                  key={item.id}
-                  onClick={() => handleNavClick(item.href)}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={cn(
-                    'group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-xs font-medium rounded-xl transition-all text-left cursor-pointer min-h-[44px]',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
-                    isActive
-                      ? 'bg-[var(--color-shell-primary)] text-white shadow-xs font-semibold'
-                      : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface)] hover:text-[var(--color-shell-text)]'
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-white' : 'text-[var(--color-shell-text-muted)]')} />
-                    <span>{item.label}</span>
-                  </div>
-                  {item.badge !== undefined && (
-                    <span
-                      className={cn(
-                        'rounded-full px-2 py-0.5 text-[10px] font-bold',
-                        isActive ? 'bg-white/20 text-white' : 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
-                      )}
-                    >
-                      {item.badge}
+                <div key={group.id}>
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group.id, expanded)}
+                    aria-expanded={expanded}
+                    aria-controls={`admin-nav-group-${group.id}`}
+                    className={cn(
+                      'flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-lg cursor-pointer transition-colors',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
+                      groupHasActive
+                        ? 'text-[var(--color-shell-accent)]'
+                        : 'text-[var(--color-shell-text-subtle)] hover:text-[var(--color-shell-text-muted)]'
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <GroupIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      {group.label}
                     </span>
+                    <ChevronRight
+                      className={cn('h-3 w-3 transition-transform duration-150', expanded && 'rotate-90')}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {expanded && (
+                    <div id={`admin-nav-group-${group.id}`} className="mt-1 space-y-1">
+                      {group.items.map((item) => {
+                        const Icon = item.icon;
+                        const isActive = item.href === activeHref;
+                        const badge = config.navItems.find((n) => n.id === item.id)?.badge;
+
+                        return (
+                          <button
+                            key={item.id}
+                            onClick={() => handleNavClick(item.href)}
+                            aria-current={isActive ? 'page' : undefined}
+                            className={cn(
+                              'group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-xs font-medium rounded-xl transition-all text-left cursor-pointer min-h-[44px]',
+                              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]',
+                              isActive
+                                ? 'bg-[var(--color-shell-primary)] text-white shadow-xs font-semibold'
+                                : 'text-[var(--color-shell-text-muted)] hover:bg-[var(--color-shell-surface)] hover:text-[var(--color-shell-text)]'
+                            )}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <Icon className={cn('h-4 w-4 shrink-0', isActive ? 'text-white' : 'text-[var(--color-shell-text-muted)]')} />
+                              <span>{item.label}</span>
+                            </div>
+                            {badge !== undefined && (
+                              <span
+                                className={cn(
+                                  'rounded-full px-2 py-0.5 text-[10px] font-bold',
+                                  isActive ? 'bg-white/20 text-white' : 'bg-[var(--color-shell-surface-elevated)] text-[var(--color-shell-text-muted)]'
+                                )}
+                              >
+                                {badge}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                </button>
+                </div>
               );
             })}
           </nav>
@@ -150,14 +239,6 @@ export const AdminSidebar: React.FC = () => {
 
       {/* Admin User Profile & Sign Out */}
       <div className="pt-4 border-t border-[var(--color-shell-border)] space-y-3">
-        {/* Theme selection */}
-        <div className="flex flex-col gap-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
-            Theme
-          </span>
-          <ThemeToggle variant="labeled" buttonClassName="w-full" />
-        </div>
-
         {/* User Card */}
         <div className="rounded-xl bg-[var(--color-shell-surface)] border border-[var(--color-shell-border)] p-2.5 flex items-center gap-2.5 shadow-2xs">
           <div className="h-8 w-8 rounded-lg bg-[var(--color-shell-primary)] text-white flex items-center justify-center font-bold text-xs shrink-0 ring-1 ring-[var(--color-shell-primary)]/50">
@@ -214,7 +295,6 @@ export const AdminSidebar: React.FC = () => {
           <span className="font-bold text-sm text-[var(--color-shell-text)] font-display">Suggest Key Admin</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <ThemeToggle />
           <button
             onClick={() => setMobileSidebarOpen(true)}
             className="min-touch-icon flex items-center justify-center p-2 text-[var(--color-shell-text-muted)] hover:text-[var(--color-shell-text)] rounded-lg hover:bg-[var(--color-shell-surface)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)]"

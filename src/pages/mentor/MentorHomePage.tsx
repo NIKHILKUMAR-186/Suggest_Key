@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Clock, Video, AlertCircle, CheckCircle2, Loader2, User, ShieldCheck } from 'lucide-react';
+import { Calendar, Clock, Video, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { useAuth } from '@/src/context/AuthContext';
@@ -10,6 +10,9 @@ import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { isBookingUpcoming } from '@/src/lib/sessionState';
 import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
+import { MentorActionBanner } from '@/src/components/mentor/MentorActionBanner';
+import { MentorEmptyState } from '@/src/components/mentor/MentorEmptyState';
+import type { EnrichedBookingRecord } from '@/src/lib/bookingService';
 
 interface Booking {
   id: string;
@@ -43,10 +46,6 @@ export const MentorHomePage: React.FC = () => {
   const [todaySessions, setTodaySessions] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Explicit three-state verification outcome. The previous code computed a
-  // nullable `mentorApproved` boolean from possibly-null onboarding fields,
-  // which collapsed the unresolved state into "not approved" and flashed the
-  // verification card before the backend had answered.
   const isVerified = mentorVerificationState === 'verified';
   const isNotVerified = mentorVerificationState === 'not_verified';
   const isVerificationLoading = mentorVerificationState === 'loading';
@@ -58,18 +57,11 @@ export const MentorHomePage: React.FC = () => {
     }
     setLoading(true);
     try {
-      const bookings = await fetchMentorBookings(user.id);
+      const bookings = await fetchMentorBookings(user.id) as unknown as Booking[];
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
 
-      // "Today" is a date label and stays on the local calendar day, but whether
-      // a session is still actionable must come from the server. Filtering on
-      // `status === 'CONFIRMED'` alone listed sessions that had already ended
-      // earlier the same day, leaving a dead Join button on the mentor's home
-      // screen. The server annotates every row with `sessionState` /
-      // `isUpcoming`; the local resolver is only a fallback for a cached row
-      // that predates that field.
       const stillActionable = (b: Booking): boolean => {
         const server = (b as Booking & { isUpcoming?: boolean }).isUpcoming;
         if (typeof server === 'boolean') return server;
@@ -83,7 +75,6 @@ export const MentorHomePage: React.FC = () => {
       });
       setTodaySessions(today);
 
-      // Find MENTOR_PENDING booking that needs action
       const pending = bookings.find((b) => b.status === 'MENTOR_PENDING' && !b.meeting_url);
       setActionBooking(pending || null);
     } catch (err: any) {
@@ -142,14 +133,6 @@ export const MentorHomePage: React.FC = () => {
 
   const application = onboardingStatus?.application;
   if (isNotVerified) {
-    const statusMessage = application?.status === 'pending_review'
-      ? 'Your mentor application is under Admin review.'
-      : application?.status === 'rejected'
-        ? application.rejection_reason || 'Your mentor application needs updates before it can be reviewed again.'
-        : application?.status === 'draft'
-          ? 'Continue your mentor application and submit it for review.'
-          : 'Complete your mentor profile and submit your application for review.';
-
     return (
       <div className="max-w-2xl mx-auto py-12">
         <div className="rounded-xl border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)] p-6 text-center space-y-4">
@@ -157,10 +140,26 @@ export const MentorHomePage: React.FC = () => {
           <h1 className="text-xl font-bold text-[var(--color-shell-text)]">
             {application?.status === 'pending_review' ? 'Under Admin Review' : 'Mentor Verification Required'}
           </h1>
-          <p className="text-sm text-[var(--color-shell-text-muted)]">{statusMessage}</p>
-          {application?.submitted_at && <p className="text-xs text-[var(--color-shell-text-subtle)]">Submitted {new Date(application.submitted_at).toLocaleString()}</p>}
+          <p className="text-sm text-[var(--color-shell-text-muted)]">
+            {application?.status === 'pending_review'
+              ? 'Your mentor application is under Admin review.'
+              : application?.status === 'rejected'
+                ? application.rejection_reason || 'Your mentor application needs updates before it can be reviewed again.'
+                : application?.status === 'draft'
+                  ? 'Continue your mentor application and submit it for review.'
+                  : 'Complete your mentor profile and submit your application for review.'}
+          </p>
+          {application?.submitted_at && (
+            <p className="text-xs text-[var(--color-shell-text-subtle)]">
+              Submitted {new Date(application.submitted_at).toLocaleString()}
+            </p>
+          )}
           <Button onClick={() => navigate('/mentor/verification')} size="md">
-            {application?.status === 'pending_review' ? 'View Application' : application?.status === 'draft' || application?.status === 'rejected' ? 'Continue Verification' : 'Complete Verification'}
+            {application?.status === 'pending_review'
+              ? 'View Application'
+              : application?.status === 'draft' || application?.status === 'rejected'
+                ? 'Continue Verification'
+                : 'Complete Verification'}
           </Button>
         </div>
       </div>
@@ -168,17 +167,50 @@ export const MentorHomePage: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-shell-text)] sm:text-3xl">
+            Mentor Dashboard
+          </h1>
+          <p className="mt-1.5 text-sm text-[var(--color-shell-text-muted)] max-w-2xl">
+            Your operational command center. Confirm upcoming sessions, manage your calendar, and review past bookings — all in one place.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <Button
+            onClick={() => navigate('/mentor/availability')}
+            variant="secondary"
+            size="sm"
+            className="gap-1.5 text-xs"
+          >
+            <Calendar className="h-3.5 w-3.5" />
+            <span>Manage Availability</span>
+          </Button>
+          <Button
+            onClick={() => navigate('/mentor/bookings')}
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-xs"
+          >
+            <span>View All Bookings</span>
+          </Button>
+        </div>
+      </div>
+
       {/* Action Required Banner */}
       {actionBooking && (
-        <div className="rounded-xl border border-[var(--color-shell-warning)] bg-[var(--color-shell-warning-soft)]/50 p-5 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-5 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full bg-[var(--color-shell-warning)]/70 flex items-center justify-center font-bold text-[var(--status-warning-strong)] text-sm">
+              <div className="h-10 w-10 shrink-0 rounded-full bg-[var(--color-shell-warning)]/70 flex items-center justify-center font-bold text-[var(--status-warning-strong)] text-sm">
                 {actionBooking.seeker?.full_name?.charAt(0) || 'S'}
               </div>
               <div>
-                <h3 className="text-base font-bold text-[var(--color-shell-text)]">{actionBooking.seeker?.full_name || 'Seeker'}</h3>
+                <h3 className="text-base font-bold text-[var(--color-shell-text)]">
+                  Action Required: {actionBooking.seeker?.full_name || 'Seeker'}
+                </h3>
                 <p className="text-xs text-[var(--color-shell-text-muted)]">
                   Segment: {actionBooking.segment?.name || 'Unknown'} · Gig: {actionBooking.gig?.title || 'Unknown'}
                 </p>
@@ -200,13 +232,13 @@ export const MentorHomePage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center gap-3 shrink-0">
+          <div className="mt-4 flex flex-col sm:flex-row items-center gap-3">
             <input
               type="url"
               placeholder="https://meet.google.com/your-meeting-link"
               value={meetingUrl}
               onChange={(e) => setMeetingUrl(e.target.value)}
-              className="flex-1 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs text-[var(--color-shell-text)]"
+              className="flex-1 rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs text-[var(--color-shell-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-shell-primary)]"
             />
             <Button
               onClick={handleConfirm}
@@ -219,49 +251,99 @@ export const MentorHomePage: React.FC = () => {
             </Button>
           </div>
 
-          <div className="text-[11px] text-[var(--color-shell-warning)]/80 flex items-center gap-1.5 pt-1">
-            <AlertCircle className="h-3.5 w-3.5" />
+          <div className="mt-2 text-[11px] text-[var(--color-shell-text-subtle)] flex items-center gap-1.5">
+            <AlertCircle className="h-3.5 w-3.5 text-[var(--color-shell-warning)]" />
             <span>Recommended deadline: Add meeting URL at least {MEETING_LINK_DEADLINE_MINUTES} minutes before start. System records missed deadlines for platform audit.</span>
           </div>
         </div>
       )}
 
-      {/* Today's Schedule Overview */}
+      {/* Today's Schedule */}
       <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
-        <h2 className="text-base font-bold text-[var(--color-shell-text)] border-b border-[var(--color-shell-border)] pb-3 flex items-center justify-between">
-          <span>Today's Confirmed Sessions</span>
-          <span className="text-xs font-normal text-[var(--color-shell-text-muted)]">Local Time: {profile?.timezone || 'Asia/Kolkata'}</span>
-        </h2>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-[var(--color-shell-border)]">
+          <h2 className="text-base font-bold text-[var(--color-shell-text)]">
+            Today's Confirmed Sessions
+          </h2>
+          <span className="text-xs text-[var(--color-shell-text-muted)]">
+            Local Time: {profile?.timezone || 'Asia/Kolkata'}
+          </span>
+        </div>
 
         {todaySessions.length === 0 ? (
-          <div className="p-4 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)]/70 text-center text-xs text-[var(--color-shell-text-muted)]">
-            No confirmed sessions scheduled for today.
-          </div>
+          <MentorEmptyState
+            title="No sessions today"
+            description="You have no confirmed sessions scheduled for today. Your upcoming sessions will appear here when you confirm them."
+            actionLabel="View All Bookings"
+            onAction={() => navigate('/mentor/bookings')}
+          />
         ) : (
-          todaySessions.map((session) => (
-            <div key={session.id} className="p-4 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)]/70 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <Badge variant="success">CONFIRMED</Badge>
-                  <span className="font-bold text-sm text-[var(--color-shell-text)]">
-                    {session.seeker?.full_name || 'Seeker'} · {session.segment?.name || 'Unknown Segment'}
-                  </span>
-                </div>
-                <p className="text-xs text-[var(--color-shell-text-muted)]">
-                  {formatSessionTime(session.start_time, session.end_time, session.mentor_timezone)} · {session.meeting_url ? 'Google Meet Attached' : 'Meeting link pending'}
-                </p>
-              </div>
-              <Button
-                onClick={() => navigate(`/mentor/booking-detail?bookingId=${session.id}`)}
-                variant="outline"
-                size="sm"
-                className="text-xs"
+          <div className="space-y-2">
+            {todaySessions.map((session) => (
+              <div
+                key={session.id}
+                className="group rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)]/50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors"
               >
-                Session Details
-              </Button>
-            </div>
-          ))
+                <div className="space-y-1 min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="success" className="text-xs">
+                      CONFIRMED
+                    </Badge>
+                    <span className="font-bold text-sm text-[var(--color-shell-text)]">
+                      {session.seeker?.full_name || 'Seeker'} · {session.segment?.name || 'Unknown Segment'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--color-shell-text-muted)]">
+                    {formatSessionTime(session.start_time, session.end_time, session.mentor_timezone)} · {session.meeting_url ? 'Google Meet Attached' : 'Meeting link pending'}
+                  </p>
+                </div>
+                <Button
+                  onClick={() => navigate(`/mentor/booking-detail?bookingId=${session.id}`)}
+                  variant="outline"
+                  size="sm"
+                  className="text-xs gap-1.5 shrink-0"
+                >
+                  Session Details
+                </Button>
+              </div>
+            ))}
+          </div>
         )}
+      </div>
+
+      {/* Quick Actions */}
+      <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+        <h2 className="text-base font-bold text-[var(--color-shell-text)] mb-4">
+          Quick Actions
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Button
+            onClick={() => navigate('/mentor/bookings')}
+            variant="secondary"
+            size="sm"
+            className="h-auto py-3 flex flex-col items-center gap-1.5 text-xs"
+          >
+            <Clock className="h-5 w-5 text-[var(--color-shell-text-muted)]" />
+            <span>Review Pending Confirmations</span>
+          </Button>
+          <Button
+            onClick={() => navigate('/mentor/availability')}
+            variant="secondary"
+            size="sm"
+            className="h-auto py-3 flex flex-col items-center gap-1.5 text-xs"
+          >
+            <Calendar className="h-5 w-5 text-[var(--color-shell-text-muted)]" />
+            <span>Edit Availability</span>
+          </Button>
+          <Button
+            onClick={() => navigate('/mentor/notifications')}
+            variant="secondary"
+            size="sm"
+            className="h-auto py-3 flex flex-col items-center gap-1.5 text-xs"
+          >
+            <AlertCircle className="h-5 w-5 text-[var(--color-shell-text-muted)]" />
+            <span>Check Notifications</span>
+          </Button>
+        </div>
       </div>
     </div>
   );

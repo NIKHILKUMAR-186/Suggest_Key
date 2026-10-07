@@ -1,73 +1,53 @@
+import { motion, useReducedMotion } from 'motion/react';
 import React from 'react';
-import { Reveal } from '@/src/components/landing/Reveal';
-import { JOURNEY_STEPS } from '@/src/components/landing/landingContent';
+import { LandingSectionHead } from '@/src/components/landing/LandingSectionHead';
+import { STEPS, STEPS_TITLE } from '@/src/components/landing/landingContent';
 
 /**
- * HOW SUGGEST KEY WORKS.
+ * HOW IT WORKS — three simple cards.
  *
- * Editorial rather than diagrammatic: a numbered left rail reads as an
- * editorial sequence rather than a software pipeline, and the hairline that
- * joins the numbers is the only connective device — no boxes, no arrows, no
- * per-step illustrations competing with the copy.
+ * The spec asks for three compact cards on a light band: Pick your key,
+ * Meet the wise, Talk, then act. Each is a white rounded card with a small
+ * numbered circle, a title, and a short description. No pinned stage, no
+ * SVG arc, no scroll observer — just three cards that rise as the section
+ * arrives.
  */
-export const LandingHowItWorks: React.FC = () => (
-  <section
-    id="how-it-works"
-    className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
-    aria-labelledby="how-it-works-heading"
-  >
-    <div className="mx-auto max-w-[1240px]">
-      <Reveal className="max-w-2xl">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--color-shell-accent)]">
-          How Suggest Key works
-        </p>
-        <h2
-          id="how-it-works-heading"
-          className="mt-4 text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[38px]"
-          style={{ fontFamily: 'var(--font-aeonikpro)' }}
-        >
-          A simple journey from a question to a conversation that helps you move forward.
-        </h2>
-      </Reveal>
 
-      <ol className="mt-10 grid grid-cols-1 gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-4">
-        {JOURNEY_STEPS.map((step, index) => {
-          const Icon = step.icon;
-          const isLast = index === JOURNEY_STEPS.length - 1;
+export const LandingHowItWorks: React.FC = () => {
+  const canAnimate = useReducedMotion() !== true;
 
-          return (
-            <Reveal
-              as="li"
-              key={step.num}
-              delay={index * 0.07}
-              className="relative flex gap-5 lg:flex-col lg:gap-6"
+  return (
+    <section id="how-it-works" className="sk-lg-band sk-lg-band--paper" aria-labelledby="how-it-works-title">
+      <span className="sk-lg-margin" aria-hidden="true" />
+
+      <div className="sk-lg__wrap">
+        <LandingSectionHead id="how-it-works-title" title={STEPS_TITLE} />
+
+        <div className="sk-lg-steps--cards">
+          {STEPS.map((step, index) => (
+            <motion.div
+              key={step.index}
+              className="sk-lg-step-card"
+              initial={canAnimate ? { opacity: 0, y: 24 } : false}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, amount: 0.3 }}
+              transition={{
+                duration: 0.72,
+                delay: index * 0.1,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
-              {/* Rail: the number, a hairline to the next step, and the icon. */}
-              <div className="flex shrink-0 flex-col items-center lg:flex-row lg:items-center lg:gap-4">
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] text-[13px] font-bold text-[var(--sk-brand-text)] shadow-[var(--sk-shadow-card)]">
-                  {step.num}
-                </span>
-                {!isLast ? (
-                  <span
-                    className="hidden w-full flex-1 bg-[var(--sk-brand-border)] lg:block lg:h-px lg:w-full"
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </div>
+              <span className="sk-lg-step-card__index" aria-hidden="true">
+                {step.index}
+              </span>
+              <h3 className="sk-lg-step-card__title">{step.title}</h3>
+              <p className="sk-lg-step-card__desc">{step.description}</p>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
 
-              <div className="lg:flex-1">
-                <Icon className="h-5 w-5 text-[var(--color-shell-accent)]" aria-hidden="true" />
-                <h3 className="mt-3 text-lg font-semibold leading-snug tracking-tight text-[var(--sk-brand-text)] lg:mt-4">
-                  {step.title}
-                </h3>
-                <p className="mt-2 text-[13.5px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-                  {step.description}
-                </p>
-              </div>
-            </Reveal>
-          );
-        })}
-      </ol>
-    </div>
-  </section>
-);
+export default LandingHowItWorks;

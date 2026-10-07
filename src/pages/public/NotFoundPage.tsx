@@ -4,7 +4,6 @@ import { Compass, Home, ArrowLeft, LayoutGrid, UserCog, ShieldCheck } from 'luci
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { Button } from '@/src/components/ui/Button';
-import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 
 const ROLE_HOME: Record<string, string> = {
   admin: '/admin',
@@ -51,7 +50,6 @@ export const NotFoundPage: React.FC = () => {
             </div>
             <span className="font-display text-[17px] font-bold tracking-[-0.02em]">Suggest Key</span>
           </button>
-          <ThemeToggle />
         </div>
       </header>
 

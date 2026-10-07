@@ -234,7 +234,7 @@ Support is deliberately **not** a seeker or mentor navigation item. It is reache
 from inside Settings → Help & Support (`/seeker/support`,
 `/mentor/support`), because seeker and mentor keep their existing top-nav shape.
 
-### Admin — sidebar (13 items)
+### Admin — sidebar (17 items)
 
 | id | Label | Href |
 |---|---|---|
@@ -243,7 +243,11 @@ from inside Settings → Help & Support (`/seeker/support`,
 | `admin-mentors` | Mentors | `/admin/mentors` |
 | `admin-mentor-verification` | Mentor Verification | `/admin/mentor-verification` |
 | `admin-segments` | Segments | `/admin/segments` |
+| `admin-gigs` | Gigs | `/admin/gigs` |
 | `admin-bookings` | Bookings | `/admin/bookings` |
+| `admin-slot-explorer` | Slot Explorer | `/admin/slot-explorer` |
+| `admin-holds` | Active Holds | `/admin/holds` |
+| `admin-reschedules` | Reschedules | `/admin/reschedules` |
 | `admin-workspaces` | Workspaces | `/admin/workspaces` |
 | `admin-payments` | Payments | `/admin/payments` |
 | `admin-coupons` | Coupons | `/admin/coupons` |
@@ -749,8 +753,8 @@ never written (see §11.2).
 | `CONFIRMED` → `COMPLETED` | `complete_expired_sessions()` cron, `POST /api/sessions/:bookingId/complete`, or `reconcile_expired_sessions` |
 | → `PAYMENT_PROCESSING` | **Nobody.** Permitted by the CHECK, written by no current code path. |
 | `MENTOR_PENDING` → `OVERDUE` | **Nobody.** Derived on read (§10.1), never written. |
-| `OVERDUE` → `CONFIRMED` | The mentor acts: `POST /api/mentor/bookings/:id/confirm` (records `confirmedAfterDeadline`) |
-| `OVERDUE` → `CANCELLED` | The mentor or an admin acts explicitly: `POST /api/mentor/bookings/:id/cancel`, or the admin cancellation route. Never automatic. |
+| `OVERDUE` → `CONFIRMED` | The mentor cannot — `confirm_booking()` raises `MEETING_LINK_DEADLINE_PASSED` (HTTP 409). The window has closed. |
+| `OVERDUE` → `CANCELLED` | **Automatic.** `cancel_overdue_mentor_bookings()` pg_cron every minute, with `cancellation_reason = 'MENTOR_MEETING_LINK_DEADLINE_MISSED'`. |
 
 ### 10.1 The `OVERDUE` projection — derived, never persisted
 
@@ -795,26 +799,46 @@ millisecond later. This matches the T−5 access window (`now >= start - 5 min`)
 used for seeker link visibility, and it is the boundary
 `tests/meetingLinkDeadline.test.ts` already pinned.
 
-#### What `OVERDUE` is *not*
+#### What `OVERDUE` is *not* — before Phase 43
 
-- **It does not cancel.** `docs/rules.md` M4 records that `MENTOR_PENDING` "has
-  no timer" and that nothing in code moves it automatically; phase 8 records that
-  a missed deadline "never blocks booking and never cancels one". There is no
-  cron, no RPC and no handler that cancels on deadline expiry, and none was added.
-  A missed deadline therefore raises **no refund** and **no cancellation
-  notification**. The booking stays `MENTOR_PENDING` and the seeker is still
-  waiting.
-- **It is not a hard gate on confirmation.** A late link is still accepted and
+The following were true before Phase 43 (the deadline was audit-only). Phase 43
+changes all three:
+
+- **It did not cancel.** `docs/rules.md` M4 (pre-Phase 43) recorded that
+  `MENTOR_PENDING` "has no timer" and that nothing in code moved it
+  automatically; phase 8 recorded that a missed deadline "never blocks booking
+  and never cancels one". There was no cron, no RPC and no handler that
+  cancelled on deadline expiry, and none was added. A missed deadline therefore
+  raised **no refund** and **no cancellation notification**. The booking stayed
+  `MENTOR_PENDING` and the seeker was still waiting.
+- **It was not a hard gate on confirmation.** A late link was still accepted and
   recorded as late (`confirmedAfterDeadline: true` on the confirm response).
-  Refusing it would strand a paid seeker with no room. The real gate is the
-  existing one: `confirm_booking()` re-checks ownership and requires
+  Refusing it would have stranded a paid seeker with no room. The real gate was
+  the existing one: `confirm_booking()` re-checked ownership and required
   `status = 'MENTOR_PENDING'`.
-- **It does not hide the meeting link.** Link visibility is governed solely by the
-  T−5 access window (`redactMeetingUrlForParticipant`), plus two revocations:
-  a recorded `actual_ended_at`, and a `CANCELLED` / `REJECTED` status — the latter
-  checked ahead of the time gate, because a cancellation normally happens before
-  the session and the window alone would otherwise hand the seeker a room for a
-  session that is not happening.
+- **It did not hide the meeting link.** Link visibility was governed solely by
+  the T−5 access window (`redactMeetingUrlForParticipant`), plus two
+  revocations: a recorded `actual_ended_at`, and a `CANCELLED` / `REJECTED`
+  status — the latter checked ahead of the time gate, because a cancellation
+  normally happens before the session and the window alone would otherwise hand
+  the seeker a room for a session that is not happening.
+
+#### What `OVERDUE` is now (Phase 43)
+
+- **It auto-cancels.** `cancel_overdue_mentor_bookings()` runs every minute from
+  pg_cron and transitions `MENTOR_PENDING → CANCELLED` with
+  `cancellation_reason = 'MENTOR_MEETING_LINK_DEADLINE_MISSED'`. The payment is
+  parked in `refund_status = 'PENDING'` + `refund_reason = 'mentor_rejection'`;
+  the server-side `reconcileAutoCancelledRefunds()` reader starts the gateway
+  refund (Razorpay) or the admin manual-refund queue on the next admin ledger
+  read.
+- **It is a hard gate on confirmation.** `confirm_booking()` now raises
+  `MEETING_LINK_DEADLINE_PASSED` (HTTP 409) when `start_time − 5min <= now()`.
+  The mentor can no longer retroactively rescue a booking the cron is about to
+  cancel.
+- **It does not hide the meeting link.** Unchanged — a cancelled booking still
+  revokes the link via `redactMeetingUrlForParticipant()` checking status ahead
+  of the T−5 window.
 
 #### How the mentor page reaches `OVERDUE` without a refresh
 
@@ -1022,6 +1046,7 @@ Key properties, all verified in code:
 | `PATCH` | `/api/admin/payments/:id/reject` | yes | admin | Manual path only, `reason` required |
 | `POST` | `/api/admin/payments/:id/complete-manual-refund` | yes | admin | Record a completed external refund transfer (see §11.3a) |
 | `GET` | `/api/admin/payments/:id/refund-proof` | yes | admin | Five-minute signed URL for the stored refund receipt |
+| `POST` | `/api/admin/payments/:id/initiate-refund` | yes | admin | Explicitly start a refund for a captured payment (see §11.3b) |
 | `GET` | `/api/admin/users/:id/payments` | yes | admin | Per-user payment history |
 | `POST` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Apply a code; body is `{ code }` and nothing else |
 | `DELETE` | `/api/seeker/bookings/:id/coupon` | yes | seeker owner | Remove the coupon and restore the base amount |
@@ -1073,6 +1098,43 @@ POST /api/admin/payments/:id/complete-manual-refund
   uploaded receipt and maps the database code to a safe message, so a refund that
   was not recorded can never look recorded. No automatic retry: that stays an
   operational matter.
+
+### 11.3b Admin-initiated refund initiation
+
+Until this section, refunds were only ever started by the booking-cancellation
+flow: when a booking was cancelled, the server called `runCreateRazorpayRefund`
+with a reason like `seeker_cancellation_within_window` or `mentor_rejection`.
+An admin had no way to refund a captured payment whose booking was not — or
+could not be — cancelled: a service issue, a duplicate charge, or a post-hoc
+correction.
+
+`POST /api/admin/payments/:id/initiate-refund` closes that gap. The admin
+confirms the payment details and the server calls the same
+`runCreateRazorpayRefund` function, with `callerId` set to the admin and
+`reason` set to `admin_refund`:
+
+```
+POST /api/admin/payments/:id/initiate-refund
+{ note?: "internal audit note" }
+```
+
+The body carries **no amount** and **no status** — the gateway, the captured
+amount and the reason are all derived from the payment row. Two outcomes, split
+by `payments.gateway`:
+
+- **Razorpay payments** call the gateway's refund API (`createRefund`), record a
+  `REFUND_INITIATED` payment event, and stay `refund_status='PENDING'` until
+  the gateway's webhook (`refund.processed` / `refund.failed`) confirms. The
+  admin click must not mark `REFUNDED` — only the webhook settles it.
+- **Manual UPI/QR payments** cannot be refunded by the platform. The endpoint
+  marks `refund_status='PENDING'` + `manual_refund_required=true`, which queues
+  the refund for the existing `complete-manual-refund` endpoint. The admin then
+  transfers the money externally and records it as evidence.
+
+The seeker is notified that the refund is **pending** — never that it was
+initiated or completed — via `notifyRefundState` using the same `refundNotice`
+vocabulary. An audit event (`admin_refund_initiated`) records the admin, the
+gateway, the amount and the optional note.
 
 ### 11.4 Payment events and webhook events
 
@@ -1221,7 +1283,7 @@ Authoritative source: `src/config/app.ts` for the server copy and display, and
 | `HOLD_DURATION_MS` | **5 min** | How long a slot is reserved during checkout. DB-enforced via `hold_duration_interval()`. |
 | `BOOKING_CUTOFF_MS` | **5 min** | A slot stays bookable while `slotStart − now >= 5 min`, on absolute instants. Replaces the old 2-hour advance rule, which no longer exists. DB-enforced in `create_booking_with_hold()` via `clock_timestamp()`. |
 | `SESSION_ACCESS_WINDOW_MS` | **5 min (T−5)** | Meeting link becomes readable at `start − 5 min`. |
-| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. Audit/overdue only; it never blocks booking and never cancels one. Crossing it moves the booking into the derived `OVERDUE` bucket (§10.1) — a presentation and audit state, never a write, never a cancellation, and never a block on confirming late. |
+| `MEETING_LINK_DEADLINE_MS` | **5 min** | Submission deadline for the *mentor* to add the link: `start − 5 min`. **Hard gate** since Phase 43: once it elapses the mentor can no longer confirm (HTTP 409 `MEETING_LINK_DEADLINE_PASSED`), and `cancel_overdue_mentor_bookings()` auto-cancels the booking with a refund workflow. Crossing it moves the booking into the derived `OVERDUE` bucket (§10.1) for presentation, then to `CANCELLED` on the next cron tick. |
 | `NORMAL_CANCELLATION_WINDOW_MINUTES` | **10 min** | Seeker may cancel/reschedule while `start − now >= 10 min`. |
 | `DEFAULT_TIMEZONE` | `Asia/Kolkata` | Default on `profiles.timezone`, `bookings.*_timezone`, `mentor_availability.timezone`. |
 

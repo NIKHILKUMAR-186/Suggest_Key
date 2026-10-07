@@ -186,6 +186,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
   const origin = parseMentorOrigin(paramSource);
   // The topic the landing page was filtered by, so Back restores the same chips.
   const paramTopic = searchParams.get('topic') || '';
+  const paramSlotTime = searchParams.get('slotTime') || '';
   // Why the seeker opened this page. There is one detail route, so `intent`
   // is the only thing that distinguishes "read about this mentor" from
   // "pick a time". It never decides WHAT is booked: the gig, the segment and
@@ -320,6 +321,18 @@ export const SeekerMentorDetailPage: React.FC = () => {
           // seeker scrolls to a booking panel with a slot already selected,
           // which is booking state the UI started on its own.
           if (intent === 'profile') return null;
+
+          // If the URL carries a `slotTime`, honour it — this is how a slot
+          // chip on a mentor card pre-selects the time without touching any
+          // booking state. The slot must still be bookable; a stale or taken
+          // slot silently falls back to the earliest available one.
+          if (paramSlotTime) {
+            const matched = mentor?.all_slots?.find(
+              (s) => s.local_start_time === paramSlotTime && s.is_available
+            );
+            if (matched) return matched;
+          }
+
           if (!prev) return mentor?.available_slots?.[0] ?? null;
           const stillBookable = mentor?.all_slots?.find(
             (s) => s.id === prev.id && s.is_available
@@ -341,7 +354,7 @@ export const SeekerMentorDetailPage: React.FC = () => {
         }
       }
     },
-    [hasRequiredParams, resolvedSegmentId, paramMentorId, paramGigId, selectedDate, intent]
+    [hasRequiredParams, resolvedSegmentId, paramMentorId, paramGigId, selectedDate, intent, paramSlotTime]
   );
 
   const reloadMentorSlots = useCallback(() => loadMentor(), [loadMentor]);

@@ -179,10 +179,6 @@ describe('the hamburger holds every secondary action', () => {
       );
     }
     assert.ok(source.includes('handleSignOut'), 'sign out must remain available');
-    assert.ok(
-      source.includes('<ThemeToggle />'),
-      'the existing shared theme control must be reused, not reimplemented',
-    );
   });
 
   it('never invents a route: every destination is an in-app path', () => {

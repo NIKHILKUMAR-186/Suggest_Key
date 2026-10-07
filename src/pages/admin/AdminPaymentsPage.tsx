@@ -12,6 +12,7 @@ import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
 import {
   isRefundOwed,
+  canInitiateRefund,
   type AdminPaymentRow,
 } from '@/src/lib/adminPaymentView';
 import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
@@ -58,9 +59,12 @@ export const AdminPaymentsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   // 'all' | 'refunds_owed' — a refund the platform owes but has not issued.
   const [filter, setFilter] = useState<'all' | 'refunds_owed'>('all');
+  const [refundStatusFilter, setRefundStatusFilter] = useState<string>('all');
   // Refund completion form state. Held only while the modal is open, so opening
   // the form can never itself be mistaken for completing the refund.
   const [isRefunding, setIsRefunding] = useState(false);
+  const [isConfirmingRefund, setIsConfirmingRefund] = useState(false);
+  const [isInitiatingRefund, setIsInitiatingRefund] = useState(false);
   const [refundForm, setRefundForm] = useState({ amount: '', method: 'UPI', reference: '', note: '' });
   const [refundFile, setRefundFile] = useState<File | null>(null);
   const [isSubmittingRefund, setIsSubmittingRefund] = useState(false);
@@ -140,7 +144,37 @@ export const AdminPaymentsPage: React.FC = () => {
   };
 
   /**
-   * Completes a manual refund: uploads the receipt to the private bucket, then
+   * Calls the admin-initiated refund endpoint for a Razorpay or manual payment.
+   * The amount and gateway are derived on the server; this call carries no
+   * authoritative amount or status from the browser.
+   */
+  const handleInitiateRefund = async (payment: PaymentItem) => {
+    setIsConfirmingRefund(false);
+    setIsInitiatingRefund(true);
+
+    try {
+      const res = await apiFetch(`/api/admin/payments/${payment.id}/initiate-refund`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error?.message || 'The refund could not be initiated.');
+
+      await fetchPayments();
+      toast.success(data.refund?.message ?? 'The refund has been initiated.', {
+        title: 'Refund initiated',
+      });
+    } catch (err: unknown) {
+      toast.error(toUserMessage(err, 'The refund could not be initiated. Nothing was recorded.', { action: 'initiate-refund' }), {
+        title: 'Refund not initiated',
+      });
+    } finally {
+      setIsInitiatingRefund(false);
+    }
+  };
+
+  /**
    * tells the API to run the atomic completion. The seeker is notified by the
    * database transition, not by anything on this page.
    */
@@ -256,7 +290,15 @@ export const AdminPaymentsPage: React.FC = () => {
   // ponytail: a refund is OWED, not paid. This view only surfaces the list; no
   // refund is ever issued from here.
   const refundsOwedCount = payments.filter(isRefundOwed).length;
+  const refundStatuses = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of payments) {
+      if (p.refundStatus) set.add(p.refundStatus);
+    }
+    return Array.from(set).sort();
+  }, [payments]);
   const visiblePayments = filter === 'refunds_owed' ? payments.filter(isRefundOwed) : payments;
+  const filteredByRefundStatus = refundStatusFilter === 'all' ? visiblePayments : visiblePayments.filter((p) => p.refundStatus === refundStatusFilter);
 
   return (
     <div className="space-y-6">
@@ -279,6 +321,20 @@ export const AdminPaymentsPage: React.FC = () => {
             >
               {filter === 'refunds_owed' ? 'Showing Refunds Owed' : `Refunds Owed (${refundsOwedCount})`}
             </Button>
+          )}
+          {refundStatuses.length > 0 && (
+            <select
+              value={refundStatusFilter}
+              onChange={(e) => setRefundStatusFilter(e.target.value)}
+              className="text-xs rounded-md border border-zinc-200 px-2 py-1 bg-white text-zinc-700"
+            >
+              <option value="all">All Refund Statuses</option>
+              {refundStatuses.map((s) => (
+                <option key={s} value={s}>
+                  {refundStatusLabel(s)}
+                </option>
+              ))}
+            </select>
           )}
           <Badge variant="warning" className="text-xs font-semibold">
             {pendingCount} Awaiting Verification
@@ -308,12 +364,14 @@ export const AdminPaymentsPage: React.FC = () => {
               Retry
             </Button>
           </div>
-        ) : visiblePayments.length === 0 ? (
+          ) : filteredByRefundStatus.length === 0 ? (
           <EmptyState
             icon={CreditCard}
             title={filter === 'refunds_owed' ? 'No Refunds Owed' : 'No Payments Found'}
             description={
-              filter === 'refunds_owed'
+              refundStatusFilter !== 'all'
+                ? `No payments with refund status "${refundStatusLabel(refundStatusFilter)}" found.`
+                : filter === 'refunds_owed'
                 ? 'No payment is currently marked as awaiting a refund.'
                 : 'No payment records found in the system.'
             }
@@ -336,7 +394,7 @@ export const AdminPaymentsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
-              {visiblePayments.map((p) => (
+              {filteredByRefundStatus.map((p) => (
                 <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
                   <td className="py-3 px-4 font-mono">
                     {p.bookingCode ? (
@@ -609,7 +667,88 @@ export const AdminPaymentsPage: React.FC = () => {
               </div>
             )}
 
-            {isRefunding ? (
+            {isConfirmingRefund ? (
+              /* Admin confirmation before starting the refund. Shows the same
+                 read-only context the admin needs to verify, then a confirm/cancel
+                 pair. The amount is NOT editable: it is the full captured amount,
+                 derived server-side from the payment row. */
+              <div className="space-y-3 pt-2 border-t border-zinc-100">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    {selectedPayment.gateway === 'razorpay'
+                      ? 'This will call the payment gateway to issue a refund of the full captured amount. The seeker will be notified that the refund is pending. The original payment method will be credited — this can take several business days. This action cannot be undone.'
+                      : 'This will queue a manual refund. You must transfer the money yourself, then use "Process Refund" to record the transfer with the UTR and receipt. The seeker is notified only once the transfer is recorded.'}
+                  </span>
+                </div>
+
+                <dl className="grid grid-cols-2 gap-2 rounded-lg bg-zinc-50 p-3 text-[11px]">
+                  <div>
+                    <dt className="text-zinc-400">Booking</dt>
+                    <dd className="font-mono font-semibold text-zinc-900">
+                      {selectedPayment.bookingCode || selectedPayment.bookingId}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Seeker</dt>
+                    <dd className="font-medium text-zinc-900">{selectedPayment.seekerName || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Mentor</dt>
+                    <dd className="font-medium text-zinc-900">{selectedPayment.mentorName || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Gig / session</dt>
+                    <dd className="font-medium text-zinc-900">{selectedPayment.gigTitle || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Original amount</dt>
+                    <dd className="font-bold text-zinc-900">{formatInr(selectedPayment.amount)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Refund amount</dt>
+                    <dd className="font-bold text-zinc-900">{formatInr(selectedPayment.amount)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Gateway</dt>
+                    <dd className="font-medium text-zinc-900">
+                      {selectedPayment.gateway === 'razorpay' ? 'Razorpay' : 'Manual UPI / QR'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Payment reference</dt>
+                    <dd className="font-mono break-all text-zinc-900">
+                      {selectedPayment.transactionReference || '—'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Payment status</dt>
+                    <dd className="font-medium text-zinc-900">{selectedPayment.status}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Refund status</dt>
+                    <dd className="font-medium text-zinc-900">
+                      {selectedPayment.refundStatus ? refundStatusLabel(selectedPayment.refundStatus) : '—'}
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={() => setIsConfirmingRefund(false)} disabled={isInitiatingRefund}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-1 bg-amber-600 hover:bg-amber-700 text-white"
+                    disabled={isInitiatingRefund}
+                    onClick={() => handleInitiateRefund(selectedPayment)}
+                  >
+                    {isInitiatingRefund ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                    {isInitiatingRefund ? 'Initiating…' : 'Confirm Refund'}
+                  </Button>
+                </div>
+              </div>
+            ) : isRefunding ? (
               /* The refund form. Read-only context first, then only the fields an
                  admin actually has to supply: the amount they sent, the rail, the
                  UTR from the receipt, the receipt itself, and an optional note. */
@@ -794,6 +933,22 @@ export const AdminPaymentsPage: React.FC = () => {
               </div>
             ) : (
               <div className="flex justify-end gap-2 pt-2">
+                {/* Offered only when the payment can have a refund started — i.e.
+                    it is VERIFIED and no refund is in flight or completed. A
+                    gateway refund calls the gateway API; a manual refund queues
+                    it for the complete-manual-refund flow. A completed or pending
+                    refund is not re-offerable. */}
+                {canInitiateRefund(selectedPayment) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1 border-amber-200 text-amber-700 hover:bg-amber-50"
+                    onClick={() => setIsConfirmingRefund(true)}
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                    Initiate Refund
+                  </Button>
+                )}
                 {/* Offered only while a manual refund is genuinely outstanding. A
                     gateway refund is settled by the gateway's own events, and a
                     completed refund must never be completable a second time. */}

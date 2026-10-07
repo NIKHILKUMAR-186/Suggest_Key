@@ -1,6 +1,5 @@
 import React from 'react';
 import { cn } from '@/src/lib/utils';
-import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 
 interface AuthLayoutProps {
   children: React.ReactNode;
@@ -23,10 +22,6 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, className, var
         'relative z-10 flex w-full min-h-screen flex-col',
         isSplit ? 'lg:ml-[50%] lg:w-1/2' : ''
       )}>
-        {/* Auth Header with Theme Toggle */}
-        <header className="flex items-center justify-end p-4 sm:p-6 lg:px-8">
-          <ThemeToggle />
-        </header>
         <div className={cn('flex-1 flex items-center justify-center px-4 py-6 sm:px-6', isSplit ? 'lg:w-full' : '')}>
           <div className="w-full max-w-md">
             {children}

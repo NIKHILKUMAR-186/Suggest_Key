@@ -577,7 +577,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 const clearError = () => setError(null);
 
-// Fetch onboarding status when user changes
+  /**
+   * Re-read the authoritative profile from the database and refresh the
+   * context. Used after writes that mutate profile fields (avatar upload,
+   * name/timezone edits) so the UI reflects the canonical row rather than a
+   * stale local copy. Never invents a profile: a failed read leaves the
+   * previous state untouched.
+   */
+  const refreshProfile = useCallback(async (): Promise<void> => {
+    if (!user?.id) return;
+    try {
+      const { profile: freshProfile } = await fetchUserProfile(user.id);
+      if (freshProfile) {
+        setProfile(freshProfile);
+      }
+    } catch {
+      // A failed refresh must not break the save flow that triggered it.
+    }
+  }, [user?.id]);
+
+  // Fetch onboarding status when user changes
   useEffect(() => {
     if (user && roles.includes('mentor')) {
       fetchOnboardingStatus();
@@ -632,6 +651,7 @@ const clearError = () => setError(null);
         signOut,
         hasRole,
         clearError,
+        refreshProfile,
       }}
     >
       {children}

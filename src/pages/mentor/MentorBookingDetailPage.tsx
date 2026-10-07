@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import { formatOverdueDuration } from '@/src/lib/bookingLifecycle';
+import { cn } from '@/src/lib/utils';
 import {
   ArrowLeft,
   Video,
@@ -10,15 +11,15 @@ import {
   ExternalLink,
   Loader2,
   Copy,
-  Check,
   User,
   CreditCard,
   BellRing,
   FileText,
-  AlertCircle,
   Info,
   LifeBuoy,
   Timer,
+  AlertCircle,
+  Check,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
@@ -35,10 +36,11 @@ import {
   confirmMentorBooking,
   endSessionByMentor,
   respondToRescheduleRequest,
-  EnrichedBookingRecord,
+  type EnrichedBookingRecord,
 } from '@/src/lib/bookingService';
 import { validateMeetingUrl } from '@/src/lib/bookingEngine';
 import { resolveSessionLifecycle, type SessionLifecycleState } from '@/src/lib/sessionState';
+import { MentorActionBanner } from '@/src/components/mentor/MentorActionBanner';
 
 const STATUS_ORDER = ['PAYMENT_PENDING', 'PENDING_VERIFICATION', 'MENTOR_PENDING', 'CONFIRMED', 'COMPLETED', 'CANCELLED', 'REJECTED'];
 
@@ -52,14 +54,14 @@ const STATUS_LABEL: Record<string, string> = {
   REJECTED: 'Rejected',
 };
 
-/**
- * A reschedule window as the mentor reads it: `30 Sep, 2:00 PM – 3:00 PM`.
- *
- * Rendered in the MENTOR's timezone, because the decision is the mentor's and
- * the slot the mentor gave up was in the mentor's own calendar. Showing it in
- * the seeker's zone would make "5:00 PM" ambiguous, which is precisely the
- * mistake that makes a reschedule look like it moved to the wrong hour.
- */
+const STATUS_STEP_LABEL: Record<string, string> = {
+  PAYMENT_PENDING: 'Payment',
+  PENDING_VERIFICATION: 'Verified',
+  MENTOR_PENDING: 'Awaiting Confirmation',
+  CONFIRMED: 'Confirmed',
+  COMPLETED: 'Completed',
+};
+
 function formatRescheduleWindow(startIso: string, endIso: string, timeZone: string): string {
   const fmt = (iso: string) =>
     new Date(iso).toLocaleString('en-IN', {
@@ -72,6 +74,16 @@ function formatRescheduleWindow(startIso: string, endIso: string, timeZone: stri
     });
   return `${fmt(startIso)} – ${fmt(endIso).split(', ').pop()}`;
 }
+
+const STATUS_BADGE_VARIANT: Record<string, 'default' | 'secondary' | 'success' | 'warning' | 'destructive' | 'outline'> = {
+  MENTOR_PENDING: 'warning',
+  CONFIRMED: 'success',
+  COMPLETED: 'default',
+  CANCELLED: 'destructive',
+  REJECTED: 'destructive',
+  PAYMENT_PENDING: 'outline',
+  PENDING_VERIFICATION: 'outline',
+};
 
 export const MentorBookingDetailPage: React.FC = () => {
   const { navigate, currentPath } = useNavigation();
@@ -98,6 +110,7 @@ export const MentorBookingDetailPage: React.FC = () => {
   const [bookingId, setBookingId] = useState<string>(getBookingIdFromUrl());
   const [booking, setBooking] = useState<EnrichedBookingRecord | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+
   const [meetingUrl, setMeetingUrl] = useState<string>('');
   const [urlError, setUrlError] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -114,6 +127,7 @@ export const MentorBookingDetailPage: React.FC = () => {
     if (!mentorId) return;
     setLoading(true);
     setFeedbackError(null);
+    setFeedbackSuccess(null);
     try {
       const data = await fetchBookingDetail(idToLoad, mentorId);
       if (data) {
@@ -302,23 +316,12 @@ export const MentorBookingDetailPage: React.FC = () => {
     return idx === -1 ? 0 : idx + 1;
   };
 
-  // ---- Derived state ----
-  //
-  // A one-second local tick drives presentation only. It never issues a request
-  // and never decides access: the server remains the authority, and any action
-  // still round-trips and is re-checked there.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // The server annotates every booking with `sessionState`, derived from its own
-  // clock and `end_time` after reconciling an elapsed row. That is authoritative
-  // and is what the raw `status` used to be read for. Deriving the lifecycle
-  // locally as a fallback keeps the page correct if the annotation is missing,
-  // which matters because a page left open across `end_time` would otherwise
-  // keep showing a stale state until a manual refresh.
   const serverSessionState = (booking as (EnrichedBookingRecord | null) & {
     sessionState?: SessionLifecycleState;
   })?.sessionState;
@@ -328,12 +331,7 @@ export const MentorBookingDetailPage: React.FC = () => {
 
   const isConfirmed = sessionState === 'ACCESS_OPEN' || sessionState === 'IN_PROGRESS';
   const isPending = booking?.status === 'MENTOR_PENDING';
-  // CANCELLED is deliberately not folded into `isCompleted`: it gates the
-  // "Open Workspace" affordance, and a cancelled session never had one.
   const isCompleted = sessionState === 'COMPLETED';
-  // The server's bucket, not a local recomputation. `deadlineInfo.isOverdue` is
-  // purely arithmetic and is true for every booking past T-5m including
-  // confirmed ones, so it must never be the thing that decides this.
   const isOverdue = booking?.lifecycle?.bucket === 'OVERDUE';
   const overdueByMs = booking?.lifecycle?.overdueByMs ?? 0;
 
@@ -345,43 +343,25 @@ export const MentorBookingDetailPage: React.FC = () => {
   const sessionDurationLabel = booking ? formatDuration(booking) : 'Not recorded';
   const minutesLeft = booking?.deadlineInfo?.minutesUntilSession;
 
-  // Session lifecycle timing.
   const startMs = booking ? new Date(booking.start_time).getTime() : 0;
   const endMs = booking ? new Date(booking.end_time).getTime() : 0;
   const hasStarted = Number.isFinite(startMs) && nowMs >= startMs;
-  // A session is over when it was ended manually OR its scheduled window has
-  // elapsed. Reading only `actual_ended_at` treated an elapsed-but-not-yet-
-  // reconciled row as still live, which surfaced an "End Session" button for a
-  // session that had already finished and labelled it "AWAITING START".
   const hasEnded = !!booking?.actual_ended_at || (Number.isFinite(endMs) && nowMs >= endMs);
   const isLive = sessionState === 'IN_PROGRESS' && hasStarted && !hasEnded;
 
-  // Countdown for live sessions, derived from the shared tick above rather than
-  // a second interval reading `Date.now()` directly, so the countdown and the
-  // lifecycle state above can never disagree.
   const countdown = isLive && Number.isFinite(endMs)
     ? Math.max(0, Math.ceil((endMs - nowMs) / 1000))
     : 0;
 
-  const formatCountdown = (secs: number) => {
+  const formatCountdownLocal = (secs: number) => {
     const h = Math.floor(secs / 3600);
     const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
-  // Only while the server says the session is actually running. Gating on the
-  // stored status let a finished-but-unreconciled booking keep its End Session
-  // button; the server rejects that call anyway, so the button was a dead end.
   const canEndSession = sessionState === 'IN_PROGRESS' && hasStarted && !hasEnded;
 
-  // ---- Reschedule request ----
-  //
-  // A reschedule is a request, not an edit. The booking is still at
-  // `start_time`; the request is a separate row that names the time the seeker
-  // wants instead. Accepting moves the booking, rejecting leaves it alone, and
-  // both go through the server, which re-checks ownership and the slot's
-  // availability inside the same transaction.
   const rescheduleRequest = booking?.rescheduleRequest || null;
   const isReschedulePending = rescheduleRequest?.status === 'PENDING';
   const [responding, setResponding] = useState(false);
@@ -424,10 +404,9 @@ export const MentorBookingDetailPage: React.FC = () => {
     }
   };
 
-  // ---- Render ----
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto py-16 flex flex-col items-center justify-center gap-3">
+      <div className="max-w-4xl mx-auto py-16 flex flex-col items-center justify-center gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-[var(--color-shell-text-muted)]" />
         <span className="text-sm font-medium text-[var(--color-shell-text-muted)]">Loading session details...</span>
       </div>
@@ -450,7 +429,7 @@ export const MentorBookingDetailPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
       {/* Back button */}
       <button
         onClick={() => navigate('/mentor/bookings')}
@@ -460,102 +439,258 @@ export const MentorBookingDetailPage: React.FC = () => {
         <span>Back to Mentor Bookings</span>
       </button>
 
-      {/* Header: Booking code, status badge */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--color-shell-border)] pb-4">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
-              Mentor Booking Details
-            </span>
-            <span className="text-2xl font-bold text-[var(--color-shell-text)] font-mono">
-              #{booking.booking_code}
-            </span>
-            <Badge variant={isConfirmed ? 'success' : isPending ? 'warning' : 'secondary'}>
-              {STATUS_LABEL[booking.status] || booking.status}
-            </Badge>
-          </div>
-          <h2 className="mt-2 text-xl font-bold leading-snug text-[var(--color-shell-text)]">{gigTitle}</h2>
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            {booking.segment?.name ? (
-              <span className="inline-flex items-center rounded-md border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-shell-text-muted)]">
-                {segmentName}
-              </span>
-            ) : null}
-            <span className="text-[11px] font-medium text-[var(--color-shell-text-muted)]">{sessionDurationLabel}</span>
-            <span
-              className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
-                paymentStatus === 'verified'
-                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:border-emerald-800/50'
-                  : 'text-zinc-600 bg-zinc-50 border-zinc-200 dark:text-zinc-400 dark:bg-zinc-800 dark:border-zinc-700'
-              }`}
-            >
-              {paymentStatus === 'verified' ? `Payment verified · ${amountLabel}` : 'Payment not verified yet'}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-  {isCompleted && (
-            <Button
-              onClick={() => navigate(`/mentor/workspace?bookingId=${booking.id}`)}
-              size="sm"
-              variant="outline"
-              className="gap-1.5 text-xs"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              <span>Open Session Workspace</span>
-            </Button>
-          )}
-          {/* Support for this booking, carrying the human-readable code only. */}
-          <Button
-            onClick={() =>
-              navigate(`/mentor/support?bookingCode=${encodeURIComponent(booking.booking_code)}`)
-            }
-            size="sm"
-            variant="outline"
-            className="gap-1.5 text-xs"
-          >
-            <LifeBuoy className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Help &amp; Support</span>
-          </Button>
-        </div>
-      </div>
-
       {/* Feedback messages */}
       {feedbackSuccess && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 p-4 flex items-start gap-3 text-xs text-emerald-900 dark:text-emerald-100">
-          <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+        <div className="rounded-xl border border-[var(--color-shell-success)]/30 bg-[var(--color-shell-success-soft)] p-4 flex items-start gap-3 text-xs text-[var(--color-shell-success)]">
+          <CheckCircle2 className="h-5 w-5 text-[var(--color-shell-success)] shrink-0 mt-0.5" />
           <div className="space-y-0.5">
-            <span className="font-bold block text-sm">Confirmation Dispatched!</span>
-            <p>{feedbackSuccess}</p>
+            <span className="font-bold block text-sm">Success</span>
+            <p className="text-[var(--color-shell-text)]">{feedbackSuccess}</p>
           </div>
         </div>
       )}
 
       {feedbackError && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 dark:bg-rose-900/20 p-4 flex items-start gap-3 text-xs text-rose-900 dark:text-rose-100">
-          <AlertCircle className="h-5 w-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+        <div className="rounded-xl border border-[var(--color-shell-error)]/30 bg-[var(--color-shell-error-soft)] p-4 flex items-start gap-3 text-xs text-[var(--color-shell-error)]">
+          <AlertCircle className="h-5 w-5 text-[var(--color-shell-error)] shrink-0 mt-0.5" />
           <div>
             <span className="font-bold block text-sm">Action Blocked</span>
-            <p>{feedbackError}</p>
+            <p className="text-[var(--color-shell-text)]">{feedbackError}</p>
           </div>
         </div>
       )}
 
+      {/* Header card: booking code, gig title, status badge, key details */}
+      <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-shell-text-subtle)]">
+                Mentor Booking
+              </span>
+              <span className="text-xl font-mono font-bold text-[var(--color-shell-text)]">
+                #{booking.booking_code}
+              </span>
+              <Badge variant={STATUS_BADGE_VARIANT[booking.status] || 'secondary'} className="text-xs">
+                {STATUS_LABEL[booking.status] || booking.status}
+              </Badge>
+            </div>
+            <h2 className="mt-2 text-xl font-bold leading-snug text-[var(--color-shell-text)]">
+              {gigTitle}
+            </h2>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {booking.segment?.name ? (
+                <span className="inline-flex items-center rounded-md border border-[var(--color-shell-border)] bg-[var(--color-shell-bg-hover)] px-2 py-0.5 text-xs font-medium text-[var(--color-shell-text-muted)]">
+                  {segmentName}
+                </span>
+              ) : null}
+              <span className="text-xs font-medium text-[var(--color-shell-text-muted)]">{sessionDurationLabel}</span>
+              <span
+                className={`text-xs font-medium px-2 py-0.5 rounded border ${
+                  paymentStatus === 'verified'
+                    ? 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-900/20 dark:border-emerald-800/50'
+                    : 'text-zinc-600 bg-zinc-50 border-zinc-200 dark:text-zinc-400 dark:bg-zinc-800 dark:border-zinc-700'
+                }`}
+              >
+                {paymentStatus === 'verified' ? `Payment verified · ${amountLabel}` : 'Payment not verified yet'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {isCompleted && (
+              <Button
+                onClick={() => navigate(`/mentor/workspace?bookingId=${booking.id}`)}
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                <span>Open Session Workspace</span>
+              </Button>
+            )}
+            <Button
+              onClick={() =>
+                navigate(`/mentor/support?bookingCode=${encodeURIComponent(booking.booking_code)}`)
+              }
+              size="sm"
+              variant="outline"
+              className="gap-1.5 text-xs"
+            >
+              <LifeBuoy className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Help &amp; Support</span>
+            </Button>
+          </div>
+        </div>
+      </div>
+
       {/* Overdue warning */}
       {isPending && isOverdue && (
-        <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-4 flex items-start gap-3 text-xs text-[var(--color-shell-text)]">
-          <AlertCircle className="h-5 w-5 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-bold block text-sm">
-              Meeting link deadline missed by {formatOverdueDuration(overdueByMs)}
-            </span>
-            <p>
-              This is no longer a routine pending confirmation. The booking has <strong>not</strong>{' '}
-              been cancelled and no refund has been raised &mdash; {booking?.seeker?.full_name || 'the seeker'} is
-              still waiting. You can still attach a link and confirm (it will be recorded as a late
-              confirmation), or cancel the booking, which releases the slot and starts a refund.
-            </p>
+        <div className="rounded-xl border border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)] p-5 shadow-xs">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
+            <div className="space-y-2">
+              <span className="font-bold block text-sm text-[var(--color-shell-text)]">
+                Meeting link deadline missed by {formatOverdueDuration(overdueByMs)}
+              </span>
+              <p className="text-xs text-[var(--color-shell-text-muted)]">
+                This is no longer a routine pending confirmation. The booking has <strong>not</strong>{' '}
+                been cancelled and no refund has been raised — {booking?.seeker?.full_name || 'the seeker'} is
+                still waiting. You can still attach a link and confirm (it will be recorded as a late
+                confirmation), or cancel the booking, which releases the slot and starts a refund.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Confirmation & Meeting Link (Pending only) ===== */}
+      {isPending && (
+        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+          <div className="flex items-center gap-2 pb-3 border-b border-[var(--color-shell-border)]">
+            <Video className="h-5 w-5 text-[var(--color-shell-text-muted)]" />
+            <h3 className="text-sm font-bold text-[var(--color-shell-text)]">
+              Confirm Session & Attach Meeting Link
+            </h3>
+          </div>
+
+          <div className="mt-4 space-y-4">
+            {isOverdue && (
+              <div className="rounded-lg border border-[var(--color-shell-warning)]/30 bg-[var(--color-shell-warning-soft)]/50 px-3.5 py-2.5 text-xs">
+                <div className="flex items-center gap-1.5 font-semibold text-[var(--color-shell-warning)]">
+                  <Clock className="h-3.5 w-3.5" />
+                  <span>Deadline Miss: {formatOverdueDuration(overdueByMs)}</span>
+                </div>
+                <p className="mt-1 text-[var(--color-shell-text-muted)]">
+                  The standard deadline has passed, but you can still confirm with a meeting link.
+                  The seeker will be notified it is a late confirmation.
+                </p>
+              </div>
+            )}
+
+            <form onSubmit={handleConfirm} className="space-y-4">
+              <Input
+                id="meeting-url-input"
+                label="HTTPS Video Meeting URL"
+                value={meetingUrl}
+                onChange={(e) => handleUrlChange(e.target.value)}
+                placeholder="https://meet.google.com/xxx-xxxx-xxx"
+                error={urlError}
+                helperText="Must be a valid HTTPS URL. Cannot confirm session without a valid link."
+              />
+
+              <Input
+                id="meeting-url-input"
+                label="HTTPS Video Meeting URL"
+                value={meetingUrl}
+                onChange={(e) => handleUrlChange(e.target.value)}
+                placeholder="https://meet.google.com/xxx-xxxx-xxx"
+                error={urlError}
+                helperText="Must be a valid HTTPS URL. Cannot confirm session without a valid link."
+              />
+
+              <div className="rounded-lg bg-[var(--color-shell-bg-hover)] p-3.5 text-xs space-y-2">
+                <div className="flex items-center gap-1.5 font-semibold text-[var(--color-shell-text)]">
+                  <BellRing className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)]" />
+                  <span>Seeker Notification Rules</span>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-[var(--color-shell-text-muted)] pl-1">
+                  <li>
+                    Confirming changes the status to{' '}
+                    <code className="bg-[var(--color-shell-border)] px-1 py-0.5 rounded text-[11px] text-[var(--color-shell-text)]">
+                      CONFIRMED
+                    </code>
+                    {' '}and sends an in-app notification immediately.
+                  </li>
+                  <li>
+                    The video link stays hidden from the seeker until 5 minutes before the session starts.
+                  </li>
+                  <li>
+                    Add the link at least {MEETING_LINK_DEADLINE_MINUTES} minutes before start for a timely confirmation.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="text-xs text-[var(--color-shell-text-muted)] flex items-center gap-1.5">
+                  <Info className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+                  <span>In-app alert will be pushed to {booking.seeker?.full_name || 'seeker'}</span>
+                </div>
+                <Button
+                  id="btn-confirm-session"
+                  type="submit"
+                  size="md"
+                  disabled={submitting || !!urlError || !meetingUrl.trim()}
+                  className="w-full sm:w-auto gap-2 text-xs font-semibold"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Video className="h-3.5 w-3.5" />
+                      <span>Confirm Session & Share Link</span>
+                    </>
+                  )}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Confirmed session: meeting link management ===== */}
+      {isConfirmed && booking.meeting_url && (
+        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs">
+          <div className="flex items-center justify-between pb-3 border-b border-[var(--color-shell-border)]">
+            <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
+              <Video className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
+              Meeting Link
+            </h3>
+            <Badge variant="success" className="text-xs">
+              Active
+            </Badge>
+          </div>
+
+          <div className="mt-4 flex items-center gap-2 text-xs">
+            <div className="font-mono text-[var(--color-shell-text-muted)] flex-1 break-all bg-[var(--color-shell-bg-hover)] px-3 py-2 rounded-lg border border-[var(--color-shell-border)]">
+              {booking.meeting_url}
+            </div>
+            <Button
+              onClick={() => handleCopyLink(booking.meeting_url!)}
+              variant="outline"
+              size="sm"
+              className="gap-1 text-xs shrink-0"
+            >
+              {copiedLink ? <Check className="h-3.5 w-3.5 text-[var(--color-shell-success)]" /> : <Copy className="h-3.5 w-3.5" />}
+              <span>{copiedLink ? 'Copied' : 'Copy'}</span>
+            </Button>
+            <a
+              href={booking.meeting_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] shrink-0"
+              aria-label="Open meeting link"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+
+          <p className="mt-2 text-[11px] text-[var(--color-shell-text-subtle)]">
+            This link will unlock for the seeker 5 minutes before the session starts and is revoked when the session ends.
+          </p>
+        </div>
+      )}
+
+      {/* ===== Confirmed but no meeting link yet ===== */}
+      {isConfirmed && !booking.meeting_url && !booking.actual_ended_at && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/10 p-4 flex items-start gap-3 text-xs text-amber-800 dark:text-amber-100">
+          <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <span className="font-bold block text-sm">No Meeting Link Set</span>
+            <p>The meeting URL is not yet attached. Use the form below to confirm this session.</p>
           </div>
         </div>
       )}
@@ -566,11 +701,11 @@ export const MentorBookingDetailPage: React.FC = () => {
           id="reschedule-request-panel"
           className={`rounded-xl border p-6 shadow-xs space-y-5 ${
             isReschedulePending
-              ? 'border-amber-300 bg-amber-50 dark:bg-amber-900/10'
+              ? 'border-[var(--color-shell-warning)]/40 bg-[var(--color-shell-warning-soft)]/50'
               : 'border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]'
           }`}
         >
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-inherit pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
             <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
               <Calendar className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
               Reschedule Request
@@ -589,7 +724,7 @@ export const MentorBookingDetailPage: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-3">
+            <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3">
               <span className="block font-medium text-[var(--color-shell-text-muted)]">Current</span>
               <span className="mt-0.5 block font-semibold text-[var(--color-shell-text)]">
                 {formatRescheduleWindow(rescheduleRequest.original_start_time, rescheduleRequest.original_end_time, booking.mentor_timezone)}
@@ -640,14 +775,14 @@ export const MentorBookingDetailPage: React.FC = () => {
         </div>
       )}
 
-      {/* ===== Session Control Center (Live / Scheduled / Ended) ===== */}
+      {/* ===== Session Control Center ===== */}
       <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5">
         <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-3">
           <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
             <Clock className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
             Session Lifecycle Control Center
           </h3>
-          <Badge variant={isLive ? 'success' : hasEnded ? 'secondary' : isConfirmed ? 'warning' : 'outline'}>
+          <Badge variant={isLive ? 'success' : hasEnded ? 'secondary' : isConfirmed ? 'warning' : 'outline'} className="text-xs">
             {isLive ? '● LIVE IN PROGRESS' : hasEnded ? 'ENDED' : isConfirmed ? 'AWAITING START' : STATUS_LABEL[booking.status]}
           </Badge>
         </div>
@@ -660,7 +795,7 @@ export const MentorBookingDetailPage: React.FC = () => {
               <span className="font-medium">Time remaining in session</span>
             </div>
             <div className="font-mono text-lg font-bold text-[var(--color-shell-text)]">
-              {formatCountdown(countdown)}
+              {formatCountdownLocal(countdown)}
             </div>
           </div>
         )}
@@ -671,30 +806,32 @@ export const MentorBookingDetailPage: React.FC = () => {
             Booking Lifecycle Progression
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
-            {STATUS_ORDER.slice(0, 5).map((status, idx) => {
+            {STATUS_ORDER.slice(1, 5).map((status, idx) => {
               const stageIdx = idx + 1;
               const currentStage = getSessionLifecycleStage(booking.status);
               const isComplete = stageIdx <= currentStage;
               const isCurrent = stageIdx === currentStage;
               const isFinal = status === 'COMPLETED';
+              const statusKey = STATUS_STEP_LABEL[status] || status;
               return (
                 <div
                   key={status}
-                  className={`p-2.5 rounded-lg border text-center transition-all ${
+                  className={`p-2.5 rounded-lg border ${
                     isComplete
-                      ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-800 dark:text-emerald-200 font-bold border-emerald-200 dark:border-emerald-800/50'
+                      ? 'bg-[var(--color-shell-success-soft)] text-[var(--color-shell-success)] font-bold border-[var(--color-shell-success)]/30'
                       : 'bg-[var(--color-shell-bg-hover)] text-[var(--color-shell-text-muted)] border-[var(--color-shell-border)] font-medium'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-1.5 mb-0.5">
                     <span
-                      className={`h-1.5 w-1.5 rounded-full ${
-                        isComplete ? 'bg-emerald-500 dark:bg-emerald-400' : isCurrent ? 'bg-[var(--color-shell-accent)]' : 'bg-[var(--color-shell-text-subtle)]/40'
-                      }`}
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full',
+                        isComplete ? 'bg-[var(--color-shell-success)]' : isCurrent ? 'bg-[var(--color-shell-accent)]' : 'bg-[var(--color-shell-text-subtle)]/40'
+                      )}
                     />
-                    <span>{STATUS_LABEL[status] || status}</span>
+                    <span>{statusKey}</span>
                   </div>
-                  {isComplete && <div className="w-4 h-0.5 bg-emerald-500 dark:bg-emerald-400 rounded-full mx-auto" />}
+                  {isComplete && <div className="w-4 h-0.5 bg-[var(--color-shell-success)] rounded-full mx-auto" />}
                 </div>
               );
             })}
@@ -757,165 +894,26 @@ export const MentorBookingDetailPage: React.FC = () => {
           </div>
         )}
 
+        {/* Scheduled but not started */}
         {!hasStarted && isConfirmed && (
           <div className="flex items-start gap-3 text-xs">
             <Clock className="h-4 w-4 text-[var(--color-shell-warning)] shrink-0 mt-0.5" />
             <div className="space-y-0.5">
               <p className="font-semibold text-[var(--color-shell-text)]">Session Scheduled</p>
               <p className="text-[var(--color-shell-text-muted)]">
-                The session has not started yet. The "End Session" action will become available once the session is in progress.
+                The session has not started yet. The "End Session" button will become available once the session begins.
               </p>
             </div>
           </div>
         )}
       </div>
 
-      {/* ===== Confirmation & Meeting Link ===== */}
-      {isPending && (
-        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--color-shell-border)] pb-3">
-            <div>
-              <h3 className="text-sm font-bold text-[var(--color-shell-text)]">Confirm Session & Attach Meeting Link</h3>
-              <p className="text-xs text-[var(--color-shell-text-muted)] mt-0.5">
-                Enter your video conference link (Google Meet, Zoom, MS Teams, etc.).
-              </p>
-            </div>
-            <div className="text-xs">
-              {booking.deadlineInfo && (
-                <span
-                  className={`inline-flex items-center gap-1 font-medium px-2 py-0.5 rounded ${
-                    isOverdue
-                      ? 'bg-amber-100 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200'
-                      : 'bg-[var(--color-shell-bg-hover)] text-[var(--color-shell-text-muted)]'
-                  }`}
-                >
-                  <Clock className="h-3 w-3" />
-                  Deadline: {MEETING_LINK_DEADLINE_MINUTES}m before start (
-                  {isOverdue
-                    ? `overdue by ${formatOverdueDuration(overdueByMs)}`
-                    : `~${minutesLeft}m remaining`}
-                  )
-                </span>
-              )}
-            </div>
-          </div>
-
-          <form onSubmit={handleConfirm} className="space-y-4">
-            <Input
-              id="meeting-url-input"
-              label="HTTPS Video Meeting URL"
-              value={meetingUrl}
-              onChange={(e) => handleUrlChange(e.target.value)}
-              placeholder="https://meet.google.com/xxx-xxxx-xxx"
-              error={urlError}
-              helperText="Must be a valid HTTPS URL. Cannot confirm session without a valid link."
-            />
-
-            <div className="rounded-lg bg-[var(--color-shell-bg-hover)] p-3.5 text-xs space-y-1.5">
-              <div className="flex items-center gap-1.5 font-semibold text-[var(--color-shell-text)]">
-                <BellRing className="h-3.5 w-3.5 text-[var(--color-shell-text-muted)]" />
-                <span>Platform Secrecy & Notification Rules</span>
-              </div>
-              <ul className="list-disc list-inside space-y-1 text-[var(--color-shell-text-muted)] pl-1">
-                <li>
-                  <strong>Confirmation Requirement:</strong> Session cannot be confirmed without a verified HTTPS meeting link.
-                </li>
-                <li>
-                  <strong>Seeker Notification:</strong> Confirming changes status to <code className="bg-[var(--color-shell-border)] px-1 py-0.5 rounded text-[11px]">CONFIRMED</code> and immediately dispatches an in-app notification to the seeker.
-                </li>
-                <li>
-                  <strong>Link Privacy:</strong> The actual video link remains hidden from the seeker until 5 minutes before the scheduled start.
-                </li>
-              </ul>
-            </div>
-
-            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="text-xs text-[var(--color-shell-text-muted)] flex items-center gap-1.5">
-                <Info className="h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
-                <span>In-app alert will be pushed to {booking.seeker?.full_name || 'seeker'}</span>
-              </div>
-              <Button
-                id="btn-confirm-session"
-                type="submit"
-                size="md"
-                disabled={submitting || !!urlError || !meetingUrl.trim()}
-                className="w-full sm:w-auto gap-2 text-xs bg-[var(--color-shell-primary)] hover:bg-[var(--color-shell-primary-hover)] text-white cursor-pointer"
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Processing Confirmation...</span>
-                  </>
-                ) : (
-                  <>
-                    <Video className="h-3.5 w-3.5" />
-                    <span>Confirm Session & Share Link</span>
-                  </>
-                )}
-              </Button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* ===== Confirmed session: meeting link management ===== */}
-      {isConfirmed && booking.meeting_url && (
-        <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
-          <div className="flex items-center justify-between border-b border-[var(--color-shell-border)] pb-2">
-            <h3 className="text-sm font-bold text-[var(--color-shell-text)] flex items-center gap-1.5">
-              <Video className="h-4 w-4 text-[var(--color-shell-text-muted)]" />
-              Meeting Link
-            </h3>
-            <Badge variant="success" className="text-xs">
-              Active
-            </Badge>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <div className="font-mono text-[var(--color-shell-text-muted)] flex-1 break-all bg-[var(--color-shell-bg-hover)] px-3 py-2 rounded-lg border border-[var(--color-shell-border)]">
-              {booking.meeting_url}
-            </div>
-            <Button
-              onClick={() => handleCopyLink(booking.meeting_url!)}
-              variant="outline"
-              size="sm"
-              className="gap-1 text-xs shrink-0"
-            >
-              {copiedLink ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
-              <span>{copiedLink ? 'Copied' : 'Copy'}</span>
-            </Button>
-            <a
-              href={booking.meeting_url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-[var(--color-shell-accent)] hover:text-[var(--color-shell-accent-hover)] shrink-0"
-              aria-label="Open meeting link"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </div>
-          <p className="text-[11px] text-[var(--color-shell-text-subtle)]">
-            This link will unlock for the seeker 5 minutes before the session starts and is revoked when the session ends.
-          </p>
-        </div>
-      )}
-
-      {/* ===== Confirmed but no meeting link yet ===== */}
-      {isConfirmed && !booking.meeting_url && !booking.actual_ended_at && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/10 p-4 flex items-start gap-3 text-xs text-amber-800 dark:text-amber-100">
-          <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-0.5">
-            <span className="font-bold block text-sm">No Meeting Link Set</span>
-            <p>The meeting URL is not yet attached. Use the form below to confirm this session.</p>
-          </div>
-        </div>
-      )}
-
-      {/* ===== Reject Reschedule Request Modal ===== */}
+      {/* ===== Reschedule Decision Modals ===== */}
       <Modal
         isOpen={showRejectModal}
         onClose={() => setShowRejectModal(false)}
         title="Decline this reschedule?"
-        description="The booking keeps its current date and time. The requested slot is released and the seeker is told."
+        description="The booking keeps its current date and time. The requested time is released and the seeker is told."
       >
         <div className="space-y-4">
           <div className="space-y-2">
@@ -960,7 +958,6 @@ export const MentorBookingDetailPage: React.FC = () => {
         </div>
       </Modal>
 
-      {/* ===== End Session Confirmation Modal ===== */}
       <Modal
         isOpen={showEndModal}
         onClose={() => setShowEndModal(false)}
@@ -1017,7 +1014,7 @@ export const MentorBookingDetailPage: React.FC = () => {
         </div>
       </Modal>
 
-      {/* ===== 2-Column Info Grid ===== */}
+      {/* ===== Two-Column Info Grid ===== */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Seeker Information */}
         <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-6 shadow-xs space-y-4">
@@ -1122,6 +1119,12 @@ export const MentorBookingDetailPage: React.FC = () => {
               <span className="font-medium text-[var(--color-shell-text)]">{sessionDurationLabel}</span>
             </div>
             <div className="flex justify-between gap-3 border-t border-[var(--color-shell-border)] pt-2">
+              <span className="text-[var(--color-shell-text-muted)]">Booking Code:</span>
+              <span className="font-mono text-xs text-[var(--color-shell-text-muted)] text-right">
+                #{booking.booking_code}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
               <span className="text-[var(--color-shell-text-muted)]">Payment Amount:</span>
               <span className="font-bold text-[var(--color-shell-text)]">{amountLabel}</span>
             </div>

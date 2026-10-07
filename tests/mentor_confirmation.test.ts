@@ -353,7 +353,7 @@ describe('Phase 8: Mentor Confirmation & Meeting Link Rules', () => {
       assert.equal(result.error?.code, 'ALREADY_CONFIRMED');
     });
 
-    it('overdue meeting link does NOT cancel session and can still be confirmed', async () => {
+it('overdue meeting link is rejected with MEETING_LINK_DEADLINE_PASSED', async () => {
       const db = createTestContext();
 
       // Check that admin overdue helper identifies it
@@ -361,7 +361,9 @@ describe('Phase 8: Mentor Confirmation & Meeting Link Rules', () => {
       assert.equal(overdueList.length, 1);
       assert.equal(overdueList[0].id, 'bk-overdue-02');
 
-      // Mentor confirms the overdue session
+      // Mentor tries to confirm the overdue session - now rejected by the hard
+      // deadline gate (Phase 43). The booking stays MENTOR_PENDING and the
+      // pg_cron job will auto-cancel it.
       const result = await confirmSessionByMentor(
         {
           bookingId: 'bk-overdue-02',
@@ -371,14 +373,92 @@ describe('Phase 8: Mentor Confirmation & Meeting Link Rules', () => {
         db
       );
 
-      assert.equal(result.success, true);
-      assert.equal(result.isOverdue, true);
-      assert.equal(result.booking?.status, 'CONFIRMED');
-      assert.equal(result.booking?.meeting_url, 'https://meet.google.com/overdue-resolution');
+      assert.equal(result.success, false);
+      assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
+      // On rejection, no booking is returned (the status didn't change).
+      assert.equal(result.booking, undefined);
+      assert.equal(result.isOverdue, undefined, 'no isOverdue flag on failure');
 
-      // Now it should no longer be in the overdue list since it is CONFIRMED
+      // Still in the overdue list since it was not confirmed
       const overdueListAfter = getOverdueBookings(db);
-      assert.equal(overdueListAfter.length, 0);
+      assert.equal(overdueListAfter.length, 1);
     });
+  });
+});
+
+  // ===========================================================================
+  // Phase 43: Hard deadline rejection + auto-cancel idempotency
+  // ===========================================================================
+
+  describe('Phase 43 hard deadline rejection', () => {
+    it('accepts a confirmation submitted exactly at the deadline boundary (strict >)', async () => {
+      // The deadline boundary is start_time - 5min. At exactly that instant the
+      // window is still open (strict `>` in the engine). One millisecond later it
+      // is closed. `confirmSessionByMentor` uses the same boundary the RPC does.
+      const db = createTestContext();
+      const booking = db.bookings[1]; // bk-overdue-02, starts in 3m
+      const startMs = new Date(booking.start_time).getTime();
+      const deadlineMs = startMs - 5 * 60_000;
+
+      // Exactly at the deadline — still open
+      const atDeadline = await confirmSessionByMentor(
+        {
+          bookingId: 'bk-overdue-02',
+          mentorId: 'mentor-201',
+          meetingUrl: 'https://meet.google.com/at-boundary',
+          currentUtcTime: new Date(deadlineMs),
+        },
+        db,
+      );
+      // At exactly the deadline, strict `>` means the window is still open.
+      assert.equal(atDeadline.success, true);
+      assert.equal(atDeadline.booking?.status, 'CONFIRMED');
+    });
+
+  it('refuses a non-HTTPS link regardless of deadline', async () => {
+    const db = createTestContext();
+    // bk-valid-01 starts in 4 hours — deadline is well in the future
+    const result = await confirmSessionByMentor(
+      {
+        bookingId: 'bk-valid-01',
+        mentorId: 'mentor-201',
+        meetingUrl: 'ftp://insecure.example.com',
+        currentUtcTime: new Date(Date.now() + 60 * 1000), // 1 min from now
+      },
+      db,
+    );
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'INVALID_MEETING_URL');
+  });
+
+  it('does not transition the booking status when the deadline is passed', async () => {
+    const db = createTestContext();
+    const result = await confirmSessionByMentor(
+      {
+        bookingId: 'bk-overdue-02',
+        mentorId: 'mentor-201',
+        meetingUrl: 'https://meet.google.com/too-late',
+      },
+      db,
+    );
+    assert.equal(result.success, false);
+    assert.equal(result.error?.code, 'MEETING_LINK_DEADLINE_PASSED');
+    const booking = db.bookings.find((b) => b.id === 'bk-overdue-02');
+    assert.equal(booking?.status, 'MENTOR_PENDING');
+    assert.equal(booking?.meeting_url, null);
+  });
+
+  it('does not emit notifications when the deadline is passed', async () => {
+    const db = createTestContext();
+    const notificationsBefore = db.notifications?.length ?? 0;
+    await confirmSessionByMentor(
+      {
+        bookingId: 'bk-overdue-02',
+        mentorId: 'mentor-201',
+        meetingUrl: 'https://meet.google.com/too-late',
+      },
+      db,
+    );
+    assert.equal(db.notifications?.length ?? 0, notificationsBefore, 'no notifications written on rejection');
   });
 });

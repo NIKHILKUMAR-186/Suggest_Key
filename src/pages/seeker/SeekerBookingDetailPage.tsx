@@ -10,9 +10,11 @@ import {
   Info,
   LifeBuoy,
   Lock,
+  RefreshCw,
   RotateCcw,
   Trash2,
   Video,
+  XCircle,
 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Modal } from '@/src/components/ui/Modal';
@@ -34,6 +36,7 @@ import { formatClockTime, formatClockRange, formatZoneLabel } from '@/src/lib/se
 import type { BookingStatus } from '@/src/types/database';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { APP_CONFIG, CANCELLATION_WINDOW_MS, HOLDOUT_MINUTES } from '@/src/config/app';
+import { refundStatusLabel, formatInrLabel } from '@/src/lib/refundCompletion';
 import { PageHeading } from '@/src/components/booking/PageHeading';
 import { SegmentScope } from '@/src/components/booking/SegmentScope';
 import { StatusPill } from '@/src/components/booking/StatusPill';
@@ -684,6 +687,89 @@ export const SeekerBookingDetailPage: React.FC = () => {
                   : lastReschedule.rejection_reason ||
                     'Your mentor kept the original time.'}
               </InlineNotice>
+            )}
+
+            {/* ---------------- Refund timeline ---------------- */}
+            {booking.status === 'CANCELLED' && booking.payment && booking.payment.refund_status && (
+              <SectionCard title="Refund status" icon={RefreshCw}>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[13px] font-medium text-[var(--color-shell-text)]">
+                        {booking.payment.gateway === 'manual' ? 'Refund required' : 'Refund requested'}
+                      </p>
+                      <p className="text-[12px] text-[var(--color-shell-text-muted)]">
+                        {booking.payment.gateway === 'manual'
+                          ? 'This was a manual payment. The platform cannot automatically return the money — an admin must process the refund externally.'
+                          : 'The refund has been sent to the payment gateway for processing.'}
+                      </p>
+                    </div>
+                    <StatusPill
+                      tone={booking.payment.refund_status === 'REFUNDED' ? 'success' : booking.payment.refund_status === 'PENDING' ? 'warning' : 'danger'}
+                      label={refundStatusLabel(booking.payment.refund_status)}
+                      size="sm"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[13px]">
+                    <span className="text-[var(--color-shell-text-muted)]">Amount</span>
+                    <span className="font-bold text-[var(--color-shell-text)]">
+                      {formatInrLabel(booking.payment.amount_inr)}
+                    </span>
+                  </div>
+
+                  {booking.payment.refund_status === 'PENDING' && booking.payment.gateway === 'manual' && (
+                    <InlineNotice tone="info" icon={Info} title="Pending admin processing">
+                      An admin needs to transfer the money and record the transfer reference and receipt. You will be notified once the refund is completed.
+                    </InlineNotice>
+                  )}
+
+                  {booking.payment.refund_status === 'PENDING' && booking.payment.gateway === 'razorpay' && (
+                    <InlineNotice tone="info" icon={RefreshCw} title="Refund processing">
+                      The refund has been initiated with Razorpay. It typically takes 5–10 business days to appear in your original payment method. You will be notified once it is confirmed.
+                    </InlineNotice>
+                  )}
+
+                  {booking.payment.refund_status === 'REFUNDED' && (
+                    <div className="space-y-2 border-t border-[var(--color-shell-border)] pt-3">
+                      <p className="text-[13px] font-medium text-[var(--color-shell-success)] flex items-center gap-1.5">
+                        <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                        Refund completed
+                      </p>
+                      <dl className="space-y-1 text-[12px]">
+                        {booking.payment.refund_method && (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-shell-text-muted)]">Method</dt>
+                            <dd className="font-semibold text-[var(--color-shell-text)]">
+                              {booking.payment.refund_method === 'BANK_TRANSFER' ? 'Bank transfer' : 'UPI'}
+                            </dd>
+                          </div>
+                        )}
+                        {booking.payment.refund_reference && (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-shell-text-muted)]">Reference</dt>
+                            <dd className="font-mono text-[var(--color-shell-text)] break-all">{booking.payment.refund_reference}</dd>
+                          </div>
+                        )}
+                        {booking.payment.refunded_at && (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-shell-text-muted)]">Completed at</dt>
+                            <dd className="font-semibold text-[var(--color-shell-text)]">
+                              {new Date(booking.payment.refunded_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                            </dd>
+                          </div>
+                        )}
+                      </dl>
+                    </div>
+                  )}
+
+                  {booking.payment.refund_status === 'FAILED' && (
+                    <InlineNotice tone="danger" icon={XCircle} title="Refund failed">
+                      The refund could not be completed. Our team has been notified and will look into it. You will be updated here once there is progress.
+                    </InlineNotice>
+                  )}
+                </div>
+              </SectionCard>
             )}
           </div>
         </div>

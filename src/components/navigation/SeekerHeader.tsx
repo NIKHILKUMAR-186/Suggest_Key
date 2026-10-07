@@ -45,7 +45,6 @@ import {
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
-import { ThemeToggle } from '@/src/components/ui/ThemeToggle';
 import { useActiveSegments } from '@/src/hooks/useActiveSegments';
 import { getHighestPriorityActiveSegment } from '@/src/lib/discoveryService';
 import {
@@ -290,16 +289,6 @@ export const SeekerHeader: React.FC<SeekerHeaderProps> = ({ homeHref = SEEKER_HO
             </button>
           );
         })}
-      </div>
-
-      <div className="my-1.5 h-px w-full bg-[var(--sk-brand-border)]" role="separator" />
-
-      {/* Preferences: the shared app-wide theme control, reused rather than
-          re-implemented, so the header menu and every other menu offer the
-          same Light / Dark / System behaviour. */}
-      <div role="group" aria-label="Preferences" className="flex items-center justify-between gap-2 px-3 py-1.5">
-        <span className="text-sm font-medium text-[var(--sk-brand-text)]">Theme</span>
-        <ThemeToggle />
       </div>
 
       <div className="my-1.5 h-px w-full bg-[var(--sk-brand-border)]" role="separator" />

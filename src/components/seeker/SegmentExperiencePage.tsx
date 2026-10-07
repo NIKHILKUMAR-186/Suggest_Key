@@ -112,8 +112,8 @@ export const SegmentExperiencePage: React.FC<SegmentExperiencePageProps> = ({
    * The heading is built from the real segment name ("Explore Autism Mentors"),
    * so a segment created tomorrow words itself correctly with no code change.
    */
-  const discoveryCta = segmentSlug ? (
-    <div className="sk-section">
+   const discoveryCta = segmentSlug ? (
+    <div className="sk-section sk-discovery-cta">
       <div className="flex flex-col gap-4 rounded-3xl border border-[var(--sk-brand-border)] bg-[var(--sk-brand-surface)] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">
         <div className="min-w-0">
           <p className="sk-eyebrow">{buildSegmentExploreTitle(segment?.name)}</p>

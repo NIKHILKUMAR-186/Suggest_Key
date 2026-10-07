@@ -1,119 +1,137 @@
-import React, { useMemo } from 'react';
-import { ArrowRight, Users } from 'lucide-react';
-import { Button } from '@/src/components/ui/Button';
-import { EmptyState } from '@/src/components/shared/EmptyState';
-import { ErrorState } from '@/src/components/shared/ErrorState';
-import { Reveal } from '@/src/components/landing/Reveal';
+import React from 'react';
+import type { DirectoryMentor } from '@/src/types/database';
+import { LandingMentorCard } from '@/src/components/landing/LandingMentorCard';
+import { LandingSectionHead } from '@/src/components/landing/LandingSectionHead';
+import { MagneticButton } from '@/src/components/landing/landingMotion';
 import {
-  LandingMentorCard,
-  LandingMentorCardSkeleton,
-} from '@/src/components/landing/LandingMentorCard';
-import { useFeaturedMentors } from '@/src/hooks/useFeaturedMentors';
-import { getDateStringInTimezone } from '@/src/lib/slotEngine';
-import { useAuth } from '@/src/context/AuthContext';
-import { HERO_ARROW } from '@/src/components/landing/landingContent';
-
-export interface LandingFeaturedMentorsProps {
-  /** The app's own navigate(), so discovery is reached through the router. */
-  onNavigate: (href: string) => void;
-  /** Where mentor discovery goes for this visitor's auth state. */
-  findMentorPath: string;
-}
+  MENTORS_BODY,
+  MENTORS_EMPTY_TITLE,
+  MENTORS_ERROR_TITLE,
+  MENTORS_LINK_LABEL,
+  MENTORS_RETRY_LABEL,
+  MENTORS_TITLE,
+} from '@/src/components/landing/landingContent';
 
 /**
- * FEATURED MENTORS.
+ * THE MENTORS — a grid of profiles.
  *
- * Reads the live directory and the live availability endpoint through
- * `useFeaturedMentors`, and shows nothing at all rather than something
- * representative: no placeholder mentor is ever rendered, in the loading state
- * or in the empty one.
+ * Real profiles, fetched live through the public directory and rendered exactly as
+ * it returns them. No seed data, no fallback card, no invented number anywhere in
+ * this section.
+ *
+ * THE SPEC ASKS FOR A GRID.
+ *
+ * The reference screenshot shows four mentor cards across on desktop. The cards are
+ * white with rounded corners, subtle borders, and soft shadows. We keep the plum
+ * band behind them so portraits read as portraits, but the cards themselves are
+ * paper-coloured tiles in a grid that sizes to the database.
  */
+
+export interface LandingFeaturedMentorsProps {
+  mentors: DirectoryMentor[];
+  isLoading: boolean;
+  hasError: boolean;
+  onOpenMentor: (mentor: DirectoryMentor) => void;
+  onBrowseAll: () => void;
+  onRetry: () => void;
+}
+
+const CardSkeleton: React.FC = () => (
+  <li className="sk-lg-mentor sk-lg-mentor--grid" aria-hidden="true">
+    <div style={{ padding: 18, display: 'grid', gap: 12 }}>
+      <span className="sk-lg-skeleton sk-lg-skeleton--portrait" />
+      <span className="sk-lg-skeleton sk-lg-skeleton--line" style={{ width: '64%' }} />
+      <span className="sk-lg-skeleton sk-lg-skeleton--line" style={{ width: '42%' }} />
+    </div>
+  </li>
+);
+
 export const LandingFeaturedMentors: React.FC<LandingFeaturedMentorsProps> = ({
-  onNavigate,
-  findMentorPath,
+  mentors,
+  isLoading,
+  hasError,
+  onOpenMentor,
+  onBrowseAll,
+  onRetry,
 }) => {
-  const { profile } = useAuth();
-  const { mentors, isLoading, hasError, reload } = useFeaturedMentors();
-
-  const today = useMemo(
-    () => getDateStringInTimezone(new Date(), profile?.timezone || 'Asia/Kolkata'),
-    [profile?.timezone]
-  );
-
   return (
     <section
       id="mentors"
-      className="scroll-mt-24 bg-[var(--sk-brand-canvas)] px-4 py-16 sm:px-6 sm:py-24 lg:px-8"
-      aria-labelledby="featured-mentors-heading"
+      className="sk-lg-band sk-lg-band--plum sk-lg-mentors-band"
+      aria-labelledby="mentors-title"
     >
-      <div className="mx-auto max-w-[1240px]">
-        <Reveal className="max-w-2xl">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--color-shell-accent)]">
-            Featured mentors
-          </p>
-          <h2
-            id="featured-mentors-heading"
-            className="mt-4 text-[28px] font-medium leading-[1.12] tracking-tight text-[var(--sk-brand-text)] sm:text-[38px]"
-            style={{ fontFamily: 'var(--font-aeonikpro)' }}
-          >
-            Meet people who can help you move forward.
-          </h2>
-          <p className="mt-4 text-[15px] leading-relaxed text-[var(--sk-brand-text-muted)]">
-            Explore verified mentors across different areas and find someone who fits your needs. Prices and
-            availability below are the mentor&apos;s own.
-          </p>
-        </Reveal>
+      <div className="sk-lg__wrap">
+        <div className="sk-lg-band__head">
+          <LandingSectionHead id="mentors-title" title={MENTORS_TITLE} body={MENTORS_BODY} />
 
-        <div className="mt-10">
-          {isLoading ? (
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4" aria-busy="true">
-              {[0, 1, 2, 3].map((index) => (
-                <LandingMentorCardSkeleton key={index} />
-              ))}
-            </div>
-          ) : hasError ? (
-            <ErrorState
-              title="We couldn't load mentors just now"
-              message="Mentor discovery is available as usual — head there directly, or try loading this section again."
-              onRetry={reload}
-            />
-          ) : mentors.length > 0 ? (
-            <>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {mentors.map((entry, index) => (
-                  <Reveal key={entry.mentor.id} delay={index * 0.06} className="h-full">
-                    <LandingMentorCard
-                      entry={entry}
-                      today={today}
-                      onOpen={() => onNavigate(findMentorPath)}
-                    />
-                  </Reveal>
-                ))}
-              </div>
-
-              <div className="mt-10 flex justify-center">
-                <Button variant="outline" size="lg" className="gap-2 rounded-xl" onClick={() => onNavigate(findMentorPath)}>
-                  Explore all mentors
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="rounded-[26px] border border-dashed border-[var(--sk-brand-border-strong)] bg-[var(--sk-brand-surface)]/60">
-              <EmptyState
-                icon={Users}
-                title="Mentors are being added"
-                description="New mentors are approved and onboarded regularly. Every session fee is shown before you pay, so there are no surprises when they arrive."
-              />
-              <div className="flex justify-center pb-12">
-                <Button size="md" className="gap-2" onClick={() => onNavigate(findMentorPath)}>
-                  Find a Mentor {HERO_ARROW}
-                </Button>
-              </div>
-            </div>
-          )}
+          <MagneticButton className="sk-lg-link" onClick={onBrowseAll}>
+            {MENTORS_LINK_LABEL}
+            <span className="sk-lg-link__arrow" aria-hidden="true">
+              <svg viewBox="0 0 14 14" fill="none">
+                <path
+                  d="M2 7h9.5M8 3.4 11.8 7 8 10.6"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          </MagneticButton>
         </div>
+
+        {isLoading ? (
+          <ul className="sk-lg-mentors--grid" aria-hidden="true">
+            {[0, 1, 2, 3].map((key) => (
+              <CardSkeleton key={key} />
+            ))}
+          </ul>
+        ) : mentors.length > 0 ? (
+          <ul className="sk-lg-mentors--grid">
+            {mentors.map((mentor, index) => (
+              <LandingMentorCard key={mentor.id} mentor={mentor} index={index} onOpen={onOpenMentor} />
+            ))}
+          </ul>
+        ) : hasError ? (
+          <div className="sk-lg-state sk-lg-state--on-plum">
+            <p className="sk-lg-state__title">{MENTORS_ERROR_TITLE}</p>
+            <button type="button" className="sk-lg-link sk-lg-state__action" onClick={onRetry}>
+              {MENTORS_RETRY_LABEL}
+              <span className="sk-lg-link__arrow" aria-hidden="true">
+                <svg viewBox="0 0 14 14" fill="none">
+                  <path
+                    d="M2 7h9.5M8 3.4 11.8 7 8 10.6"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </button>
+          </div>
+        ) : (
+          <div className="sk-lg-blank">
+            <p className="sk-lg-lead">{MENTORS_EMPTY_TITLE}</p>
+            <button type="button" className="sk-lg-link sk-lg-state__action" onClick={onBrowseAll}>
+              {MENTORS_LINK_LABEL}
+              <span className="sk-lg-link__arrow" aria-hidden="true">
+                <svg viewBox="0 0 14 14" fill="none">
+                  <path
+                    d="M2 7h9.5M8 3.4 11.8 7 8 10.6"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
 };
+
+export default LandingFeaturedMentors;
