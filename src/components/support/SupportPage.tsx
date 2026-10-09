@@ -11,6 +11,7 @@ import { ErrorState } from '@/src/components/shared/ErrorState';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 import {
   SUPPORT_ATTACHMENT_MAX_BYTES,
   SUPPORT_ATTACHMENT_MIME_TYPES,
@@ -74,6 +75,8 @@ export const SupportPage: React.FC<SupportPageProps> = ({
 }) => {
   const { activeRole } = useAuth();
   const { currentPath } = useNavigation();
+  const rateLimitCheck = useRateLimitCheck();
+  const isRateLimited = rateLimitCheck.isRateLimited;
   const role = activeRole ?? 'seeker';
 
   // Support notifications deep-link as `/seeker/support?ticketCode=SK-...`.
@@ -372,6 +375,7 @@ const TicketConversation: React.FC<{
   const [sending, setSending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const { isRateLimited } = useRateLimitCheck();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -394,9 +398,12 @@ const TicketConversation: React.FC<{
   // persisted correctly, and a stale view self-corrects within one tick.
   useEffect(() => {
     if (!detail || !isSupportTicketReplyable(detail.ticket.status)) return;
-    const timer = setInterval(() => void load(), 20000);
+    const timer = setInterval(() => {
+      if (isRateLimited) return;
+      void load();
+    }, 20000);
     return () => clearInterval(timer);
-  }, [detail, load]);
+  }, [detail, load, isRateLimited]);
 
   const sendReply = async (event: React.FormEvent) => {
     event.preventDefault();

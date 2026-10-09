@@ -1,0 +1,16 @@
+﻿## Phase 2 complete
+
+**Changes:**
+- Segments: asymmetric 3-card grid (first spans 2 rows), 01/02/03 indices, orange handwritten caption, hand-drawn arrow connector, sprout sticker accent.
+- How It Works: dew surface, 4-step timeline with scroll-linked progress (ProcessProgress), editorial step numbers, 'Start the conversation' CTA.
+- Motion: tuned Reveal playOnMount/amount; SplitText line entrance fixed (no flash).
+- Landing tests re-pointed to new Superr components while preserving contracts.
+
+**Verification:**
+- tsc --noEmit: 1 pre-existing unrelated error (MentorDirectoryPage.tsx).
+- Build: passes (113 files, verify OK).
+- Tests: 1849 total, pass 1840, fail 9. 5 pre-existing/unrelated (razorpay, reschedule, meeting-link, ledger/reconciliation, admin support path). Landing contract tests fixed (landing_hero_segments: 1 pass/0 fail).
+
+**Next:** Phase 3 — Mentor Showcase + Why Suggest Key (refine featured mentor card, supporting mentor cards, load-more, Why section).
+
+Awaiting approval for Phase 3.

@@ -60,14 +60,16 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
   }
 
   return (
-    <Suspense fallback={SESSION_LOADING_FALLBACK}>
-      {activeRole === 'admin' ? (
-        <AdminShell>{children}</AdminShell>
-      ) : activeRole === 'mentor' ? (
-        <MentorShell>{children}</MentorShell>
-      ) : (
-        <SeekerShell>{children}</SeekerShell>
-      )}
-    </Suspense>
+    <>
+      <Suspense fallback={SESSION_LOADING_FALLBACK}>
+        {activeRole === 'admin' ? (
+          <AdminShell>{children}</AdminShell>
+        ) : activeRole === 'mentor' ? (
+          <MentorShell>{children}</MentorShell>
+        ) : (
+          <SeekerShell>{children}</SeekerShell>
+        )}
+      </Suspense>
+    </>
   );
 };

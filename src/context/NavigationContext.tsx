@@ -1,6 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useAuth } from '@/src/context/AuthContext';
 import type { UserRole } from '@/src/types/navigation';
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => unknown;
+};
 
 interface NavigationContextType {
   currentPath: string;
@@ -35,10 +40,36 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // `navigate` and `replace` only touch setState and history, so they are safe
   // to keep referentially stable for the life of the provider.
   const navigate = useCallback((path: string) => {
-    setCurrentPath(path);
-    if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', path);
+    const update = () => {
+      flushSync(() => {
+        setCurrentPath(path);
+        if (typeof window !== 'undefined') {
+          window.history.pushState({}, '', path);
+        }
+      });
+    };
+
+    if (typeof window === 'undefined') {
+      setCurrentPath(path);
+      return;
     }
+
+    const currentRoute = window.location.pathname;
+    const nextRoute = path.split('?')[0] ?? path;
+    const isLandingOrAuthRoute = (route: string) =>
+      route === '/' || route.startsWith('/auth/');
+    const transitionDocument = document as ViewTransitionDocument;
+    const shouldTransition =
+      isLandingOrAuthRoute(currentRoute) &&
+      isLandingOrAuthRoute(nextRoute) &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (shouldTransition && transitionDocument.startViewTransition) {
+      transitionDocument.startViewTransition(update);
+      return;
+    }
+
+    update();
   }, []);
 
   const replace = useCallback((path: string) => {

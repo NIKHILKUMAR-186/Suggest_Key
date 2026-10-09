@@ -5,6 +5,8 @@ dist/
 coverage/
 .agents/
 .claude/
+api/
+agent/
 .DS_Store
 *.log
 .env*
@@ -62,3 +64,74 @@ helpers/
 tests/
 production-clone-backup/
 supabase-clone backup/
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+.build/
+
+# Coverage and generated test output
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+bun-debug.log*
+
+# TypeScript / bundler caches
+*.tsbuildinfo
+.eslintcache
+.vite/
+.turbo/
+.rpt2_cache/
+
+
+# Local Supabase CLI state — keep migrations tracked
+supabase/.temp/
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Local-only backups; verify before keeping these patterns
+production-clone-backup/
+supabase-clone backup/
+
+# Agent/tool local state — verify whether any files are shared project config
+.agents/
+.claude/
+.kilo/
+.playwright-mcp/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*.swo
+*~
+
+# Process artifacts
+*.pid
+*.pid.lock
+*.seed
+
+# Temporary output
+tmp/
+temp/
+graphify-out/

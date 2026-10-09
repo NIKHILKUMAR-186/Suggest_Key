@@ -102,6 +102,20 @@ describe('API rate limiting', () => {
     assert.equal(other.status, 200, 'a different user is unaffected by the noisy one');
   });
 
+  it('exhausts an IP-based budget and returns 429', async () => {
+    const ip = '203.0.113.30';
+
+    for (let attempt = 0; attempt <= EXPENSIVE_RATE_LIMIT; attempt += 1) {
+      await hit(`${server.url}/api/expensive`, { ip });
+    }
+
+    const blocked = await hit(`${server.url}/api/expensive`, { ip });
+    assert.equal(blocked.status, 429, 'the same IP stays blocked');
+
+    const other = await hit(`${server.url}/api/expensive`, { ip: '203.0.113.31' });
+    assert.equal(other.status, 200, 'a different IP gets its own budget');
+  });
+
   it('keys unauthenticated callers by IP address', async () => {
     const ip = '203.0.113.30';
 
@@ -114,6 +128,46 @@ describe('API rate limiting', () => {
 
     const other = await hit(`${server.url}/api/expensive`, { ip: '203.0.113.31' });
     assert.equal(other.status, 200, 'a different IP gets its own budget');
+  });
+
+  it('returns a Retry-After header that matches the JSON retryAfterSeconds', async () => {
+    const ip = '203.0.113.60';
+
+    for (let attempt = 0; attempt < EXPENSIVE_RATE_LIMIT; attempt += 1) {
+      await hit(`${server.url}/api/expensive`, { ip, userId: `u-${ip}` });
+    }
+
+    const res = await hit(`${server.url}/api/expensive`, { ip, userId: `u-${ip}` });
+    assert.equal(res.status, 429);
+
+    const header = res.headers.get('Retry-After');
+    assert.ok(header, 'Retry-After header must be present on a 429');
+    const headerSeconds = Number(header);
+    assert.ok(
+      Number.isInteger(headerSeconds) && headerSeconds >= 1,
+      'Retry-After must be a positive integer number of seconds',
+    );
+
+    const body = await res.clone().json();
+    assert.equal(body.error.retryAfterSeconds, headerSeconds, 'header and body must agree');
+  });
+
+  it('does not leak internal limiter details in the 429 body', async () => {
+    const ip = '203.0.113.70';
+
+    for (let attempt = 0; attempt < EXPENSIVE_RATE_LIMIT; attempt += 1) {
+      await hit(`${server.url}/api/expensive`, { ip, userId: `u-${ip}` });
+    }
+
+    const res = await hit(`${server.url}/api/expensive`, { ip, userId: `u-${ip}` });
+    const body = await res.json();
+    const serialized = JSON.stringify(body);
+
+    assert.equal(body.success, false);
+    assert.equal(body.error.code, 'RATE_LIMITED');
+    assert.ok(!serialized.includes('resetTime'), 'must not expose limiter internal resetTime');
+    assert.ok(!serialized.includes('RateLimit-Limit'), 'must not echo limiter internal headers');
+    assert.ok(!serialized.includes('stack'), 'must not expose a stack trace');
   });
 
   it('advertises the standard RateLimit headers', async () => {

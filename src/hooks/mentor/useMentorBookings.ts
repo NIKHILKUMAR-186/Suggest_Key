@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { fetchMentorBookings, EnrichedBookingRecord } from '@/src/lib/bookingService';
+import { useCallback } from 'react';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
+import type { EnrichedBookingRecord } from '@/src/lib/bookingService';
 import type { BookingStatus } from '@/src/types/database';
 
 export type MentorBookingsFilter = 'ALL' | BookingStatus | 'all';
@@ -9,39 +10,47 @@ export interface UseMentorBookingsResult {
   loading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  loadMore: (isLoadMore?: boolean) => Promise<void>;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+interface MentorBookingsResponse {
+  bookings: EnrichedBookingRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
+  serverNow: string;
 }
 
 export function useMentorBookings(
   mentorId: string | undefined,
   filter?: MentorBookingsFilter
 ): UseMentorBookingsResult {
-  const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const statusFilter = filter && filter !== 'ALL' && filter !== 'all' ? filter : undefined;
 
-  const refetch = useCallback(async () => {
-    if (!mentorId) {
-      setBookings([]);
-      return;
-    }
+  const {
+    data: bookings = [],
+    isLoading,
+    error,
+    refetch,
+    loadMore,
+    hasMore,
+    nextCursor,
+  } = usePaginatedQuery<EnrichedBookingRecord, { status?: string }>({
+    url: '/api/mentor/bookings',
+    pageSize: 6,
+    enabled: !!mentorId,
+    params: { status: statusFilter },
+  });
 
-    const statusFilter = filter && filter !== 'ALL' && filter !== 'all' ? filter : undefined;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchMentorBookings(mentorId, statusFilter);
-      setBookings(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load bookings');
-    } finally {
-      setLoading(false);
-    }
-  }, [mentorId, filter]);
-
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-
-  return { bookings, loading, error, refetch };
+  return {
+    bookings,
+    loading: isLoading,
+    error: error?.message || null,
+    refetch,
+    loadMore,
+    hasMore,
+    nextCursor,
+  };
 }

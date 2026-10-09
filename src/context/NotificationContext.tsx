@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 import {
   fetchUserNotifications,
   markNotificationAsRead as apiMarkRead,
@@ -26,11 +27,14 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
 
+  const { isRateLimited } = useRateLimitCheck();
+
   // Compute effective user ID from auth context
   const effectiveUserId = user?.id;
 
   const refreshNotifications = useCallback(async () => {
     if (!effectiveUserId) return;
+    if (isRateLimited) return;
     setLoading(true);
     try {
       const list = await fetchUserNotifications(effectiveUserId);
@@ -40,14 +44,19 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     } finally {
       setLoading(false);
     }
-  }, [effectiveUserId]);
+  }, [effectiveUserId, isRateLimited]);
 
   useEffect(() => {
     refreshNotifications();
-    // Periodic refresh every 30s to detect live events
-    const interval = setInterval(refreshNotifications, 30000);
+    // Periodic refresh every 30s to detect live events. Paused while the global
+    // rate-limit cooldown is active so the polling interval cannot create a 429
+    // retry loop; it resumes automatically once the cooldown clears.
+    const interval = setInterval(() => {
+      if (isRateLimited) return;
+      refreshNotifications();
+    }, 30000);
     return () => clearInterval(interval);
-  }, [refreshNotifications]);
+  }, [refreshNotifications, isRateLimited]);
 
   const markAsRead = async (id: string) => {
     if (!effectiveUserId) return;

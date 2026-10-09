@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, Filter, Clock, Video, CheckCircle2, AlertCircle, AlertTriangle, Eye, ShieldCheck, RefreshCw, Undo2, Loader2 } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
@@ -7,6 +7,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { ShortId } from '@/src/components/shared/ShortId';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { apiFetch } from '@/src/lib/apiClient';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
 import { APP_CONFIG, MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import { formatOverdueDuration, type BookingLifecycle } from '@/src/lib/bookingLifecycle';
 import { useToast } from '@/src/context/ToastContext';
@@ -86,10 +87,7 @@ interface EnrichedBookingRecord {
 export const AdminBookingsPage: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [selectedBooking, setSelectedBooking] = useState<EnrichedBookingRecord | null>(null);
-  const [bookings, setBookings] = useState<EnrichedBookingRecord[]>([]);
   const [overdueCount, setOverdueCount] = useState<number>(0);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
   const [isConfirmingRefund, setIsConfirmingRefund] = useState(false);
   const [isInitiatingRefund, setIsInitiatingRefund] = useState(false);
   const [isRefunding, setIsRefunding] = useState(false);
@@ -97,37 +95,33 @@ export const AdminBookingsPage: React.FC = () => {
   const [refundFile, setRefundFile] = useState<File | null>(null);
   const [isSubmittingRefund, setIsSubmittingRefund] = useState(false);
 
-  const loadBookings = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch('/api/admin/bookings');
-      if (!res.ok) throw new Error('Failed to fetch bookings');
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to load bookings');
+  const {
+    data: bookings = [],
+    isLoading,
+    isLoadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refetch,
+  } = usePaginatedQuery<EnrichedBookingRecord>({
+    url: '/api/admin/bookings',
+    pageSize: 6,
+    enabled: true,
+  });
 
-      const enriched: EnrichedBookingRecord[] = data.bookings || [];
-      // Sort by start_time asc
-      enriched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-      setBookings(enriched);
-
-      // The server's own bucket. `lifecycle` is absent only from a response
-      // produced before the field existed, and a booking whose deadline state
-      // cannot be read is not silently counted as fine.
-      const overdue = enriched.filter((b) => b.lifecycle?.bucket === 'OVERDUE');
-      setOverdueCount(overdue.length);
-    } catch (err) {
-      setError(
-        toUserMessage(err, 'The bookings ledger could not be loaded. Please try again.', { page: 'admin-bookings' })
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+  const loadBookings = useCallback(async () => {
+    await refetch();
+  }, [refetch]);
 
   useEffect(() => {
     loadBookings();
-  }, []);
+  }, [loadBookings]);
+
+  // Calculate overdue count when bookings change
+  useEffect(() => {
+    const overdue = bookings.filter((b) => b.lifecycle?.bucket === 'OVERDUE');
+    setOverdueCount(overdue.length);
+  }, [bookings]);
 
   const filtered = bookings.filter((b) => {
     if (filterStatus === 'ALL') return true;
@@ -312,7 +306,7 @@ export const AdminBookingsPage: React.FC = () => {
         </>
       )}
 
-      {loading ? (
+      {isLoading ? (
         <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)] p-12 text-center space-y-3">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-[var(--color-shell-primary)] border-t-transparent mx-auto" />
           <p className="text-xs text-[var(--color-shell-text-muted)]">Loading operational ledger...</p>
@@ -320,7 +314,7 @@ export const AdminBookingsPage: React.FC = () => {
       ) : error ? (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-center space-y-2">
           <AlertCircle className="h-6 w-6 text-rose-600 mx-auto" />
-          <p className="text-xs text-rose-900">{error}</p>
+          <p className="text-xs text-rose-900">{error.message}</p>
           <p className="text-[11px] text-rose-700">
             The ledger is unavailable. No booking data is being shown, and no value below is a placeholder.
           </p>
@@ -450,6 +444,33 @@ const isOverdue = b.lifecycle?.bucket === 'OVERDUE';
         </table>
         </div>
       </div>
+
+      {hasMore && !isLoadingMore && (
+        <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+          <Button
+            onClick={loadMore}
+            variant="outline"
+            size="lg"
+            className="min-w-[200px]"
+            aria-label="Load more bookings"
+          >
+            Load more bookings
+          </Button>
+        </div>
+      )}
+      {isLoadingMore && (
+        <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+          <Button
+            variant="outline"
+            size="lg"
+            className="min-w-[200px]"
+            disabled
+          >
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            Loading...
+          </Button>
+        </div>
+      )}
 
       {/* Booking Detail Modal */}
       {selectedBooking && (

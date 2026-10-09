@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch, captureClientError } from '@/src/lib/apiClient';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 import type { AdminDashboardPayload } from '@/src/lib/adminDashboard';
 
 export const ADMIN_DASHBOARD_REFRESH_INTERVAL_MS = 60_000;
@@ -56,7 +57,12 @@ export function useAdminDashboard(
     };
   }, []);
 
+  const { isRateLimited } = useRateLimitCheck();
+
   const load = useCallback(async () => {
+    // Pause revalidation while the global cooldown is active so the dashboard
+    // interval cannot fire a burst of 429s the moment the limiter resets.
+    if (isRateLimited) return;
     if (inFlight.current) return;
     inFlight.current = true;
     setIsRefreshing(true);
@@ -92,7 +98,7 @@ export function useAdminDashboard(
         setIsInitialLoading(false);
       }
     }
-  }, []);
+  }, [isRateLimited]);
 
   // Initial load.
   useEffect(() => {
@@ -102,10 +108,11 @@ export function useAdminDashboard(
   // Background revalidation.
   useEffect(() => {
     const interval = setInterval(() => {
+      if (isRateLimited) return;
       void load();
     }, refreshIntervalMs);
     return () => clearInterval(interval);
-  }, [load, refreshIntervalMs]);
+  }, [load, refreshIntervalMs, isRateLimited]);
 
   // Revalidate when the admin returns to the tab (covers mutations performed
   // in another tab and long-idle sessions).

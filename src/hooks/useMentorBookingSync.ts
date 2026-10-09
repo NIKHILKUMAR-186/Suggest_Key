@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 
 /**
  * Keeps the mentor bookings ledger synchronised with the server.
@@ -70,6 +71,8 @@ export function useMentorBookingSync({
 }: MentorBookingSyncOptions): void {
   const handlerRef = useRef<() => void>(() => undefined);
   handlerRef.current = () => onInvalidate();
+  
+  const { isRateLimited } = useRateLimitCheck();
 
   // The nearest deadline is the only boundary that can change a tab. A stable
   // string key (rather than the array identity) keeps this effect from
@@ -92,9 +95,11 @@ export function useMentorBookingSync({
     // A boundary a few hundred milliseconds out still warrants an immediate
     // revalidation, because what the page is showing is already stale.
     const wait = Math.max(delay, 0) + 250;
-    const timer = setTimeout(() => handlerRef.current(), Math.min(wait, MAX_BOUNDARY_WAIT_MS));
+    const timer = setTimeout(() => {
+      if (!isRateLimited) handlerRef.current();
+    }, Math.min(wait, MAX_BOUNDARY_WAIT_MS));
     return () => clearTimeout(timer);
-  }, [nextBoundaryKey, enabled]);
+  }, [nextBoundaryKey, enabled, isRateLimited]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -114,7 +119,7 @@ export function useMentorBookingSync({
       if (burstTimer) clearTimeout(burstTimer);
       burstTimer = setTimeout(() => {
         burstTimer = null;
-        handlerRef.current();
+        if (!isRateLimited) handlerRef.current();
       }, BURST_WINDOW_MS);
     };
 
@@ -159,11 +164,13 @@ export function useMentorBookingSync({
     const period = Math.max(MIN_INTERVAL_MS, intervalMs);
     const timer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       notify();
     }, period);
 
     const onResume = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       notify();
     };
 
@@ -188,5 +195,5 @@ export function useMentorBookingSync({
         channel = null;
       }
     };
-  }, [mentorId, intervalMs, enabled]);
+  }, [mentorId, intervalMs, enabled, isRateLimited]);
 }

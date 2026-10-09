@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { ArrowLeft, Shield, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Shield, AlertCircle, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Button } from '@/src/components/ui/Button';
 import { SegmentSelector } from '@/src/components/seeker/SegmentSelector';
@@ -69,9 +69,13 @@ export const SeekerMentorListPage: React.FC = () => {
   const [eligibleLanguages, setEligibleLanguages] = useState<string[]>([]);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [isLoadingMentors, setIsLoadingMentors] = useState<boolean>(false);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [mentorError, setMentorError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [pageSize, setPageSize] = useState<number>(6);
 
   /**
    * Discovery reads the same server endpoint as mentor detail, and a card's
@@ -137,24 +141,32 @@ export const SeekerMentorListPage: React.FC = () => {
     let isMounted = true;
     if (!selectedSegment) {
       setMentors([]);
+      setNextCursor(null);
+      setHasMore(false);
       return;
     }
     async function loadMentors() {
       setIsLoadingMentors(true);
       setMentorError(null);
       try {
-        const { mentors: discMentors, error: mentorErr } = await fetchDiscoverableMentors(
-          selectedSegment!.id,
-          selectedDate
-        );
+        const { mentors: discMentors, nextCursor, hasMore, error: mentorErr } = await fetchDiscoverableMentors({
+          segmentId: selectedSegment!.id,
+          dateStr: selectedDate,
+          cursor: null,
+          pageSize: 6
+        });
         if (mentorErr) throw mentorErr;
         if (isMounted) {
           setMentors(discMentors);
+          setNextCursor(nextCursor);
+          setHasMore(hasMore);
         }
       } catch (err: any) {
         if (isMounted) {
           console.error('Error loading mentors:', err);
           setMentors([]);
+          setNextCursor(null);
+          setHasMore(false);
           setMentorError('Unable to load mentors right now.');
         }
       } finally {
@@ -164,6 +176,28 @@ export const SeekerMentorListPage: React.FC = () => {
     loadMentors();
     return () => { isMounted = false; };
   }, [selectedSegment, selectedDate, reloadToken]);
+
+  const loadMore = useCallback(async () => {
+    if (!selectedSegment || !nextCursor || isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    try {
+      const { mentors: moreMentors, nextCursor: newCursor, hasMore: newHasMore, error: mentorErr } = await fetchDiscoverableMentors({
+        segmentId: selectedSegment.id,
+        dateStr: selectedDate,
+        cursor: nextCursor,
+        pageSize: 6
+      });
+      if (mentorErr) throw mentorErr;
+      setMentors((prev) => [...prev, ...moreMentors]);
+      setNextCursor(newCursor);
+      setHasMore(newHasMore);
+    } catch (err: any) {
+      console.error('Error loading more mentors:', err);
+      setMentorError('Unable to load more mentors.');
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [selectedSegment, selectedDate, nextCursor, isLoadingMore, hasMore]);
 
   // Discovery state is mirrored into the query string so it survives a refresh,
   // a shared link, and the trip out to mentor detail and back. `replace` rather
@@ -370,7 +404,7 @@ export const SeekerMentorListPage: React.FC = () => {
 
       {/* Content */}
       {isLoadingSegments || isLoadingMentors ? (
-        <MentorGridSkeleton count={3} />
+        <MentorGridSkeleton count={6} />
       ) : mentorError ? null : filteredMentors.length === 0 ? (
         <EmptyMentorState
           title={emptyTitle}
@@ -379,14 +413,42 @@ export const SeekerMentorListPage: React.FC = () => {
           actions={emptyActions}
         />
       ) : (
-        <MentorGrid
-          featuredMentors={featuredMentors}
-          regularMentors={regularMentors}
-          selectedSegment={selectedSegment}
-          selectedDate={selectedDate}
-          today={today}
-          navigate={navigate}
-        />
+        <>
+          <MentorGrid
+            featuredMentors={featuredMentors}
+            regularMentors={regularMentors}
+            selectedSegment={selectedSegment}
+            selectedDate={selectedDate}
+            today={today}
+            navigate={navigate}
+          />
+          {hasMore && !isLoadingMore && (
+            <div className="flex justify-center pt-6">
+              <Button
+                onClick={loadMore}
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                aria-label="Load more mentors"
+              >
+                Load more mentors
+              </Button>
+            </div>
+          )}
+          {isLoadingMore && (
+            <div className="flex justify-center pt-6">
+              <Button
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                disabled
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Loading...
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Notice on Real Availability Engine */}

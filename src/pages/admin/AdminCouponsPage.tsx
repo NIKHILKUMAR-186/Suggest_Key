@@ -8,6 +8,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
 import type { AdminCoupon, CouponDiscountType, CouponStatus } from '@/src/types/database';
 
 /**
@@ -63,9 +64,6 @@ const toNullableNumber = (value: string): number | null =>
   value.trim() === '' ? null : Number(value);
 
 export const AdminCouponsPage: React.FC = () => {
-  const [coupons, setCoupons] = useState<AdminCoupon[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>('ALL');
 
   const [showForm, setShowForm] = useState(false);
@@ -74,21 +72,25 @@ export const AdminCouponsPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
+  const {
+    data: coupons = [],
+    isLoading,
+    isLoadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refetch,
+  } = usePaginatedQuery<AdminCoupon>({
+    url: '/api/admin/coupons',
+    pageSize: 6,
+    enabled: true,
+  });
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch('/api/admin/coupons');
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to load coupons');
-      setCoupons(data.coupons || []);
-    } catch (err) {
-      setError(toUserMessage(err, 'Failed to load coupons'));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    await refetch();
+  }, [refetch]);
 
   useEffect(() => {
     load();
@@ -148,6 +150,7 @@ export const AdminCouponsPage: React.FC = () => {
    */
   const changeStatus = async (coupon: AdminCoupon, status: CouponStatus) => {
     setBusyId(coupon.id);
+    setStatusError(null);
     try {
       const res = await apiFetch(`/api/admin/coupons/${coupon.id}/status`, {
         method: 'PATCH',
@@ -156,12 +159,12 @@ export const AdminCouponsPage: React.FC = () => {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setError(data?.error?.message || 'That coupon could not be updated.');
+        setStatusError(data?.error?.message || 'That coupon could not be updated.');
         return;
       }
       await load();
     } catch (err) {
-      setError(toUserMessage(err, 'That coupon could not be updated.'));
+      setStatusError(toUserMessage(err, 'That coupon could not be updated.'));
     } finally {
       setBusyId(null);
     }
@@ -214,7 +217,7 @@ export const AdminCouponsPage: React.FC = () => {
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-[var(--color-shell-error)]/35 bg-[var(--color-shell-error-soft)] px-4 py-3 text-xs text-[var(--color-shell-error)]">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+          <span>{error.message}</span>
         </div>
       )}
 
@@ -352,7 +355,15 @@ export const AdminCouponsPage: React.FC = () => {
       )}
 
       <div className="overflow-hidden rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]">
-        {loading ? (
+        {statusError && (
+          <div className="p-4 text-center text-[var(--color-shell-error)] text-xs">
+            {statusError}
+            <Button variant="outline" size="sm" onClick={() => setStatusError(null)} className="mt-2">
+              Dismiss
+            </Button>
+          </div>
+        )}
+        {isLoading ? (
           <div className="p-8 text-center">
             <Loader2 className="mx-auto h-8 w-8 animate-spin text-[var(--color-shell-text-subtle)]" />
             <p className="mt-2 text-xs text-[var(--color-shell-text-muted)]">Loading coupons…</p>
@@ -368,20 +379,21 @@ export const AdminCouponsPage: React.FC = () => {
             }
           />
         ) : (
-          <div className="table-scroll">
-            <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
-              <thead className="border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] text-[11px] font-semibold uppercase tracking-wider text-[var(--color-shell-text)]">
-                <tr>
-                  <th className="px-4 py-3">Code</th>
-                  <th className="px-4 py-3">Discount</th>
-                  <th className="px-4 py-3">Targeting</th>
-                  <th className="px-4 py-3">Claimed</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--color-shell-border)]">
-                {filtered.map((coupon) => {
+          <>
+            <div className="table-scroll">
+              <table className="w-full text-left text-xs text-[var(--color-shell-text-muted)]">
+                <thead className="border-b border-[var(--color-shell-border)] bg-[var(--color-shell-bg)] text-[11px] font-semibold uppercase tracking-wider text-[var(--color-shell-text)]">
+                  <tr>
+                    <th className="px-4 py-3">Code</th>
+                    <th className="px-4 py-3">Discount</th>
+                    <th className="px-4 py-3">Targeting</th>
+                    <th className="px-4 py-3">Claimed</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-shell-border)]">
+                  {filtered.map((coupon) => {
                   const claimed = coupon.reserved_count + coupon.redeemed_count;
                   return (
                     <tr key={coupon.id} className="transition-colors hover:bg-[var(--color-shell-bg)]">
@@ -479,7 +491,35 @@ export const AdminCouponsPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-        )}
+
+          {hasMore && !isLoadingMore && (
+            <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+              <Button
+                onClick={loadMore}
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                aria-label="Load more coupons"
+              >
+                Load more coupons
+              </Button>
+            </div>
+          )}
+          {isLoadingMore && (
+            <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+              <Button
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                disabled
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Loading...
+              </Button>
+            </div>
+          )}
+        </>
+      )}
       </div>
 
       <p className="text-[11px] text-[var(--color-shell-text-subtle)]">

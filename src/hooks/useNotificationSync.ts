@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { useRateLimitCheck } from './useRateLimitCheck';
 
 /**
  * Keeps a notification list in step with the real `notifications` table.
@@ -41,11 +42,17 @@ export function useNotificationSync({
   // userId/enabled, not by a new inline function on every render.
   const handlerRef = useRef<() => void>(() => undefined);
   handlerRef.current = () => onInvalidate();
+  
+  const { isRateLimited } = useRateLimitCheck();
 
   useEffect(() => {
     if (!enabled || !userId) return;
 
-    const notify = () => handlerRef.current();
+    const notify = () => {
+      // Skip polling if rate limited - the global banner handles user notification
+      if (isRateLimited) return;
+      handlerRef.current();
+    };
     let channel: RealtimeChannel | null = null;
 
     if (isSupabaseConfigured()) {
@@ -91,5 +98,5 @@ export function useNotificationSync({
         channel = null;
       }
     };
-  }, [userId, intervalMs, enabled]);
+  }, [userId, intervalMs, enabled, isRateLimited]);
 }

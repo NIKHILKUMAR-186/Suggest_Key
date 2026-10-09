@@ -11,7 +11,7 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
-import { upsertUserProfile } from '@/src/lib/supabase';
+import { updateUserProfile } from '@/src/lib/supabase';
 
 interface ProfileUpdate {
   full_name?: string;
@@ -86,7 +86,7 @@ export const SeekerSettingsPage: React.FC = () => {
         full_name: displayName,
         timezone: timezone,
       };
-      const { error } = await upsertUserProfile({
+      const { error } = await updateUserProfile({
         id: profile.id,
         email: profile.email || '',
         ...updates,

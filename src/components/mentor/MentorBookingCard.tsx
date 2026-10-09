@@ -193,14 +193,14 @@ export const MentorBookingCard: React.FC<MentorBookingCardProps> = ({
             Review booking
           </Button>
         ) : isPending ? (
-            <Button
-              size="sm"
-              onClick={() => onAction(booking)}
-              className="gap-1.5 text-xs font-semibold"
-            >
-              <Video className="h-3.5 w-3.5" aria-hidden="true" />
-              Add Meeting Link & Confirm
-            </Button>
+          <Button
+            size="sm"
+            onClick={() => onAction(booking)}
+            className="gap-1.5 text-xs font-semibold"
+          >
+            <Video className="h-3.5 w-3.5" aria-hidden="true" />
+            Add Meeting Link & Confirm
+          </Button>
         ) : isConfirmed ? (
           <Button
             size="sm"

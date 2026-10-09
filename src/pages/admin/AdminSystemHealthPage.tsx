@@ -27,6 +27,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { ShortId } from '@/src/components/shared/ShortId';
 import { SystemHealthChart } from '@/src/components/admin/SystemHealthChart';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 import { DASHBOARD_RANGES, DEFAULT_RANGE, SLOW_REQUEST_MS } from '@/src/lib/systemHealth';
 import type { SystemLog, AuditLog, ErrorGroup, SystemHealthDashboard, TimelineBucket } from '@/src/types/systemLogs';
 
@@ -199,6 +200,7 @@ const AuditLogRow: React.FC<AuditLogRowProps> = ({ log, onClick }) => {
 
 export const AdminSystemHealthPage: React.FC = () => {
   const toast = useToast();
+  const { isRateLimited } = useRateLimitCheck();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [errors, setErrors] = useState<SystemLog[]>([]);
@@ -257,11 +259,13 @@ export const AdminSystemHealthPage: React.FC = () => {
     const REFRESH_MS = 20_000;
     const timer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       void fetchDashboard({ silent: true });
     }, REFRESH_MS);
 
     const onVisible = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       void fetchDashboard({ silent: true });
     };
     if (typeof document !== 'undefined') {
@@ -276,7 +280,7 @@ export const AdminSystemHealthPage: React.FC = () => {
         window.removeEventListener('focus', onVisible);
       }
     };
-  }, [fetchDashboard]);
+  }, [fetchDashboard, isRateLimited]);
 
   // Drives the "Last updated: X seconds ago" label.
   useEffect(() => {

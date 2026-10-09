@@ -5,6 +5,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 
 /**
  * Active slot holds, and the terminal states for when something else happened.
@@ -61,6 +62,7 @@ const describeExpiry = (expiresAt: string, serverNowMs: number): string => {
 };
 
 export const AdminHoldsPage: React.FC = () => {
+  const { isRateLimited } = useRateLimitCheck();
   const [holds, setHolds] = useState<AdminHoldRow[]>([]);
   const [serverNow, setServerNow] = useState<number>(Date.now());
   const [loading, setLoading] = useState(true);
@@ -95,10 +97,11 @@ export const AdminHoldsPage: React.FC = () => {
     if (filter !== 'ACTIVE') return;
     const timer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       void load();
     }, 15_000);
     return () => clearInterval(timer);
-  }, [filter, load]);
+  }, [filter, load, isRateLimited]);
 
   const activeCount = useMemo(() => holds.filter((h) => h.status === 'ACTIVE').length, [holds]);
 

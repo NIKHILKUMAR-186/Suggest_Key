@@ -9,7 +9,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { cn } from '@/src/lib/utils';
 import {
-  upsertUserProfile,
+  updateUserProfile,
   uploadProfilePhoto,
   deleteProfilePhoto,
   getProfilePhotoSignedUrl,
@@ -33,11 +33,21 @@ export const MentorSettingsPage: React.FC = () => {
   const [displayName, setDisplayName] = useState<string>(profile?.full_name || '');
   const [timezone, setTimezone] = useState<string>(profile?.timezone || 'Asia/Kolkata');
 
+  // Generate a signed URL for display whenever the profile loads or changes.
+  const refreshAvatarPreview = async () => {
+    if (!profile?.avatar_url) {
+      setAvatarPreview(null);
+      return;
+    }
+    const url = await getProfilePhotoSignedUrl(profile.avatar_url);
+    setAvatarPreview(url);
+  };
+
   useEffect(() => {
     if (profile) {
       setDisplayName(profile.full_name || '');
       setTimezone(profile.timezone || 'Asia/Kolkata');
-      setAvatarPreview(profile.avatar_url || null);
+      refreshAvatarPreview();
     }
   }, [profile]);
 
@@ -60,7 +70,7 @@ export const MentorSettingsPage: React.FC = () => {
 
   const handleCancelAvatar = () => {
     setAvatarFile(null);
-    setAvatarPreview(profile?.avatar_url || null);
+    refreshAvatarPreview();
     setAvatarError(null);
   };
 
@@ -71,7 +81,7 @@ export const MentorSettingsPage: React.FC = () => {
     try {
       const { error: storageError } = await deleteProfilePhoto(user.id);
       if (storageError) throw storageError;
-      const { error } = await upsertUserProfile({
+      const { error } = await updateUserProfile({
         id: user.id,
         email: profile?.email || user.email || '',
         full_name: displayName.trim(),
@@ -106,13 +116,13 @@ export const MentorSettingsPage: React.FC = () => {
         const { path, error: uploadError } = await uploadProfilePhoto(user.id, avatarFile);
         if (uploadError) throw uploadError;
         uploadedPath = path;
+        // Store the storage path in the DB; the signed URL is generated on read.
         if (path) {
-          const url = await getProfilePhotoSignedUrl(path);
-          avatarUrl = url;
+          avatarUrl = path;
         }
       }
 
-      const { error } = await upsertUserProfile({
+      const { error } = await updateUserProfile({
         id: profile.id,
         email: profile.email || '',
         full_name: displayName.trim(),

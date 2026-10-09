@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 
 /**
  * Keeps a seeker's booking list in step with payment decisions.
@@ -40,11 +41,17 @@ export function usePaymentSync({
   // by seekerId/enabled rather than by a new inline function each render.
   const handlerRef = useRef<() => void>(() => undefined);
   handlerRef.current = () => onInvalidate();
+  
+  const { isRateLimited } = useRateLimitCheck();
 
   useEffect(() => {
     if (!enabled || !seekerId) return;
 
-    const notify = () => handlerRef.current();
+    const notify = () => {
+      // Skip polling if rate limited - the global banner handles user notification
+      if (isRateLimited) return;
+      handlerRef.current();
+    };
     let channel: RealtimeChannel | null = null;
 
     if (isSupabaseConfigured()) {
@@ -92,5 +99,5 @@ export function usePaymentSync({
         channel = null;
       }
     };
-  }, [seekerId, intervalMs, enabled]);
+  }, [seekerId, intervalMs, enabled, isRateLimited]);
 }

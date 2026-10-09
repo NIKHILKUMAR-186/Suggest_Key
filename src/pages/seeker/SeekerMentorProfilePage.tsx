@@ -1,23 +1,4 @@
-/**
- * THE PUBLIC MENTOR PROFILE.
- *
- * A read-only page about a mentor: who they are, what they say about themselves,
- * and every session offer they actually sell. It is deliberately a different
- * experience from mentor detail, which is the booking experience - date, slots,
- * the 5-minute hold and the payment hand-off.
- *
- * Every value rendered here comes from `GET /api/seeker/mentors/:id/profile`,
- * which projects an allow-list of public columns and returns 404 for a mentor
- * who is not publicly visible. There is no second source, no cached copy and no
- * fallback mentor, so a failed read renders an error state rather than an
- * invented person.
- *
- * The one action is per OFFER, not per mentor. A mentor holds one ACTIVE gig per
- * segment and may belong to several segments, so a single "Book a slot" button
- * would have to guess. Every offer therefore carries its own button, and each
- * one hands booking the exact `mentorId` + `segmentSlug` + `gigId` that produced
- * it. Nothing here resolves a "default" gig.
- */
+
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {

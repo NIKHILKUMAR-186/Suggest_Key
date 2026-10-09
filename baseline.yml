@@ -1,0 +1,12 @@
+- generic [ref=f6e3]:
+  - generic [ref=f6e4]: "[plugin:vite:oxc] Transform failed with 3 errors: [PARSE_ERROR] Expected corresponding JSX closing tag for 'main'. ╭─[ src/pages/public/LandingPageNew.tsx:417:11 ] │ 214 │ <main id=\"main\"> │ ──┬─ │ ╰─── Opened here │ 417 │ </section> │ ───┬─── │ ╰───── Expected `</main>` ─────╯ [PARSE_ERROR] Expected corresponding JSX closing tag for 'div'. ╭─[ src/pages/public/LandingPageNew.tsx:497:9 ] │ 170 │ <div className=\"sk-ref\" id=\"top\"> │ ─┬─ │ ╰─── Opened here │ 497 │ </main> │ ──┬─ │ ╰─── Expected `</div>` ─────╯ [PARSE_ERROR] Adjacent JSX elements must be wrapped in an enclosing tag. ╭─[ src/pages/public/LandingPageNew.tsx:499:7 ] │ 499 │ <footer className=\"sk-ref-footer\"> │ ┬ │ ╰── │ │ Help: Did you want a JSX fragment `<>...</>`? ─────╯"
+  - generic [ref=f6e5]: S:/suggest-key/Suggest_key/src/pages/public/LandingPageNew.tsx
+  - generic [ref=f6e7]: at transformWithOxc (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:7208:19) at TransformPluginContext.transform (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:7280:26) at EnvironmentPluginContainer.transform (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:8172:51) at async loadAndTransform (S:\suggest-key\Suggest_key\node_modules\vite\dist\node\chunks\node.js:19634:26)
+  - generic [ref=f6e8]:
+    - text: Click outside, press Esc key, or fix the code to dismiss.You can also disable this overlay by setting
+    - code [ref=f6e9]: server.hmr.overlay
+    - text: to
+    - code [ref=f6e10]: "false"
+    - text: in
+    - code [ref=f6e11]: vite.config.ts
+    - text: .

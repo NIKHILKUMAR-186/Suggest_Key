@@ -10,12 +10,14 @@ import {
   DirectoryPagination,
   GeneratedSlot,
 } from '@/src/types/database';
+export type { DirectoryMentor };
 import { deriveAccountState } from '@/src/lib/adminAccountControl';
 import { normalizeSegmentExperience, type SegmentExperienceConfig } from '@/src/lib/segmentExperience';
 import {
   describeGigContextMismatch,
   GIG_CONTEXT_ERROR_MESSAGE,
 } from '@/src/lib/gigContext';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, encodeCursor, decodeCursor, createPaginatedResponse } from '@/src/lib/pagination';
 
 /**
  * Shape returned by `GET /api/mentor-availability/slots` for one mentor.
@@ -239,13 +241,31 @@ export function getHighestPriorityActiveSegment(segments: Segment[]): Segment | 
  * - has active gig for selected segment: gigs row where is_active = true
  * - has at least ONE valid available slot on selected date!
  */
+export interface DiscoverableMentorsQuery {
+  segmentId: string;
+  dateStr: string;
+  cursor?: string | null;
+  pageSize?: number;
+}
+
+export interface DiscoverableMentorsResult {
+  mentors: DiscoverableMentor[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
+  error: Error | null;
+}
+
 export async function fetchDiscoverableMentors(
-  segmentId: string,
-  dateStr: string,
+  query: DiscoverableMentorsQuery,
   currentUtcTime: Date = new Date()
-): Promise<{ mentors: DiscoverableMentor[]; error: Error | null }> {
+): Promise<DiscoverableMentorsResult> {
+  const { segmentId, dateStr, cursor, pageSize: requestedPageSize } = query;
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, requestedPageSize || DEFAULT_PAGE_SIZE));
+  const cursorData = cursor ? decodeCursor(cursor) : null;
+
   if (!isSupabaseConfigured()) {
-    return { mentors: [], error: null };
+    return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: null };
   }
 
   try {
@@ -258,7 +278,7 @@ export async function fetchDiscoverableMentors(
       .maybeSingle();
 
     if (segmentErr) throw segmentErr;
-    if (!segmentData) return { mentors: [], error: null };
+    if (!segmentData) return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: null };
 
     // 2. Get mentor_ids associated with this segment
     const { data: mentorSegments, error: msErr } = await supabase
@@ -268,7 +288,7 @@ export async function fetchDiscoverableMentors(
 
     if (msErr) throw msErr;
     if (!mentorSegments || mentorSegments.length === 0) {
-      return { mentors: [], error: null };
+      return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: null };
     }
 
     const mentorIds = mentorSegments.map((ms: { mentor_id: string }) => ms.mentor_id);
@@ -296,7 +316,7 @@ export async function fetchDiscoverableMentors(
     const operableProfiles = (mentorProfiles || []).filter((mp: any) => isMentorEligible(mp, nowMs));
 
     if (operableProfiles.length === 0) {
-      return { mentors: [], error: null };
+      return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: null };
     }
 
     const approvedMentorIds = operableProfiles.map((mp: { id: string }) => mp.id);
@@ -311,7 +331,7 @@ export async function fetchDiscoverableMentors(
 
     if (gigErr) throw gigErr;
     if (!gigs || gigs.length === 0) {
-      return { mentors: [], error: null };
+      return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: null };
     }
 
     // 5. Slot availability comes from the server, which is the only principal
@@ -376,10 +396,18 @@ export async function fetchDiscoverableMentors(
       });
     }
 
-    return { mentors: discoverableMentors, error: null };
+    // Apply cursor-based pagination to the final filtered results
+    const getCursorData = (item: DiscoverableMentor) => ({ lastId: item.id });
+    const { data: pageData, nextCursor, hasMore } = createPaginatedResponse(
+      discoverableMentors,
+      pageSize,
+      getCursorData
+    );
+
+    return { mentors: pageData, nextCursor, hasMore, pageSize, error: null };
   } catch (err: any) {
     console.error('Error fetching discoverable mentors from Supabase:', logSanitizer.safeMessage(err));
-    return { mentors: [], error: err };
+    return { mentors: [], nextCursor: null, hasMore: false, pageSize, error: err };
   }
 }
 
@@ -680,22 +708,26 @@ export interface AllMentorsQuery {
   language?: string | null;
   minExperience?: number | null;
   maxExperience?: number | null;
-  page?: number;
+  cursor?: string | null;
   pageSize?: number;
+  /** Do not overfetch a lookahead row; use an exact count to detect another page. */
+  strictPageSize?: boolean;
 }
 
 export interface AllMentorsResult {
   mentors: DirectoryMentor[];
-  pagination: DirectoryPagination;
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
   error: Error | null;
 }
 
-const EMPTY_PAGINATION: DirectoryPagination = {
-  page: 1,
-  pageSize: 12,
-  total: 0,
-  totalPages: 0,
-  hasNextPage: false,
+const EMPTY_PAGINATION: AllMentorsResult = {
+  mentors: [],
+  nextCursor: null,
+  hasMore: false,
+  pageSize: DEFAULT_PAGE_SIZE,
+  error: null,
 };
 
 /**
@@ -707,6 +739,7 @@ const EMPTY_PAGINATION: DirectoryPagination = {
  * A mentor with zero bookable slots on any date is still returned, which is
  * exactly how this differs from `fetchDiscoverableMentors`.
  *
+ * Uses cursor-based pagination for consistent results on dynamic data.
  * The number of round-trips is constant (independent of the mentor count) so
  * there is no N+1 pattern: two id-resolution queries when a search term is
  * present, one paged query, then two batched joins for segments and gigs.
@@ -715,12 +748,12 @@ export async function fetchAllMentors(
   query: AllMentorsQuery = {},
   currentUtcTime: Date = new Date()
 ): Promise<AllMentorsResult> {
-  const page = Math.max(1, query.page || 1);
-  const pageSize = Math.min(50, Math.max(1, query.pageSize || 12));
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, query.pageSize || DEFAULT_PAGE_SIZE));
+  const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const search = (query.search || '').trim();
 
   if (!isSupabaseConfigured()) {
-    return { mentors: [], pagination: { ...EMPTY_PAGINATION, page, pageSize }, error: null };
+    return { ...EMPTY_PAGINATION, pageSize, error: null };
   }
 
   try {
@@ -757,16 +790,18 @@ export async function fetchAllMentors(
 
       allowedIds = Array.from(merged);
       if (allowedIds.length === 0) {
-        return { mentors: [], pagination: { ...EMPTY_PAGINATION, page, pageSize }, error: null };
+        return { ...EMPTY_PAGINATION, pageSize, error: null };
       }
     }
 
-    // 2. Paged, filtered query on the eligible mentor set.
+    // 2. Paged, filtered query on the eligible mentor set using cursor-based pagination.
+    const profileSelection = query.strictPageSize
+      ? '*, profile:profiles!inner(id, full_name, avatar_url, timezone, account_status, suspended_until)'
+      : '*, profile:profiles(id, full_name, avatar_url, timezone, account_status, suspended_until)';
+
     let mentorQuery = supabase
       .from('mentor_profiles')
-      .select('*, profile:profiles(id, full_name, avatar_url, timezone, account_status, suspended_until)', {
-        count: 'exact',
-      })
+      .select(profileSelection, query.strictPageSize ? { count: 'exact' } : {})
       .eq('is_approved', true)
       .eq('is_active', true)
       .eq('approval_status', 'approved');
@@ -780,33 +815,68 @@ export async function fetchAllMentors(
       mentorQuery = mentorQuery.lte('experience_years', query.maxExperience);
     }
 
-    const from = (page - 1) * pageSize;
+    // Match the featured/rating/id sort order when advancing a cursor.
     mentorQuery = mentorQuery
       .order('is_featured', { ascending: false })
       .order('rating', { ascending: false })
       .order('id', { ascending: true })
-      .range(from, from + pageSize - 1);
+      .limit(query.strictPageSize ? pageSize : pageSize + 1);
+
+    if (cursor?.lastId) {
+      if (typeof cursor.lastIsFeatured === 'boolean' && typeof cursor.lastRating === 'number') {
+        mentorQuery = mentorQuery.or(
+          `is_featured.lt.${cursor.lastIsFeatured},and(is_featured.eq.${cursor.lastIsFeatured},rating.lt.${cursor.lastRating}),and(is_featured.eq.${cursor.lastIsFeatured},rating.eq.${cursor.lastRating},id.gt.${cursor.lastId})`
+        );
+      } else {
+        mentorQuery = mentorQuery.gt('id', cursor.lastId);
+      }
+    }
+
+    if (query.strictPageSize) {
+      const now = currentUtcTime.toISOString();
+      mentorQuery = mentorQuery.or(
+        `account_status.is.null,account_status.ilike.active,and(account_status.ilike.suspended,suspended_until.lte.${now})`,
+        { foreignTable: 'profile' }
+      );
+    }
 
     const { data: rows, error: rowsErr, count } = await mentorQuery;
     if (rowsErr) throw rowsErr;
 
     const nowMs = currentUtcTime.getTime();
     const eligibleRows = (rows || []).filter((r: any) => isMentorEligible(r, nowMs));
-    const total = typeof count === 'number' ? count : eligibleRows.length;
 
-    const pagination: DirectoryPagination = {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize),
-      hasNextPage: from + pageSize < total,
-    };
-
-    if (eligibleRows.length === 0) {
-      return { mentors: [], pagination, error: null };
+    let pageData: any[];
+    let nextCursor: string | null;
+    let hasMore: boolean;
+    if (query.strictPageSize) {
+      pageData = eligibleRows;
+      hasMore = (count ?? 0) > pageData.length;
+      const last = pageData[pageData.length - 1];
+      nextCursor = hasMore && last
+        ? encodeCursor({
+            lastId: last.id,
+            lastIsFeatured: Boolean(last.is_featured),
+            lastRating: Number(last.rating) || 0,
+          })
+        : null;
+    } else {
+      const getCursorData = (item: any) => ({
+        lastId: item.id,
+        lastIsFeatured: Boolean(item.is_featured),
+        lastRating: Number(item.rating) || 0,
+      });
+      const pagination = createPaginatedResponse(eligibleRows, pageSize, getCursorData);
+      pageData = pagination.data;
+      nextCursor = pagination.nextCursor;
+      hasMore = pagination.hasMore;
     }
 
-    const pageMentorIds = eligibleRows.map((r: { id: string }) => r.id);
+    if (pageData.length === 0) {
+      return { ...EMPTY_PAGINATION, pageSize, nextCursor: null, hasMore: false, error: null };
+    }
+
+    const pageMentorIds = pageData.map((r: { id: string }) => r.id);
 
     // 3. Batched segment membership + segment definitions.
     const { data: mentorSegments, error: msErr } = await supabase
@@ -847,7 +917,7 @@ export async function fetchAllMentors(
       );
     };
 
-    const mentors: DirectoryMentor[] = eligibleRows
+    const mentors: DirectoryMentor[] = pageData
       .filter((mp: any) => matchesSegment(mp.id))
       .map((mp: any) => {
         const profile = mp.profile || {};
@@ -886,12 +956,14 @@ export async function fetchAllMentors(
       }),
     );
 
-    return { mentors, pagination, error: null };
+    return { mentors, nextCursor, hasMore, pageSize, error: null };
   } catch (err: any) {
     console.error('Error fetching all mentors from Supabase:', logSanitizer.safeMessage(err));
     return {
       mentors: [],
-      pagination: { ...EMPTY_PAGINATION, page, pageSize },
+      nextCursor: null,
+      hasMore: false,
+      pageSize,
       error: err,
     };
   }

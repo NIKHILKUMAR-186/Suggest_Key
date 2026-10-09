@@ -10,6 +10,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
 import {
   isRefundOwed,
   canInitiateRefund,
@@ -54,9 +55,6 @@ export const AdminPaymentsPage: React.FC = () => {
   const [selectedPayment, setSelectedPayment] = useState<PaymentItem | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
-  const [payments, setPayments] = useState<PaymentItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   // 'all' | 'refunds_owed' — a refund the platform owes but has not issued.
   const [filter, setFilter] = useState<'all' | 'refunds_owed'>('all');
   const [refundStatusFilter, setRefundStatusFilter] = useState<string>('all');
@@ -71,32 +69,23 @@ export const AdminPaymentsPage: React.FC = () => {
   const [refundProofUrl, setRefundProofUrl] = useState<string | null>(null);
   const toast = useToast();
 
-  /**
-   * The payment id an admin notification was written for, taken from the URL.
-   *
-   * This is how "Review Payment" lands on the exact record the event concerns
-   * instead of dropping the operator at the top of an undifferentiated queue. It
-   * is a real id from a real notification row; nothing here is a default.
-   */
-  const focusedPaymentId = useMemo(() => {
-    const query = currentPath.includes('?') ? currentPath.split('?')[1] : '';
-    return new URLSearchParams(query).get('paymentId');
-  }, [currentPath]);
+  const {
+    data: payments = [],
+    isLoading,
+    isLoadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refetch,
+  } = usePaginatedQuery<PaymentItem>({
+    url: '/api/admin/payments',
+    pageSize: 6,
+    enabled: true,
+  });
 
   const fetchPayments = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch('/api/admin/payments');
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch payments');
-      setPayments(data.payments || []);
-    } catch (err: unknown) {
-      setError(toUserMessage(err, 'The payment queue could not be loaded. Please try again.', { page: 'admin-payments' }));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    await refetch();
+  }, [refetch]);
 
   useEffect(() => {
     fetchPayments();
@@ -106,12 +95,14 @@ export const AdminPaymentsPage: React.FC = () => {
   // id against the fetched payments, so the review modal can only ever show a
   // payment that actually exists in the database.
   useEffect(() => {
-    if (!focusedPaymentId || loading) return;
+    const query = currentPath.includes('?') ? currentPath.split('?')[1] : '';
+    const focusedPaymentId = new URLSearchParams(query).get('paymentId');
+    if (!focusedPaymentId || isLoading) return;
     const match = payments.find((p) => p.id === focusedPaymentId);
     if (!match) return;
     setSelectedPayment(match);
     setIsRejecting(false);
-  }, [focusedPaymentId, payments, loading]);
+  }, [currentPath, payments, isLoading]);
 
   /** Opens the refund form pre-filled from the payment. Records nothing. */
   const openRefundForm = (payment: PaymentItem) => {
@@ -351,7 +342,7 @@ export const AdminPaymentsPage: React.FC = () => {
 
       {/* Payment Table */}
       <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden shadow-xs">
-        {loading ? (
+        {isLoading ? (
           <div className="p-8 text-center">
             <Loader2 className="h-8 w-8 text-zinc-400 mx-auto animate-spin" />
             <p className="mt-2 text-xs text-zinc-500">Loading payments...</p>
@@ -359,12 +350,12 @@ export const AdminPaymentsPage: React.FC = () => {
         ) : error ? (
           <div className="p-6 text-center text-rose-600">
             <AlertCircle className="h-6 w-6 mx-auto mb-2" />
-            <p className="text-xs">{error}</p>
+            <p className="text-xs">{error.message}</p>
             <Button variant="outline" size="sm" onClick={fetchPayments} className="mt-2">
               Retry
             </Button>
           </div>
-          ) : filteredByRefundStatus.length === 0 ? (
+        ) : filteredByRefundStatus.length === 0 ? (
           <EmptyState
             icon={CreditCard}
             title={filter === 'refunds_owed' ? 'No Refunds Owed' : 'No Payments Found'}
@@ -377,75 +368,76 @@ export const AdminPaymentsPage: React.FC = () => {
             }
           />
         ) : (
-          <div className="table-scroll">
-          <table className="w-full text-left text-xs text-zinc-600">
-            <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
-              <tr>
-                <th className="py-3 px-4">Booking / Gig</th>
-                <th className="py-3 px-4">Seeker</th>
-                <th className="py-3 px-4">Mentor</th>
-                <th className="py-3 px-4">Method</th>
-                <th className="py-3 px-4">Reference</th>
-                <th className="py-3 px-4">Amount</th>
-                <th className="py-3 px-4">Submitted</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Refund</th>
-                <th className="py-3 px-4 text-right">Inspect Proof</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {filteredByRefundStatus.map((p) => (
-                <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
-                  <td className="py-3 px-4 font-mono">
-                    {p.bookingCode ? (
-                      <span className="font-bold text-zinc-950 block">#{p.bookingCode}</span>
-                    ) : (
-                      <ShortId value={p.bookingId} label="Booking ID" />
-                    )}
-                    <span className="text-[11px] text-zinc-400">{p.gigTitle || 'Gig unavailable'}</span>
-                  </td>
-                  <td className="py-3 px-4 font-semibold text-zinc-900 break-words">{p.seekerName || '—'}</td>
-                  <td className="py-3 px-4 break-words">{p.mentorName || '—'}</td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <Badge variant={p.gateway === 'razorpay' ? 'default' : 'secondary'} className="text-[10px]">
-                      {p.gateway === 'razorpay' ? 'Razorpay' : 'UPI / QR'}
-                    </Badge>
-                  </td>
-                  <td className="py-3 px-4 font-mono text-zinc-700 break-all">
-                    {p.transactionReference || '—'}
-                  </td>
-                  <td className="py-3 px-4 font-bold text-zinc-950 whitespace-nowrap">
-                    {formatInr(p.amount) || '—'}
-                  </td>
-                  <td className="py-3 px-4 text-zinc-500 whitespace-nowrap">{formatSubmittedAt(p.submittedAt)}</td>
-                  <td className="py-3 px-4">
-                    <Badge
-                      variant={
-                        p.status === 'VERIFIED'
-                          ? 'success'
-                          : p.status === 'PENDING_VERIFICATION'
-                          ? 'warning'
-                          : p.status === 'REJECTED' || p.status === 'FAILED' || p.status === 'REFUND_FAILED'
-                          ? 'destructive'
-                          : 'secondary'
-                      }
-                      className="text-[10px]"
-                    >
-                      {p.status}
-                    </Badge>
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    {p.refundStatus ? (
+          <>
+            <div className="table-scroll">
+            <table className="w-full text-left text-xs text-zinc-600">
+              <thead className="bg-zinc-50/70 border-b border-zinc-200 text-zinc-900 font-semibold uppercase tracking-wider text-[11px]">
+                <tr>
+                  <th className="py-3 px-4">Booking / Gig</th>
+                  <th className="py-3 px-4">Seeker</th>
+                  <th className="py-3 px-4">Mentor</th>
+                  <th className="py-3 px-4">Method</th>
+                  <th className="py-3 px-4">Reference</th>
+                  <th className="py-3 px-4">Amount</th>
+                  <th className="py-3 px-4">Submitted</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">Refund</th>
+                  <th className="py-3 px-4 text-right">Inspect Proof</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {filteredByRefundStatus.map((p) => (
+                  <tr key={p.id} className="hover:bg-zinc-50/50 transition-colors">
+                    <td className="py-3 px-4 font-mono">
+                      {p.bookingCode ? (
+                        <span className="font-bold text-zinc-950 block">#{p.bookingCode}</span>
+                      ) : (
+                        <ShortId value={p.bookingId} label="Booking ID" />
+                      )}
+                      <span className="text-[11px] text-zinc-400">{p.gigTitle || 'Gig unavailable'}</span>
+                    </td>
+                    <td className="py-3 px-4 font-semibold text-zinc-900 break-words">{p.seekerName || '—'}</td>
+                    <td className="py-3 px-4 break-words">{p.mentorName || '—'}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <Badge variant={p.gateway === 'razorpay' ? 'default' : 'secondary'} className="text-[10px]">
+                        {p.gateway === 'razorpay' ? 'Razorpay' : 'UPI / QR'}
+                      </Badge>
+                    </td>
+                    <td className="py-3 px-4 font-mono text-zinc-700 break-all">
+                      {p.transactionReference || '—'}
+                    </td>
+                    <td className="py-3 px-4 font-bold text-zinc-950 whitespace-nowrap">
+                      {formatInr(p.amount) || '—'}
+                    </td>
+                    <td className="py-3 px-4 text-zinc-500 whitespace-nowrap">{formatSubmittedAt(p.submittedAt)}</td>
+                    <td className="py-3 px-4">
                       <Badge
-                        variant={p.refundStatus === 'REFUNDED' ? 'success' : p.refundStatus === 'PENDING' ? 'warning' : 'destructive'}
+                        variant={
+                          p.status === 'VERIFIED'
+                            ? 'success'
+                            : p.status === 'PENDING_VERIFICATION'
+                            ? 'warning'
+                            : p.status === 'REJECTED' || p.status === 'FAILED' || p.status === 'REFUND_FAILED'
+                            ? 'destructive'
+                            : 'secondary'
+                        }
                         className="text-[10px]"
                       >
-                        {refundStatusLabel(p.refundStatus)}
+                        {p.status}
                       </Badge>
-                    ) : (
-                      <span className="text-zinc-400">—</span>
-                    )}
-                  </td>
+                    </td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      {p.refundStatus ? (
+                        <Badge
+                          variant={p.refundStatus === 'REFUNDED' ? 'success' : p.refundStatus === 'PENDING' ? 'warning' : 'destructive'}
+                          className="text-[10px]"
+                        >
+                          {refundStatusLabel(p.refundStatus)}
+                        </Badge>
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      )}
+                    </td>
                   <td className="py-3 px-4 text-right">
                     <Button
                       size="sm"
@@ -465,7 +457,36 @@ export const AdminPaymentsPage: React.FC = () => {
             </tbody>
           </table>
           </div>
-        )}
+
+          {hasMore && !isLoadingMore && (
+            <div className="flex justify-center p-4 border-t border-zinc-200">
+              <Button
+                onClick={loadMore}
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                aria-label="Load more payments"
+              >
+                Load more payments
+              </Button>
+            </div>
+          )}
+          {isLoadingMore && (
+            <div className="flex justify-center p-4 border-t border-zinc-200">
+              <Button
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                disabled
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Loading...
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+
       </div>
 
       {/* Payment Inspection Modal */}
@@ -494,7 +515,7 @@ export const AdminPaymentsPage: React.FC = () => {
                 </span>
               </div>
               <div className="col-span-2">
-                <span className="text-zinc-400 block text-[11px">Gig</span>
+                <span className="text-zinc-400 block text-[11px]">Gig</span>
                 <span className="text-xs font-medium text-zinc-900">{selectedPayment.gigTitle || '—'}</span>
               </div>
             </div>

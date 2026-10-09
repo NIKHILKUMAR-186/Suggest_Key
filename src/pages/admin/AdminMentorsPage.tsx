@@ -6,6 +6,7 @@ import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch } from '@/src/lib/apiClient';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
 import {
   MENTOR_ACCOUNT_BADGE_LABELS,
   deriveMentorAccountState,
@@ -65,28 +66,24 @@ interface ApiMentor {
 export const AdminMentorsPage: React.FC = () => {
   const { navigate } = useNavigation();
   const [filter, setFilter] = useState<FilterKey>('ALL');
-  const [mentors, setMentors] = useState<ApiMentor[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+
+  const {
+    data: mentors = [],
+    isLoading,
+    isLoadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refetch,
+  } = usePaginatedQuery<ApiMentor>({
+    url: '/api/admin/mentors',
+    pageSize: 6,
+    enabled: true,
+  });
 
   const fetchMentors = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiFetch('/api/admin/mentors');
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error?.message || 'Failed to fetch mentors');
-      setMentors(data.mentors || []);
-    } catch (err: any) {
-      setError(toUserMessage(err, 'Failed to load mentors'));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchMentors();
-  }, [fetchMentors]);
+    await refetch();
+  }, [refetch]);
 
   // Derive the badge from the stored columns, exactly as the detail page does.
   const rows = useMemo(
@@ -161,7 +158,7 @@ export const AdminMentorsPage: React.FC = () => {
 
       {/* Mentor table */}
       <div className="overflow-hidden rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]">
-        {loading ? (
+        {isLoading ? (
           <div className="p-8 text-center">
             <Loader2 className="mx-auto h-8 w-8 animate-spin text-[var(--color-shell-text-subtle)]" />
             <p className="mt-2 text-xs text-[var(--color-shell-text-muted)]">Loading mentors…</p>
@@ -169,7 +166,7 @@ export const AdminMentorsPage: React.FC = () => {
         ) : error ? (
           <div className="p-6 text-center text-[var(--color-shell-error)]">
             <AlertTriangle className="mx-auto mb-2 h-6 w-6" />
-            <p className="text-xs">{error}</p>
+            <p className="text-xs">{error.message}</p>
             <Button variant="outline" size="sm" onClick={fetchMentors} className="mt-2">
               Retry
             </Button>
@@ -242,6 +239,33 @@ export const AdminMentorsPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
+        )}
+
+        {hasMore && !isLoadingMore && (
+          <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+            <Button
+              onClick={loadMore}
+              variant="outline"
+              size="lg"
+              className="min-w-[200px]"
+              aria-label="Load more mentors"
+            >
+              Load more mentors
+            </Button>
+          </div>
+        )}
+        {isLoadingMore && (
+          <div className="flex justify-center p-4 border-t border-[var(--color-shell-border)]">
+            <Button
+              variant="outline"
+              size="lg"
+              className="min-w-[200px]"
+              disabled
+            >
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              Loading...
+            </Button>
           </div>
         )}
       </div>

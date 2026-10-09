@@ -21,7 +21,7 @@ import { mentorListPath } from '@/src/lib/mentorNav';
 import { cn } from '@/src/lib/utils';
 
 export const SEGMENT_MENTOR_GRID_CLASS =
-  'grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 xl:grid-cols-4';
+  'grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 xl:grid-cols-3';
 
 /**
  * Adaptive grid layout based on how many mentors the API returned:
@@ -35,7 +35,11 @@ function mentorGridClass(count: number): string {
   return SEGMENT_MENTOR_GRID_CLASS;
 }
 
-const SKELETON_COUNT = 4;
+/**
+ * Number of skeleton cards to render during loading.
+ * Matches the initial page size from the API (useSegmentMentorsByTopic default).
+ */
+const SKELETON_COUNT = 6;
 
 export interface SegmentMentorGridProps {
   mentors: TopicMentor[];
@@ -54,9 +58,17 @@ export interface SegmentMentorGridProps {
 
 const CardSkeleton: React.FC = () => (
   <div className="sk-mentor-card flex flex-col overflow-hidden" aria-hidden="true">
-    <div className="aspect-[4/5] w-full overflow-hidden bg-gradient-to-br from-[var(--segment-accent-soft)] to-[color-mix(in_srgb,var(--segment-accent)_8%,transparent)]" />
+    <div className="sk-mentor-card-media">
+      <div className="aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-[var(--segment-accent-soft)] to-[color-mix(in_srgb,var(--segment-accent)_8%,transparent)]" />
+    </div>
     <div className="sk-mentor-card-body">
-      <Skeleton className="h-6 w-3/5" />
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <Skeleton className="h-6 w-3/5" />
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Skeleton variant="circular" className="h-3.5 w-3.5" />
+          <Skeleton className="h-3.5 w-14" />
+        </div>
+      </div>
       <Skeleton className="h-4 w-4/5" />
       <Skeleton className="h-3 w-1/2" />
       <div className="mt-2 flex items-center gap-2">
@@ -64,20 +76,24 @@ const CardSkeleton: React.FC = () => (
         <Skeleton className="h-3 w-10" />
         <Skeleton className="h-3 w-14" />
       </div>
-      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-full mt-2" />
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-3/5" />
-      <div className="mt-2 space-y-2">
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-2/3" />
+      <div className="mt-4 pt-3 border-t border-[var(--segment-border)] space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="sk-mentor-card-avail-label text-xs font-medium text-[var(--sk-brand-text-muted)]" aria-hidden="true">Available times</span>
+        </div>
+        <div className="sk-slot-chips flex flex-wrap gap-2">
+          <Skeleton className="h-7 w-20 rounded-full" />
+          <Skeleton className="h-7 w-20 rounded-full" />
+          <Skeleton className="h-7 w-20 rounded-full" />
+        </div>
+        <div className="sk-slot-context flex items-center gap-1.5 text-xs text-[var(--sk-brand-text-muted)]">
+          <div className="h-3 w-3 rounded-full bg-[var(--sk-brand-border)]" aria-hidden="true" />
+          <Skeleton className="h-3 w-24" />
+        </div>
       </div>
-      <Skeleton className="h-4 w-1/3" />
-      <div className="mt-2 flex flex-wrap gap-2">
-        <Skeleton className="h-9 w-24 rounded-full" />
-        <Skeleton className="h-9 w-24 rounded-full" />
-        <Skeleton className="h-9 w-24 rounded-full" />
-      </div>
-      <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+      <div className="sk-mentor-card-cta flex flex-col gap-2.5 sm:flex-row mt-4 pt-3 border-t border-[var(--segment-border)]">
         <Skeleton className="h-10 flex-1 rounded-lg" />
         <Skeleton className="h-10 flex-1 rounded-lg" />
       </div>

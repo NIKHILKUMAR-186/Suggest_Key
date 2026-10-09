@@ -8,7 +8,7 @@ import { ProtectedRoute } from '@/src/components/auth/ProtectedRoute';
 // every anonymous visitor, and login/signup are the entry point for every
 // returning user, so deferring them would trade a larger download for a worse
 // first meaningful paint. Everything else is lazy.
-import { LandingPageNew } from '@/src/pages/public/LandingPageNew';
+import { LandingPage } from '@/src/pages/public/LandingPage';
 import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 import { LoginPage } from '@/src/pages/auth/LoginPage';
 import { SignUpPage } from '@/src/pages/auth/SignUpPage';
@@ -99,9 +99,9 @@ const RouterRoutes: React.FC = () => {
   const { activeRole, isAuthenticated } = useAuth();
   const pathname = currentPath.split('?')[0];
 
-  // 1. Public Landing Page (always accessible) - NEW REBUILT LANDING PAGE
+  // 1. Public Landing Page (always accessible)
   if (pathname === '/') {
-    return <LandingPageNew />;
+    return <LandingPage />;
   }
 
   // 2. Dedicated Authentication Routes (always accessible)

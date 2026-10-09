@@ -14,8 +14,6 @@ export const SEGMENT_MENTOR_PAGE_SIZE = 24;
 
 export interface UseSegmentMentorsResult {
   mentors: DirectoryMentor[];
-  /** Real total from the existing query's count, never a local guess. */
-  total: number;
   isLoading: boolean;
   error: string | null;
   reload: () => void;
@@ -32,7 +30,6 @@ export interface UseSegmentMentorsResult {
  */
 export function useSegmentMentors(segmentId: string | null): UseSegmentMentorsResult {
   const [mentors, setMentors] = useState<DirectoryMentor[]>([]);
-  const [total, setTotal] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState<number>(0);
@@ -44,7 +41,6 @@ export function useSegmentMentors(segmentId: string | null): UseSegmentMentorsRe
 
     if (!segmentId) {
       setMentors([]);
-      setTotal(0);
       setError(null);
       setIsLoading(false);
       return;
@@ -54,23 +50,19 @@ export function useSegmentMentors(segmentId: string | null): UseSegmentMentorsRe
       setIsLoading(true);
       setError(null);
       try {
-        const { mentors: rows, pagination, error: fetchErr } = await fetchAllMentors({
+        const { mentors: rows, error: fetchErr } = await fetchAllMentors({
           segmentId,
-          page: 1,
           pageSize: SEGMENT_MENTOR_PAGE_SIZE,
+          cursor: null,
         });
         if (fetchErr) throw fetchErr;
         if (!isMounted) return;
         setMentors(rows);
-        // `pagination.total` is the server's own count, so the badge always
-        // reflects the real size of the segment rather than the page length.
-        setTotal(typeof pagination.total === 'number' ? pagination.total : rows.length);
       } catch (err) {
         if (!isMounted) return;
         console.error('Error loading segment mentors:', logSanitizer.safeMessage(err));
         // A failure must never be rendered as "0 mentors".
         setMentors([]);
-        setTotal(0);
         setError('Unable to load mentors in this segment right now.');
       } finally {
         if (isMounted) setIsLoading(false);
@@ -83,5 +75,5 @@ export function useSegmentMentors(segmentId: string | null): UseSegmentMentorsRe
     };
   }, [segmentId, reloadToken]);
 
-  return { mentors, total, isLoading, error, reload };
+  return { mentors, isLoading, error, reload };
 }

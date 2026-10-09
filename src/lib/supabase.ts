@@ -98,6 +98,16 @@ export async function fetchUserRoles(userId: string): Promise<{ roles: UserRole[
 
 /**
  * Upsert user profile (RLS: auth.uid() = id).
+ *
+ * Used only for first-sign-in profile creation where the row may not exist yet.
+ * Uses `.upsert()` (POST) which requires the INSERT policy; phase36 keeps the
+ * INSERT policy open with `WITH CHECK (auth.uid() = id)` so new sign-ups succeed.
+ *
+ * For UPDATES to an existing profile, use {@link updateUserProfile} instead:
+ * `.upsert()` sends a POST, and when the row already exists PostgREST falls back
+ * to UPDATE, which phase36 restricts to four columns (avatar_url, full_name,
+ * phone, timezone). Including `email` or `updated_at` in an upsert payload on an
+ * existing row triggers a 403 because those columns are not UPDATE-granted.
  */
 export async function upsertUserProfile(profile: Partial<Profile> & { id: string }): Promise<{ error: Error | null }> {
   if (!isSupabaseConfigured()) {
@@ -115,6 +125,45 @@ export async function upsertUserProfile(profile: Partial<Profile> & { id: string
         avatar_url: profile.avatar_url || null,
         updated_at: new Date().toISOString(),
       });
+
+    if (error) throw error;
+    return { error: null };
+  } catch (err: any) {
+    return { error: err };
+  }
+}
+
+/**
+ * Update an existing user profile (RLS: auth.uid() = id, NOT is_account_suspended).
+ *
+ * Uses `.update()` (PATCH) rather than `.upsert()` (POST). Phase36 grants
+ * authenticated users UPDATE only on `avatar_url, full_name, phone, timezone`,
+ * so this payload is limited to exactly those columns plus `id` for the WHERE
+ * clause. Sending `email` or `updated_at` here would cause a 403.
+ *
+ * The authenticated user's session (not form-supplied IDs) authorises the write;
+ * the `.eq('id', profile.id)` filter merely selects the row, the RLS policy
+ * gates the permission.
+ */
+export async function updateUserProfile(profile: Partial<Profile> & { id: string }): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured()) {
+    return { error: new Error('Supabase is not configured') };
+  }
+
+  try {
+    const updates: Record<string, unknown> = {
+      full_name: profile.full_name,
+      timezone: profile.timezone || 'Asia/Kolkata',
+      avatar_url: profile.avatar_url || null,
+    };
+    if (profile.phone !== undefined) {
+      updates.phone = profile.phone;
+    }
+
+    const { error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', profile.id);
 
     if (error) throw error;
     return { error: null };

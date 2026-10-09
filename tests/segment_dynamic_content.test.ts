@@ -102,7 +102,7 @@ describe('Segment-based Dynamic Content', () => {
       }
       const segment = activeSegments[0];
       const today = new Date().toISOString().split('T')[0];
-      const { mentors, error } = await fetchDiscoverableMentors(segment.id, today);
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: segment.id, dateStr: today });
       assert.equal(error, null, 'Should not error when fetching discoverable mentors');
       // Every returned mentor should have the segment's gig
       for (const mentor of mentors) {
@@ -141,7 +141,7 @@ describe('Segment-based Dynamic Content', () => {
       // This test requires a segment with no mentors assigned
       // We can't easily create one, so we verify the query returns empty array rather than error
       const segment = activeSegments[0];
-      const { mentors, error } = await fetchDiscoverableMentors(segment.id, '2099-01-01'); // Future date
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: segment.id, dateStr: '2099-01-01' }); // Future date
       assert.equal(error, null, 'Should not error even with no available slots');
       // Result may be empty if no mentors have slots on that date, which is valid
       assert.ok(Array.isArray(mentors), 'Should return array (possibly empty)');
@@ -160,7 +160,7 @@ describe('Segment-based Dynamic Content', () => {
       }
       const segment = activeSegments[0];
       const today = new Date().toISOString().split('T')[0];
-      const { mentors, error } = await fetchDiscoverableMentors(segment.id, today);
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: segment.id, dateStr: today });
       assert.equal(error, null);
       for (const mentor of mentors) {
         // The gig returned should be for the selected segment
@@ -183,7 +183,7 @@ describe('Segment-based Dynamic Content', () => {
       }
       const segment = activeSegments[0];
       const today = new Date().toISOString().split('T')[0];
-      const { mentors } = await fetchDiscoverableMentors(segment.id, today);
+      const { mentors } = await fetchDiscoverableMentors({ segmentId: segment.id, dateStr: today });
       if (mentors.length === 0) {
         console.log('Skipping: No discoverable mentors for segment');
         return;
@@ -208,7 +208,7 @@ describe('Segment-based Dynamic Content', () => {
       const segment1 = activeSegments[0];
       const segment2 = activeSegments[1];
       const today = new Date().toISOString().split('T')[0];
-      const { mentors } = await fetchDiscoverableMentors(segment1.id, today);
+      const { mentors } = await fetchDiscoverableMentors({ segmentId: segment1.id, dateStr: today });
       for (const mentor of mentors) {
         assert.notEqual(
           mentor.gig.segment_id,
@@ -232,7 +232,7 @@ describe('Segment-based Dynamic Content', () => {
       // Use a future date where no mentors might have availability
       const futureDate = '2099-01-01';
       const segment = activeSegments[0];
-      const { mentors, error } = await fetchDiscoverableMentors(segment.id, futureDate);
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: segment.id, dateStr: futureDate });
       assert.equal(error, null);
       assert.ok(Array.isArray(mentors));
       // Empty array is valid - no mentors with slots on that date
@@ -291,7 +291,7 @@ describe('Segment-based Dynamic Content', () => {
       // the function handles non-existent UUID gracefully
       const fakeInactiveId = '00000000-0000-0000-0000-000000000000';
       const today = new Date().toISOString().split('T')[0];
-      const { mentors, error } = await fetchDiscoverableMentors(fakeInactiveId, today);
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: fakeInactiveId, dateStr: today });
       assert.equal(error, null, 'Should not error for non-existent segment');
       assert.equal(mentors.length, 0, 'Should return empty array for non-existent segment');
     });
@@ -311,8 +311,8 @@ describe('Segment-based Dynamic Content', () => {
       const segment2 = activeSegments[1];
       const today = new Date().toISOString().split('T')[0];
 
-      const { mentors: mentors1, error: err1 } = await fetchDiscoverableMentors(segment1.id, today);
-      const { mentors: mentors2, error: err2 } = await fetchDiscoverableMentors(segment2.id, today);
+      const { mentors: mentors1, error: err1 } = await fetchDiscoverableMentors({ segmentId: segment1.id, dateStr: today });
+      const { mentors: mentors2, error: err2 } = await fetchDiscoverableMentors({ segmentId: segment2.id, dateStr: today });
 
       assert.equal(err1, null);
       assert.equal(err2, null);
@@ -372,7 +372,7 @@ describe('Segment-based Dynamic Content', () => {
       assert.equal(resolved!.id, segment.id);
 
       const today = new Date().toISOString().split('T')[0];
-      const { mentors, error } = await fetchDiscoverableMentors(resolved!.id, today);
+      const { mentors, error } = await fetchDiscoverableMentors({ segmentId: resolved!.id, dateStr: today });
       assert.equal(error, null);
       for (const mentor of mentors) {
         assert.equal(mentor.segment.id, segment.id);

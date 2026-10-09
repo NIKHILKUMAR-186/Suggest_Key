@@ -43,6 +43,30 @@ export function clientRateLimitKey(req: Request, _res: Response): string {
   return `ip:${ipKeyGenerator(req.ip || '')}`;
 }
 
+/**
+ * Calculates the remaining seconds until the rate limit window resets.
+ * Uses the standard draft-8 headers that express-rate-limit sets.
+ */
+function getRetryAfterSeconds(req: Request): number {
+  // express-rate-limit sets `req.rateLimit` at runtime with `standardHeaders:
+  // 'draft-8'`. The package does not ship a global Request augmentation, so we
+  // reach the field through a narrow typed view. `resetTime` is a Date (v8).
+  const rateLimitInfo = (
+    req as unknown as { rateLimit?: { resetTime?: Date | number | string | null } }
+  ).rateLimit;
+  const resetHeader = rateLimitInfo?.resetTime;
+  if (resetHeader) {
+    const resetMs =
+      typeof resetHeader === 'number'
+        ? resetHeader
+        : new Date(resetHeader).getTime();
+    const remainingSec = Math.ceil((resetMs - Date.now()) / 1000);
+    return Math.max(1, remainingSec);
+  }
+  // Fallback: estimate from window
+  return Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+}
+
 const buildLimiter = (limit: number) =>
   rateLimit({
     windowMs: RATE_LIMIT_WINDOW_MS,
@@ -51,9 +75,15 @@ const buildLimiter = (limit: number) =>
     legacyHeaders: false,
     keyGenerator: clientRateLimitKey,
     handler: (req, res) => {
+      const retryAfter = getRetryAfterSeconds(req);
+      res.set('Retry-After', String(retryAfter));
       res.status(429).json({
         success: false,
-        error: { code: 'RATE_LIMITED', message: RATE_LIMIT_MESSAGE },
+        error: {
+          code: 'RATE_LIMITED',
+          message: RATE_LIMIT_MESSAGE,
+          retryAfterSeconds: retryAfter,
+        },
       });
     },
   });

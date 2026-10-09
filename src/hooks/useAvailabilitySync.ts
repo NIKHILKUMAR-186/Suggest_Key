@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured } from '@/src/lib/supabase';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 
 /**
  * The rows the slot engine reads. A change to any of them can change what is
@@ -97,6 +98,8 @@ export function useAvailabilitySync({
   // recreate the channel on every render.
   const handlerRef = useRef<() => void>(() => undefined);
   handlerRef.current = () => onInvalidate();
+  
+  const { isRateLimited } = useRateLimitCheck();
 
   // ---- Boundary timer -----------------------------------------------------
   // Kept in its own effect so a new response that moves the boundary reschedules
@@ -112,10 +115,12 @@ export function useAvailabilitySync({
     const wait = Math.max(delay, 0) + 250;
     // Cap the wait so a far-future boundary cannot leave the page unsynced
     // indefinitely if the clock is wrong.
-    const timer = setTimeout(() => handlerRef.current(), Math.min(wait, 6 * 60 * 60 * 1000));
+    const timer = setTimeout(() => {
+      if (!isRateLimited) handlerRef.current();
+    }, Math.min(wait, 6 * 60 * 60 * 1000));
 
     return () => clearTimeout(timer);
-  }, [nextBoundaryAt, enabled]);
+  }, [nextBoundaryAt, enabled, isRateLimited]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -139,7 +144,8 @@ export function useAvailabilitySync({
       if (burstTimer) clearTimeout(burstTimer);
       burstTimer = setTimeout(() => {
         burstTimer = null;
-        handlerRef.current();
+        // Skip if rate limited
+        if (!isRateLimited) handlerRef.current();
       }, BURST_WINDOW_MS);
     };
 
@@ -192,6 +198,7 @@ export function useAvailabilitySync({
     const period = Math.max(MIN_INTERVAL_MS, intervalMs);
     const timer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       notify();
     }, period);
 
@@ -200,6 +207,7 @@ export function useAvailabilitySync({
     // switched all mean the same thing: realtime events were missed.
     const onResume = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isRateLimited) return;
       notify();
     };
 
@@ -226,5 +234,5 @@ export function useAvailabilitySync({
         channel = null;
       }
     };
-  }, [mentorId, intervalMs, enabled]);
+  }, [mentorId, intervalMs, enabled, isRateLimited]);
 }

@@ -7,6 +7,7 @@ import {
   CalendarClock,
   ChevronDown,
   Filter,
+  Loader2,
   Search,
   SlidersHorizontal,
   Users,
@@ -33,7 +34,7 @@ import {
 import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngine';
 import { formatShortDate } from '@/src/lib/seekerFormat';
 import { mentorListPath, parseAvailabilityDateParam } from '@/src/lib/mentorNav';
-import { DirectoryMentor, DirectoryPagination, Segment } from '@/src/types/database';
+import { DirectoryMentor, Segment } from '@/src/types/database';
 import { SegmentThemeProvider, useSegmentTheme } from '@/src/context/SegmentThemeContext';
 import { cn } from '@/src/lib/utils';
 
@@ -55,15 +56,7 @@ const EXPERIENCE_BOUNDS: Record<Exclude<ExperienceFilter, 'all'>, { min: number;
   '6+': { min: 6 },
 };
 
-const PAGE_SIZE = 12;
-
-const EMPTY_PAGINATION: DirectoryPagination = {
-  page: 1,
-  pageSize: PAGE_SIZE,
-  total: 0,
-  totalPages: 0,
-  hasNextPage: false,
-};
+// Default page size is now 6 (from pagination.ts)
 
 const DirectoryPageInner: React.FC<{
   segments: Segment[];
@@ -177,12 +170,13 @@ export const MentorDirectoryPage: React.FC = () => {
   const [languageFilter, setLanguageFilter] = useState<string>('all');
   const [experienceFilter, setExperienceFilter] = useState<ExperienceFilter>('all');
   const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
-  const [page, setPage] = useState<number>(1);
+  const [cursor, setCursor] = useState<string | null>(null);
 
   const [mentors, setMentors] = useState<DirectoryMentor[]>([]);
-  const [pagination, setPagination] = useState<DirectoryPagination>(EMPTY_PAGINATION);
+  const [hasMore, setHasMore] = useState<boolean>(false);
   const [isLoadingSegments, setIsLoadingSegments] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const [availability, setAvailability] = useState<Map<string, DirectoryMentorAvailability>>(
@@ -248,8 +242,12 @@ export const MentorDirectoryPage: React.FC = () => {
     };
   }, []);
 
-  const loadMentors = useCallback(async () => {
-    setIsLoading(true);
+  const loadMentors = useCallback(async (isLoadMore = false) => {
+    if (isLoadMore) {
+      setIsLoadingMore(true);
+    } else {
+      setIsLoading(true);
+    }
     setError(null);
 
     const bounds =
@@ -261,31 +259,41 @@ export const MentorDirectoryPage: React.FC = () => {
       language: languageFilter === 'all' ? null : languageFilter,
       minExperience: bounds?.min ?? null,
       maxExperience: bounds?.max ?? null,
-      page,
-      pageSize: PAGE_SIZE,
+      cursor: isLoadMore ? cursor : null,
     };
 
     try {
-      const { mentors: rows, pagination: pageInfo, error: fetchErr } = await fetchAllMentors(query);
+      const { mentors: rows, nextCursor, hasMore: more, error: fetchErr } = await fetchAllMentors(query);
       if (fetchErr) throw fetchErr;
-      setMentors(rows);
-      setPagination(pageInfo);
+      if (isLoadMore) {
+        setMentors((prev) => [...prev, ...rows]);
+      } else {
+        setMentors(rows);
+      }
+      setCursor(nextCursor);
+      setHasMore(more);
     } catch (err: any) {
       console.error('Error loading mentor directory:', err);
-      setMentors([]);
-      setPagination(EMPTY_PAGINATION);
+      if (!isLoadMore) {
+        setMentors([]);
+      }
+      setHasMore(false);
       setError('Unable to load mentors right now.');
     } finally {
-      setIsLoading(false);
+      if (isLoadMore) {
+        setIsLoadingMore(false);
+      } else {
+        setIsLoading(false);
+      }
     }
-  }, [debouncedSearch, selectedSegmentId, languageFilter, experienceFilter, page]);
+  }, [debouncedSearch, selectedSegmentId, languageFilter, experienceFilter, cursor]);
 
   useEffect(() => {
     loadMentors();
   }, [loadMentors]);
 
   useEffect(() => {
-    setPage(1);
+    setCursor(null);
   }, [debouncedSearch, selectedSegmentId, languageFilter, experienceFilter]);
 
   const hasActiveFilters =
@@ -623,7 +631,7 @@ export const MentorDirectoryPage: React.FC = () => {
             <Skeleton className="h-3 w-16" />
           ) : (
             <span className="badge badge-neutral">
-              {pagination.total} mentor{pagination.total !== 1 ? 's' : ''}
+              {mentors.length} mentor{mentors.length !== 1 ? 's' : ''}
             </span>
           )}
         </div>
@@ -693,31 +701,30 @@ export const MentorDirectoryPage: React.FC = () => {
           </>
         )}
 
-        {/* Pagination */}
-        {!error && pagination.totalPages > 1 && (
-          <div className="flex items-center justify-center gap-3 pt-2">
+        {/* Load More */}
+        {!error && hasMore && !isLoadingMore && (
+          <div className="flex justify-center pt-6">
             <Button
+              onClick={() => loadMentors(true)}
               variant="outline"
-              size="sm"
-              disabled={pagination.page <= 1 || isLoading}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="gap-1.5"
+              size="lg"
+              className="min-w-[200px]"
+              aria-label="Load more mentors"
             >
-              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Previous</span>
+              Load more mentors
             </Button>
-            <span className="text-xs text-[var(--color-shell-text-muted)]">
-              Page {pagination.page} of {pagination.totalPages}
-            </span>
+          </div>
+        )}
+        {isLoadingMore && (
+          <div className="flex justify-center pt-6">
             <Button
               variant="outline"
-              size="sm"
-              disabled={!pagination.hasNextPage || isLoading}
-              onClick={() => setPage((p) => p + 1)}
-              className="gap-1.5"
+              size="lg"
+              className="min-w-[200px]"
+              disabled
             >
-              <span>Next</span>
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+              Loading...
             </Button>
           </div>
         )}

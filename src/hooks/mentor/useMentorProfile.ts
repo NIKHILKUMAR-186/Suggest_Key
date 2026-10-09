@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   fetchUserProfile,
   fetchUserRoles,
-  upsertUserProfile,
+  updateUserProfile,
 } from '@/src/lib/supabase';
 import { getLocalBookingEngineContext } from '@/src/lib/bookingService';
 import type { Profile } from '@/src/types/auth';
@@ -74,7 +74,7 @@ export async function updateMentorProfile(
   updates: Partial<Profile>
 ): Promise<{ success: boolean; error: string | null }> {
   try {
-    const { error } = await upsertUserProfile({ id: userId, ...updates });
+    const { error } = await updateUserProfile({ id: userId, ...updates });
     if (error) return { success: false, error: error.message };
     return { success: true, error: null };
   } catch (err: any) {

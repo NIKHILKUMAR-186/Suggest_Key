@@ -460,6 +460,8 @@ test('profiles UPDATE is narrowed to the four display columns', () => {
   // INSERT must keep every column: upsertUserProfile is called on first sign-in
   // and writes id/email/created_at under a WITH CHECK (auth.uid() = id) policy.
   // Narrowing it would break new sign-ups.
+  // UPDATE is narrowed to avatar_url,full_name,phone,timezone by the grant above;
+  // updateUserProfile relies on exactly that column set and must never widen it.
   assert.doesNotMatch(
     profileMigration,
     /GRANT\s+INSERT\s*\(/i,

@@ -15,8 +15,8 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useNotifications } from '@/src/context/NotificationContext';
 import { useNotificationSync } from '@/src/hooks/useNotificationSync';
 import { NotificationCard } from '@/src/components/notifications/NotificationCard';
+import { usePaginatedQuery } from '@/src/hooks/usePaginatedQuery';
 import {
-  fetchUserNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
 } from '@/src/lib/notificationService';
@@ -50,37 +50,33 @@ export const AdminNotificationsPage: React.FC = () => {
 
   const adminId = user?.id;
 
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [scopeFilter, setScopeFilter] = useState<(typeof ALERT_SCOPES)[number]>('ALL');
   // Bumped to request a reload from the realtime / visibility revalidation path,
   // which reuses the same loader rather than duplicating the query.
   const [reloadToken, setReloadToken] = useState(0);
 
+  const {
+    data: notifications = [],
+    isLoading,
+    isLoadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refetch,
+  } = usePaginatedQuery<Notification>({
+    url: '/api/admin/notifications',
+    pageSize: 6,
+    enabled: !!adminId,
+    params: { status: statusFilter, type: scopeFilter },
+  });
+
   const loadNotifs = useCallback(async () => {
-    if (!adminId) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchUserNotifications(adminId, {
-        status: statusFilter,
-        type: scopeFilter,
-      });
-      setNotifications(data);
-    } catch (err) {
-      setError(toUserMessage(err, 'The notification queue could not be loaded.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [adminId, statusFilter, scopeFilter]);
+    await refetch();
+  }, [refetch]);
 
   useEffect(() => {
-    void loadNotifs();
+    loadNotifs();
   }, [loadNotifs, reloadToken]);
 
   // A new real notification is written straight to `notifications`, so the
@@ -105,32 +101,26 @@ export const AdminNotificationsPage: React.FC = () => {
 
   const handleMarkRead = async (id: string) => {
     if (!adminId) return;
-    // Optimistic: the card renders read immediately, and the reload below
-    // replaces it with what the database actually stored.
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, is_read: true, read_at: new Date().toISOString() } : n))
-    );
     try {
       await markNotificationAsRead(id, adminId);
       await syncBadge();
+      await refetch();
     } catch (err) {
-      setError(toUserMessage(err, 'That notification could not be marked as read.'));
-      void loadNotifs();
+      console.error('Failed to mark notification as read:', err);
+      // Error will be shown by the hook's error state
+      await refetch();
     }
   };
 
   const handleMarkAllRead = async () => {
     if (!adminId) return;
-    setNotifications((prev) =>
-      prev.map((n) => ({ ...n, is_read: true, read_at: new Date().toISOString() }))
-    );
     try {
       await markAllNotificationsAsRead(adminId);
-      await loadNotifs();
       await syncBadge();
+      await refetch();
     } catch (err) {
-      setError(toUserMessage(err, 'The queue could not be marked as reviewed.'));
-      void loadNotifs();
+      console.error('Failed to mark all notifications as read:', err);
+      await refetch();
     }
   };
 
@@ -178,9 +168,9 @@ export const AdminNotificationsPage: React.FC = () => {
             variant="outline"
             size="sm"
             className="text-xs gap-1.5 h-8"
-            disabled={loading}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+disabled={isLoading}
+            >
+            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
           </Button>
         </div>
@@ -227,13 +217,13 @@ export const AdminNotificationsPage: React.FC = () => {
         <div className="rounded-xl border border-[var(--color-shell-border)] bg-[var(--color-shell-surface)]">
           <ErrorState
             title="Notification Queue Unavailable"
-            message={error}
+            message={error.message}
             onRetry={() => setReloadToken((n) => n + 1)}
           />
         </div>
       )}
 
-      {loading ? (
+      {isLoading ? (
         <div className="py-16 flex flex-col justify-center items-center text-[var(--color-shell-text-subtle)] text-xs gap-2">
           <Loader2 className="h-6 w-6 animate-spin text-[var(--color-shell-text-muted)]" />
           <span>Loading operational alerts…</span>
@@ -249,16 +239,45 @@ export const AdminNotificationsPage: React.FC = () => {
           }
         />
       ) : (
-        <div className="space-y-3">
-          {notifications.map((n) => (
-            <NotificationCard
-              key={n.id}
-              notification={n}
-              onMarkRead={handleMarkRead}
-              role="admin"
-            />
-          ))}
-        </div>
+        <>
+          <div className="space-y-3">
+            {notifications.map((n) => (
+              <NotificationCard
+                key={n.id}
+                notification={n}
+                onMarkRead={handleMarkRead}
+                role="admin"
+              />
+            ))}
+          </div>
+
+          {hasMore && !isLoadingMore && (
+            <div className="flex justify-center pt-4">
+              <Button
+                onClick={loadMore}
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                aria-label="Load more notifications"
+              >
+                Load more notifications
+              </Button>
+            </div>
+          )}
+          {isLoadingMore && (
+            <div className="flex justify-center pt-4">
+              <Button
+                variant="outline"
+                size="lg"
+                className="min-w-[200px]"
+                disabled
+              >
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Loading...
+              </Button>
+            </div>
+          )}
+        </>
       )}
 
       <p className="flex items-start gap-2 rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)] p-3 text-[11px] text-[var(--color-shell-text-subtle)]">

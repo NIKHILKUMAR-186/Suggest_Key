@@ -161,6 +161,80 @@ import { APP_CONFIG } from './src/config/app';
 import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
 import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
+// Pagination constants (mirror src/lib/pagination.ts)
+const DEFAULT_PAGE_SIZE = 6;
+const MAX_PAGE_SIZE = 50;
+const MIN_PAGE_SIZE = 1;
+
+interface PaginationParams {
+  cursor?: string | null;
+  pageSize?: number;
+}
+
+interface ParsedPaginationParams {
+  cursor: string | null;
+  pageSize: number;
+}
+
+interface PaginatedResponse<T> {
+  data: T[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
+}
+
+interface CursorData {
+  lastId: string | number;
+  lastSortValue?: string | number | Date;
+  createdAt?: string;
+}
+
+function parsePaginationParams(params: PaginationParams): ParsedPaginationParams {
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  const clampedPageSize = Math.min(Math.max(pageSize, MIN_PAGE_SIZE), MAX_PAGE_SIZE);
+  return {
+    cursor: params.cursor ?? null,
+    pageSize: clampedPageSize,
+  };
+}
+
+function encodeCursor(data: CursorData): string {
+  try {
+    const json = JSON.stringify(data);
+    return Buffer.from(json).toString('base64');
+  } catch {
+    return '';
+  }
+}
+
+function decodeCursor(cursor: string): CursorData | null {
+  try {
+    const json = Buffer.from(cursor, 'base64').toString('utf-8');
+    return JSON.parse(json) as CursorData;
+  } catch {
+    return null;
+  }
+}
+
+function createPaginatedResponse<T>(
+  data: T[],
+  pageSize: number,
+  getCursorData: (item: T) => CursorData
+): PaginatedResponse<T> {
+  const hasMore = data.length > pageSize;
+  const pageData = hasMore ? data.slice(0, pageSize) : data;
+  const nextCursor = hasMore && pageData.length > 0
+    ? encodeCursor(getCursorData(pageData[pageData.length - 1]))
+    : null;
+
+  return {
+    data: pageData,
+    nextCursor,
+    hasMore,
+    pageSize,
+  };
+}
+
 /**
  * Applicant embed for the admin mentor verification queue.
  *
@@ -996,6 +1070,89 @@ async function loadSegmentMentors(
 }
 
 /**
+ * Paginated version of loadSegmentMentors for admin segment mentors endpoint.
+ * Uses cursor-based pagination with created_at as the cursor field.
+ */
+async function loadSegmentMentorsPaginated(
+  admin: SupabaseClient,
+  segmentId: string,
+  pageSize: number,
+  cursor: string | null,
+): Promise<{ mentors: any[]; nextCursor: string | null; hasMore: boolean; error: any | null }> {
+  // First get the mentor_segments rows with pagination
+  let query = admin
+    .from('mentor_segments')
+    .select('mentor_id, segment_id, is_primary, created_at')
+    .eq('segment_id', segmentId)
+    .order('created_at', { ascending: false })
+    .limit(pageSize + 1);
+
+  if (cursor) {
+    const decoded = decodeCursor(cursor);
+    if (decoded) {
+      query = query.lt('created_at', decoded.createdAt);
+    }
+  }
+
+  const { data: msData, error: msErr } = await query;
+
+  if (msErr) return { mentors: [], nextCursor: null, hasMore: false, error: msErr };
+
+  const rows = msData || [];
+  const hasMore = rows.length > pageSize;
+  const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+  
+  const mentorIds = Array.from(new Set(pageRows.map((ms: any) => ms.mentor_id as string)));
+  if (mentorIds.length === 0) return { mentors: [], nextCursor: null, hasMore: false, error: null };
+
+  const [profilesRes, mentorProfilesRes, rolesRes, gigsRes] = await Promise.all([
+    admin.from('profiles').select('id, full_name, email').in('id', mentorIds),
+    admin.from('mentor_profiles').select('id, approval_status, is_approved, is_active, headline').in('id', mentorIds),
+    admin.from('user_roles').select('user_id, role').in('user_id', mentorIds).eq('role', 'mentor'),
+    admin.from('gigs').select('id, title, mentor_id, segment_id, is_active').in('mentor_id', mentorIds).eq('is_active', true),
+  ]);
+
+  for (const res of [profilesRes, mentorProfilesRes, rolesRes, gigsRes]) {
+    if (res.error) return { mentors: [], nextCursor: null, hasMore: false, error: res.error };
+  }
+
+  const profileMap = new Map((profilesRes.data || []).map((p: any) => [p.id, p]));
+  const mpMap = new Map((mentorProfilesRes.data || []).map((mp: any) => [mp.id, mp]));
+  const mentorRoleIds = new Set((rolesRes.data || []).map((r: any) => r.user_id as string));
+
+  const activeGigByMentor = new Map<string, any>();
+  for (const g of gigsRes.data || []) {
+    if (g.segment_id !== segmentId) continue;
+    if (!activeGigByMentor.has(g.mentor_id)) activeGigByMentor.set(g.mentor_id, g);
+  }
+
+  const mentors = pageRows
+    .filter((ms: any) => mentorRoleIds.has(ms.mentor_id))
+    .map((ms: any) => {
+      const profile = profileMap.get(ms.mentor_id);
+      const mp = mpMap.get(ms.mentor_id);
+      return {
+        id: ms.mentor_id,
+        name: profile?.full_name || 'Unknown',
+        email: profile?.email || '',
+        headline: mp?.headline || '',
+        isPrimary: Boolean(ms.is_primary),
+        activeGig: activeGigByMentor.get(ms.mentor_id)?.title || null,
+        approvalStatus: mp?.approval_status || 'draft',
+        isActive: Boolean(mp?.is_active),
+      };
+    });
+
+  let nextCursor: string | null = null;
+  if (hasMore && pageRows.length > 0) {
+    const lastRow = pageRows[pageRows.length - 1];
+    nextCursor = encodeCursor({ lastId: `${lastRow.mentor_id}:${lastRow.created_at}`, createdAt: lastRow.created_at });
+  }
+
+  return { mentors, nextCursor, hasMore, error: null };
+}
+
+/**
  * Gigs belonging to a segment. A segment with no gigs yields an empty array,
  * which is a normal state and never an error.
  */
@@ -1026,6 +1183,61 @@ async function loadSegmentGigs(
   }));
 
   return { gigs, error: null };
+}
+
+/**
+ * Paginated version of loadSegmentGigs for admin segment gigs endpoint.
+ * Uses cursor-based pagination with created_at as the cursor field.
+ */
+async function loadSegmentGigsPaginated(
+  admin: SupabaseClient,
+  segmentId: string,
+  pageSize: number,
+  cursor: string | null,
+): Promise<{ gigs: any[]; nextCursor: string | null; hasMore: boolean; error: any | null }> {
+  let query = admin
+    .from('gigs')
+    .select('*, segment:segments(name)')
+    .eq('segment_id', segmentId)
+    .order('created_at', { ascending: false })
+    .limit(pageSize + 1);
+
+  if (cursor) {
+    const decoded = decodeCursor(cursor);
+    if (decoded) {
+      query = query.lt('created_at', decoded.createdAt);
+    }
+  }
+
+  const { data, error } = await query;
+
+  if (error) return { gigs: [], nextCursor: null, hasMore: false, error };
+
+  const rows = data || [];
+  const hasMore = rows.length > pageSize;
+  const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+
+  const gigs = pageRows.map((g: any) => ({
+    id: g.id,
+    title: g.title,
+    description: g.description,
+    durationMinutes: g.duration_minutes,
+    priceInr: g.price_inr,
+    isActive: g.is_active,
+    mentorId: g.mentor_id,
+    segmentId: g.segment_id,
+    segmentName: g.segment?.name || 'Unknown',
+    createdAt: g.created_at,
+    updatedAt: g.updated_at,
+  }));
+
+  let nextCursor: string | null = null;
+  if (hasMore && pageRows.length > 0) {
+    const lastRow = pageRows[pageRows.length - 1];
+    nextCursor = encodeCursor({ lastId: lastRow.id, createdAt: lastRow.created_at });
+  }
+
+  return { gigs, nextCursor, hasMore, error: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -2403,9 +2615,13 @@ async function startServer() {
   // a client can never read another mentor's bookings.
   app.get('/api/mentor/bookings', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
     try {
-      const { status } = req.query;
+      const { status, cursor, pageSize: pageSizeParam } = req.query;
       const mentorId = req.auth!.user.id;
       const statusFilter = typeof status === 'string' && status && status !== 'ALL' ? status : null;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
 
       // ONE clock reading for the whole response. Reconciliation, session
       // annotation and the OVERDUE bucket must all be judged against the same
@@ -2416,14 +2632,36 @@ async function startServer() {
 
       const supabaseAdmin = getSupabaseAdmin();
       if (supabaseAdmin) {
-        const { data: bookings, error: bookingsErr } = await loadMentorBookingRows(
-          supabaseAdmin,
-          mentorId,
-          statusFilter
-        );
+        // Build the query with cursor-based pagination
+        let query = supabaseAdmin
+          .from('bookings')
+          .select(MENTOR_BOOKING_SELECT)
+          .eq('mentor_id', mentorId)
+          .order('start_time', { ascending: true })
+          .limit(parsedPageSize + 1); // Fetch one extra to determine hasMore
+
+        if (statusFilter) {
+          query = query.eq('status', statusFilter);
+        }
+
+        if (parsedCursor) {
+          const cursorData = decodeCursor(parsedCursor);
+          if (cursorData?.lastId) {
+            query = query.gt('id', cursorData.lastId);
+          }
+        }
+
+        const { data: bookings, error: bookingsErr } = await query;
         if (bookingsErr) throw bookingsErr;
 
-        const bookingIds = (bookings || []).map((b: any) => b.id);
+        const bookingsArray = bookings || [];
+        const hasMore = bookingsArray.length > parsedPageSize;
+        const pageBookings = hasMore ? bookingsArray.slice(0, parsedPageSize) : bookingsArray;
+        const nextCursor = hasMore && pageBookings.length > 0
+          ? encodeCursor({ lastId: pageBookings[pageBookings.length - 1].id })
+          : null;
+
+        const bookingIds = pageBookings.map((b: any) => b.id);
         const { data: payments, error: paymentsErr } = bookingIds.length
           ? await supabaseAdmin.from('payments').select('*').in('booking_id', bookingIds)
           : { data: [], error: null };
@@ -2439,7 +2677,7 @@ async function startServer() {
         // must never contain a session that has already ended.
         const reconciledMentor = await reconcileAndAnnotateBookingRows(
           supabaseAdmin,
-          [...(bookings || [])],
+          [...pageBookings],
           nowMs
         );
         const enriched = reconciledMentor.map((booking: any) =>
@@ -2455,6 +2693,9 @@ async function startServer() {
         return res.json({
           success: true,
           bookings: enriched,
+          nextCursor,
+          hasMore,
+          pageSize: parsedPageSize,
           // The authoritative instant every `lifecycle` verdict above was
           // computed against. The client uses this to correct its own clock
           // rather than to decide anything.
@@ -2472,9 +2713,28 @@ async function startServer() {
       }
 
       matched.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-      const devEnriched = matched.map((b) => enrichBooking(b, db));
+      
+      // Apply cursor-based pagination for dev fallback
+      let devBookings = matched;
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          const cursorIndex = matched.findIndex((b) => b.id === cursorData.lastId);
+          if (cursorIndex >= 0) {
+            devBookings = matched.slice(cursorIndex + 1);
+          }
+        }
+      }
+      const devPageData = devBookings.slice(0, parsedPageSize + 1);
+      const devHasMore = devPageData.length > parsedPageSize;
+      const devBookingsToReturn = devHasMore ? devPageData.slice(0, parsedPageSize) : devPageData;
+      const devNextCursor = devHasMore && devBookingsToReturn.length > 0
+        ? encodeCursor({ lastId: devBookingsToReturn[devBookingsToReturn.length - 1].id })
+        : null;
+      
+      const devEnriched = devBookingsToReturn.map((b) => enrichBooking(b, db));
 
-      return res.json({ success: true, bookings: devEnriched });
+      return res.json({ success: true, bookings: devEnriched, nextCursor: devNextCursor, hasMore: devHasMore, pageSize: parsedPageSize });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/mentor/bookings' });
     }
@@ -2708,6 +2968,11 @@ async function startServer() {
     try {
       const callerId = req.auth!.user.id;
       const isAdmin = req.auth!.roles.includes('admin');
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
 
       const admin = getSupabaseAdmin();
       if (admin) {
@@ -2720,17 +2985,32 @@ async function startServer() {
             gig:gigs(id, title, duration_minutes, price_inr, original_price_inr, segment_id),
             segment:segments(id, name, slug)
           `)
-          .order('start_time', { ascending: false });
+          .order('start_time', { ascending: false })
+          .limit(parsedPageSize + 1); // Fetch one extra to determine hasMore
 
         if (!isAdmin) {
           query = query.eq('seeker_id', callerId);
         }
 
+        if (parsedCursor) {
+          const cursorData = decodeCursor(parsedCursor);
+          if (cursorData?.lastId) {
+            query = query.gt('id', cursorData.lastId);
+          }
+        }
+
         const { data: bookings, error: bookingsErr } = await query;
         if (bookingsErr) throw bookingsErr;
 
+        const bookingsArray = bookings || [];
+        const hasMore = bookingsArray.length > parsedPageSize;
+        const pageBookings = hasMore ? bookingsArray.slice(0, parsedPageSize) : bookingsArray;
+        const nextCursor = hasMore && pageBookings.length > 0
+          ? encodeCursor({ lastId: pageBookings[pageBookings.length - 1].id })
+          : null;
+
         // Fetch payments for all returned bookings
-        const bookingIds = (bookings || []).map((b: any) => b.id);
+        const bookingIds = pageBookings.map((b: any) => b.id);
         const { data: payments, error: paymentsErr } = bookingIds.length
           ? await admin.from('payments').select('*').in('booking_id', bookingIds)
           : { data: [], error: null };
@@ -2745,7 +3025,7 @@ async function startServer() {
         // window closed is written back as COMPLETED and annotated from the
         // server clock. This is what moves an expired booking out of "Upcoming"
         // and off the join path without anyone clicking End Session.
-        const reconciled = await reconcileAndAnnotateBookingRows(admin, [...(bookings || [])]);
+        const reconciled = await reconcileAndAnnotateBookingRows(admin, [...pageBookings]);
 
         const enriched = reconciled.map((booking: any) =>
           redactMeetingUrlForParticipant(
@@ -2763,7 +3043,7 @@ async function startServer() {
           )
         );
 
-        return res.json({ success: true, bookings: enriched, serverNow: new Date().toISOString() });
+        return res.json({ success: true, bookings: enriched, nextCursor, hasMore, pageSize: parsedPageSize, serverNow: new Date().toISOString() });
       }
 
       // Fallback to in-memory dev DB
@@ -2771,7 +3051,26 @@ async function startServer() {
       const seekerIds = [callerId];
       let matched = db.bookings.filter((b) => seekerIds.includes(b.seeker_id));
       matched.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
-      return res.json({ success: true, bookings: matched.map((b) => enrichBooking(b, db)) });
+      
+      // Apply cursor-based pagination for dev fallback
+      let devBookings = matched;
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          const cursorIndex = matched.findIndex((b) => b.id === cursorData.lastId);
+          if (cursorIndex >= 0) {
+            devBookings = matched.slice(cursorIndex + 1);
+          }
+        }
+      }
+      const devPageData = devBookings.slice(0, parsedPageSize + 1);
+      const devHasMore = devPageData.length > parsedPageSize;
+      const devBookingsToReturn = devHasMore ? devPageData.slice(0, parsedPageSize) : devPageData;
+      const devNextCursor = devHasMore && devBookingsToReturn.length > 0
+        ? encodeCursor({ lastId: devBookingsToReturn[devBookingsToReturn.length - 1].id })
+        : null;
+      
+      return res.json({ success: true, bookings: devBookingsToReturn.map((b) => enrichBooking(b, db)), nextCursor: devNextCursor, hasMore: devHasMore, pageSize: parsedPageSize });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err });
     }
@@ -3488,7 +3787,7 @@ async function startServer() {
         return respondRazorpayFailure(res, result.error);
       }
 
-      if (result.mentorNotified && result.bookingId) {
+if (result.mentorNotified && result.bookingId) {
         const { data: booking } = await admin
           .from('bookings')
           .select('mentor_id, amount_inr')
@@ -3498,11 +3797,49 @@ async function startServer() {
           await notifyMentorOfPaymentCaptured(admin, {
             mentorId: booking.mentor_id,
             bookingId: result.bookingId,
-            // The real payment row, so the notification links to it.
             paymentId: result.paymentId ?? '',
             amountInr: booking.amount_inr,
             source: 'razorpay',
           });
+        }
+      }
+
+      // Notify admins for refund completion/failure events
+      if ((result.handled === 'refund_processed' || result.handled === 'refund_failed') && result.paymentId && result.bookingId) {
+        const adminIds = await resolveActiveAdminIds(admin);
+        if (adminIds.length > 0) {
+          const { data: payment } = await admin
+            .from('payments')
+            .select('amount_inr, gateway, refund_status, refund_id')
+            .eq('id', result.paymentId)
+            .maybeSingle();
+          const { data: booking } = await admin
+            .from('bookings')
+            .select('booking_code')
+            .eq('id', result.bookingId)
+            .maybeSingle();
+          if (payment && booking) {
+            const isProcessed = result.handled === 'refund_processed';
+            await insertPaymentNotifications(admin, {
+              userIds: adminIds,
+              title: isProcessed ? 'Refund Completed' : 'Refund Failed',
+              message: `Refund${booking.booking_code ? ' for booking ' + booking.booking_code : ''} of ${payment.amount_inr ? '₹' + (payment.amount_inr).toLocaleString('en-IN') : 'unknown amount'} has been ${isProcessed ? 'completed' : 'failed'}.`,
+              type: 'PAYMENT',
+              eventType: isProcessed ? 'REFUND_ADMIN_COMPLETED' : 'REFUND_ADMIN_FAILED',
+              entityType: 'payment',
+              entityId: result.paymentId,
+              link: '/admin/payments',
+              metadata: {
+                bookingId: result.bookingId,
+                bookingCode: booking.booking_code,
+                paymentId: result.paymentId,
+                amountInr: payment.amount_inr,
+                gateway: payment.gateway,
+                refundStatus: payment.refund_status,
+                refundId: payment.refund_id,
+              },
+            });
+          }
         }
       }
 
@@ -4380,7 +4717,13 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const { data: bookings, error: bookingsErr } = await admin
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
+
+      let query = admin
         .from('bookings')
         .select(`
           *,
@@ -4389,9 +4732,25 @@ async function startServer() {
           gig:gigs(id, title, duration_minutes, price_inr, segment_id),
           segment:segments(id, name, slug)
         `)
-        .order('start_time', { ascending: true });
+        .order('start_time', { ascending: true })
+        .limit(parsedPageSize + 1); // Fetch one extra to determine hasMore
 
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          query = query.gt('id', cursorData.lastId);
+        }
+      }
+
+      const { data: bookings, error: bookingsErr } = await query;
       if (bookingsErr) throw bookingsErr;
+
+      const bookingsArray = bookings || [];
+      const hasMore = bookingsArray.length > parsedPageSize;
+      const pageBookings = hasMore ? bookingsArray.slice(0, parsedPageSize) : bookingsArray;
+      const nextCursor = hasMore && pageBookings.length > 0
+        ? encodeCursor({ lastId: pageBookings[pageBookings.length - 1].id })
+        : null;
 
       // Reconcile and annotate before building the ledger, so an admin never
       // sees a stale CONFIRMED row for a session that has already ended. The
@@ -4401,12 +4760,12 @@ async function startServer() {
       const adminNowMs = Date.now();
       const reconciledBookings = await reconcileAndAnnotateBookingRows(
         admin,
-        [...(bookings || [])],
+        [...pageBookings],
         adminNowMs
       );
 
       // Get payment info for all bookings
-      const bookingIds = (bookings || []).map((b: any) => b.id);
+      const bookingIds = pageBookings.map((b: any) => b.id);
       const { data: payments, error: paymentsErr } = bookingIds.length
         ? await admin.from('payments').select('*').in('booking_id', bookingIds)
         : { data: [], error: null };
@@ -4469,6 +4828,9 @@ async function startServer() {
       return res.json({
         success: true,
         bookings: enrichedBookings,
+        nextCursor,
+        hasMore,
+        pageSize: parsedPageSize,
         serverNow: new Date(adminNowMs).toISOString(),
       });
     } catch (err: any) {
@@ -5677,6 +6039,12 @@ async function startServer() {
         });
       }
 
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
+
       // Fetch profiles with mentor role
       const { data: mentorRoles, error: rolesErr } = await admin
         .from('user_roles')
@@ -5685,32 +6053,51 @@ async function startServer() {
 
       if (rolesErr) throw rolesErr;
       if (!mentorRoles || mentorRoles.length === 0) {
-        return res.json({ success: true, mentors: [] });
+        return res.json({ success: true, mentors: [], nextCursor: null, hasMore: false, pageSize: parsedPageSize });
       }
 
       const mentorIds = mentorRoles.map((mr: { user_id: string }) => mr.user_id);
 
-      // Fetch profiles
-      const { data: profiles, error: profilesErr } = await admin
+      // Fetch profiles with cursor-based pagination
+      let profilesQuery = admin
         .from('profiles')
         .select('id, email, full_name, timezone, created_at, updated_at')
-        .in('id', mentorIds);
+        .in('id', mentorIds)
+        .order('created_at', { ascending: true })
+        .limit(parsedPageSize + 1);
 
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          profilesQuery = profilesQuery.gt('id', cursorData.lastId);
+        }
+      }
+
+      const { data: profiles, error: profilesErr } = await profilesQuery;
       if (profilesErr) throw profilesErr;
 
-      // Fetch mentor_profiles
+      const profilesArray = profiles || [];
+      const hasMore = profilesArray.length > parsedPageSize;
+      const pageProfiles = hasMore ? profilesArray.slice(0, parsedPageSize) : profilesArray;
+      const nextCursor = hasMore && pageProfiles.length > 0
+        ? encodeCursor({ lastId: pageProfiles[pageProfiles.length - 1].id })
+        : null;
+
+      const pageMentorIds = pageProfiles.map((p: any) => p.id);
+
+      // Fetch mentor_profiles for paginated mentors
       const { data: mentorProfiles, error: mpErr } = await admin
         .from('mentor_profiles')
         .select('*')
-        .in('id', mentorIds);
+        .in('id', pageMentorIds);
 
       if (mpErr) throw mpErr;
 
-      // Fetch mentor_segments with segment details
+      // Fetch mentor_segments with segment details for paginated mentors
       const { data: mentorSegments, error: msErr } = await admin
         .from('mentor_segments')
         .select('*, segment:segments(*)')
-        .in('mentor_id', mentorIds);
+        .in('mentor_id', pageMentorIds);
 
       if (msErr) throw msErr;
 
@@ -5718,13 +6105,21 @@ async function startServer() {
       const { data: gigs, error: gigsErr } = await admin
         .from('gigs')
         .select('*')
-        .in('mentor_id', mentorIds);
+        .in('mentor_id', pageMentorIds);
 
       if (gigsErr) throw gigsErr;
 
+      // Fetch account status for paginated mentors
+      const { data: accountProfiles, error: accountErr } = await admin
+        .from('profiles')
+        .select('id, account_status, suspended_at, suspended_until, suspension_reason, deactivated_at')
+        .in('id', pageMentorIds);
+
+      if (accountErr) throw accountErr;
+
       // Combine data
       const mentorMap = new Map();
-      for (const p of profiles || []) {
+      for (const p of pageProfiles) {
         mentorMap.set(p.id, {
           id: p.id,
           email: p.email,
@@ -5751,18 +6146,6 @@ async function startServer() {
         if (!gigMap.has(g.mentor_id)) gigMap.set(g.mentor_id, []);
         gigMap.get(g.mentor_id)!.push(g);
       }
-
-      // ---- Account status comes from the DATABASE, never hardcoded ----
-      // `profiles.account_status` and `mentor_profiles.is_active` are the source
-      // of truth (prompt section 13). The previous implementation returned a
-      // literal `isActive: true`, which made a deactivated mentor look active
-      // in the Admin UI.
-      const { data: accountProfiles, error: accountErr } = await admin
-        .from('profiles')
-        .select('id, account_status, suspended_at, suspended_until, suspension_reason, deactivated_at')
-        .in('id', mentorIds);
-
-      if (accountErr) throw accountErr;
 
       const accountMap = new Map<string, any>();
       for (const row of accountProfiles || []) {
@@ -5814,7 +6197,7 @@ async function startServer() {
         });
       }
 
-      return res.json({ success: true, mentors });
+      return res.json({ success: true, mentors, nextCursor, hasMore, pageSize: parsedPageSize });
     } catch (err: any) {
       console.error('Failed to fetch admin mentors:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
@@ -7991,7 +8374,7 @@ async function startServer() {
   }
 
   /**
-   * GET /api/seeker/segments/:slug/mentors?topic=<slug>&date=<YYYY-MM-DD>
+   * GET /api/seeker/segments/:slug/mentors?topic=<slug>&date=<YYYY-MM-DD>&cursor=<cursor>&pageSize=<number>
    *
    * The topic-filtered marketplace list backing the seeker's topic chips.
    * Two modes, matching the two things a seeker is looking for:
@@ -8002,6 +8385,7 @@ async function startServer() {
    *   with `date` -> the same list, further restricted to mentors with a real,
    *                  server-generated free slot on that date.
    *
+   * Pagination is cursor-based (keyset) for stable results on dynamic data.
    * Availability is never recomputed here: the date mode delegates to the
    * existing `computeMentorSlotsForDate` engine, so selecting a topic cannot
    * change what counts as bookable, and no fallback slot list is ever
@@ -8021,6 +8405,10 @@ async function startServer() {
 
       const topicSlug = typeof req.query.topic === 'string' ? req.query.topic : null;
       const dateStr = typeof req.query.date === 'string' ? req.query.date : null;
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+      const pageSize = typeof req.query.pageSize === 'string' ? parseInt(req.query.pageSize, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor, pageSize });
 
       if (topicSlug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(topicSlug)) {
         return res.status(400).json({ success: false, error: { code: 'INVALID_TOPIC', message: 'Topic slug is invalid.' } });
@@ -8055,7 +8443,7 @@ async function startServer() {
           .maybeSingle();
         if (topicErr) throw topicErr;
         if (!topic) {
-          return res.json({ success: true, mentors: [], total: 0, topic: null, segment });
+          return res.json({ success: true, mentors: [], nextCursor: null, hasMore: false, pageSize: parsedPageSize, topic: null, segment });
         }
         topicId = topic.id;
       }
@@ -8071,7 +8459,7 @@ async function startServer() {
       if (topicId) {
         const gigIds = await findGigIdsForTopic(admin, topicId);
         if (gigIds.length === 0) {
-          return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+          return res.json({ success: true, mentors: [], nextCursor: null, hasMore: false, pageSize: parsedPageSize, topic: topicSlug, segment });
         }
         gigQuery = gigQuery.in('id', gigIds);
       }
@@ -8081,7 +8469,7 @@ async function startServer() {
 
       const gigList = (gigs || []) as any[];
       if (gigList.length === 0) {
-        return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+        return res.json({ success: true, mentors: [], nextCursor: null, hasMore: false, pageSize: parsedPageSize, topic: topicSlug, segment });
       }
 
       const mentorIds = Array.from(new Set(gigList.map((g: any) => g.mentor_id as string)));
@@ -8127,15 +8515,34 @@ async function startServer() {
       });
 
       if (eligible.length === 0) {
-        return res.json({ success: true, mentors: [], total: 0, topic: topicSlug, segment });
+        return res.json({ success: true, mentors: [], nextCursor: null, hasMore: false, pageSize: parsedPageSize, topic: topicSlug, segment });
       }
+
+      // Apply cursor-based pagination to eligible mentors
+      const cursorData = parsedCursor ? decodeCursor(parsedCursor) : null;
+      let paginatedEligible = eligible;
+      
+      if (cursorData?.lastId) {
+        const cursorIndex = eligible.findIndex((mp: any) => mp.id === cursorData.lastId);
+        if (cursorIndex >= 0) {
+          paginatedEligible = eligible.slice(cursorIndex + 1);
+        }
+      }
+      
+      // Fetch one extra to determine hasMore
+      const pageData = paginatedEligible.slice(0, parsedPageSize + 1);
+      const hasMore = pageData.length > parsedPageSize;
+      const mentorsToReturn = hasMore ? pageData.slice(0, parsedPageSize) : pageData;
+      const nextCursor = hasMore && mentorsToReturn.length > 0
+        ? encodeCursor({ lastId: mentorsToReturn[mentorsToReturn.length - 1].id })
+        : null;
 
       // Date mode reuses the existing availability engine unchanged, so a
       // topic filter can never widen or narrow what is genuinely bookable.
       let slotResults: Map<string, MentorSlotResult> | null = null;
       if (dateStr) {
         const computed = await computeMentorSlotsForDate(admin, {
-          mentorIds: eligible.map((mp: any) => mp.id as string),
+          mentorIds: mentorsToReturn.map((mp: any) => mp.id as string),
           dateStr,
           segmentId: segment.id,
           now,
@@ -8145,7 +8552,7 @@ async function startServer() {
       }
 
       const mentors: any[] = [];
-      for (const mp of eligible) {
+      for (const mp of mentorsToReturn) {
         const mentorGigs = gigList.filter((g: any) => g.mentor_id === mp.id);
         if (mentorGigs.length === 0) continue;
 
@@ -8203,7 +8610,9 @@ async function startServer() {
       return res.json({
         success: true,
         mentors,
-        total: mentors.length,
+        nextCursor,
+        hasMore,
+        pageSize: parsedPageSize,
         topic: topicSlug,
         segment,
       });
@@ -9088,10 +9497,11 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const { mentors, error } = await loadSegmentMentors(admin, segment.id);
+      const { pageSize, cursor } = parsePaginationParams(req.query);
+      const { mentors, nextCursor, hasMore, error } = await loadSegmentMentorsPaginated(admin, segment.id, pageSize, cursor);
       if (error) throw error;
 
-      return res.json({ success: true, mentors });
+      return res.json({ success: true, mentors, nextCursor, hasMore, pageSize });
     } catch (err: any) {
       console.error('Failed to fetch segment mentors:', logSanitizer.safeMessage(err));
       return respondWithServerError({
@@ -9117,10 +9527,11 @@ async function startServer() {
         return res.status(404).json({ success: false, error: { code: 'SEGMENT_NOT_FOUND', message: 'Segment not found' } });
       }
 
-      const { gigs, error } = await loadSegmentGigs(admin, segment.id);
+      const { pageSize, cursor } = parsePaginationParams(req.query);
+      const { gigs, nextCursor, hasMore, error } = await loadSegmentGigsPaginated(admin, segment.id, pageSize, cursor);
       if (error) throw error;
 
-      return res.json({ success: true, gigs });
+      return res.json({ success: true, gigs, nextCursor, hasMore, pageSize });
     } catch (err: any) {
       console.error('Failed to fetch segment gigs:', logSanitizer.safeMessage(err));
       return respondWithServerError({
@@ -9210,24 +9621,50 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      // Fetch all profiles
-      const { data: profiles, error: profilesErr } = await admin
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
+
+      // Fetch profiles with cursor-based pagination
+      let profilesQuery = admin
         .from('profiles')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(parsedPageSize + 1);
 
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          profilesQuery = profilesQuery.gt('id', cursorData.lastId);
+        }
+      }
+
+      const { data: profiles, error: profilesErr } = await profilesQuery;
       if (profilesErr) throw profilesErr;
 
-      // Fetch all user_roles
+      const profilesArray = profiles || [];
+      const hasMore = profilesArray.length > parsedPageSize;
+      const pageProfiles = hasMore ? profilesArray.slice(0, parsedPageSize) : profilesArray;
+      const nextCursor = hasMore && pageProfiles.length > 0
+        ? encodeCursor({ lastId: pageProfiles[pageProfiles.length - 1].id })
+        : null;
+
+      const pageProfileIds = pageProfiles.map((p: any) => p.id);
+
+      // Fetch user_roles for paginated profiles
       const { data: userRoles, error: rolesErr } = await admin
         .from('user_roles')
-        .select('*');
+        .select('*')
+        .in('user_id', pageProfileIds);
 
       if (rolesErr) throw rolesErr;
 
       const { data: applications, error: applicationsErr } = await admin
         .from('mentor_applications')
-        .select('user_id, status');
+        .select('user_id, status')
+        .in('user_id', pageProfileIds);
 
       if (applicationsErr) throw applicationsErr;
 
@@ -9243,7 +9680,7 @@ async function startServer() {
         if (application.user_id) applicationStatusMap.set(application.user_id, application.status);
       }
 
-      const users = (profiles || []).map((p: any) => {
+      const users = pageProfiles.map((p: any) => {
         const roles = rolesMap.get(p.id) || ['seeker'];
         const applicationStatus = applicationStatusMap.get(p.id) || null;
         const primaryRole = roles.includes('admin')
@@ -9266,7 +9703,7 @@ async function startServer() {
         };
       });
 
-      return res.json({ success: true, users });
+      return res.json({ success: true, users, nextCursor, hasMore, pageSize: parsedPageSize });
     } catch (err: any) {
       console.error('Failed to fetch admin users:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
@@ -9315,6 +9752,11 @@ async function startServer() {
         bio: mentorProfile.about,
         years_experience: mentorProfile.experience_years,
       } : null;
+
+      // Generate a signed URL for the profile photo in the private bucket.
+      if (profile && profile.avatar_url) {
+        profile.avatar_url = await signProfilePhotoUrl(admin, profile.avatar_url) ?? profile.avatar_url;
+      }
 
       // ---- Real operational counters for the overview cards -------------------
       // Every number below is a live database count, never a computed guess.
@@ -10094,7 +10536,13 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const { data: payments, error: paymentsErr } = await admin
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
+
+      let query = admin
         .from('payments')
         .select(`
           *,
@@ -10108,14 +10556,30 @@ async function startServer() {
             amount_inr
           )
         `)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(parsedPageSize + 1); // Fetch one extra to determine hasMore
 
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          query = query.gt('id', cursorData.lastId);
+        }
+      }
+
+      const { data: payments, error: paymentsErr } = await query;
       if (paymentsErr) throw paymentsErr;
 
+      const paymentsArray = payments || [];
+      const hasMore = paymentsArray.length > parsedPageSize;
+      const pagePayments = hasMore ? paymentsArray.slice(0, parsedPageSize) : paymentsArray;
+      const nextCursor = hasMore && pagePayments.length > 0
+        ? encodeCursor({ lastId: pagePayments[pagePayments.length - 1].id })
+        : null;
+
       // Get all unique seeker, mentor and gig IDs referenced by these payments.
-      const seekerIds = [...new Set((payments || []).map((p: any) => p.booking?.seeker_id).filter(Boolean))];
-      const mentorIds = [...new Set((payments || []).map((p: any) => p.booking?.mentor_id).filter(Boolean))];
-      const gigIds = [...new Set((payments || []).map((p: any) => p.booking?.gig_id).filter(Boolean))];
+      const seekerIds = [...new Set(pagePayments.map((p: any) => p.booking?.seeker_id).filter(Boolean))];
+      const mentorIds = [...new Set(pagePayments.map((p: any) => p.booking?.mentor_id).filter(Boolean))];
+      const gigIds = [...new Set(pagePayments.map((p: any) => p.booking?.gig_id).filter(Boolean))];
 
       // Fetch the real names/titles. Nothing here is defaulted into a fake
       // value: a name that cannot be resolved stays null and the UI says so.
@@ -10134,7 +10598,7 @@ async function startServer() {
       // never handed to the browser and is never made public.
       const SIGNED_PROOF_TTL_SECONDS = 300;
       const formattedPayments = await Promise.all(
-        (payments || []).map(async (p: any) => {
+        pagePayments.map(async (p: any) => {
           let proofUrl: string | null = null;
           if (p.proof_storage_path) {
             try {
@@ -10160,7 +10624,7 @@ async function startServer() {
         }),
       );
 
-      return res.json({ success: true, payments: formattedPayments });
+      return res.json({ success: true, payments: formattedPayments, nextCursor, hasMore, pageSize: parsedPageSize });
      } catch (err: any) {
       console.error('Failed to fetch admin payments:', logSanitizer.safeMessage(err));
       return respondWithInternalError({ req, res, error: err });
@@ -10248,14 +10712,36 @@ async function startServer() {
         return res.status(503).json({ success: false, error: { code: 'SERVICE_UNAVAILABLE', message: 'Admin client not configured.' } });
       }
 
-      const { data: coupons, error: couponsErr } = await admin
+      const { cursor, pageSize: pageSizeParam } = req.query;
+      const cursorStr = typeof cursor === 'string' ? cursor : null;
+      const pageSize = typeof pageSizeParam === 'string' ? parseInt(pageSizeParam, 10) : undefined;
+
+      const { cursor: parsedCursor, pageSize: parsedPageSize } = parsePaginationParams({ cursor: cursorStr, pageSize });
+
+      let query = admin
         .from('coupons')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(parsedPageSize + 1); // Fetch one extra to determine hasMore
 
+      if (parsedCursor) {
+        const cursorData = decodeCursor(parsedCursor);
+        if (cursorData?.lastId) {
+          query = query.gt('id', cursorData.lastId);
+        }
+      }
+
+      const { data: coupons, error: couponsErr } = await query;
       if (couponsErr) throw couponsErr;
 
-      const ids = (coupons || []).map((c: any) => c.id);
+      const couponsArray = coupons || [];
+      const hasMore = couponsArray.length > parsedPageSize;
+      const pageCoupons = hasMore ? couponsArray.slice(0, parsedPageSize) : couponsArray;
+      const nextCursor = hasMore && pageCoupons.length > 0
+        ? encodeCursor({ lastId: pageCoupons[pageCoupons.length - 1].id })
+        : null;
+
+      const ids = pageCoupons.map((c: any) => c.id);
       const { data: usage, error: usageErr } = ids.length
         ? await admin
           .from('coupon_usage')
@@ -10275,12 +10761,15 @@ async function startServer() {
 
       return res.json({
         success: true,
-        coupons: (coupons || []).map((c: any) => ({
+        coupons: pageCoupons.map((c: any) => ({
           ...c,
           reserved_count: counts.get(c.id)?.reserved ?? 0,
           redeemed_count: counts.get(c.id)?.redeemed ?? 0,
           released_count: counts.get(c.id)?.released ?? 0,
         })),
+        nextCursor,
+        hasMore,
+        pageSize: parsedPageSize,
       });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err, context: 'GET /api/admin/coupons' });
@@ -10728,6 +11217,37 @@ async function startServer() {
         },
       });
 
+      // Notify all active admins of the manual refund completion
+      const adminIds = await resolveActiveAdminIds(admin);
+      if (adminIds.length > 0) {
+        const { data: booking } = await admin
+          .from('bookings')
+          .select('booking_code')
+          .eq('id', payment.booking_id)
+          .maybeSingle();
+        if (booking) {
+          await insertPaymentNotifications(admin, {
+            userIds: adminIds,
+            title: 'Manual Refund Completed',
+            message: `Manual refund of ₹${amount.value.toLocaleString('en-IN')}${booking.booking_code ? ' for booking ' + booking.booking_code : ''} completed by ${refundMethodLabel(method.value)} (reference: ${reference.value}).`,
+            type: 'PAYMENT',
+            eventType: 'REFUND_ADMIN_COMPLETED',
+            entityType: 'payment',
+            entityId: id,
+            link: '/admin/payments',
+            metadata: {
+              bookingId: payment.booking_id,
+              bookingCode: booking.booking_code,
+              paymentId: id,
+              amountInr: amount.value,
+              refundMethod: method.value,
+              refundReference: reference.value,
+              completedBy: req.auth!.user.id,
+            },
+          });
+        }
+      }
+
       return res.json({
         success: true,
         refund: result,
@@ -10889,6 +11409,34 @@ async function startServer() {
           refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
           kind: refundResult.value.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
         });
+
+        // Notify all active admins
+        const adminIds = await resolveActiveAdminIds(admin);
+        if (adminIds.length > 0) {
+          const notice = refundNotice(
+            refundResult.value.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
+            { amountInr: payment.amount_inr, bookingCode: booking.booking_code }
+          );
+          await insertPaymentNotifications(admin, {
+            userIds: adminIds,
+            title: notice.title,
+            message: `Admin-initiated refund${booking.booking_code ? ' for booking ' + booking.booking_code : ''}: ${notice.message}`,
+            type: 'PAYMENT',
+            eventType: 'REFUND_ADMIN_INITIATED',
+            entityType: 'payment',
+            entityId: payment.id,
+            link: '/admin/payments',
+            metadata: {
+              bookingId: payment.booking_id,
+              bookingCode: booking.booking_code,
+              paymentId: payment.id,
+              amountInr: payment.amount_inr,
+              gateway: payment.gateway,
+              initiatedBy: req.auth!.user.id,
+              refundStatus: refundResult.value.status,
+            },
+          });
+        }
       }
 
       // 4. Audit.

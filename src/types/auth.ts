@@ -10,6 +10,7 @@ export interface Profile {
   full_name: string;
   avatar_url?: string | null;
   timezone: string;
+  phone?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -17,6 +17,7 @@ import { SupportPriorityBadge, SupportStatusBadge, TicketCodeChip } from '@/src/
 import { LoadingState } from '@/src/components/shared/LoadingState';
 import { ErrorState } from '@/src/components/shared/ErrorState';
 import { useNavigation } from '@/src/context/NavigationContext';
+import { useRateLimitCheck } from '@/src/hooks/useRateLimitCheck';
 import {
   SUPPORT_STATUS_TRANSITIONS,
   SUPPORT_TICKET_PRIORITIES,
@@ -75,6 +76,7 @@ const STATUS_TABS: Array<{ id: 'ALL' | SupportTicketStatus; label: string }> = [
 
 export const AdminSupportPage: React.FC<{ initialTicketCode?: string }> = ({ initialTicketCode }) => {
   const { currentPath } = useNavigation();
+  const { isRateLimited } = useRateLimitCheck();
 
   // Support notifications deep-link as `/admin/support?ticketCode=SK-...`, so the
   // queue opens that ticket rather than an empty detail pane.
@@ -284,6 +286,7 @@ const AdminTicketDetail: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { isRateLimited } = useRateLimitCheck();
 
   const [reply, setReply] = useState('');
   const [note, setNote] = useState('');
@@ -313,9 +316,12 @@ const AdminTicketDetail: React.FC<{
   // transport.
   useEffect(() => {
     if (!detail || !isSupportTicketReplyable(detail.ticket.status)) return;
-    const timer = setInterval(() => void load(), 20000);
+    const timer = setInterval(() => {
+      if (isRateLimited) return;
+      void load();
+    }, 20000);
     return () => clearInterval(timer);
-  }, [detail, load]);
+  }, [detail, load, isRateLimited]);
 
   /** Wraps an admin action so failure surfaces once and success reloads. */
   const run = async (action: () => Promise<unknown>) => {

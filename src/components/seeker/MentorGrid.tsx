@@ -19,49 +19,103 @@ export interface MentorGridProps {
 }
 
 /**
- * Two columns is the sweet spot for a discovery grid: a mentor card needs room
- * for a bio, availability, price and two actions, so a third column would
- * squeeze every card into a cramped column and a single mentor would be left
- * stranded at half the page width.
+ * Responsive grid for mentor cards:
+ * - Mobile: 1 column
+ * - Tablet (md): 2 columns
+ * - Desktop (lg): 3 columns
+ * - Large desktop (xl): 3 columns (max 3 for readability)
  */
 export const MENTOR_GRID_CLASS =
-  'grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6';
+  'grid grid-cols-1 gap-5 md:grid-cols-2 md:gap-6 lg:grid-cols-3 xl:grid-cols-3';
 
 export const MentorCardSkeleton: React.FC = () => (
   <div
     aria-hidden="true"
-    className="seeker-card-premium flex h-full flex-col p-5 sm:p-6"
+    className="seeker-card-premium relative flex h-full flex-col p-5 sm:p-6"
   >
-    <div className="flex items-center gap-4">
-      <Skeleton variant="circular" className="h-14 w-14 shrink-0 sm:h-[68px] sm:w-[68px]" />
-      <div className="flex-1 space-y-2">
-        <Skeleton className="h-4 w-2/3" />
-        <Skeleton className="h-3 w-1/2" />
+    {/* Segment color indicator */}
+    <div className="segment-indicator" aria-hidden="true" />
+
+    <div className="mentor-card-body">
+      {/* Identity header - avatar + name + badges */}
+      <div className="flex items-center gap-4">
+        <Skeleton variant="circular" className="h-14 w-14 shrink-0 sm:h-[68px] sm:w-[68px]" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
+            <Skeleton className="h-5 w-2/3" />
+            <Skeleton className="h-5 w-16 rounded-md" />
+          </div>
+          <Skeleton className="h-3.5 w-4/5" />
+        </div>
       </div>
-    </div>
-    <div className="mt-4 space-y-2">
-      <Skeleton className="h-3 w-full" />
-      <Skeleton className="h-3 w-4/5" />
-    </div>
-    <div className="mt-4 flex gap-1.5">
-      <Skeleton className="h-5 w-20 rounded-md" />
-      <Skeleton className="h-5 w-16 rounded-md" />
-    </div>
-    <div className="mt-auto space-y-3 pt-5">
-      <div className="h-px w-full bg-[var(--color-shell-border)]" />
-      <div className="flex items-end justify-between">
-        <Skeleton className="h-8 w-28" />
-        <Skeleton className="h-5 w-20" />
+
+      {/* Bio preview */}
+      <div className="mt-4 space-y-2">
+        <Skeleton className="h-3.5 w-full" />
+        <Skeleton className="h-3.5 w-4/5" />
+        <Skeleton className="h-3.5 w-3/5" />
       </div>
-      <div className="flex gap-2.5">
-        <Skeleton className="h-11 flex-1 rounded-xl" />
-        <Skeleton className="h-11 flex-1 rounded-xl" />
+
+      {/* Expertise chips */}
+      <div className="mt-4 flex flex-wrap gap-1.5">
+        <Skeleton className="h-5 w-16 rounded-full" />
+        <Skeleton className="h-5 w-20 rounded-full" />
+        <Skeleton className="h-5 w-14 rounded-full" />
+      </div>
+
+      {/* Language + timezone + experience */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <div className="inline-flex items-center gap-1.5">
+          <Skeleton variant="circular" className="h-3.5 w-3.5 shrink-0" />
+          <Skeleton className="h-3 w-24" />
+        </div>
+        <div className="inline-flex items-center gap-1.5">
+          <Skeleton variant="circular" className="h-3.5 w-3.5 shrink-0" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+        <Skeleton className="h-3 w-28" />
+      </div>
+
+      {/* Commerce footer */}
+      <div className="mentor-card-footer mt-auto space-y-4 pt-5 border-t border-[var(--color-shell-border)]">
+        {/* Availability badge */}
+        <div className="flex items-center gap-2">
+          <Skeleton variant="circular" className="h-3.5 w-3.5 shrink-0" />
+          <Skeleton className="h-3 w-36" />
+        </div>
+
+        {/* Price/duration row */}
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Skeleton variant="circular" className="h-3 w-3 shrink-0" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+            <Skeleton className="h-4 w-20" />
+          </div>
+          <div className="shrink-0 text-right space-y-1">
+            <div className="flex items-center gap-1.5">
+              <Skeleton variant="circular" className="h-3.5 w-3.5 shrink-0" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Skeleton className="h-5 w-12 rounded-md" />
+              <Skeleton className="h-5 w-16 rounded-md" />
+            </div>
+          </div>
+        </div>
+
+        {/* CTA buttons */}
+        <div className="flex flex-col gap-2.5 sm:flex-row">
+          <Skeleton className="h-11 flex-1 rounded-xl" />
+          <Skeleton className="h-11 flex-1 rounded-xl" />
+        </div>
       </div>
     </div>
   </div>
 );
 
-export const MentorGridSkeleton: React.FC<{ count?: number }> = ({ count = 3 }) => (
+export const MentorGridSkeleton: React.FC<{ count?: number }> = ({ count = 6 }) => (
   <div className={MENTOR_GRID_CLASS} aria-hidden="true">
     {Array.from({ length: count }).map((_, i) => (
       <MentorCardSkeleton key={i} />
