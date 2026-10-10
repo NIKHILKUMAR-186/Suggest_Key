@@ -657,8 +657,9 @@ describe('K. every surface reads the same resolver', () => {
     const card = read('src/components/mentor/MentorBookingCard.tsx');
     assert.match(card, /label: 'Review Booking'/);
     // The late-confirm capability itself is unchanged and server-enforced; what
-    // is gone is the button that fires it without the mentor choosing to.
-    assert.match(card, /'Add Meeting Link & Confirm'/);
+    // is gone is the button that fires it without the mentor choosing to. The
+    // label renders as JSX text, so it is matched unquoted.
+    assert.match(card, /Add Meeting Link & Confirm/);
     assert.match(card, /Meeting link deadline missed/);
     assert.match(card, /Overdue by/);
   });

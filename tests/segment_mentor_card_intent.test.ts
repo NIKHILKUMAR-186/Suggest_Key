@@ -445,13 +445,19 @@ describe('the card adds detail without adding a product capability', () => {
     );
   });
 
-  it('the next-available label is derived from a real slot or not shown at all', () => {
+  it('the availability display is derived from real slots or absent', () => {
     const card = code(CARD);
-    // The server returns generated slots; the card reads the earliest one. It
-    // never formats a time the API did not send.
+    // The server returns generated slots; the card filters them to the bookable
+    // ones and shows up to three as chips. It never formats a time the API did
+    // not send, and it never claims availability without a slot behind it.
     assert.match(card, /const openSlots = \(mentor\.available_slots \|\| \[\]\)/);
-    assert.match(card, /formatNextAvailableLabel\(/);
+    assert.match(card, /\.filter\(\(s\) => s\.is_available\)/);
+    assert.match(card, /const visibleSlots = openSlots\.slice\(/);
     assert.match(card, /formatLocalTimeLabel\(/);
+    // The whole availability block is gated on slots existing, and the empty
+    // case says so explicitly rather than inventing availability.
+    assert.match(card, /openSlots\.length > 0 \?/);
+    assert.match(card, /No upcoming slots/);
     // No "available today" claim without a slot behind it.
     assert.equal(
       /Available today|available now/i.test(card),

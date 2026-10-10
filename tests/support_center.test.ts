@@ -1120,12 +1120,14 @@ describe('Formspree is gone, not duplicated', () => {
 
 describe('support routes are wired to the right pages', () => {
   it('the admin support path serves the queue, not the user form', () => {
+    assert.match(ROUTER, /if \(pathname === '\/admin\/support'\) return <AdminSupportPage \/>/);
+    // The router is code-split: the page arrives either as a static named import
+    // or as a lazy dynamic import. Both are wired; neither may be lost.
     assert.match(
       ROUTER,
-      /if \(pathname === '\/admin\/support'\) return <AdminSupportPage \/>/,
-      '/admin/support must render the operational queue',
+      /import \{ AdminSupportPage \} from|lazy\(\(\) => import\('@\/src\/pages\/admin\/AdminSupportPage'\)/,
+      'the admin queue page must be loaded by the router',
     );
-    assert.match(ROUTER, /import \{ AdminSupportPage \} from/);
   });
 
   it('seeker and mentor support paths render the shared ticket page', () => {

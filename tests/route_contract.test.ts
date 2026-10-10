@@ -201,8 +201,11 @@ describe('the reschedule route exists end to end', () => {
       /pathname === '\/seeker\/reschedule'\) return <SeekerReschedulePage \/>/.test(code(ROUTER)),
       'Router.tsx must route /seeker/reschedule to its own page',
     );
+    // Code-split router: the page arrives either as a static named import or as
+    // a lazy dynamic import. Both are wired; neither may be lost.
     assert.ok(
-      code(ROUTER).includes("import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage'"),
+      code(ROUTER).includes("import { SeekerReschedulePage } from '@/src/pages/seeker/SeekerReschedulePage'")
+        || /lazy\(\(\) => import\('@\/src\/pages\/seeker\/SeekerReschedulePage'\)/.test(code(ROUTER)),
       'the page must be imported by the router',
     );
   });

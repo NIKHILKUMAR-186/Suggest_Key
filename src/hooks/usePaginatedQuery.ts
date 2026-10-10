@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type {
   PaginationParams,
   ParsedPaginationParams,
@@ -7,6 +7,24 @@ import type {
 } from '@/src/lib/pagination';
 import { DEFAULT_PAGE_SIZE, parsePaginationParams, encodeCursor, decodeCursor } from '@/src/lib/pagination';
 import { apiFetch } from '@/src/lib/apiClient';
+
+/**
+ * Shallow equality for pagination params. Returns true when all own enumerable
+ * keys of both objects have identical values (by Object.is). Used to prevent
+ * redundant state updates that would trigger an infinite render/fetch loop.
+ */
+function shallowEqual<A extends Record<string, unknown>, B extends Record<string, unknown>>(
+  a: A,
+  b: B,
+): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  return true;
+}
 
 export interface UsePaginatedQueryOptions<T, TParams extends PaginationParams = PaginationParams> {
   url?: string;
@@ -141,7 +159,12 @@ export function usePaginatedQuery<T, TParams extends PaginationParams = Paginati
       const mergedParams = { ...params, ...newParams };
       const parsed = parsePaginationParams(mergedParams);
       const finalParams = { ...mergedParams, ...parsed } as ParsedPaginationParams & TParams;
-      setParamsState(finalParams);
+      // Only update if the normalized params differ by value. This prevents a
+      // re-render + effect re-fire when the caller passes params that normalize
+      // to the same thing (e.g. an empty object, or identical pageSize).
+      if (!shallowEqual(params, finalParams)) {
+        setParamsState(finalParams);
+      }
     },
     [params]
   );
@@ -150,8 +173,13 @@ export function usePaginatedQuery<T, TParams extends PaginationParams = Paginati
     if (!enabled) return;
     const parsed = parsePaginationParams(params);
     const finalParams = { ...params, ...parsed } as ParsedPaginationParams & TParams;
-    setParamsState(finalParams);
-    executeFetch(finalParams, false);
+    // Only fire when the normalized params actually change by value. Without
+    // this guard, `setParamsState(finalParams)` always produces a new object
+    // identity, the effect re-runs, and the fetch loops indefinitely.
+    if (!shallowEqual(params, finalParams)) {
+      setParamsState(finalParams);
+      executeFetch(finalParams, false);
+    }
   }, [enabled, params]);
 
   return {

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowRight } from 'lucide-react';
+import { motion, useScroll, useSpring, useTransform, type MotionValue } from 'motion/react';
 import { MagneticButton, Reveal, SplitText, landingMotion, useReducedMotion } from '@/src/components/landing/motion';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { HandArrow, NotebookScene, StickerBolt, StickerHeart, StickerSparkle } from '@/src/components/landing/SuperrStickers';
+import { HandArrow, StickerBolt, StickerHeart, StickerSparkle } from '@/src/components/landing/SuperrStickers';
 import { mentorSegmentLabel, mentorSessionLabel } from '@/src/components/landing/mentorMeta';
 import type { MentorDirectoryItem } from '@/src/hooks/useMentorDirectory';
 
@@ -30,15 +31,138 @@ export interface SuperrHeroProps {
   findMentorPath: string;
 }
 
+interface NotebookGeometry {
+  startWidth: number;
+  startHeight: number;
+  endWidth: number;
+  endHeight: number;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+}
+
+function NotebookIllustration({
+  progress,
+  x,
+  y,
+  scaleX,
+  scaleY,
+  rotate,
+  width,
+}: {
+  progress: MotionValue<number>;
+  x: MotionValue<number>;
+  y: MotionValue<number>;
+  scaleX: MotionValue<number>;
+  scaleY: MotionValue<number>;
+  rotate: MotionValue<number>;
+  width: number;
+}) {
+  const coverRotate = useTransform(progress, [0.08, 0.72], [0, -178]);
+  const pageOpacity = useTransform(progress, [0.18, 0.62], [0, 1]);
+  const coverOpacity = useTransform(progress, [0.58, 0.82], [1, 0]);
+
+  return (
+    <motion.div
+      className="notebook-artwork notebook-artwork--transition"
+      style={{ x, y, scaleX, scaleY, rotate, width }}
+      aria-hidden="true"
+    >
+      <div className="notebook-artwork__shadow" />
+      <div className="notebook-artwork__cover-edge" />
+      <div className="notebook-artwork__pages notebook-artwork__pages--left">
+        <span /><span /><span />
+      </div>
+      <div className="notebook-artwork__pages notebook-artwork__pages--right">
+        <span /><span /><span />
+      </div>
+      <motion.div className="notebook-artwork__cover notebook-artwork__cover--left" style={{ rotateY: coverRotate, opacity: coverOpacity }}>
+        <span className="notebook-artwork__brand">suggest<br />key</span>
+        <span className="notebook-artwork__cover-line">one useful next step</span>
+      </motion.div>
+      <motion.div className="notebook-artwork__page notebook-artwork__page--left" style={{ opacity: pageOpacity }}>
+        <span className="notebook-artwork__margin" />
+        <span className="notebook-artwork__scribble notebook-artwork__scribble--one" />
+        <span className="notebook-artwork__scribble notebook-artwork__scribble--two" />
+        <span className="notebook-artwork__corner">suggest key</span>
+      </motion.div>
+      <motion.div className="notebook-artwork__page notebook-artwork__page--right" style={{ opacity: pageOpacity }}>
+        <span className="notebook-artwork__margin" />
+        <span className="notebook-artwork__scribble notebook-artwork__scribble--three" />
+        <span className="notebook-artwork__scribble notebook-artwork__scribble--four" />
+      </motion.div>
+      <div className="notebook-artwork__spine" />
+    </motion.div>
+  );
+}
+
 export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   const { navigate } = useNavigation();
   const reduceMotion = useReducedMotion();
-  const [portraitFailed, setPortraitFailed] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 560px)').matches);
   const mentor = featured?.mentor ?? null;
-  const portraitUrl = mentor?.avatar_url ?? null;
-  const showPortrait = Boolean(portraitUrl) && !portraitFailed;
+  const transitionRef = useRef<HTMLDivElement>(null);
+  const sourceRef = useRef<HTMLDivElement>(null);
+  const targetRef = useRef<HTMLDivElement>(null);
+  const openSectionRef = useRef<HTMLElement>(null);
+  const [geometry, setGeometry] = useState<NotebookGeometry | null>(null);
+  const { scrollYProgress } = useScroll({
+    target: openSectionRef,
+    offset: ['start 140%', 'start 0%'],
+  });
+  const progress = useSpring(scrollYProgress, landingMotion.spring);
+  useLayoutEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 560px)');
+    const update = () => setIsMobile(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener('change', update);
+    return () => mediaQuery.removeEventListener('change', update);
+  }, []);
+
+  // Mobile and reduced-motion layouts resolve directly to the open notebook.
+  // Only desktop/tablet with normal motion follows the scroll timeline.
+  const animationProgress = useTransform(progress, (value) => (isMobile || reduceMotion) ? 1 : value);
+  const x = useTransform(animationProgress, (value) => geometry ? geometry.startX + (geometry.endX - geometry.startX) * value : 0);
+  const y = useTransform(animationProgress, (value) => geometry ? geometry.startY + (geometry.endY - geometry.startY) * value : 0);
+  const scaleX = useTransform(animationProgress, (value) => geometry ? 1 + ((geometry.endWidth / geometry.startWidth) - 1) * value : 1);
+  const scaleY = useTransform(animationProgress, (value) => geometry ? 1 + ((geometry.endHeight / geometry.startHeight) - 1) * value : 1);
+  const rotate = useTransform(animationProgress, [0, 1], [7, 0]);
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const wrapper = transitionRef.current;
+      const source = sourceRef.current;
+      const target = targetRef.current;
+      if (!wrapper || !source || !target) return;
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const sourceRect = source.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      setGeometry({
+        startWidth: sourceRect.width,
+        startHeight: sourceRect.height,
+        endWidth: targetRect.width,
+        endHeight: targetRect.height,
+        startX: sourceRect.left - wrapperRect.left + sourceRect.width * 0.16,
+        startY: sourceRect.top - wrapperRect.top - sourceRect.height * 0.045,
+        endX: targetRect.left - wrapperRect.left,
+        endY: targetRect.top - wrapperRect.top,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (transitionRef.current) observer.observe(transitionRef.current);
+    if (sourceRef.current) observer.observe(sourceRef.current);
+    if (targetRef.current) observer.observe(targetRef.current);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
 
   return (
+    <div ref={transitionRef} className="notebook-transition">
     <section className="landing-hero" aria-labelledby="hero-title">
       <div className="landing-wrap">
         <div className="landing-hero__head">
@@ -97,22 +221,7 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
           </div>
 
           <Reveal className="landing-hero__visual" mode="lift" playOnMount delay={0.3}>
-            <div className="landing-hero__frame">
-              {/* The image reveal is scoped to the media so the stickers, which
-                  deliberately break the frame's edges, are never clipped by it. */}
-              <Reveal as="span" className="landing-hero__media" mode="clip" playOnMount delay={0.36}>
-                {showPortrait ? (
-                  <img
-                    src={portraitUrl as string}
-                    alt=""
-                    decoding="async"
-                    onError={() => setPortraitFailed(true)}
-                  />
-                ) : (
-                  <NotebookScene />
-                )}
-              </Reveal>
-            </div>
+            <div ref={sourceRef} className="landing-hero__notebook-slot" aria-hidden="true" />
 
             <Reveal className="landing-hero__label" mode="lift" playOnMount delay={0.58}>
               <dl>
@@ -151,6 +260,13 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
         </Reveal>
       </div>
     </section>
+    <section ref={openSectionRef} className="notebook-open-section" aria-label="An open Suggest Key notebook">
+      <div ref={targetRef} className="notebook-open-section__notebook-slot" aria-hidden="true" />
+    </section>
+    {geometry && (
+      <NotebookIllustration progress={animationProgress} x={x} y={y} scaleX={scaleX} scaleY={scaleY} rotate={rotate} width={geometry.startWidth} />
+    )}
+    </div>
   );
 }
 

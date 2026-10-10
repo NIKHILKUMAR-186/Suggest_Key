@@ -5,7 +5,6 @@ dist/
 coverage/
 .agents/
 .claude/
-api/
 agent/
 .DS_Store
 *.log

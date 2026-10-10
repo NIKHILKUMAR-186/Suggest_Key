@@ -850,6 +850,12 @@ function resolveImport(specifier: string, fromFile: string): string | null {
  * the server-only gateway modules, and only the import graph decides which a
  * bundler actually pulls in. This returns every repo source file reachable
  * from `src/main.tsx`, which is what `index.html` loads.
+ *
+ * Both static (`import ... from '...'`) and dynamic (`import('...')`) edges are
+ * followed: the router is code-split with `lazy(() => import(...))`, and a
+ * bundler fetches those modules too. Skipping dynamic edges drops every
+ * lazy-routed page out of the graph, which would let the assertions below pass
+ * vacuously — the walk's own sanity checks exist to catch exactly that.
  */
 function browserReachableFiles(): string[] {
   const seen = new Set<string>();
@@ -870,6 +876,7 @@ function browserReachableFiles(): string[] {
     const specifiers = [
       ...[...contents.matchAll(/(?:^|\n)\s*(?:import|export)[\s\S]{0,400}?from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]),
       ...[...contents.matchAll(/(?:^|\n)\s*import\s+['"]([^'"]+)['"]/g)].map((m) => m[1]),
+      ...[...contents.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1]),
     ];
 
     for (const specifier of specifiers) {

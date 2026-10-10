@@ -28,7 +28,12 @@ export function parseRetryAfterHeader(header: string | null): number | null {
 
   const dateMs = Date.parse(trimmed);
   if (Number.isFinite(dateMs)) {
-    return Math.max(1, Math.ceil((dateMs - Date.now()) / 1000));
+    // A valid HTTP-date for Retry-After MUST be in the future. If the parsed
+    // date is in the past (e.g., Date.parse("-5") returns -5 ms before epoch),
+    // treat it as unparsable and fall through to null.
+    const now = Date.now();
+    if (dateMs <= now) return null;
+    return Math.max(1, Math.ceil((dateMs - now) / 1000));
   }
 
   return null;

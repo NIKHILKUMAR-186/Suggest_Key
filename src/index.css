@@ -11,6 +11,25 @@
   --glass-on-brand: rgba(21, 10, 40, 0.76);
   --glass-border: rgba(31, 16, 55, 0.14);
   --glass-highlight: rgba(255, 255, 255, 0.62);
+
+  /* ============================================================
+     SUGGEST KEY — BRAND TOKENS
+     Sampled from public/logo.png: deep purple field #1F1037,
+     yellow accent #F7D243, white wordmark #FCFDFE.
+     Shared by the landing navbar and footer so both read as one
+     system instead of two recolored blocks.
+     ============================================================ */
+  --brand-purple: #1f1037;
+  --brand-purple-hover: #2c1a4d;
+  /* Readable foreground for light surfaces where the deep purple is too dark. */
+  --brand-purple-contrast: #3b2a63;
+  --brand-yellow: #f7d243;
+  --brand-yellow-hover: #ffdd57;
+  --brand-white: #fcfdfe;
+  /* Muted white for secondary text sitting on the purple field. */
+  --brand-on-purple: rgba(252, 253, 254, 0.72);
+  /* Hairlines on the purple field. */
+  --brand-on-purple-strong: rgba(252, 253, 254, 0.24);
 }
 
 .dark {

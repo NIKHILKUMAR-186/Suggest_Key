@@ -12,16 +12,15 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
-import { useActiveSegments } from '@/src/hooks/useActiveSegments';
 import { useMentorDirectory } from '@/src/hooks/useMentorDirectory';
 import { mentorDirectoryPath, mentorProfilePath, segmentLandingPath } from '@/src/lib/mentorNav';
 import type { DirectoryMentor } from '@/src/types/database';
-import { MagneticButton, ProcessProgress, Reveal, TiltCard } from '@/src/components/landing/motion';
+import { MagneticButton, ProcessProgress, Reveal } from '@/src/components/landing/motion';
 import { landingMotion, useReducedMotion } from '@/src/components/landing/motion';
 import { SuperrNav } from '@/src/components/landing/SuperrNav';
 import { SuperrHero } from '@/src/components/landing/SuperrHero';
-import { HandArrow, StickerSprout } from '@/src/components/landing/SuperrStickers';
 import { mentorMeta } from '@/src/components/landing/mentorMeta';
+import { LANDING_SEGMENTS } from '@/src/components/landing/landingSegments';
 import './LandingPage.css';
 
 const steps = [
@@ -38,12 +37,12 @@ const faqs = [
   ['What happens after the session?', 'You can revisit your session workspace for notes, takeaways, and next steps shared by your mentor.'],
 ] as const;
 
-function Portrait({ mentor, large = false }: { mentor: DirectoryMentor; large?: boolean }) {
+function Portrait({ mentor }: { mentor: DirectoryMentor }) {
   const [failed, setFailed] = useState(false);
   return (
-    <span className={`landing-portrait${large ? ' landing-portrait--large' : ''}`}>
+    <span className="landing-portrait">
       {mentor.avatar_url && !failed ? (
-        <img src={mentor.avatar_url} alt="" loading={large ? 'eager' : 'lazy'} onError={() => setFailed(true)} />
+        <img src={mentor.avatar_url} alt="" loading="lazy" onError={() => setFailed(true)} />
       ) : (
         <UserRound aria-hidden="true" />
       )}
@@ -55,7 +54,6 @@ function Portrait({ mentor, large = false }: { mentor: DirectoryMentor; large?: 
 export function LandingPage() {
   const { isAuthenticated } = useAuth();
   const { navigate } = useNavigation();
-  const { segments, isLoading: segmentsLoading, error: segmentsError, reload: reloadSegments } = useActiveSegments();
   const { mentors, isLoading: mentorsLoading, isLoadingMore, hasError: mentorsError, hasMore, loadMore, reload: reloadMentors } = useMentorDirectory();
   const [backTop, setBackTop] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
@@ -89,7 +87,10 @@ export function LandingPage() {
       <SuperrNav findMentorPath={findPath} />
 
       <main id="main">
-        <SuperrHero featured={mentors.length > 0 ? mentors[0] : null} findMentorPath={findPath} />
+        <SuperrHero
+          featured={mentors.length > 0 ? mentors[0] : null}
+          findMentorPath={findPath}
+        />
 
         <section className="landing-discovery landing-wrap" id="explore" aria-labelledby="explore-title">
           <Reveal className="landing-section-intro" mode="mask">
@@ -97,29 +98,23 @@ export function LandingPage() {
             <h2 id="explore-title">What are you<br /><em>figuring out?</em></h2>
             <p>Choose the part of life or work that feels closest to your question. From there, the right conversation gets easier to find.</p>
             <a className="landing-text-link" href={mentorDirectoryPath()}>Browse all mentors <ArrowRight size={17} /></a>
-            {/* The hand-drawn arrow points from the introduction to the
-                catalogue it describes — the notebook's own way of saying
-                "this way". */}
-            <HandArrow className="landing-section-intro__arrow" />
           </Reveal>
+          {/* Three fixed cards from local configuration. No segment query is
+              issued here, so the section renders on the first paint. */}
           <div className="landing-segments">
-            {segmentsLoading && <div className="landing-state" role="status">Reading the current mentorship areas…</div>}
-            {segmentsError && <div className="landing-state landing-state--error" role="alert">{segmentsError} <button type="button" onClick={reloadSegments}>Try again</button></div>}
-            {!segmentsLoading && !segmentsError && segments.length === 0 && <div className="landing-state">No mentorship areas are available yet.</div>}
-            {!segmentsLoading && !segmentsError && segments.slice(0, 3).map((segment, index) => (
-              <Reveal as="article" className={`landing-segment landing-segment--${index + 1}`} key={segment.id} mode="lift" delay={index * landingMotion.stagger.compact}>
-                <a href={segmentLandingPath({ segmentSlug: segment.slug })}>
+            {LANDING_SEGMENTS.map((segment, index) => (
+              <Reveal as="article" className="landing-segment" key={segment.id} mode="lift" delay={index * landingMotion.stagger.compact}>
+                <a href={segmentLandingPath({ segmentSlug: segment.id })}>
                   <span className="landing-segment__index">0{index + 1}</span>
-                  <span className="landing-segment__body"><strong>{segment.name}</strong><span>{segment.description || 'Find a focused conversation for the next step.'}</span></span>
+                  <span className="landing-segment__body">
+                    <strong>{segment.title}</strong>
+                    <span>{segment.description}</span>
+                  </span>
                   <ArrowUp className="landing-segment__arrow" />
                 </a>
               </Reveal>
             ))}
           </div>
-          {/* One sprout, placed by hand rather than on a grid. */}
-          <Reveal as="span" className="landing-sticker landing-sticker--sprout" mode="settle" delay={0.2}>
-            <StickerSprout />
-          </Reveal>
         </section>
 
         <section ref={journeyRef} className="landing-journey" id="how-it-works" aria-labelledby="journey-title">
@@ -147,12 +142,23 @@ export function LandingPage() {
           {mentorsLoading && <div className="landing-mentor-state" role="status">Finding mentors for you…</div>}
           {mentorsError && <div className="landing-state landing-state--error" role="alert">Mentors could not be loaded. <button type="button" onClick={reloadMentors}>Try again</button></div>}
           {!mentorsLoading && !mentorsError && mentors.length === 0 && <div className="landing-mentor-state">No mentors are available yet.</div>}
-          {!mentorsLoading && !mentorsError && mentors.length > 0 && <Reveal className="landing-mentor-showcase" mode="clip">
-            <button className="landing-featured-mentor" type="button" onClick={() => openMentor(mentors[0].mentor)}>
-              <Portrait mentor={mentors[0].mentor} large /><span className="landing-featured-mentor__copy"><span className="landing-note">Featured conversation</span><strong>{mentors[0].mentor.full_name}</strong><span>{mentors[0].mentor.headline || mentors[0].mentor.about}</span><small>{mentorMeta(mentors[0]).join(' · ')}</small><span className="landing-text-link">View mentor <ArrowRight size={17} /></span></span>
-            </button>
-            <div className="landing-supporting-mentors">{mentors.slice(1).map((item) => <TiltCard as="button" className="landing-supporting-mentor" key={item.mentor.id} onClick={() => openMentor(item.mentor)}><Portrait mentor={item.mentor} /><span><strong>{item.mentor.full_name}</strong><small>{item.mentor.headline || item.mentor.segments[0]?.name}</small><small>{mentorMeta(item).slice(1, 3).join(' · ')}</small></span><ArrowRight size={17} /></TiltCard>)}</div>
-          </Reveal>}
+          {!mentorsLoading && !mentorsError && mentors.length > 0 && (
+            <div className="landing-mentor-grid">
+              {mentors.map((item, index) => (
+                <Reveal className="landing-mentor-cell" key={item.mentor.id} mode="lift" delay={index * landingMotion.stagger.compact}>
+                  <button className="landing-mentor-card" type="button" onClick={() => openMentor(item.mentor)}>
+                    <Portrait mentor={item.mentor} />
+                    <span className="landing-mentor-card__body">
+                      <strong>{item.mentor.full_name}</strong>
+                      <span>{item.mentor.headline || item.mentor.segments[0]?.name || 'Mentor'}</span>
+                      <small>{mentorMeta(item).join(' · ')}</small>
+                      <span className="landing-text-link">View mentor <ArrowRight size={17} /></span>
+                    </span>
+                  </button>
+                </Reveal>
+              ))}
+            </div>
+          )}
           {hasMore && !mentorsLoading && <button className="landing-load-more" type="button" onClick={loadMore} disabled={isLoadingMore}>{isLoadingMore ? 'Loading more mentors…' : 'Load more mentors'} <ArrowRight size={17} /></button>}
         </section>
 

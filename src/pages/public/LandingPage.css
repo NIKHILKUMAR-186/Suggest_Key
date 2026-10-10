@@ -104,12 +104,20 @@
 .landing-page a { color: inherit; text-decoration: none; }
 .landing-page button { font: inherit; color: inherit; }
 
+/* Focus ring: deep purple reads strongly on the cream paper. On the purple
+   brand surfaces (navbar, footer) it flips to the yellow accent further down. */
 .landing-page button:focus-visible,
 .landing-page a:focus-visible,
 .landing-page [tabindex]:focus-visible {
-  outline: 3px solid var(--sprout);
+  outline: 3px solid var(--brand-purple-contrast);
   outline-offset: 3px;
   border-radius: 4px;
+}
+.landing-page .landing-nav button:focus-visible,
+.landing-page .landing-nav a:focus-visible,
+.landing-page .landing-footer button:focus-visible,
+.landing-page .landing-footer a:focus-visible {
+  outline-color: var(--brand-yellow);
 }
 
 .landing-skip {
@@ -347,22 +355,21 @@
 .landing-page [id='mentors'] { scroll-margin-top: 5.5rem; }
 
 /* --- 7. Navigation ------------------------------------------------------- */
-/* Minimal bar: brand mark top-left, links centre, sign-in + pill CTA right.
-   Home is FIRST and always returns the visitor smoothly to the top. */
+/* Deep purple taken from the logo field, white links, yellow reserved for the
+   active state and the single conversion anchor. Home is FIRST and always
+   returns the visitor smoothly to the top. */
 
 .landing-nav {
   position: sticky;
   top: 0;
   z-index: 60;
-  background: color-mix(in srgb, var(--paper) 92%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-bottom: 1px solid transparent;
+  background: var(--brand-purple);
+  border-bottom: 1px solid var(--brand-on-purple-strong);
   transition: border-color 240ms var(--ease), box-shadow 240ms var(--ease);
 }
 .landing-nav[data-scrolled='true'] {
-  border-bottom-color: var(--hairline);
-  box-shadow: 0 1px 12px rgba(43, 26, 7, 0.05);
+  border-bottom-color: var(--brand-on-purple-strong);
+  box-shadow: 0 2px 18px rgba(31, 16, 55, 0.32);
 }
 
 .landing-nav__inner {
@@ -400,7 +407,7 @@
   border: 0;
   padding: 0.35rem 0;
   cursor: pointer;
-  color: var(--ink);
+  color: var(--brand-on-purple);
   position: relative;
   transition: color var(--fast) var(--ease);
 }
@@ -412,16 +419,20 @@
   right: 0;
   bottom: -2px;
   height: 2px;
-  background: var(--orange);
+  background: var(--brand-yellow);
   border-radius: 2px;
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform 200ms var(--ease);
 }
 .landing-nav__links a:hover,
-.landing-nav__links button:hover { color: var(--orange); }
+.landing-nav__links button:hover { color: var(--brand-yellow); }
 .landing-nav__links a:hover::after,
 .landing-nav__links button:hover::after { transform: scaleX(1); }
+/* Home is the current section: yellow text plus the yellow underline, so the
+   active item is never told by colour alone. */
+.landing-nav__links a[aria-current='page'] { color: var(--brand-yellow); }
+.landing-nav__links a[aria-current='page']::after { transform: scaleX(1); }
 
 .landing-nav__actions {
   display: flex;
@@ -437,12 +448,22 @@
   font-family: var(--font-ui);
   font-size: var(--text-body-sm);
   font-weight: 500;
-  color: var(--ink);
+  color: var(--brand-white);
   cursor: pointer;
   border-radius: var(--radius-inputs);
   transition: color var(--fast) var(--ease);
 }
-.landing-nav__signin:hover { color: var(--orange); }
+.landing-nav__signin:hover { color: var(--brand-yellow); }
+
+/* Yellow fill, purple word — the one saturated element in the bar, and the
+   only place yellow appears as a block. */
+.landing-nav .landing-button {
+  background: var(--brand-yellow);
+  border-color: var(--brand-yellow);
+  color: var(--brand-purple);
+  box-shadow: none;
+}
+.landing-nav .landing-button:hover { box-shadow: rgba(0, 0, 0, 0.3) 0px 2px 5px 0px; }
 
 .landing-nav__toggle {
   display: none;
@@ -450,12 +471,11 @@
   justify-content: center;
   width: 2.75rem;
   height: 2.75rem;
-  background: var(--paper);
-  border: 1.5px solid var(--charcoal);
+  background: var(--brand-white);
+  border: 1.5px solid var(--brand-yellow);
   border-radius: var(--radius-buttons);
-  color: var(--charcoal);
+  color: var(--brand-purple);
   cursor: pointer;
-  box-shadow: var(--shadow-subtle);
 }
 
 /* --- 8. Hero ------------------------------------------------------------- */
@@ -468,7 +488,7 @@
   position: relative;
   padding-top: clamp(2.5rem, 6vw, 5rem);
   padding-bottom: clamp(3rem, 6vw, 5rem);
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* Headline block. `max-width` in ch keeps the stack to three lines at every
@@ -543,7 +563,7 @@
   position: relative;
   justify-self: end;
   width: 100%;
-  max-width: 27rem;
+  max-width: 42rem;
   padding: clamp(1rem, 3vw, 2.25rem);
 }
 
@@ -574,6 +594,216 @@
   height: 100%;
 }
 .landing-hero__media svg { display: block; width: 100%; height: 100%; }
+
+/* Static notebook studies: the hero uses the closed object and the next
+   section gives the open object its own uninterrupted stage. */
+.notebook-open-section {
+  min-height: clamp(34rem, 70vw, 56rem);
+  display: grid;
+  place-items: center;
+  padding: clamp(4rem, 9vw, 8rem) var(--gutter);
+  overflow: hidden;
+  background: var(--dew);
+}
+
+.notebook-transition {
+  position: relative;
+  overflow: visible;
+}
+
+.notebook-transition .notebook-artwork--transition {
+  position: absolute;
+  z-index: 12;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  pointer-events: none;
+  will-change: transform;
+  aspect-ratio: 0.78 / 1;
+}
+
+.landing-hero__notebook-slot {
+  width: min(100%, 29rem);
+  aspect-ratio: 0.78 / 1;
+  margin-inline: auto;
+  visibility: hidden;
+}
+
+.notebook-open-section__notebook-slot {
+  width: min(100%, 72rem);
+  aspect-ratio: 1.5 / 1;
+  visibility: hidden;
+}
+
+.notebook-open-section .notebook-artwork {
+  width: min(100%, 72rem);
+}
+
+.notebook-artwork {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1.5 / 1;
+  transform-style: preserve-3d;
+}
+
+.notebook-artwork--closed {
+  width: min(100%, 29rem);
+  aspect-ratio: 0.78 / 1;
+  transform: rotate(7deg) perspective(900px) rotateY(-13deg);
+}
+
+.notebook-artwork__shadow {
+  position: absolute;
+  z-index: 0;
+  inset: 12% 5% 5%;
+  border-radius: 12% 10% 16% 12%;
+  background: rgba(43, 26, 7, 0.22);
+  filter: blur(22px);
+  transform: translate3d(1.2rem, 1.4rem, -2rem) rotate(3deg);
+}
+
+.notebook-artwork__cover-edge,
+.notebook-artwork__pages,
+.notebook-artwork__cover,
+.notebook-artwork__page {
+  position: absolute;
+  border: 1.5px solid var(--charcoal);
+}
+
+.notebook-artwork__cover-edge {
+  z-index: 1;
+  inset: 6% 4% 5%;
+  border-radius: 1.5rem 1.1rem 1.2rem 1.5rem;
+  background: #c84f16;
+  box-shadow: inset 0 0 0 0.45rem rgba(93, 33, 3, 0.16);
+  transform: translate3d(0.8rem, 0.8rem, -1.5rem);
+}
+
+.notebook-artwork__pages {
+  z-index: 2;
+  background: #f1e8df;
+}
+
+.notebook-artwork__pages span {
+  position: absolute;
+  height: 1px;
+  background: rgba(43, 26, 7, 0.24);
+}
+
+.notebook-artwork__pages--left {
+  inset: 7% 51% 6% 4%;
+  border-radius: 1.4rem 0.3rem 0.4rem 1.4rem;
+  box-shadow: 0.15rem 0 0 #d9c7ba, 0.3rem 0 0 #cbb7a9;
+}
+
+.notebook-artwork__pages--right {
+  inset: 7% 4% 6% 49%;
+  border-radius: 0.3rem 1.4rem 1.4rem 0.4rem;
+  box-shadow: -0.15rem 0 0 #d9c7ba, -0.3rem 0 0 #cbb7a9;
+}
+
+.notebook-artwork__pages span { left: 8%; right: 8%; bottom: 13%; }
+.notebook-artwork__pages span:nth-child(2) { bottom: 10%; }
+.notebook-artwork__pages span:nth-child(3) { bottom: 7%; }
+
+.notebook-artwork__cover {
+  z-index: 3;
+  inset: 4% 4% 4%;
+  border-radius: 1.5rem 1.1rem 1.2rem 1.5rem;
+  background: #f1762d;
+  color: var(--cocoa);
+  box-shadow: 0.45rem 0.55rem 0 rgba(95, 38, 4, 0.18);
+  transform-origin: left center;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+}
+
+.notebook-artwork__cover--left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.notebook-artwork__brand {
+  font-family: var(--font-display);
+  font-size: clamp(2.7rem, 7vw, 5rem);
+  font-weight: var(--weight-semibold);
+  line-height: 0.84;
+  letter-spacing: -0.05em;
+  text-align: center;
+}
+
+.notebook-artwork__cover-line {
+  font-family: var(--font-ui);
+  font-size: clamp(0.58rem, 1.1vw, 0.75rem);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.notebook-artwork__page {
+  z-index: 4;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 2.1rem, rgba(43, 26, 7, 0.1) 2.1rem 2.16rem),
+    linear-gradient(90deg, rgba(206, 80, 10, 0.1), transparent 18%),
+    var(--paper);
+  box-shadow: var(--shadow-lg);
+}
+
+.notebook-artwork__page--left {
+  inset: 9% 50% 8% 5%;
+  border-radius: 1.4rem 0.35rem 0.35rem 1.4rem;
+}
+
+.notebook-artwork__page--right {
+  inset: 9% 5% 8% 50%;
+  border-radius: 0.35rem 1.4rem 1.4rem 0.35rem;
+}
+
+.notebook-artwork__margin {
+  position: absolute;
+  inset: 7% 12%;
+  border-left: 1px solid rgba(206, 80, 10, 0.28);
+}
+
+.notebook-artwork__scribble {
+  position: absolute;
+  height: 0.38rem;
+  border-radius: 1rem;
+  background: rgba(43, 26, 7, 0.28);
+}
+
+.notebook-artwork__scribble--one { top: 29%; left: 22%; width: 42%; }
+.notebook-artwork__scribble--two { top: 36%; left: 22%; width: 60%; }
+.notebook-artwork__scribble--three { top: 30%; left: 18%; width: 50%; }
+.notebook-artwork__scribble--four { top: 37%; left: 18%; width: 37%; }
+
+.notebook-artwork__corner {
+  position: absolute;
+  left: 18%;
+  bottom: 10%;
+  color: var(--orange);
+  font-family: var(--font-display);
+  font-size: clamp(0.7rem, 1.5vw, 1rem);
+  font-style: italic;
+  transform: rotate(-5deg);
+}
+
+.notebook-artwork__spine {
+  position: absolute;
+  z-index: 5;
+  top: 8%;
+  bottom: 7%;
+  left: 50%;
+  width: 0.8rem;
+  border-left: 1px solid rgba(43, 26, 7, 0.36);
+  border-right: 1px solid rgba(43, 26, 7, 0.16);
+  background: rgba(206, 80, 10, 0.18);
+  transform: translateX(-50%);
+}
+
 
 /* Name Label Sticker — white card, 1px charcoal border, ruled fields. */
 .landing-hero__label {
@@ -689,13 +919,13 @@
   margin: 0 0 1.75rem;
 }
 
-/* Mentorship segments */
+/* Mentorship segments — three equal cards, none privileged. The grid stretch
+   gives them identical height, so comparison is a straight read across. */
 .landing-segments {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1.2fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--element-gap);
-  min-height: 28rem;
+  align-content: start;
 }
 .landing-segment { padding: 0; overflow: hidden; }
 .landing-segment > a {
@@ -703,21 +933,20 @@
   flex: 1;
   flex-direction: column;
   justify-content: space-between;
-  min-height: inherit;
+  min-height: 15rem;
   padding: 1.5rem;
   background: var(--paper);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-cards);
-  transition: transform 240ms var(--ease), background 240ms var(--ease), border-color 240ms var(--ease);
+  transition: transform 240ms var(--ease), background 240ms var(--ease), border-color 240ms var(--ease), box-shadow 240ms var(--ease);
 }
 .landing-segment > a:focus-visible { outline-offset: -4px; }
 .landing-segment:hover > a {
   transform: translateY(-0.35rem);
   background: var(--dew);
-  border-color: var(--hairline-strong);
+  border-color: var(--brand-purple-contrast);
+  box-shadow: var(--shadow-lg);
 }
-.landing-segment--1 { grid-row: span 2; }
-.landing-segment--1 > a { background: var(--dew); border-color: var(--hairline-strong); }
 .landing-segment__index {
   font-family: var(--font-ui);
   font-size: 0.75rem;
@@ -727,9 +956,9 @@
 .landing-segment strong {
   display: block;
   font-family: var(--font-display);
-  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
   font-weight: var(--weight-semibold);
-  line-height: 1.05;
+  line-height: 1.08;
   color: var(--cocoa);
   margin-bottom: 0.6rem;
 }
@@ -809,7 +1038,8 @@
   margin: 0;
 }
 
-/* Mentor showcase */
+/* Mentor showcase — every mentor identical. No featured card, no supporting
+   row: one card structure, one aspect ratio, one CTA placement. */
 .landing-mentors { padding-block: var(--section-space); }
 .landing-mentor-state,
 .landing-state {
@@ -831,57 +1061,83 @@
   font: inherit;
   padding: 0;
 }
-.landing-mentor-showcase {
+.landing-mentor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
   gap: var(--element-gap);
   margin-top: clamp(2rem, 4vw, 3.5rem);
 }
-.landing-featured-mentor {
+/* One card structure for everybody. The auto-fill grid scales from one column
+   on a phone to as many as fit, so no mentor is ever a secondary row. */
+.landing-mentor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--element-gap);
+  margin-top: clamp(2rem, 4vw, 3.5rem);
+}
+/* The Reveal wrapper must stretch so every card fills its row height. */
+.landing-mentor-cell { display: flex; }
+.landing-mentor-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
   border: 1px solid var(--hairline);
   background: var(--paper);
   color: var(--ink);
-  text-align: left;
-  padding: 0;
-  cursor: pointer;
-  min-height: 30rem;
   border-radius: var(--radius-cards);
   overflow: hidden;
-  transition: border-color 240ms var(--ease), box-shadow 240ms var(--ease);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 240ms var(--ease), box-shadow 240ms var(--ease), transform 240ms var(--ease);
 }
-.landing-featured-mentor:hover { border-color: var(--charcoal); box-shadow: var(--shadow-lg); }
-.landing-featured-mentor:focus-visible { outline-offset: 3px; }
-.landing-featured-mentor:hover .landing-portrait img { transform: scale(1.04); }
-.landing-featured-mentor__copy {
+.landing-mentor-card:hover {
+  border-color: var(--charcoal);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-0.25rem);
+}
+.landing-mentor-card:focus-visible { outline-offset: 3px; }
+.landing-mentor-card:hover .landing-portrait img { transform: scale(1.04); }
+.landing-mentor-card__body {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.75rem;
-  padding: clamp(1.5rem, 3vw, 2rem);
+  gap: 0.5rem;
+  padding: 1.25rem;
 }
-.landing-featured-mentor__copy strong {
+.landing-mentor-card__body strong {
   font-family: var(--font-display);
   font-size: var(--text-heading-sm);
   font-weight: var(--weight-semibold);
+  line-height: 1.15;
   color: var(--cocoa);
 }
-.landing-featured-mentor__copy > span:not(.landing-note):not(.landing-text-link) {
+/* The role: the mentor's own headline, falling back to their segment. */
+.landing-mentor-card__body > span:not(.landing-text-link):not(.landing-portrait) {
   font-family: var(--font-display);
   font-size: var(--text-body-sm);
-  line-height: 1.5;
+  line-height: 1.45;
   color: var(--ink);
   opacity: 0.78;
 }
-.landing-featured-mentor__copy small {
+.landing-mentor-card__body small {
   font-family: var(--font-ui);
   font-size: var(--text-caption);
   line-height: 1.5;
   color: var(--sienna);
 }
-.landing-featured-mentor__copy .landing-text-link { margin-top: auto; }
-.landing-portrait { display: block; overflow: hidden; background: var(--dew); min-height: 11rem; }
+.landing-mentor-card__body .landing-text-link { margin-top: auto; }
+/* Identical aspect ratio for every card, so the grid never has one tall row. */
+.landing-portrait {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  background: var(--dew);
+  aspect-ratio: 4 / 3;
+  min-height: 0;
+}
 .landing-portrait img {
   width: 100%;
   height: 100%;
@@ -890,40 +1146,6 @@
   transition: transform 500ms var(--ease);
 }
 .landing-portrait svg { width: 100%; height: 100%; padding: 3rem; color: var(--muted); }
-.landing-portrait--large { min-height: 30rem; }
-.landing-supporting-mentors { display: flex; flex-direction: column; gap: 0.7rem; }
-.landing-supporting-mentor {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
-  gap: 1rem;
-  align-items: center;
-  border: 1px solid var(--hairline);
-  background: var(--paper);
-  border-radius: var(--radius-cards);
-  padding: 0.7rem;
-  text-align: left;
-  cursor: pointer;
-  min-height: 6.5rem;
-  transition: border-color 200ms var(--ease), background 200ms var(--ease), transform 200ms var(--ease);
-}
-.landing-supporting-mentor:hover { border-color: var(--charcoal); background: var(--dew); transform: translateY(-2px); }
-.landing-supporting-mentor:focus-visible { outline-offset: 3px; }
-.landing-supporting-mentor .landing-portrait { min-height: 5.5rem; height: 5.5rem; border-radius: var(--radius-inputs); }
-.landing-supporting-mentor span:not(.landing-portrait) { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
-.landing-supporting-mentor strong {
-  font-family: var(--font-display);
-  font-size: var(--text-body);
-  font-weight: var(--weight-semibold);
-  color: var(--cocoa);
-}
-.landing-supporting-mentor small {
-  font-family: var(--font-ui);
-  font-size: var(--text-caption);
-  line-height: 1.45;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-.landing-supporting-mentor > svg:last-child { color: var(--cocoa); flex: none; }
 .landing-load-more {
   display: inline-flex;
   align-items: center;
@@ -1011,10 +1233,11 @@
   max-width: 44rem;
 }
 
-/* Footer — the Marker Orange brand band. The closer. */
+/* Footer — the second half of the brand band, same purple field as the navbar.
+   White typography for structure, yellow only for the CTA and separators. */
 .landing-footer {
-  background: var(--orange);
-  color: var(--charcoal);
+  background: var(--brand-purple);
+  color: var(--brand-white);
   border-radius: var(--radius-footer) var(--radius-footer) 0 0;
   margin-inline: 10px;
   padding: clamp(3.5rem, 7vw, 6rem) 0 1.5rem;
@@ -1023,15 +1246,21 @@
   font-size: clamp(2.5rem, 7vw, 5rem);
   line-height: 1.05;
   margin-bottom: 1.75rem;
-  color: var(--charcoal);
+  color: var(--brand-white);
 }
-.landing-footer .landing-note { color: var(--charcoal); opacity: 0.75; }
+.landing-footer h2 em { color: var(--brand-yellow); }
+.landing-footer .landing-note { color: var(--brand-yellow); opacity: 0.85; }
 .landing-footer__lead { display: flex; flex-direction: column; align-items: flex-start; padding-bottom: clamp(3rem, 6vw, 5rem); }
+.landing-footer .landing-button--gold {
+  background: var(--brand-yellow);
+  border-color: var(--brand-yellow);
+  color: var(--brand-purple);
+}
 .landing-footer__links {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;
   gap: 2rem;
-  border-top: 1px solid rgba(23, 23, 23, 0.28);
+  border-top: 1px solid var(--brand-on-purple-strong);
   padding-top: 2rem;
 }
 .landing-footer__links div { display: flex; flex-direction: column; align-items: flex-start; gap: 0.65rem; font-size: var(--text-body-sm); }
@@ -1039,12 +1268,14 @@
   font-family: var(--font-ui);
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--charcoal);
+  color: var(--brand-yellow);
   margin-bottom: 0.2rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .landing-footer__links a,
 .landing-footer__links button {
-  color: var(--charcoal);
+  color: var(--brand-white);
   opacity: 0.78;
   border: 0;
   background: none;
@@ -1052,10 +1283,10 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
-  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease);
+  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 .landing-footer__links a:hover,
-.landing-footer__links button:hover { opacity: 1; transform: translateX(3px); }
+.landing-footer__links button:hover { opacity: 1; color: var(--brand-yellow); transform: translateX(3px); }
 .landing-footer__base {
   display: flex;
   justify-content: space-between;
@@ -1063,13 +1294,13 @@
   gap: 1rem;
   margin-top: clamp(3rem, 5vw, 4rem);
   padding-top: 1.25rem;
-  border-top: 1px solid rgba(23, 23, 23, 0.28);
+  border-top: 1px solid var(--brand-on-purple-strong);
   font-family: var(--font-ui);
   font-size: 0.8rem;
   opacity: 0.8;
 }
 .landing-footer__base a { display: inline-flex; align-items: center; gap: 0.4rem; }
-.landing-footer__base a:hover { opacity: 1; }
+.landing-footer__base a:hover { opacity: 1; color: var(--brand-yellow); }
 
 /* Back to top */
 .landing-back-top {
@@ -1109,8 +1340,8 @@
     align-items: stretch;
     gap: 0.25rem;
     padding: 1rem;
-    background: var(--paper);
-    border: 1.5px solid var(--charcoal);
+    background: var(--brand-purple);
+    border: 1.5px solid var(--brand-yellow);
     border-radius: var(--radius-cards);
     box-shadow: var(--shadow-lg);
     font-size: var(--text-body);
@@ -1129,7 +1360,7 @@
 
   .landing-hero__body { grid-template-columns: 1fr; gap: 2.5rem; }
   .landing-hero__copy { max-width: 40rem; }
-  .landing-hero__visual { justify-self: center; max-width: 24rem; }
+  .landing-hero__visual { justify-self: center; max-width: 42rem; }
 }
 
 @media (max-width: 860px) {
@@ -1137,17 +1368,16 @@
   .landing-faq,
   .landing-why__inner { grid-template-columns: 1fr; gap: 3rem; }
   .landing-why__inner > div:first-child { position: static; }
-  .landing-segments { grid-template-columns: 1fr; grid-template-rows: auto; min-height: 0; }
-  .landing-segment--1 { grid-row: auto; min-height: 17rem; }
+  /* Three equal cards become a stack; nothing keeps its old tall-row privilege. */
+  .landing-segments { grid-template-columns: 1fr; }
+  .landing-segment > a { min-height: 0; }
   .landing-journey__heading { display: block; }
   .landing-steps { grid-template-columns: 1fr 1fr; }
   .landing-steps__line, .landing-steps__progress { display: none; }
   .landing-step { padding-top: 0; }
   .landing-step__dot { display: none; }
   .landing-step h3 { margin-top: 0.75rem; }
-  .landing-mentor-showcase { grid-template-columns: 1fr; }
-  .landing-featured-mentor { grid-template-columns: 1fr; min-height: 0; }
-  .landing-portrait--large { min-height: 18rem; }
+  .landing-mentor-grid { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
   .landing-footer__links { grid-template-columns: 1fr 1fr; }
   .landing-footer__links div:first-child { grid-column: span 2; }
 }
@@ -1156,11 +1386,14 @@
   .landing-brand__name { display: none; }
   .landing-hero__scroll { display: none; }
   .landing-steps { grid-template-columns: 1fr; }
+  .landing-mentor-grid { grid-template-columns: 1fr; }
   .landing-footer__links { grid-template-columns: 1fr; }
   .landing-footer__links div:first-child { grid-column: auto; }
   .landing-footer__base { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
   .landing-hero__label { position: static; width: 100%; margin-top: 1rem; transform: none; }
-  .landing-hero__frame { transform: none; }
+  .notebook-open-section { min-height: 28rem; padding-inline: 1rem; }
+  .notebook-open-section .notebook-artwork { width: 100%; aspect-ratio: 1.15 / 1; }
+  .notebook-artwork--closed { width: min(100%, 20rem); }
   .landing-sticker--heart { right: -0.5rem; }
   .landing-sticker--sparkle { left: -0.5rem; }
 }

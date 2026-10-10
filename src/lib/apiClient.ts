@@ -20,6 +20,9 @@ export {
   isCriticalRequest,
   getSnapshot,
   enterRateLimit,
+  isRateLimitedResponse,
+  assertNotRateLimited,
+  readApiError,
 };
 export type { RateLimitInfo };
 
@@ -68,7 +71,7 @@ export async function getApiAuthorization(): Promise<string | null> {
 /**
  * Checks if a response is a rate limit (429) response.
  */
-export function isRateLimitedResponse(response: Response): boolean {
+function isRateLimitedResponse(response: Response): boolean {
   return response.status === 429;
 }
 
@@ -179,4 +182,68 @@ export function captureClientError(error: Error | unknown, context?: Record<stri
 
   console.error('[Client Error]', JSON.stringify(info));
   return info;
+}
+
+/**
+ * Canonical caller-facing 429 helper.
+ *
+ * A 429 is a RECOVERABLE cooldown signal, never a fatal error. This helper
+ * extracts the server-provided retry timing and throws a typed RateLimitError
+ * that callers can catch and surface as a countdown UI, without any manual
+ * parsing.
+ *
+ * Use AFTER awaiting the response but BEFORE throwing on `!res.ok`.
+ */
+async function assertNotRateLimited(response: Response): Promise<void> {
+  if (!isRateLimitedResponse(response)) return;
+
+  // Server-authoritative cooldown. We clone because extractRateLimitInfo
+  // consumes the body; the caller may still want to read it.
+  const info = await extractRateLimitInfo(response.clone());
+  throw new RateLimitError({
+    isRateLimited: true,
+    retryAt: info.retryAt,
+    remainingSeconds: info.retryAfterSeconds,
+    message: info.message,
+  });
+}
+
+/**
+ * Reads the API error envelope into a safe Error.
+ *
+ * - 429 → RateLimitError (with retryAt/retryAfterSeconds)
+ * - Other non-2xx → Error with the envelope's message or a contextual fallback
+ * - 2xx → never throws (caller should not call this on success)
+ *
+ * Intended for services that currently do `if (!res.ok) throw new Error(...)`.
+ */
+async function readApiError(
+  response: Response,
+  fallbackMessage: string = 'An unexpected error occurred.',
+): Promise<Error> {
+  if (isRateLimitedResponse(response)) {
+    try {
+      await assertNotRateLimited(response);
+    } catch (err) {
+      if (err instanceof RateLimitError) return err;
+      throw err;
+    }
+    // unreachable
+    return new Error(fallbackMessage);
+  }
+
+  let envelopeMessage = fallbackMessage;
+  try {
+    const payload = await response.clone().json();
+    if (payload?.error?.message && typeof payload.error.message === 'string') {
+      envelopeMessage = payload.error.message;
+    }
+  } catch {
+    // Non-JSON or unreadable — use fallback.
+  }
+
+  const err = new Error(envelopeMessage);
+  // Attach status for callers that branch on it.
+  (err as any).status = response.status;
+  return err;
 }
