@@ -1,0 +1,1025 @@
+/* The design's own typeface, loaded from within this stylesheet so the font
+   is fetched only when this page is the active variant and no global
+   document is modified to obtain it. */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,700;0,800;1,800&display=swap');
+
+/* ==========================================================================
+   NEW LANDING PAGE — "Ask the Wise" design system (independent variant).
+
+   This is the ONLY stylesheet for the `NewLandingPage` variant. It is a
+   dedicated, namespaced stylesheet: every selector is either the single
+   `.nlg` scope root or a descendant of it, so nothing here can affect the
+   rest of the application and no Tailwind rule can affect this page.
+
+   It deliberately does NOT define any `:root` variables, does NOT touch
+   `body`, `html`, `h1`, `button`, `a` or `*`, and does NOT touch
+   `src/index.css`. The legacy landing page keeps its own stylesheet and
+   remains completely independent.
+
+   Converted from the supplied standalone HTML design (Plus Jakarta Sans,
+   deep-purple hero field, warm cream page, yellow accent).
+   ========================================================================== */
+
+.nlg {
+  /* --- Design tokens (scoped to this page only) ------------------------- */
+  --nlg-ink: #1f1235;
+  --nlg-bg: #faf6ef;
+  --nlg-card: #ffffff;
+  --nlg-yellow: #fbd83d;
+  --nlg-yellow-strong: #fdd83c;
+  --nlg-muted: #5d5670;
+  --nlg-line: #ece6da;
+  --nlg-teal: #1fb5a5;
+  --nlg-pink: #ee5d83;
+  --nlg-hero: #22123f;
+  --nlg-hero-deep: #1d0f3a;
+  --nlg-hero-soft: #3a2a6b55;
+  --nlg-yellow-ink: #241600;
+
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  scroll-padding-top: env(safe-area-inset-top, 0px);
+  background: var(--nlg-bg);
+  color: var(--nlg-ink);
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  line-height: 1.5;
+  overflow: clip;
+}
+
+/* --- Reset, scoped ----------------------------------------------------- */
+.nlg,
+.nlg *,
+.nlg *::before,
+.nlg *::after {
+  box-sizing: border-box;
+}
+
+.nlg h1,
+.nlg h2,
+.nlg h3,
+.nlg p {
+  margin: 0;
+}
+
+.nlg a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* --- Shared surface ---------------------------------------------------- */
+.nlg .nlg-wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* Skip link: visible only when focused, so keyboard and screen-reader
+   visitors can step past the hero without sighted users seeing it. */
+.nlg .nlg-skip {
+  position: fixed;
+  left: 1rem;
+  top: -5rem;
+  z-index: 90;
+  background: var(--nlg-card);
+  color: var(--nlg-ink);
+  border: 1.5px solid var(--nlg-ink);
+  border-radius: 99px;
+  padding: 0.65rem 1.1rem;
+  font-weight: 700;
+  font-size: 13px;
+  transition: top 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nlg .nlg-skip:focus {
+  top: 1rem;
+}
+
+/* --- Buttons ----------------------------------------------------------- */
+.nlg .nlg-btn {
+  display: inline-block;
+  padding: 14px 24px;
+  border-radius: 99px;
+  font-weight: 700;
+  font-size: 14px;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.nlg .nlg-btn--yellow {
+  background: var(--nlg-yellow);
+  color: var(--nlg-ink);
+}
+
+.nlg .nlg-btn--ghost {
+  background: #ffffff14;
+  color: #ffffff;
+}
+
+.nlg .nlg-btn--dark {
+  background: var(--nlg-ink);
+  color: #ffffff;
+}
+
+.nlg .nlg-btn--white {
+  background: #ffffff;
+  color: var(--nlg-ink);
+}
+
+.nlg .nlg-btn:focus-visible,
+.nlg a:focus-visible,
+.nlg summary:focus-visible {
+  outline: 3px solid var(--nlg-hero-soft);
+  outline-offset: 3px;
+}
+
+/* ==========================================================================
+   HERO BANNER
+   ========================================================================== */
+
+.nlg-banner {
+  background: var(--nlg-hero-deep);
+  line-height: normal;
+}
+
+.nlg-banner__wrap {
+  container-type: inline-size;
+  max-width: 1672px;
+  margin: 0 auto;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+.nlg-banner__stage {
+  position: relative;
+  aspect-ratio: 1672 / 941;
+  background:
+    radial-gradient(900px 400px at 85% 30%, #3a2a6b55, transparent),
+    var(--nlg-hero) none;
+  overflow: hidden;
+  color: #ffffff;
+}
+
+.nlg-banner__copy {
+  position: absolute;
+  left: 5.38cqw;
+  top: 11cqw;
+  width: 52cqw;
+}
+
+.nlg-banner__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 2.99cqw;
+  min-height: 30px;
+  padding: 0 1.4cqw 0 0.6cqw;
+  gap: 1.05cqw;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: max(12px, 1cqw);
+  font-weight: 500;
+  line-height: 1;
+  color: #e8e2f5;
+  white-space: nowrap;
+}
+
+.nlg-banner__pill svg {
+  width: 1.7cqw;
+  min-width: 18px;
+  height: auto;
+  flex: none;
+}
+
+.nlg-banner__title {
+  margin: 1.7cqw 0 0;
+  font-size: max(30px, 4.55cqw);
+  line-height: 1.02;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #ffffff;
+}
+
+.nlg-banner__title span {
+  display: block;
+  white-space: nowrap;
+}
+
+.nlg-banner__title em {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--nlg-yellow);
+}
+
+.nlg-banner__lead {
+  margin: 1.2cqw 0 0;
+  max-width: 41cqw;
+  font-size: max(14px, 1.5cqw);
+  line-height: 1.47;
+  font-weight: 400;
+  color: #e4def7;
+  white-space: nowrap;
+}
+
+.nlg-banner__cta {
+  display: flex;
+  gap: 1.7cqw;
+  margin-top: 2.2cqw;
+  flex-wrap: wrap;
+}
+
+.nlg-banner__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.95cqw;
+  height: 4.6cqw;
+  min-height: 46px;
+  padding: 0 1.9cqw;
+  border-radius: 99px;
+  font-size: max(14px, 1.27cqw);
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  font-family: inherit;
+  border: 0;
+  cursor: pointer;
+}
+
+.nlg-banner__btn svg {
+  flex: none;
+  height: 1.85cqw;
+  min-height: 20px;
+  width: auto;
+}
+
+.nlg-banner__btn--primary {
+  background: var(--nlg-yellow-strong);
+  color: var(--nlg-yellow-ink);
+  box-shadow: 0 0 2cqw rgba(253, 216, 60, 0.38);
+  min-width: 17.8cqw;
+}
+
+.nlg-banner__btn--secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  min-width: 19.4cqw;
+}
+
+.nlg-banner__btn--primary .nlg-banner__arrow {
+  height: 1.1cqw;
+  min-height: 14px;
+  margin-left: 0.2cqw;
+}
+
+.nlg-banner__trust {
+  display: flex;
+  align-items: center;
+  margin-top: 3.1cqw;
+  padding-left: 0.45cqw;
+}
+
+.nlg-banner__trust-item {
+  display: flex;
+  align-items: center;
+  gap: 1.7cqw;
+  font-size: max(12px, 1.08cqw);
+  line-height: 1.39;
+  font-weight: 500;
+  color: #f1ecfb;
+}
+
+.nlg-banner__trust-item svg {
+  flex: none;
+  height: 2.55cqw;
+  min-height: 24px;
+  width: auto;
+}
+
+.nlg-banner__trust-item + .nlg-banner__trust-item {
+  margin-left: 2.7cqw;
+  padding-left: 2.15cqw;
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* --- Hero photo field and floating bubbles ------------------------------ */
+
+.nlg-banner__photo {
+  display: contents;
+}
+
+.nlg-banner__tails {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.nlg-banner__tails path {
+  fill: none;
+  stroke: #d9c9f7;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+.nlg-banner__bubble {
+  position: absolute;
+  left: var(--nlg-x);
+  top: var(--nlg-y);
+  right: var(--nlg-right, auto);
+  min-width: var(--nlg-w);
+  height: var(--nlg-h);
+  display: flex;
+  align-items: center;
+  gap: 1.1cqw;
+  padding: 0 1.8cqw 0 1.25cqw;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(58, 22, 84, 0.84);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: max(12px, 1.08cqw);
+  line-height: 1.36;
+  font-weight: 500;
+  color: #ffffff;
+  box-sizing: border-box;
+}
+
+.nlg-banner__badge {
+  flex: none;
+  width: 3cqw;
+  min-width: 32px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+
+.nlg-banner__badge svg {
+  width: 52%;
+  height: 52%;
+}
+
+.nlg-banner__badge--pink {
+  background: #ffafcf;
+}
+
+.nlg-banner__badge--yellow {
+  background: #f7dc4f;
+}
+
+.nlg-banner__badge--teal {
+  background: #26f1c6;
+}
+
+.nlg-bubble--relationships {
+  --nlg-x: 56.1cqw;
+  --nlg-y: 8.73cqw;
+  --nlg-w: 13.8cqw;
+  --nlg-h: 5.26cqw;
+}
+
+.nlg-bubble--career {
+  --nlg-x: 86.48cqw;
+  --nlg-y: 10.1cqw;
+  --nlg-w: 11.7cqw;
+  --nlg-h: 5.2cqw;
+}
+
+.nlg-bubble--autism {
+  --nlg-x: 53.68cqw;
+  --nlg-y: 24.22cqw;
+  --nlg-w: 11.2cqw;
+  --nlg-h: 5.35cqw;
+}
+
+/* --- Hero responsive ---------------------------------------------------- */
+
+@container (max-width: 1000px) {
+  .nlg-banner__stage {
+    aspect-ratio: auto;
+    background: linear-gradient(#1d0b3e, #1f0f42);
+    overflow: visible;
+  }
+
+  .nlg-banner__photo {
+    display: block;
+    position: relative;
+    height: clamp(300px, 100cqw, 640px);
+    background: linear-gradient(#1d0b3e, #1f0f42);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16%);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 16%);
+    margin-top: 6px;
+  }
+
+  .nlg-banner__tails {
+    display: none;
+  }
+
+  .nlg-banner__copy {
+    position: static;
+    width: auto;
+    padding: 30px 20px 6px;
+  }
+
+  .nlg-banner__pill {
+    height: auto;
+    min-height: 0;
+    padding: 9px 16px 9px 10px;
+    gap: 10px;
+    font-size: 13px;
+  }
+
+  .nlg-banner__pill svg {
+    width: 18px;
+  }
+
+  .nlg-banner__title span {
+    display: inline;
+    white-space: normal;
+  }
+
+  .nlg-banner__title {
+    margin-top: 18px;
+    font-size: clamp(34px, 10.2cqw, 64px);
+    line-height: 1.06;
+  }
+
+  .nlg-banner__lead {
+    margin-top: 14px;
+    max-width: 560px;
+    font-size: clamp(15px, 3.9cqw, 20px);
+    line-height: 1.5;
+    white-space: normal;
+  }
+
+  .nlg-banner__cta {
+    gap: 12px;
+    margin-top: 22px;
+  }
+
+  .nlg-banner__btn {
+    flex: 1 1 210px;
+    height: 56px;
+    padding: 0 22px;
+    gap: 12px;
+    font-size: 16px;
+  }
+
+  .nlg-banner__btn svg {
+    height: 22px;
+  }
+
+  .nlg-banner__btn--primary,
+  .nlg-banner__btn--secondary {
+    min-width: 0;
+  }
+
+  .nlg-banner__btn--primary .nlg-banner__arrow {
+    height: 15px;
+  }
+
+  .nlg-banner__trust {
+    flex-wrap: wrap;
+    gap: 14px 0;
+    margin-top: 26px;
+    padding-left: 0;
+  }
+
+  .nlg-banner__trust-item {
+    gap: 10px;
+    font-size: 13px;
+  }
+
+  .nlg-banner__trust-item svg {
+    height: 28px;
+  }
+
+  .nlg-banner__trust {
+    gap: 14px 26px;
+  }
+
+  .nlg-banner__bubble {
+    min-width: 0;
+    height: auto;
+    padding: 7px 14px 7px 8px;
+    gap: 9px;
+    font-size: 12px;
+    line-height: 1.25;
+    background: rgba(58, 22, 84, 0.9);
+  }
+
+  .nlg-banner__badge {
+    width: 32px;
+    min-width: 32px;
+  }
+
+  .nlg-bubble--relationships {
+    --nlg-x: 3%;
+    --nlg-y: 9%;
+    --nlg-right: auto;
+  }
+
+  .nlg-bubble--career {
+    --nlg-x: auto;
+    --nlg-right: 3%;
+    --nlg-y: 17%;
+  }
+
+  .nlg-bubble--autism {
+    --nlg-x: 3%;
+    --nlg-y: 36%;
+    --nlg-right: auto;
+  }
+}
+
+@container (max-width: 380px) {
+  .nlg-banner__trust-item {
+    font-size: 12px;
+  }
+
+  .nlg-banner__trust {
+    gap: 14px 18px;
+  }
+}
+
+/* ==========================================================================
+   CATEGORY CARDS (overlap the hero, like the source design)
+   ========================================================================== */
+
+.nlg-cards {
+  position: relative;
+  z-index: 2;
+  margin-top: calc(-1 * min(6vw, 90px));
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.nlg-card {
+  background: var(--nlg-card);
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: 0 10px 30px #1f123522;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nlg-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 40px #1f123533;
+}
+
+.nlg-card h3 {
+  font-size: 20px;
+}
+
+.nlg-card p {
+  font-size: 13px;
+  color: var(--nlg-muted);
+}
+
+.nlg-card__chips {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 10px;
+  flex-wrap: wrap;
+}
+
+.nlg-chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 99px;
+}
+
+.nlg-chip--teal {
+  background: #d6f3ee;
+  color: #0d7a6e;
+}
+
+.nlg-chip--pink {
+  background: #fde0e8;
+  color: #b0204a;
+}
+
+.nlg-chip--yellow {
+  background: #fdf0a8;
+  color: #7a5d00;
+}
+
+/* ==========================================================================
+   SECTIONS
+   ========================================================================== */
+
+.nlg-section {
+  padding: 70px 0 0;
+}
+
+.nlg-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8a6d00;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.nlg-section h2 {
+  font-size: clamp(26px, 4vw, 34px);
+  letter-spacing: -0.02em;
+  font-weight: 800;
+  margin-bottom: 24px;
+}
+
+/* --- How it works ------------------------------------------------------ */
+
+.nlg-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.nlg-step {
+  background: var(--nlg-card);
+  border: 1px solid var(--nlg-line);
+  border-radius: 18px;
+  padding: 22px;
+}
+
+.nlg-step__number {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--nlg-ink);
+  color: #ffffff;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.nlg-step h3 {
+  font-size: 16px;
+}
+
+.nlg-step p {
+  font-size: 13px;
+  color: var(--nlg-muted);
+  margin-top: 4px;
+}
+
+/* --- Experts ----------------------------------------------------------- */
+
+.nlg-experts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.nlg-expert {
+  background: var(--nlg-card);
+  border: 1px solid var(--nlg-line);
+  border-radius: 18px;
+  padding: 18px;
+  font-size: 13px;
+}
+
+.nlg-expert__top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.nlg-expert__avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #d9cff7;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  flex: none;
+  overflow: hidden;
+}
+
+.nlg-expert__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.nlg-expert small {
+  color: var(--nlg-muted);
+  display: block;
+}
+
+.nlg-expert__price {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  border-top: 1px solid var(--nlg-line);
+  padding-top: 10px;
+  color: var(--nlg-muted);
+}
+
+.nlg-expert__price b {
+  font-size: 16px;
+  color: var(--nlg-ink);
+}
+
+/* --- Stories ----------------------------------------------------------- */
+
+.nlg-stories {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.nlg-story {
+  background: var(--nlg-hero);
+  color: #ffffff;
+  border-radius: 20px;
+  padding: 24px;
+  font-size: 15px;
+}
+
+.nlg-story small {
+  display: block;
+  margin-top: 16px;
+  color: #bdb3dc;
+  font-size: 12px;
+}
+
+/* --- FAQ --------------------------------------------------------------- */
+
+.nlg-faq {
+  background: var(--nlg-card);
+  border: 1px solid var(--nlg-line);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.nlg-faq__item {
+  border-bottom: 1px solid var(--nlg-line);
+  padding: 16px 20px;
+}
+
+.nlg-faq__item:last-child {
+  border-bottom: 0;
+}
+
+.nlg-faq__summary {
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.nlg-faq__summary::-webkit-details-marker {
+  display: none;
+}
+
+.nlg-faq__summary::after {
+  content: '+';
+  background: #fdf0a8;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  font-weight: 400;
+}
+
+.nlg-faq__summary[aria-expanded='true']::after {
+  content: '\2013';
+}
+
+.nlg-faq__answer {
+  font-size: 13px;
+  color: var(--nlg-muted);
+  margin-top: 10px;
+}
+
+/* --- CTA --------------------------------------------------------------- */
+
+.nlg-cta {
+  margin: 70px 0;
+  background: var(--nlg-yellow);
+  border-radius: 28px;
+  padding: 44px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.nlg-cta h2 {
+  margin-bottom: 8px;
+}
+
+.nlg-cta p {
+  max-width: 420px;
+}
+
+.nlg-cta__actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   FOOTER
+   ========================================================================== */
+
+.nlg-footer {
+  background: var(--nlg-hero);
+  color: #cfc7ea;
+  padding: 50px 0 30px;
+  font-size: 13px;
+}
+
+.nlg-footer__grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  gap: 24px;
+}
+
+.nlg-footer__grid b {
+  color: var(--nlg-yellow);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  display: block;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+}
+
+.nlg-footer__grid a {
+  display: block;
+  color: #e4defa;
+  text-decoration: none;
+  margin-bottom: 10px;
+}
+
+.nlg-footer__grid a:hover {
+  color: #ffffff;
+}
+
+/* A link the design offers but this application has no destination for. It is
+   shown inert rather than as a live href that would do nothing. */
+.nlg-footer__disabled {
+  display: block;
+  color: #e4defa;
+  opacity: 0.45;
+  margin-bottom: 10px;
+  cursor: default;
+}
+
+.nlg-footer__signin {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: #e4defa;
+  text-align: left;
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+.nlg-footer__signin:hover {
+  color: #ffffff;
+}
+
+.nlg-footer__brand {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: #ffffff;
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+  margin-bottom: 12px;
+  display: block;
+}
+
+.nlg-footer__blurb {
+  margin-bottom: 12px;
+}
+
+.nlg-footer__fine {
+  border-top: 1px solid #ffffff1f;
+  margin-top: 36px;
+  padding-top: 20px;
+  font-size: 12px;
+}
+
+.nlg-footer__fine b {
+  color: #ffffff;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: inherit;
+  margin: 0;
+  display: inline;
+}
+
+/* ==========================================================================
+   RESPONSIVE
+   ========================================================================== */
+
+.nlg .nlg-cards,
+.nlg .nlg-steps,
+.nlg .nlg-stories,
+.nlg .nlg-footer__grid {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 821px) {
+  .nlg .nlg-steps {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .nlg .nlg-stories {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .nlg .nlg-footer__grid {
+    grid-template-columns: 1.4fr 1fr 1fr 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .nlg .nlg-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .nlg .nlg-expert {
+    padding: 16px;
+  }
+
+  .nlg-section {
+    padding-top: 56px;
+  }
+
+  .nlg-cta {
+    padding: 32px;
+    margin: 56px 0;
+  }
+
+  .nlg-footer__grid b {
+    margin-bottom: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .nlg .nlg-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .nlg-cta {
+    padding: 26px;
+  }
+}
+
+/* --- Reduced motion ---------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .nlg .nlg-card {
+    transition: none;
+  }
+
+  .nlg .nlg-card:hover {
+    transform: none;
+  }
+
+  .nlg .nlg-skip {
+    transition: none;
+  }
+}

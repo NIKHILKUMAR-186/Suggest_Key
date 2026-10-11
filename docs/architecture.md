@@ -274,7 +274,7 @@ file documents the two ordering hazards (`/mentors` before `/mentor`).
 
 | Path | Component |
 |---|---|
-| `/` | `LandingPage` |
+| `/` | `LandingPage` (variant `legacy`) or `NewLandingPage` (variant `new`) — see below |
 | `/auth/login`, `/login` | `LoginPage` |
 | `/auth/signup`, `/signup` | `SignUpPage` |
 | `/auth/forgot-password` | `ForgotPasswordPage` |
@@ -330,6 +330,43 @@ featureless figures, not a stock "counsellor" photo.
 Ratings, review counts, session counts and testimonials are **not rendered
 anywhere on the page**: `mentor_profiles.rating` / `review_count` are columns
 with no review system behind them. See `tests/landing_hero_segments.test.ts`.
+
+### Two landing-page variants, switched by one setting
+
+`/` has two complete, independent implementations and only one is ever
+mounted:
+
+| Variant | Implementation | Styles |
+|---|---|---|
+| `legacy` | `src/pages/public/LandingPage.tsx` + `src/components/landing/` | `src/pages/public/LandingPage.css` |
+| `new` | `src/pages/public/NewLandingPage.tsx` + `src/components/new-landing/` | `src/components/new-landing/styles/NewLandingPage.css` |
+
+The active variant is a build-time literal in **`src/config/landing-page.config.ts`**:
+
+```ts
+export const LANDING_PAGE_VARIANT: LandingPageVariant = 'legacy';
+```
+
+`src/routes/Router.tsx` is the only selection point. It resolves the variant
+once at module load, so exactly one variant renders and neither is ever kept
+in the tree hidden by CSS. Switching is: change that one value, rebuild.
+
+The variant is deliberately **not** read from `process.env` or a `VITE_*
+variable. Client bundles do not receive `process.env` — the bundler rewrites
+it to `{}`, so an environment-driven switch silently resolves to `legacy` and
+the new page can never be reached no matter what is set. A literal is
+unambiguous, type-checked and cannot be flipped by a visitor, a query string or
+any other public control.
+
+**CSS isolation.** The `new` variant's stylesheet scopes every rule under one
+`.nlg` root and defines no `:root` variables and no `body` / `html` / `h1` /
+`*` rules, so it cannot leak into the legacy page or any other route and no
+Tailwind rule can leak back in. It is emitted as its own CSS file and is not
+requested at all while the variant is `legacy`.
+
+**The legacy variant is untouched.** The verified DOM of `/` in the `legacy`
+variant is byte-identical before and after this integration; only the live
+scroll-parallax transform, which is a function of scroll position, differs.
 
 ### Seeker + admin (allowedRoles `['seeker','admin']`)
 

@@ -4,6 +4,14 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -25,6 +33,187 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/lib/fileValidation.ts
+var fileValidation_exports = {};
+__export(fileValidation_exports, {
+  ALLOWED_MIME_TYPES_BY_BUCKET: () => ALLOWED_MIME_TYPES_BY_BUCKET,
+  fetchFileHeader: () => fetchFileHeader,
+  validateFileContent: () => validateFileContent,
+  validateFileSignature: () => validateFileSignature,
+  validateImageStructure: () => validateImageStructure,
+  validatePDFStructure: () => validatePDFStructure,
+  validateStoredFile: () => validateStoredFile
+});
+function validateWebP(buffer) {
+  if (buffer.length < 12) return false;
+  return buffer[8] === 87 && // W
+  buffer[9] === 69 && // E
+  buffer[10] === 66 && // B
+  buffer[11] === 80;
+}
+function validateGIF(buffer) {
+  if (buffer.length < 6) return false;
+  const version = buffer[4];
+  return version === 55 || version === 57;
+}
+function validateFileSignature(buffer, declaredMimeType) {
+  if (!buffer || buffer.length === 0) {
+    return { ok: false, reason: "Empty file buffer" };
+  }
+  const normalizedDeclared = declaredMimeType.toLowerCase();
+  const signature = MAGIC_SIGNATURES.find((s) => s.mimeType === normalizedDeclared);
+  if (!signature) {
+    return { ok: false, reason: `Unsupported MIME type for validation: ${declaredMimeType}` };
+  }
+  if (buffer.length < signature.minLength) {
+    return { ok: false, reason: `File too small for ${declaredMimeType} validation (need ${signature.minLength} bytes)` };
+  }
+  for (let i = 0; i < signature.bytes.length; i++) {
+    if (buffer[signature.offset + i] !== signature.bytes[i]) {
+      return {
+        ok: false,
+        reason: `Magic bytes mismatch for ${declaredMimeType}: expected ${signature.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" ")} at offset ${signature.offset}`
+      };
+    }
+  }
+  if (normalizedDeclared === "image/webp") {
+    if (!validateWebP(buffer)) {
+      return { ok: false, reason: "Invalid WebP format: missing WEBP signature" };
+    }
+  }
+  if (normalizedDeclared === "image/gif") {
+    if (!validateGIF(buffer)) {
+      return { ok: false, reason: "Invalid GIF format: not GIF87a or GIF89a" };
+    }
+  }
+  return { ok: true, mimeType: signature.mimeType };
+}
+function validateImageStructure(buffer, mimeType) {
+  switch (mimeType) {
+    case "image/png": {
+      if (buffer.length < 25) return false;
+      return buffer[12] === 73 && // I
+      buffer[13] === 72 && // H
+      buffer[14] === 68 && // D
+      buffer[15] === 82;
+    }
+    case "image/jpeg": {
+      for (let i = 2; i < buffer.length - 1; i++) {
+        if (buffer[i] === 255 && buffer[i + 1] >= 192 && buffer[i + 1] <= 207) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case "image/webp": {
+      return validateWebP(buffer);
+    }
+    case "image/gif": {
+      return validateGIF(buffer);
+    }
+    default:
+      return false;
+  }
+}
+function validatePDFStructure(buffer) {
+  const content = new TextDecoder("ascii", { fatal: false }).decode(buffer);
+  return content.includes("%%EOF") && content.includes("trailer");
+}
+function validateFileContent(buffer, declaredMimeType) {
+  const sigResult = validateFileSignature(buffer, declaredMimeType);
+  if (!sigResult.ok) {
+    return sigResult;
+  }
+  if (sigResult.mimeType.startsWith("image/")) {
+    if (!validateImageStructure(buffer, sigResult.mimeType)) {
+      return { ok: false, reason: `Invalid ${sigResult.mimeType} structure` };
+    }
+  }
+  if (sigResult.mimeType === "application/pdf") {
+    if (!validatePDFStructure(buffer)) {
+      return { ok: false, reason: "Invalid PDF structure: missing EOF or trailer" };
+    }
+  }
+  return sigResult;
+}
+async function fetchFileHeader(supabaseAdmin2, bucket, path2, bytesToFetch = 4096) {
+  try {
+    const { data: signedUrlData, error: signErr } = await supabaseAdmin2.storage.from(bucket).createSignedUrl(path2, 60);
+    if (signErr || !signedUrlData?.signedUrl) {
+      console.error("[FileValidation] Failed to create signed URL:", signErr?.message);
+      return null;
+    }
+    const response = await fetch(signedUrlData.signedUrl, {
+      method: "GET",
+      headers: {
+        Range: `bytes=0-${bytesToFetch - 1}`
+      }
+    });
+    if (!response.ok) {
+      console.error("[FileValidation] Failed to fetch file header:", response.status, response.statusText);
+      return null;
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
+  } catch (err) {
+    console.error("[FileValidation] Exception fetching file header:", err);
+    return null;
+  }
+}
+async function validateStoredFile(supabaseAdmin2, bucket, path2, expectedMimeType) {
+  const header = await fetchFileHeader(supabaseAdmin2, bucket, path2);
+  if (!header) {
+    return { ok: false, reason: "Failed to fetch file header for validation" };
+  }
+  return validateFileContent(header, expectedMimeType);
+}
+var MAGIC_SIGNATURES, ALLOWED_MIME_TYPES_BY_BUCKET;
+var init_fileValidation = __esm({
+  "src/lib/fileValidation.ts"() {
+    MAGIC_SIGNATURES = [
+      {
+        mimeType: "image/png",
+        offset: 0,
+        bytes: [137, 80, 78, 71, 13, 10, 26, 10],
+        minLength: 8
+      },
+      {
+        mimeType: "image/jpeg",
+        offset: 0,
+        bytes: [255, 216, 255],
+        minLength: 3
+      },
+      {
+        mimeType: "image/webp",
+        offset: 0,
+        bytes: [82, 73, 70, 70],
+        minLength: 12
+      },
+      {
+        mimeType: "image/gif",
+        offset: 0,
+        bytes: [71, 73, 70, 56],
+        minLength: 6
+      },
+      {
+        mimeType: "application/pdf",
+        offset: 0,
+        bytes: [37, 80, 68, 70],
+        minLength: 5
+      }
+    ];
+    ALLOWED_MIME_TYPES_BY_BUCKET = {
+      "avatars": ["image/jpeg", "image/png", "image/webp"],
+      "segment-hero": ["image/png", "image/jpeg", "image/webp", "image/gif"],
+      "payment-qr": ["image/png", "image/jpeg", "image/webp"],
+      "payment-proofs": ["image/jpeg", "image/png", "image/webp"],
+      "mentor-verification-documents": ["image/jpeg", "image/png", "image/webp", "application/pdf"],
+      "support-attachments": ["image/png", "image/jpeg", "image/webp", "application/pdf"],
+      "profile-photos": ["image/jpeg", "image/png", "image/webp"]
+    };
+  }
+});
 
 // server.ts
 var server_exports = {};
@@ -2509,14 +2698,6 @@ function generateRequestId() {
   const hex = (0, import_crypto.randomBytes)(REQUEST_ID_BYTES).toString("hex");
   return `${REQUEST_ID_PREFIX}${hex}`;
 }
-function sanitizeStack(stack) {
-  if (!stack) return void 0;
-  const lines = stack.split("\n");
-  const cleaned = lines.map((line) => {
-    return line.replace(/\.js:\d+:\d+/, ".js:xxx:xxx");
-  });
-  return cleaned.join("\n");
-}
 async function writeSystemLog(input) {
   const admin = getAdminClient();
   if (!admin) return;
@@ -2615,10 +2796,7 @@ async function logApiError(params) {
     role: params.role,
     error_code: params.error_code,
     message: params.message,
-    metadata: {
-      ...params.metadata || {},
-      ...params.stack ? { stack: sanitizeStack(params.stack) } : {}
-    }
+    metadata: params.metadata || {}
   });
 }
 async function fetchSystemLogs(options) {
@@ -6350,6 +6528,21 @@ var RATE_LIMIT_MESSAGE = "Too many requests, please wait a moment.";
 var RATE_LIMIT_WINDOW_MS = 6e4;
 var API_RATE_LIMIT = 120;
 var EXPENSIVE_RATE_LIMIT = 10;
+var UPLOAD_RATE_LIMIT = 20;
+var UPLOAD_RATE_LIMITS = {
+  "mentor/document/upload-url": 10,
+  // Mentor verification docs
+  "payment-proof": 10,
+  // Payment proofs
+  "support/attachments/upload-url": 15,
+  // Support attachments
+  "segment/hero-upload-url": 5,
+  // Segment hero (admin only)
+  "platform-config/qr-upload-url": 5,
+  // Payment QR (admin only)
+  "profile-photo": 10
+  // Profile photos
+};
 function clientRateLimitKey(req, _res) {
   const userId = req.auth?.user?.id;
   if (typeof userId === "string" && userId) return `user:${userId}`;
@@ -6361,9 +6554,15 @@ function getRetryAfterSeconds(req) {
   if (resetHeader) {
     const resetMs = typeof resetHeader === "number" ? resetHeader : new Date(resetHeader).getTime();
     const remainingSec = Math.ceil((resetMs - Date.now()) / 1e3);
-    return Math.max(1, remainingSec);
+    const base2 = Math.max(1, remainingSec);
+    const jitter2 = Math.floor(base2 * 0.1);
+    const withJitter2 = base2 + (Math.random() * 2 - 1) * jitter2;
+    return Math.max(1, Math.round(withJitter2));
   }
-  return Math.ceil(RATE_LIMIT_WINDOW_MS / 1e3);
+  const base = Math.ceil(RATE_LIMIT_WINDOW_MS / 1e3);
+  const jitter = Math.floor(base * 0.1);
+  const withJitter = base + (Math.random() * 2 - 1) * jitter;
+  return Math.max(1, Math.round(withJitter));
 }
 var buildLimiter = (limit) => (0, import_express_rate_limit.rateLimit)({
   windowMs: RATE_LIMIT_WINDOW_MS,
@@ -6386,6 +6585,16 @@ var buildLimiter = (limit) => (0, import_express_rate_limit.rateLimit)({
 });
 var apiRateLimiter = buildLimiter(API_RATE_LIMIT);
 var expensiveRouteLimiter = buildLimiter(EXPENSIVE_RATE_LIMIT);
+function buildUploadRateLimiter(flowName) {
+  const limit = UPLOAD_RATE_LIMITS[flowName] ?? UPLOAD_RATE_LIMIT;
+  return buildLimiter(limit);
+}
+var mentorDocumentUploadLimiter = buildUploadRateLimiter("mentor/document/upload-url");
+var paymentProofUploadLimiter = buildUploadRateLimiter("payment-proof");
+var supportAttachmentUploadLimiter = buildUploadRateLimiter("support/attachments/upload-url");
+var segmentHeroUploadLimiter = buildUploadRateLimiter("segment/hero-upload-url");
+var paymentQrUploadLimiter = buildUploadRateLimiter("platform-config/qr-upload-url");
+var profilePhotoUploadLimiter = buildUploadRateLimiter("profile-photo");
 
 // src/lib/validation.ts
 var import_zod = require("zod");
@@ -7490,7 +7699,7 @@ async function signQrImageUrl(admin, storagePath) {
   try {
     const { data, error } = await admin.storage.from(PAYMENT_QR_BUCKET).createSignedUrl(storagePath, 3600);
     if (error) {
-      console.error("Failed to sign the payment QR URL:", error.message);
+      console.error("Failed to sign the payment QR URL:", logSanitizer.safeMessage(error));
       return null;
     }
     return data?.signedUrl ?? null;
@@ -7504,7 +7713,7 @@ async function signProfilePhotoUrl(admin, storagePath) {
   try {
     const { data, error } = await admin.storage.from("profile-photos").createSignedUrl(storagePath, 3600);
     if (error) {
-      console.error("Failed to sign the profile photo URL:", error.message);
+      console.error("Failed to sign the profile photo URL:", logSanitizer.safeMessage(error));
       return null;
     }
     return data?.signedUrl ?? null;
@@ -7545,7 +7754,7 @@ async function insertPaymentNotifications(admin, input) {
   }));
   const { error } = await admin.from("notifications").insert(rows);
   if (error) {
-    console.error("Failed to write payment notifications:", error.message);
+    console.error("Failed to write payment notifications:", logSanitizer.safeMessage(error));
     return 0;
   }
   return rows.length;
@@ -7689,7 +7898,7 @@ async function reconcileAutoCancelledRefunds(admin, now = /* @__PURE__ */ new Da
         booking: { seeker_id: payment.seeker_id, booking_code: payment.booking?.[0]?.booking_code ?? "" },
         refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
         kind: refundResult.value.status === "REFUND_INITIATED" ? "GATEWAY_PENDING" : "MANUAL_PENDING"
-      }).catch((err) => console.error("Auto-cancel refund notification failed:", err.message));
+      }).catch((err) => console.error("Auto-cancel refund notification failed:", logSanitizer.safeMessage(err)));
     } else {
       result.failed++;
     }
@@ -8105,7 +8314,7 @@ async function persistNaturalSessionCompletion(admin, engineBooking, nowIso) {
     updated_at: nowIso
   }).eq("id", engineBooking.id).eq("status", "CONFIRMED").select("id, status").maybeSingle();
   if (error) {
-    console.error("Failed to persist natural session completion:", error.message);
+    console.error("Failed to persist natural session completion:", logSanitizer.safeMessage(error));
     return false;
   }
   return !!data;
@@ -8155,7 +8364,7 @@ async function reconcileAndAnnotateBookingRows(admin, rows, nowMs = Date.now()) 
       p_booking_ids: expiredIds
     });
     if (error) {
-      console.error("Bulk session reconciliation failed:", error.message);
+      console.error("Bulk session reconciliation failed:", logSanitizer.safeMessage(error));
     } else {
       const completed = Array.isArray(data) ? data.length : 0;
       if (completed > 0) {
@@ -9012,6 +9221,7 @@ async function startServer() {
     requireAuth,
     requireRole("seeker"),
     expensiveRouteLimiter,
+    paymentProofUploadLimiter,
     validateBody(apiSchemas.paymentProofSubmit),
     async (req, res) => {
       const bookingId = req.params.id;
@@ -9071,7 +9281,7 @@ async function startServer() {
       }
       const { data: storedFile, error: statErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).list(`${callerId}/${bookingId}`, { search: storagePath.split("/").pop(), limit: 10 });
       if (statErr) {
-        console.error("Payment proof lookup failed:", statErr.message);
+        console.error("Payment proof lookup failed:", logSanitizer.safeMessage(statErr));
         return respondWithInternalError({ req, res, error: statErr, context: "POST /api/seeker/bookings/:id/payment-proof (storage lookup)" });
       }
       const storedObject = (storedFile || []).find((f) => f.name === storagePath.split("/").pop());
@@ -9082,6 +9292,16 @@ async function startServer() {
       if (typeof storedBytes === "number" && storedBytes > PAYMENT_PROOF_MAX_BYTES) {
         await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
         return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", field: "proof", message: "That image is too large. Please upload a screenshot under 5 MB." } });
+      }
+      const { validateStoredFile: validateStoredFile2 } = await Promise.resolve().then(() => (init_fileValidation(), fileValidation_exports));
+      const declaredMimeType = req.body.mimeType ?? "image/jpeg";
+      const validationResult = await validateStoredFile2(admin, PAYMENT_PROOF_BUCKET, storagePath, declaredMimeType);
+      if (!validationResult.ok) {
+        await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
+        return res.status(400).json({
+          success: false,
+          error: { code: "VALIDATION_FAILED", message: `File content validation failed: ${validationResult.reason}` }
+        });
       }
       const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       const paymentRow = {
@@ -9100,7 +9320,7 @@ async function startServer() {
       };
       const { data: payment, error: paymentErr } = await admin.from("payments").upsert(paymentRow, { onConflict: "booking_id" }).select().single();
       if (paymentErr) {
-        console.error("Failed to persist payment record:", paymentErr.message);
+        console.error("Failed to persist payment record:", logSanitizer.safeMessage(paymentErr));
         try {
           await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
         } catch (cleanupErr) {
@@ -9111,7 +9331,7 @@ async function startServer() {
       if (booking.status === "PAYMENT_PENDING") {
         const { error: advanceErr } = await admin.from("bookings").update({ status: "PENDING_VERIFICATION", updated_at: nowIso }).eq("id", booking.id).eq("status", "PAYMENT_PENDING");
         if (advanceErr) {
-          console.error("Failed to advance booking to PENDING_VERIFICATION:", advanceErr.message);
+          console.error("Failed to advance booking to PENDING_VERIFICATION:", logSanitizer.safeMessage(advanceErr));
         }
       }
       const isNewReviewRequest = !existingPayment || existingPayment.status === "REJECTED";
@@ -12338,9 +12558,44 @@ async function startServer() {
         if (oldPath && newPath && oldPath !== newPath) {
           try {
             await admin.storage.from("segment-hero").remove([oldPath]);
-            console.log("[segment-hero] Removed previous hero image:", oldPath);
+            if (process.env.NODE_ENV !== "production") {
+              console.log("[segment-hero] Removed previous hero image:", oldPath);
+            }
           } catch (err) {
             console.error("[segment-hero] Failed to remove previous hero image:", oldPath, logSanitizer.safeMessage(err));
+          }
+        }
+      }
+      if (newHeroImageUrl && newHeroImageUrl !== oldHeroImageUrl) {
+        const newPath = extractSegmentHeroStoragePath(newHeroImageUrl);
+        if (newPath) {
+          const ext = newPath.split(".").pop()?.toLowerCase();
+          const mimeTypeByExt = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "webp": "image/webp",
+            "gif": "image/gif"
+          };
+          const mimeType = mimeTypeByExt[ext ?? ""] ?? "image/png";
+          const { validateStoredFile: validateStoredFile2 } = await Promise.resolve().then(() => (init_fileValidation(), fileValidation_exports));
+          const validationResult = await validateStoredFile2(admin, "segment-hero", newPath, mimeType);
+          if (!validationResult.ok) {
+            await admin.storage.from("segment-hero").remove([newPath]);
+            await admin.from("segments").update({
+              experience_config: {
+                ...data.experience_config,
+                branding: {
+                  ...data.experience_config?.branding || {},
+                  heroImageUrl: void 0
+                }
+              },
+              updated_at: (/* @__PURE__ */ new Date()).toISOString()
+            }).eq("id", id);
+            return res.status(400).json({
+              success: false,
+              error: { code: "VALIDATION_FAILED", message: `Hero image validation failed: ${validationResult.reason}` }
+            });
           }
         }
       }
@@ -12963,7 +13218,7 @@ async function startServer() {
       return respondWithInternalError({ req, res, error: err });
     }
   });
-  app.post("/api/admin/segments/:id/hero-upload-url", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/admin/segments/:id/hero-upload-url", requireAuth, requireAdmin, segmentHeroUploadLimiter, async (req, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -13038,7 +13293,9 @@ async function startServer() {
       if (previousPath) {
         try {
           await admin.storage.from("segment-hero").remove([previousPath]);
-          console.log("[segment-hero] Removed previous hero image:", previousPath);
+          if (process.env.NODE_ENV !== "production") {
+            console.log("[segment-hero] Removed previous hero image:", previousPath);
+          }
         } catch (err) {
           console.error("[segment-hero] Failed to remove previous hero image:", previousPath, logSanitizer.safeMessage(err));
         }
@@ -13277,7 +13534,7 @@ async function startServer() {
       if (documentsErr) throw documentsErr;
       if (membershipsErr) throw membershipsErr;
       const signedDocuments = await Promise.all((documents || []).map(async (document) => {
-        const { data: signed, error: signedErr } = await admin.storage.from("mentor-verification-documents").createSignedUrl(document.storage_path, 300);
+        const { data: signed, error: signedErr } = await admin.storage.from("mentor-verification-documents").createSignedUrl(document.storage_path, 300, { download: true });
         if (signedErr) throw signedErr;
         return { ...document, download_url: signed?.signedUrl || null };
       }));
@@ -13331,7 +13588,7 @@ async function startServer() {
           };
         }
       } catch (authErr) {
-        console.warn("[admin] Unable to read Supabase Auth state for user", userId, getErrorMessage(authErr));
+        console.warn("[admin] Unable to read Supabase Auth state for user", userId, logSanitizer.safeMessage(authErr));
       }
       return res.json({
         success: true,
@@ -13870,9 +14127,9 @@ async function startServer() {
           let proofUrl = null;
           if (p.proof_storage_path) {
             try {
-              const { data: signed, error: signedErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(p.proof_storage_path, SIGNED_PROOF_TTL_SECONDS);
+              const { data: signed, error: signedErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(p.proof_storage_path, SIGNED_PROOF_TTL_SECONDS, { download: true });
               if (signedErr) {
-                console.error("Failed to sign payment proof:", signedErr.message);
+                console.error("Failed to sign payment proof:", logSanitizer.safeMessage(signedErr));
               } else {
                 proofUrl = signed?.signedUrl ?? null;
               }
@@ -14225,7 +14482,7 @@ async function startServer() {
       const objectName = body.storagePath.split("/").pop();
       const { data: storedFile, error: statErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).list(`${REFUND_PROOF_PATH_PREFIX}/${id}`, { search: objectName, limit: 10 });
       if (statErr) {
-        console.error("Refund proof lookup failed:", statErr.message);
+        console.error("Refund proof lookup failed:", logSanitizer.safeMessage(statErr));
         return respondWithInternalError({ req, res, error: statErr, context: "POST /api/admin/payments/:id/complete-manual-refund (storage lookup)" });
       }
       const storedObject = (storedFile || []).find((f) => f.name === objectName);
@@ -14317,9 +14574,9 @@ async function startServer() {
       if (!isRefundProofPathFor(req.params.id, payment.refund_proof_storage_path)) {
         return res.status(404).json({ success: false, error: { code: "PROOF_NOT_STORED", message: "No refund proof is stored for this payment." } });
       }
-      const { data: signed, error: signedErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(payment.refund_proof_storage_path, 300);
+      const { data: signed, error: signedErr } = await admin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(payment.refund_proof_storage_path, 300, { download: true });
       if (signedErr) {
-        console.error("Failed to sign refund proof:", signedErr.message);
+        console.error("Failed to sign refund proof:", logSanitizer.safeMessage(signedErr));
         return res.status(500).json({ success: false, error: { code: "PROOF_NOT_STORED", message: "The refund proof could not be opened right now." } });
       }
       return res.json({ success: true, url: signed?.signedUrl ?? null });
@@ -14524,8 +14781,29 @@ async function startServer() {
         changedFields.push("currency");
       }
       if (body.qrImageStoragePath !== void 0) {
-        updates.qr_image_storage_path = body.qrImageStoragePath;
-        changedFields.push("qr_image_storage_path");
+        const qrImageStoragePath = body.qrImageStoragePath;
+        if (!qrImageStoragePath) {
+          updates.qr_image_storage_path = null;
+          changedFields.push("qr_image_storage_path");
+        } else {
+          updates.qr_image_storage_path = qrImageStoragePath;
+          changedFields.push("qr_image_storage_path");
+          const { validateStoredFile: validateStoredFile2 } = await Promise.resolve().then(() => (init_fileValidation(), fileValidation_exports));
+          const validationResult = await validateStoredFile2(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, "image/png");
+          if (!validationResult.ok) {
+            const validationResult2 = await validateStoredFile2(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, "image/jpeg");
+            if (!validationResult2.ok) {
+              const validationResult3 = await validateStoredFile2(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, "image/webp");
+              if (!validationResult3.ok) {
+                await admin.storage.from(PAYMENT_QR_BUCKET).remove([qrImageStoragePath]);
+                return res.status(400).json({
+                  success: false,
+                  error: { code: "VALIDATION_FAILED", message: `QR image validation failed: ${validationResult3.reason}` }
+                });
+              }
+            }
+          }
+        }
       }
       if (changedFields.length === 0) {
         return res.status(400).json({
@@ -14575,6 +14853,7 @@ async function startServer() {
     "/api/admin/platform-config/qr-upload-url",
     requireAuth,
     requireAdmin,
+    paymentQrUploadLimiter,
     validateBody(apiSchemas.platformQrUploadRequest),
     async (req, res) => {
       try {
@@ -14629,7 +14908,7 @@ async function startServer() {
       if (previousPath) {
         const { error: removeErr } = await admin.storage.from(PAYMENT_QR_BUCKET).remove([previousPath]);
         if (removeErr) {
-          console.error("Failed to remove the previous payment QR object:", removeErr.message);
+          console.error("Failed to remove the previous payment QR object:", logSanitizer.safeMessage(removeErr));
         }
       }
       auditAction(req.auth, "ADMIN_UPDATED_PAYMENT_CONFIGURATION", {
@@ -14940,6 +15219,7 @@ async function startServer() {
     "/api/support/tickets/:ticketCode/attachments/upload-url",
     requireAuth,
     expensiveRouteLimiter,
+    supportAttachmentUploadLimiter,
     validateBody(apiSchemas.supportAttachmentUploadRequest),
     async (req, res) => {
       const admin = getSupabaseAdmin();
@@ -15006,6 +15286,15 @@ async function startServer() {
       const admin = getSupabaseAdmin();
       if (!admin) return supportUnavailable(res);
       const { storagePath, fileName, mimeType, fileSize } = req.body ?? {};
+      const { validateStoredFile: validateStoredFile2 } = await Promise.resolve().then(() => (init_fileValidation(), fileValidation_exports));
+      const validationResult = await validateStoredFile2(admin, SUPPORT_ATTACHMENT_BUCKET, storagePath, mimeType);
+      if (!validationResult.ok) {
+        await admin.storage.from(SUPPORT_ATTACHMENT_BUCKET).remove([storagePath]);
+        return res.status(400).json({
+          success: false,
+          error: { code: "VALIDATION_FAILED", message: `File content validation failed: ${validationResult.reason}` }
+        });
+      }
       const { data, error } = await admin.rpc("add_support_attachment", {
         p_ticket_code: req.params.ticketCode,
         p_actor_id: req.auth.user.id,
@@ -15995,13 +16284,42 @@ async function startServer() {
         onConflict: "application_id,document_type"
       }).select().single();
       if (docErr) throw docErr;
+      const { validateStoredFile: validateStoredFile2 } = await Promise.resolve().then(() => (init_fileValidation(), fileValidation_exports));
+      const validationResult = await validateStoredFile2(admin, "mentor-verification-documents", storagePath, mimeType);
+      let finalStatus = "approved";
+      let validationError = null;
+      if (!validationResult.ok) {
+        finalStatus = "rejected";
+        validationError = validationResult.reason;
+        await admin.storage.from("mentor-verification-documents").remove([storagePath]);
+      }
+      const { data: updatedDocument, error: updateErr } = await admin.from("mentor_verification_documents").update({
+        status: finalStatus,
+        updated_at: (/* @__PURE__ */ new Date()).toISOString(),
+        ...validationError ? { admin_note: `Validation failed: ${validationError}` } : {}
+      }).eq("id", document.id).select().single();
+      if (updateErr) throw updateErr;
       await admin.from("mentor_application_audit").insert({
         application_id: applicationId,
         action: "document_uploaded",
         admin_user_id: null,
-        metadata: { document_type: documentType, document_id: document.id }
+        metadata: {
+          document_type: documentType,
+          document_id: document.id,
+          validation_status: finalStatus,
+          validation_error: validationError
+        }
       });
-      return res.json({ success: true, document });
+      if (finalStatus === "rejected") {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "VALIDATION_FAILED",
+            message: `File content validation failed: ${validationError}`
+          }
+        });
+      }
+      return res.json({ success: true, document: updatedDocument });
     } catch (err) {
       return respondWithInternalError({ req, res, error: err });
     }
@@ -16153,7 +16471,7 @@ async function startServer() {
       const { data: auditRows, error: auditErr } = await admin.from("mentor_application_audit").select(MENTOR_APPLICATION_AUDIT_SELECT).eq("application_id", id).order("created_at", { ascending: false });
       if (auditErr) throw auditErr;
       const documents = await Promise.all((documentRows ?? []).map(async (doc) => {
-        const { data: signed, error: signedErr } = await admin.storage.from("mentor-verification-documents").createSignedUrl(doc.storage_path, 300);
+        const { data: signed, error: signedErr } = await admin.storage.from("mentor-verification-documents").createSignedUrl(doc.storage_path, 300, { download: true });
         if (signedErr) throw signedErr;
         return { ...doc, download_url: signed?.signedUrl || null };
       }));
@@ -16998,7 +17316,7 @@ async function startServer() {
       });
     }
   });
-  app.get("/api/mentor/document/upload-url", requireAuth, requireRole("mentor"), async (req, res) => {
+  app.get("/api/mentor/document/upload-url", requireAuth, requireRole("mentor"), mentorDocumentUploadLimiter, async (req, res) => {
     try {
       const userId = req.auth.user.id;
       const { applicationId, documentType, fileName, mimeType, sizeBytes } = req.query;
@@ -17022,13 +17340,22 @@ async function startServer() {
       if (!docType) {
         return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: "Invalid document type." } });
       }
-      if (!["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(mimeType)) {
+      const ALLOWED_MENTOR_DOCUMENT_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+      const mimeTypeStr = mimeType;
+      if (!ALLOWED_MENTOR_DOCUMENT_MIME_TYPES.includes(mimeTypeStr)) {
         return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: "Unsupported file type." } });
       }
-      if (Number(sizeBytes) > 5242880) {
+      const MAX_DOCUMENT_BYTES2 = 5242880;
+      if (Number(sizeBytes) > MAX_DOCUMENT_BYTES2) {
         return res.status(400).json({ success: false, error: { code: "VALIDATION_ERROR", message: "File size exceeds 5MB limit." } });
       }
-      const fileExt = fileName.split(".").pop() || "bin";
+      const extensionByMimeType = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "application/pdf": "pdf"
+      };
+      const fileExt = extensionByMimeType[mimeTypeStr] ?? "bin";
       const uniqueFilename = `${documentType}-${Date.now()}-${Math.random().toString(36).substring(2, 12)}.${fileExt}`;
       const storagePath = `${userId}/${applicationId}/${uniqueFilename}`;
       if (process.env.NODE_ENV !== "production") {

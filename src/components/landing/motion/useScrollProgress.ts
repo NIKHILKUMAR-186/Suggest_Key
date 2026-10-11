@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
-import { useMotionValue, useMotionValueEvent, useSpring, useTransform, type MotionValue } from 'motion/react';
+import { useMotionValue, useSpring, useTransform, type MotionValue } from 'motion/react';
 
 /**
  * Shared scroll-progress tracking for scroll-linked landing choreography.
@@ -54,13 +54,13 @@ export function useScrollProgress({
   lead = 1.4,
   disabled = false,
   pinned = 1,
-  spring = DEFAULT_SPRING,
+  spring,
 }: ScrollProgressConfig): ScrollProgressResult {
   const initialScrollY = useRef(typeof window !== 'undefined' ? window.scrollY : 0);
   const scrollY = useMotionValue(initialScrollY.current);
   const windowStart = useMotionValue(Number.NaN);
   const windowEnd = useMotionValue(Number.NaN);
-  const smoothed = useSpring(scrollY, spring);
+  const source = spring ? useSpring(scrollY, spring) : scrollY;
 
   /**
    * Recompute the animation window from the target's live document position.
@@ -96,9 +96,21 @@ export function useScrollProgress({
       measureWindow();
     };
 
-    window.addEventListener('scroll', onScroll, { passive: true });
+    let ticking = false;
+    const onScrollRAF = () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          scrollY.set(window.scrollY);
+          measureWindow();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    window.addEventListener('scroll', onScrollRAF, { passive: true });
     return () => {
-      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('scroll', onScrollRAF);
     };
   }, [disabled, measureWindow, scrollY]);
 
@@ -113,7 +125,7 @@ export function useScrollProgress({
   }, [measureWindow]);
 
   const progress = useTransform(
-    [smoothed, windowStart, windowEnd],
+    [source, windowStart, windowEnd],
     ([value, start, end]: number[]) => {
       if (disabled) return pinned;
       // Unmeasured or degenerate geometry falls back to the initial state so
@@ -123,17 +135,6 @@ export function useScrollProgress({
       return raw < 0 ? 0 : raw > 1 ? 1 : raw;
     },
   );
-
-  // TEMP DEBUG — remove before finishing
-  useMotionValueEvent(progress, 'change', (v) => {
-    (window as unknown as Record<string, unknown>).__scrollDebug = {
-      progress: v,
-      scrollY: window.scrollY,
-      smoothed: smoothed.get(),
-      start: windowStart.get(),
-      end: windowEnd.get(),
-    };
-  });
 
   return { progress, refresh: measureWindow };
 }

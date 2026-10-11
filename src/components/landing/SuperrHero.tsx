@@ -44,11 +44,10 @@ export interface SuperrHeroProps {
 
 /**
  * How many viewport heights above the pinned slot the transition begins.
- * Two viewports keeps the closed book on screen for the whole fly-in on a
- * normal-height hero, and `useScrollProgress` clamps the window to the
- * document so progress is still exactly 0 at `scrollY === 0`.
+ * Reduced to 1.0 to match the shorter 120vh open section — the entrance
+ * animation now completes within ~1 viewport height of scrolling.
  */
-const NOTEBOOK_SCROLL_LEAD = 2;
+const NOTEBOOK_SCROLL_LEAD = 1.0;
 
 function NotebookIllustration({
   progress,
@@ -58,6 +57,7 @@ function NotebookIllustration({
   scaleY,
   rotate,
   width,
+  onLoginClick,
 }: {
   progress: MotionValue<number>;
   x: MotionValue<number>;
@@ -66,6 +66,7 @@ function NotebookIllustration({
   scaleY: MotionValue<number>;
   rotate: MotionValue<number>;
   width: MotionValue<number>;
+  onLoginClick: () => void;
 }) {
   const coverRotate = useTransform(progress, [0.08, 0.72], [0, -178]);
   const pageOpacity = useTransform(progress, [0.18, 0.62], [0, 1]);
@@ -75,44 +76,41 @@ function NotebookIllustration({
   return (
     <motion.div
       className="notebook-artwork notebook-artwork--transition"
-      style={{ x, y, scaleX, scaleY, rotate, width }}
+      style={{ x, y, scaleX, scaleY, rotate, width, willChange: 'transform' }}
       aria-hidden="true"
     >
       <div className="notebook-artwork__shadow" />
       <div className="notebook-artwork__cover-edge" />
-      <div className="notebook-artwork__pages notebook-artwork__pages--left">
-        <span /><span /><span />
-      </div>
-      <div className="notebook-artwork__pages notebook-artwork__pages--right">
+      <div className="notebook-artwork__pages notebook-artwork__pages--single">
         <span /><span /><span />
       </div>
       <motion.div className="notebook-artwork__cover notebook-artwork__cover--left" style={{ rotateY: coverRotate, opacity: coverOpacity }}>
-        <span className="notebook-artwork__brand">suggest<br />key</span>
+        <span className="notebook-artwork__brand"><img src="/logo.png"  width={30} height={30} /><img src="/name.png" alt="suggest key" /></span>
         <span className="notebook-artwork__cover-line">one useful next step</span>
       </motion.div>
-      <motion.div className="notebook-artwork__page notebook-artwork__page--left" style={{ opacity: pageOpacity }}>
+<motion.div className="notebook-artwork__page notebook-artwork__page--single" style={{ opacity: pageOpacity }}>
         <span className="notebook-artwork__margin" />
-        <motion.div className="notebook-artwork__segments" style={{ opacity: contentOpacity }}>
-          {LANDING_SEGMENTS.slice(0, 2).map((segment, index) => (
-            <div key={segment.id} className="notebook-artwork__segment">
-              <span className="notebook-artwork__segment-index">0{index + 1}</span>
-              <strong className="notebook-artwork__segment-title">{segment.title}</strong>
-              <span className="notebook-artwork__segment-description">{segment.description}</span>
-            </div>
-          ))}
-        </motion.div>
-        <span className="notebook-artwork__corner">suggest key</span>
-      </motion.div>
-      <motion.div className="notebook-artwork__page notebook-artwork__page--right" style={{ opacity: pageOpacity }}>
-        <span className="notebook-artwork__margin" />
-        <motion.div className="notebook-artwork__segments" style={{ opacity: contentOpacity }}>
-          {LANDING_SEGMENTS.slice(2, 3).map((segment) => (
-            <div key={segment.id} className="notebook-artwork__segment">
-              <span className="notebook-artwork__segment-index">03</span>
-              <strong className="notebook-artwork__segment-title">{segment.title}</strong>
-              <span className="notebook-artwork__segment-description">{segment.description}</span>
-            </div>
-          ))}
+        <motion.div className="notebook-editorial" style={{ opacity: contentOpacity }}>
+          <button
+            className="notebook-editorial__header-graphic notebook-editorial__clickable"
+            onClick={onLoginClick}
+            aria-label="Explore Suggest Key mentorship — sign in to continue"
+            type="button"
+          >
+            <img src="/image1.png" width={300} height={30} alt="Suggest Key mentorship introduction" />
+          </button>
+          <button
+            className="notebook-editorial__segments-graphic notebook-editorial__clickable"
+            onClick={onLoginClick}
+            aria-label="Explore Suggest Key mentorship segments — sign in to continue"
+            type="button"
+          >
+            <img src="/image2.png" width={300} height={30} alt="Suggest Key mentorship segments: Autism Mentorship, Relationship Guidance, Career Mentorship" />
+          </button>
+          <footer className="notebook-editorial__footer">
+            <span className="notebook-editorial__signature">Suggest Key</span>
+            <p className="notebook-editorial__tagline">Guidance that moves you forward.</p>
+          </footer>
         </motion.div>
       </motion.div>
       <div className="notebook-artwork__spine" />
@@ -148,7 +146,6 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   const { progress } = useScrollProgress({
     targetRef: pinRef,
     lead: NOTEBOOK_SCROLL_LEAD,
-    spring: landingMotion.spring,
   });
 
   useLayoutEffect(() => {
@@ -173,9 +170,11 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
     const source = sourceRef.current;
     const target = targetRef.current;
     if (!wrapper || !source || !target) return;
+    // Batch reads to avoid layout thrashing
     const wrapperRect = wrapper.getBoundingClientRect();
     const sourceRect = source.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
+    // Write to motion values (no state updates)
     gStartX.set(sourceRect.left - wrapperRect.left + sourceRect.width * 0.16);
     gStartY.set(sourceRect.top - wrapperRect.top - sourceRect.height * 0.045);
     gEndX.set(targetRect.left - wrapperRect.left);
@@ -189,24 +188,21 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
 
   useLayoutEffect(() => {
     measure();
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(() => {
+      measure();
+    });
     if (transitionRef.current) observer.observe(transitionRef.current);
     if (sourceRef.current) observer.observe(sourceRef.current);
     if (targetRef.current) observer.observe(targetRef.current);
-    window.addEventListener('resize', measure);
-    // The pinned slot moves with `position: sticky`, so the geometry must be
-    // re-read on every scroll tick for the open book to stay centred.
-    window.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure, { passive: true });
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', measure);
-      window.removeEventListener('scroll', measure);
     };
   }, [measure]);
 
   return (
     <div ref={transitionRef} className="notebook-transition">
-    <div data-debug-is-mobile={String(isMobile)} data-debug-reduce-motion={String(reduceMotion)} style={{ display: 'none' }} />
     <section className="landing-hero" aria-labelledby="hero-title">
       <div className="landing-wrap">
         <div className="landing-hero__head">

@@ -26,20 +26,20 @@ export interface LandingSegment {
 export const LANDING_SEGMENTS: readonly LandingSegment[] = [
   {
     id: 'autism',
-    title: 'Autism Mentor',
+    title: 'Autism Mentorship',
     description:
-      'Specialized neurodivergent support, sensory navigation, and individualized growth coaching.',
+      'Personalized support for neurodivergent individuals and their families, focusing on sensory needs, everyday challenges, and individual growth.',
   },
   {
     id: 'relationship',
-    title: 'Relationship Advisor',
+    title: 'Relationship Guidance',
     description:
-      'Guidance for communication, boundaries, and relationship challenges.',
+      'Build healthier relationships through better communication, clear boundaries, and a deeper understanding of one another.',
   },
   {
     id: 'career',
-    title: 'Career Mentor',
+    title: 'Career Mentorship',
     description:
-      'Career development, transitions, planning, leadership communication, and compensation negotiations.',
+      'Discover career opportunities, strengthen professional skills, and make confident decisions about your future.',
   },
 ];

@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { ProtectedRoute } from '@/src/components/auth/ProtectedRoute';
+import { isNewLandingPageActive } from '@/src/config/landing-page.config';
 
 // --- Critical, above-the-fold entry points ---------------------------
 // These stay in the initial chunk. The landing page IS the first paint for
@@ -13,6 +14,16 @@ import { NotFoundPage } from '@/src/pages/public/NotFoundPage';
 import { LoginPage } from '@/src/pages/auth/LoginPage';
 import { SignUpPage } from '@/src/pages/auth/SignUpPage';
 import { AuthCallback } from '@/src/pages/auth/AuthCallback';
+
+/**
+ * The `new` landing variant is a complete, independent implementation of `/`
+ * with its own stylesheet, so it is split into its own chunk. It is only ever
+ * requested when `LANDING_PAGE_VARIANT` is `new` — the legacy default never
+ * downloads it, and the two implementations are never mounted together.
+ */
+const NewLandingPage = isNewLandingPageActive()
+  ? lazy(() => import('@/src/pages/public/NewLandingPage').then((m) => ({ default: m.NewLandingPage })))
+  : null;
 
 // --- Lazily loaded ---------------------------------------------------
 // Every seeker, mentor, admin and support screen is behind an authenticated
@@ -99,8 +110,12 @@ const RouterRoutes: React.FC = () => {
   const { activeRole, isAuthenticated } = useAuth();
   const pathname = currentPath.split('?')[0];
 
-  // 1. Public Landing Page (always accessible)
+  // 1. Public Landing Page (always accessible).
+  //    The ACTIVE variant is decided once by `src/config/landing-page.config.ts`
+  //    and is the only switch between the two implementations. Exactly one is
+  //    rendered; they are never kept mounted in parallel and never combined.
   if (pathname === '/') {
+    if (NewLandingPage && isNewLandingPageActive()) return <NewLandingPage />;
     return <LandingPage />;
   }
 
