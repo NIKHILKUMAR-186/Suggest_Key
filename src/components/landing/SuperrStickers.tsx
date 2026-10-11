@@ -114,38 +114,38 @@ export function HandArrow({ className }: StickerProps) {
  * pencil, in the same flat sticker vocabulary. Shown only until a real mentor
  * portrait is available, so the composition never collapses to a grey box.
  */
-export function NotebookScene({ className }: StickerProps) {
-  return (
-    <svg viewBox="0 0 400 500" fill="none" aria-hidden="true" focusable="false" className={className} preserveAspectRatio="xMidYMid slice">
-      <rect width="400" height="500" fill="var(--dew)" />
-      {/* Notebook, tilted like a real object on a desk */}
-      <g transform="rotate(-4 200 250)">
-        <rect x="72" y="96" width="256" height="324" rx="16" fill="var(--paper)" stroke={OUTLINE} strokeWidth="2.5" />
-        <rect x="72" y="96" width="26" height="324" rx="13" fill="var(--dew)" stroke={OUTLINE} strokeWidth="2.5" />
-        <rect x="72" y="150" width="256" height="16" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" />
-        <rect x="72" y="352" width="256" height="16" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" />
-        {/* Name label sticker on the cover */}
-        <g transform="rotate(2.5 214 268)">
-          <rect x="128" y="212" width="172" height="112" rx="8" fill="#ffffff" stroke={OUTLINE} strokeWidth="1.5" />
-          <path d="M144 248h140M144 272h140M144 296h92" stroke="var(--mist)" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="5 6" />
-          <path d="M144 234h56" stroke={OUTLINE} strokeWidth="2" strokeLinecap="round" />
-        </g>
+export const NotebookScene = React.forwardRef<SVGSVGElement, StickerProps>(({ className }, ref) => (
+  <svg ref={ref} viewBox="0 0 400 500" fill="none" aria-hidden="true" focusable="false" className={className} preserveAspectRatio="xMidYMid slice">
+    <rect width="400" height="500" fill="var(--dew)" />
+    {/* Notebook, tilted like a real object on a desk */}
+    <g transform="rotate(-4 200 250)">
+      <rect x="72" y="96" width="256" height="324" rx="16" fill="var(--paper)" stroke={OUTLINE} strokeWidth="2.5" />
+      <rect x="72" y="96" width="26" height="324" rx="13" fill="var(--dew)" stroke={OUTLINE} strokeWidth="2.5" />
+      <rect x="72" y="150" width="256" height="16" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" />
+      <rect x="72" y="352" width="256" height="16" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" />
+      {/* Name label sticker on the cover */}
+      <g transform="rotate(2.5 214 268)">
+        <rect x="128" y="212" width="172" height="112" rx="8" fill="#ffffff" stroke={OUTLINE} strokeWidth="1.5" />
+        <path d="M144 248h140M144 272h140M144 296h92" stroke="var(--mist)" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="5 6" />
+        <path d="M144 234h56" stroke={OUTLINE} strokeWidth="2" strokeLinecap="round" />
       </g>
-      {/* Coloured pencil tucked alongside */}
-      <g transform="rotate(14 330 400)">
-        <rect x="300" y="330" width="26" height="140" rx="5" fill="var(--sky)" stroke={OUTLINE} strokeWidth="2" />
-        <path d="M300 400h26l-13 22-13-22Z" fill="var(--paper)" stroke={OUTLINE} strokeWidth="2" />
-        <path d="M307 416h12l-6 10-6-10Z" fill={OUTLINE} />
-      </g>
-      {/* Two sticker marks, placed by hand rather than on a grid */}
-      <g transform="translate(58 60) rotate(-12)">
-        <path d="M13.6 2.6C14.5 8.3 17.2 11 23 11.9 17.2 12.8 14.5 15.5 13.6 21.2 12.7 15.5 10 12.8 4.2 11.9 10 11 12.7 8.3 13.6 2.6Z" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" strokeLinejoin="round" />
-      </g>
-      <g transform="translate(300 92) rotate(11)">
-        <path d="M12 30.2C4 23.6 0 18.7 0 13.2A7.6 7.6 0 0 1 12 8.4 7.6 7.6 0 0 1 24 13.2C24 18.7 20 23.6 12 30.2Z" fill="var(--bubblegum)" stroke={OUTLINE} strokeWidth="2" strokeLinejoin="round" />
-      </g>
-    </svg>
-  );
-}
+    </g>
+    {/* Coloured pencil tucked alongside */}
+    <g transform="rotate(14 330 400)">
+      <rect x="300" y="330" width="26" height="140" rx="5" fill="var(--sky)" stroke={OUTLINE} strokeWidth="2" />
+      <path d="M300 400h26l-13 22-13-22Z" fill="var(--paper)" stroke={OUTLINE} strokeWidth="2" />
+      <path d="M307 416h12l-6 10-6-10Z" fill={OUTLINE} />
+    </g>
+    {/* Two sticker marks, placed by hand rather than on a grid */}
+    <g transform="translate(58 60) rotate(-12)">
+      <path d="M13.6 2.6C14.5 8.3 17.2 11 23 11.9 17.2 12.8 14.5 15.5 13.6 21.2 12.7 15.5 10 12.8 4.2 11.9 10 11 12.7 8.3 13.6 2.6Z" fill="var(--orange)" stroke={OUTLINE} strokeWidth="2" strokeLinejoin="round" />
+    </g>
+    <g transform="translate(300 92) rotate(11)">
+      <path d="M12 30.2C4 23.6 0 18.7 0 13.2A7.6 7.6 0 0 1 12 8.4 7.6 7.6 0 0 1 24 13.2C24 18.7 20 23.6 12 30.2Z" fill="var(--bubblegum)" stroke={OUTLINE} strokeWidth="2" strokeLinejoin="round" />
+    </g>
+  </svg>
+));
+
+NotebookScene.displayName = 'NotebookScene';
 
 export default StickerBolt;

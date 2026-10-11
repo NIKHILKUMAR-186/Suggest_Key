@@ -88,15 +88,6 @@ function sanitizeBody(body: any): Record<string, any> {
   return result;
 }
 
-function sanitizeStack(stack: string | undefined): string | undefined {
-  if (!stack) return undefined;
-  const lines = stack.split('\n');
-  const cleaned = lines.map((line) => {
-    return line.replace(/\.js:\d+:\d+/, '.js:xxx:xxx');
-  });
-  return cleaned.join('\n');
-}
-
 interface LogEntryInput {
   requestId: string;
   level: SystemLogLevel;
@@ -260,10 +251,7 @@ export async function logSystemError(params: {
     role: params.role,
     error_code: params.error_code,
     message: params.message,
-    metadata: {
-      ...(params.metadata || {}),
-      ...(params.stack ? { stack: sanitizeStack(params.stack) } : {}),
-    },
+    metadata: params.metadata || {},
   });
 }
 
@@ -290,10 +278,7 @@ export async function logApiError(params: {
     role: params.role,
     error_code: params.error_code,
     message: params.message,
-    metadata: {
-      ...(params.metadata || {}),
-      ...(params.stack ? { stack: sanitizeStack(params.stack) } : {}),
-    },
+    metadata: params.metadata || {},
   });
 }
 

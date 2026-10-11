@@ -8,6 +8,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { fetchMentorBookings } from '@/src/lib/bookingService';
 import { apiFetch } from '@/src/lib/apiClient';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { isBookingUpcoming } from '@/src/lib/sessionState';
 import { MEETING_LINK_DEADLINE_MINUTES } from '@/src/config/app';
 import { MentorActionBanner } from '@/src/components/mentor/MentorActionBanner';
@@ -78,7 +79,7 @@ export const MentorHomePage: React.FC = () => {
       const pending = bookings.find((b) => b.status === 'MENTOR_PENDING' && !b.meeting_url);
       setActionBooking(pending || null);
     } catch (err: any) {
-      console.error('Failed to fetch mentor home data:', err);
+      console.error('Failed to fetch mentor home data:', logSanitizer.safeMessage(err));
     } finally {
       setLoading(false);
     }

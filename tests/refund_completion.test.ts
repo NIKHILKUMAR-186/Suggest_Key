@@ -352,7 +352,7 @@ describe('H/I/J — the refund proof', () => {
   });
 
   it('R. the server serves the proof only through a short-lived signed URL', () => {
-    assert.match(serverSrc, /createSignedUrl\(payment\.refund_proof_storage_path as string, 300\)/);
+    assert.match(serverSrc, /createSignedUrl\(payment\.refund_proof_storage_path as string, 300, \{ download: true \}\)/);
     // The raw object key is never returned in the proof response.
     const route = serverSrc.slice(serverSrc.indexOf("app.get('/api/admin/payments/:id/refund-proof'"));
     assert.match(route.slice(0, 3000), /return res\.json\(\{ success: true, url: signed\?\.signedUrl \?\? null \}\)/);

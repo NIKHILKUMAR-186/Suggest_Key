@@ -158,7 +158,7 @@ import {
   type AccountStatusAction,
 } from './src/lib/adminAccountControl';
 import { APP_CONFIG } from './src/config/app';
-import { apiRateLimiter, expensiveRouteLimiter } from './src/lib/rateLimit';
+import { apiRateLimiter, expensiveRouteLimiter, mentorDocumentUploadLimiter, paymentProofUploadLimiter, supportAttachmentUploadLimiter, segmentHeroUploadLimiter, paymentQrUploadLimiter, profilePhotoUploadLimiter } from './src/lib/rateLimit';
 import { apiSchemas, formatValidationFailure, parseBody, validateBody } from './src/lib/validation';
 
 // Pagination constants (mirror src/lib/pagination.ts)
@@ -313,7 +313,7 @@ async function signQrImageUrl(admin: SupabaseClient, storagePath: string | null)
       .from(PAYMENT_QR_BUCKET)
       .createSignedUrl(storagePath, 3600);
     if (error) {
-      console.error('Failed to sign the payment QR URL:', error.message);
+      console.error('Failed to sign the payment QR URL:', logSanitizer.safeMessage(error));
       return null;
     }
     return data?.signedUrl ?? null;
@@ -339,7 +339,7 @@ async function signProfilePhotoUrl(admin: SupabaseClient, storagePath: string | 
       .from('profile-photos')
       .createSignedUrl(storagePath, 3600);
     if (error) {
-      console.error('Failed to sign the profile photo URL:', error.message);
+      console.error('Failed to sign the profile photo URL:', logSanitizer.safeMessage(error));
       return null;
     }
     return data?.signedUrl ?? null;
@@ -430,7 +430,7 @@ async function insertPaymentNotifications(
 
   const { error } = await admin.from('notifications').insert(rows);
   if (error) {
-    console.error('Failed to write payment notifications:', error.message);
+    console.error('Failed to write payment notifications:', logSanitizer.safeMessage(error));
     return 0;
   }
   return rows.length;
@@ -693,7 +693,7 @@ async function reconcileAutoCancelledRefunds(
         booking: { seeker_id: payment.seeker_id, booking_code: payment.booking?.[0]?.booking_code ?? '' },
         refundInfo: { paymentId: payment.id, amountInr: payment.amount_inr, status: refundResult.value.status },
         kind: refundResult.value.status === 'REFUND_INITIATED' ? 'GATEWAY_PENDING' : 'MANUAL_PENDING',
-      }).catch((err) => console.error('Auto-cancel refund notification failed:', err.message));
+      }).catch((err) => console.error('Auto-cancel refund notification failed:', logSanitizer.safeMessage(err)));
     } else {
       result.failed++;
     }
@@ -1621,7 +1621,7 @@ async function persistNaturalSessionCompletion(
     .maybeSingle();
 
   if (error) {
-    console.error('Failed to persist natural session completion:', error.message);
+    console.error('Failed to persist natural session completion:', logSanitizer.safeMessage(error));
     return false;
   }
   return !!data;
@@ -1759,7 +1759,7 @@ async function reconcileAndAnnotateBookingRows(
     if (error) {
       // Non-fatal: the annotation below still reports these rows as COMPLETED
       // from the clock, so the UI is correct even if the write failed.
-      console.error('Bulk session reconciliation failed:', error.message);
+      console.error('Bulk session reconciliation failed:', logSanitizer.safeMessage(error));
     } else {
       const completed = Array.isArray(data) ? data.length : 0;
       if (completed > 0) {
@@ -3097,6 +3097,7 @@ async function startServer() {
     requireAuth,
     requireRole('seeker'),
     expensiveRouteLimiter,
+    paymentProofUploadLimiter,
     validateBody(apiSchemas.paymentProofSubmit),
     async (req: AuthRequest, res) => {
     const bookingId = req.params.id;
@@ -3212,7 +3213,7 @@ async function startServer() {
       .list(`${callerId}/${bookingId}`, { search: storagePath.split('/').pop(), limit: 10 });
 
     if (statErr) {
-      console.error('Payment proof lookup failed:', statErr.message);
+      console.error('Payment proof lookup failed:', logSanitizer.safeMessage(statErr));
       return respondWithInternalError({ req, res, error: statErr, context: 'POST /api/seeker/bookings/:id/payment-proof (storage lookup)' });
     }
 
@@ -3227,6 +3228,21 @@ async function startServer() {
       // instead of a generic failure.
       await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', field: 'proof', message: 'That image is too large. Please upload a screenshot under 5 MB.' } });
+    }
+
+    // ---- 4b. Validate actual file content against declared MIME type ----------
+    // The client declares the MIME type during signed URL issuance; we verify
+    // the actual bytes match to prevent disguised executables or corrupt files.
+    const { validateStoredFile } = await import('@/src/lib/fileValidation');
+    const declaredMimeType = (req.body as { mimeType?: string }).mimeType ?? 'image/jpeg';
+    const validationResult = await validateStoredFile(admin, PAYMENT_PROOF_BUCKET, storagePath, declaredMimeType);
+
+    if (!validationResult.ok) {
+      await admin.storage.from(PAYMENT_PROOF_BUCKET).remove([storagePath]);
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_FAILED', message: `File content validation failed: ${validationResult.reason}` },
+      });
     }
 
     // ---- 5. Upsert the payment record ------------------------------------
@@ -3256,7 +3272,7 @@ async function startServer() {
       .single();
 
     if (paymentErr) {
-      console.error('Failed to persist payment record:', paymentErr.message);
+      console.error('Failed to persist payment record:', logSanitizer.safeMessage(paymentErr));
       // The uploaded object is now orphaned; remove it so a failed submission
       // leaves no unreferenced file in the private bucket.
       try {
@@ -3278,7 +3294,7 @@ async function startServer() {
         // The payment itself is safely stored, so this is logged rather than
         // thrown: the admin queue reads the payment, and My Bookings still
         // shows a truthful payment state.
-        console.error('Failed to advance booking to PENDING_VERIFICATION:', advanceErr.message);
+        console.error('Failed to advance booking to PENDING_VERIFICATION:', logSanitizer.safeMessage(advanceErr));
       }
     }
 
@@ -8244,9 +8260,52 @@ if (result.mentorNotified && result.bookingId) {
         if (oldPath && newPath && oldPath !== newPath) {
           try {
             await admin.storage.from('segment-hero').remove([oldPath]);
-            console.log('[segment-hero] Removed previous hero image:', oldPath);
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('[segment-hero] Removed previous hero image:', oldPath);
+            }
           } catch (err: any) {
             console.error('[segment-hero] Failed to remove previous hero image:', oldPath, logSanitizer.safeMessage(err));
+          }
+        }
+      }
+
+      // Validate new hero image content if it was changed and points to our storage
+      if (newHeroImageUrl && newHeroImageUrl !== oldHeroImageUrl) {
+        const newPath = extractSegmentHeroStoragePath(newHeroImageUrl);
+        if (newPath) {
+          // Determine MIME type from extension
+          const ext = newPath.split('.').pop()?.toLowerCase();
+          const mimeTypeByExt: Record<string, string> = {
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'webp': 'image/webp',
+            'gif': 'image/gif',
+          };
+          const mimeType = mimeTypeByExt[ext ?? ''] ?? 'image/png';
+          const { validateStoredFile } = await import('@/src/lib/fileValidation');
+          const validationResult = await validateStoredFile(admin, 'segment-hero', newPath, mimeType);
+          if (!validationResult.ok) {
+            // Remove the invalid file
+            await admin.storage.from('segment-hero').remove([newPath]);
+            // Also clear the heroImageUrl from the segment config
+            await admin
+              .from('segments')
+              .update({
+                experience_config: {
+                  ...data.experience_config,
+                  branding: {
+                    ...((data.experience_config as any)?.branding || {}),
+                    heroImageUrl: undefined,
+                  },
+                },
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', id);
+            return res.status(400).json({
+              success: false,
+              error: { code: 'VALIDATION_FAILED', message: `Hero image validation failed: ${validationResult.reason}` },
+            });
           }
         }
       }
@@ -9300,7 +9359,7 @@ if (result.mentorNotified && result.bookingId) {
   });
 
   // Segment hero image endpoints (admin only)
-  app.post('/api/admin/segments/:id/hero-upload-url', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/segments/:id/hero-upload-url', requireAuth, requireAdmin, segmentHeroUploadLimiter, async (req: AuthRequest, res) => {
     try {
       const admin = getSupabaseAdmin();
       if (!admin) {
@@ -9399,7 +9458,9 @@ if (result.mentorNotified && result.bookingId) {
       if (previousPath) {
         try {
           await admin.storage.from('segment-hero').remove([previousPath]);
-          console.log('[segment-hero] Removed previous hero image:', previousPath);
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('[segment-hero] Removed previous hero image:', previousPath);
+          }
         } catch (err: any) {
           console.error('[segment-hero] Failed to remove previous hero image:', previousPath, logSanitizer.safeMessage(err));
         }
@@ -9741,7 +9802,7 @@ if (result.mentorNotified && result.bookingId) {
       if (membershipsErr) throw membershipsErr;
 
       const signedDocuments = await Promise.all((documents || []).map(async (document: { storage_path: string }) => {
-        const { data: signed, error: signedErr } = await admin.storage.from('mentor-verification-documents').createSignedUrl(document.storage_path, 300);
+        const { data: signed, error: signedErr } = await admin.storage.from('mentor-verification-documents').createSignedUrl(document.storage_path, 300, { download: true });
         if (signedErr) throw signedErr;
         return { ...document, download_url: signed?.signedUrl || null };
       }));
@@ -9830,7 +9891,7 @@ if (result.mentorNotified && result.bookingId) {
       } catch (authErr) {
         // Auth state is supplementary: the rest of the page is still real and
         // usable, so this is logged rather than failed.
-        console.warn('[admin] Unable to read Supabase Auth state for user', userId, getErrorMessage(authErr));
+        console.warn('[admin] Unable to read Supabase Auth state for user', userId, logSanitizer.safeMessage(authErr));
       }
 
       return res.json({
@@ -10596,6 +10657,8 @@ if (result.mentorNotified && result.bookingId) {
       // A payment proof is sensitive: the bucket is private, so the admin gets
       // a short-lived SIGNED url generated server-side. The raw storage path is
       // never handed to the browser and is never made public.
+      // Using download: true forces Content-Disposition: attachment and
+      // X-Content-Type-Options: nosniff for security.
       const SIGNED_PROOF_TTL_SECONDS = 300;
       const formattedPayments = await Promise.all(
         pagePayments.map(async (p: any) => {
@@ -10604,9 +10667,9 @@ if (result.mentorNotified && result.bookingId) {
             try {
               const { data: signed, error: signedErr } = await admin.storage
                 .from(PAYMENT_PROOF_BUCKET)
-                .createSignedUrl(p.proof_storage_path, SIGNED_PROOF_TTL_SECONDS);
+                .createSignedUrl(p.proof_storage_path, SIGNED_PROOF_TTL_SECONDS, { download: true });
               if (signedErr) {
-                console.error('Failed to sign payment proof:', signedErr.message);
+                console.error('Failed to sign payment proof:', logSanitizer.safeMessage(signedErr));
               } else {
                 proofUrl = signed?.signedUrl ?? null;
               }
@@ -11162,7 +11225,7 @@ if (result.mentorNotified && result.bookingId) {
         .list(`${REFUND_PROOF_PATH_PREFIX}/${id}`, { search: objectName, limit: 10 });
 
       if (statErr) {
-        console.error('Refund proof lookup failed:', statErr.message);
+        console.error('Refund proof lookup failed:', logSanitizer.safeMessage(statErr));
         return respondWithInternalError({ req, res, error: statErr, context: 'POST /api/admin/payments/:id/complete-manual-refund (storage lookup)' });
       }
 
@@ -11289,10 +11352,10 @@ if (result.mentorNotified && result.bookingId) {
 
       const { data: signed, error: signedErr } = await admin.storage
         .from(PAYMENT_PROOF_BUCKET)
-        .createSignedUrl(payment.refund_proof_storage_path as string, 300);
+        .createSignedUrl(payment.refund_proof_storage_path as string, 300, { download: true });
 
       if (signedErr) {
-        console.error('Failed to sign refund proof:', signedErr.message);
+        console.error('Failed to sign refund proof:', logSanitizer.safeMessage(signedErr));
         return res.status(500).json({ success: false, error: { code: 'PROOF_NOT_STORED', message: 'The refund proof could not be opened right now.' } });
       }
 
@@ -11619,8 +11682,34 @@ if (result.mentorNotified && result.bookingId) {
       }
 
       if (body.qrImageStoragePath !== undefined) {
-        updates.qr_image_storage_path = body.qrImageStoragePath;
-        changedFields.push('qr_image_storage_path');
+        const qrImageStoragePath = body.qrImageStoragePath;
+        if (!qrImageStoragePath) {
+          // Allow explicit null to clear the QR
+          updates.qr_image_storage_path = null;
+          changedFields.push('qr_image_storage_path');
+        } else {
+          updates.qr_image_storage_path = qrImageStoragePath;
+          changedFields.push('qr_image_storage_path');
+
+          // Validate the uploaded QR image content
+          const { validateStoredFile } = await import('@/src/lib/fileValidation');
+          const validationResult = await validateStoredFile(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, 'image/png');
+          // Also try JPEG and WebP since we don't know which one was uploaded
+          if (!validationResult.ok) {
+            const validationResult2 = await validateStoredFile(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, 'image/jpeg');
+            if (!validationResult2.ok) {
+              const validationResult3 = await validateStoredFile(admin, PAYMENT_QR_BUCKET, qrImageStoragePath, 'image/webp');
+              if (!validationResult3.ok) {
+                // All validations failed - remove the file and reject
+                await admin.storage.from(PAYMENT_QR_BUCKET).remove([qrImageStoragePath]);
+                return res.status(400).json({
+                  success: false,
+                  error: { code: 'VALIDATION_FAILED', message: `QR image validation failed: ${validationResult3.reason}` },
+                });
+              }
+            }
+          }
+        }
       }
 
       // The schema already refuses a patch that names no field. This is a
@@ -11690,6 +11779,7 @@ if (result.mentorNotified && result.bookingId) {
     '/api/admin/platform-config/qr-upload-url',
     requireAuth,
     requireAdmin,
+    paymentQrUploadLimiter,
     validateBody(apiSchemas.platformQrUploadRequest),
     async (req: AuthRequest, res) => {
     try {
@@ -11786,7 +11876,7 @@ if (result.mentorNotified && result.bookingId) {
       if (previousPath) {
         const { error: removeErr } = await admin.storage.from(PAYMENT_QR_BUCKET).remove([previousPath]);
         if (removeErr) {
-          console.error('Failed to remove the previous payment QR object:', removeErr.message);
+          console.error('Failed to remove the previous payment QR object:', logSanitizer.safeMessage(removeErr));
         }
       }
 
@@ -12240,6 +12330,7 @@ if (result.mentorNotified && result.bookingId) {
     '/api/support/tickets/:ticketCode/attachments/upload-url',
     requireAuth,
     expensiveRouteLimiter,
+    supportAttachmentUploadLimiter,
     validateBody(apiSchemas.supportAttachmentUploadRequest),
     async (req: AuthRequest, res) => {
       const admin = getSupabaseAdmin();
@@ -12328,6 +12419,19 @@ if (result.mentorNotified && result.bookingId) {
       if (!admin) return supportUnavailable(res);
 
       const { storagePath, fileName, mimeType, fileSize } = req.body ?? {};
+
+      // Validate actual file content against declared MIME type
+      const { validateStoredFile } = await import('@/src/lib/fileValidation');
+      const validationResult = await validateStoredFile(admin, SUPPORT_ATTACHMENT_BUCKET, storagePath, mimeType);
+
+      if (!validationResult.ok) {
+        // Delete the invalid file from storage
+        await admin.storage.from(SUPPORT_ATTACHMENT_BUCKET).remove([storagePath]);
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_FAILED', message: `File content validation failed: ${validationResult.reason}` },
+        });
+      }
 
       const { data, error } = await admin.rpc('add_support_attachment', {
         p_ticket_code: req.params.ticketCode,
@@ -13837,7 +13941,7 @@ if (result.mentorNotified && result.bookingId) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid document type.' } });
       }
 
-      // Upsert document
+      // Upsert document with pending status (validation happens after)
       const { data: document, error: docErr } = await admin
         .from('mentor_verification_documents')
         .upsert({
@@ -13857,15 +13961,58 @@ if (result.mentorNotified && result.bookingId) {
 
       if (docErr) throw docErr;
 
+      // Validate actual file content against declared MIME type
+      const { validateStoredFile } = await import('@/src/lib/fileValidation');
+      const validationResult = await validateStoredFile(admin, 'mentor-verification-documents', storagePath, mimeType);
+
+      let finalStatus: 'approved' | 'rejected' = 'approved';
+      let validationError: string | null = null;
+
+      if (!validationResult.ok) {
+        finalStatus = 'rejected';
+        validationError = validationResult.reason;
+        // Delete the invalid file from storage
+        await admin.storage.from('mentor-verification-documents').remove([storagePath]);
+      }
+
+      // Update document with validation result
+      const { data: updatedDocument, error: updateErr } = await admin
+        .from('mentor_verification_documents')
+        .update({
+          status: finalStatus,
+          updated_at: new Date().toISOString(),
+          ...(validationError ? { admin_note: `Validation failed: ${validationError}` } : {}),
+        })
+        .eq('id', document.id)
+        .select()
+        .single();
+
+      if (updateErr) throw updateErr;
+
       // Log audit
       await admin.from('mentor_application_audit').insert({
         application_id: applicationId,
         action: 'document_uploaded',
         admin_user_id: null,
-        metadata: { document_type: documentType, document_id: document.id },
+        metadata: {
+          document_type: documentType,
+          document_id: document.id,
+          validation_status: finalStatus,
+          validation_error: validationError,
+        },
       });
 
-      return res.json({ success: true, document });
+      if (finalStatus === 'rejected') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: `File content validation failed: ${validationError}`,
+          },
+        });
+      }
+
+      return res.json({ success: true, document: updatedDocument });
     } catch (err: any) {
       return respondWithInternalError({ req, res, error: err });
     }
@@ -14100,7 +14247,7 @@ if (result.mentorNotified && result.bookingId) {
       const documents = await Promise.all(((documentRows ?? []) as unknown as MentorApplicationDetailDocument[]).map(async (doc) => {
         const { data: signed, error: signedErr } = await admin.storage
           .from('mentor-verification-documents')
-          .createSignedUrl(doc.storage_path, 300);
+          .createSignedUrl(doc.storage_path, 300, { download: true });
         if (signedErr) throw signedErr;
         return { ...doc, download_url: signed?.signedUrl || null };
       }));
@@ -15203,7 +15350,7 @@ if (result.mentorNotified && result.bookingId) {
   });
 
   // GET /api/mentor/document/upload-url: Get a presigned upload URL for a verification document
-  app.get('/api/mentor/document/upload-url', requireAuth, requireRole('mentor'), async (req: AuthRequest, res) => {
+  app.get('/api/mentor/document/upload-url', requireAuth, requireRole('mentor'), mentorDocumentUploadLimiter, async (req: AuthRequest, res) => {
     try {
       const userId = req.auth!.user.id;
       const { applicationId, documentType, fileName, mimeType, sizeBytes } = req.query;
@@ -15245,18 +15392,27 @@ if (result.mentorNotified && result.bookingId) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Invalid document type.' } });
       }
 
-      // Validate MIME type
-      if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(mimeType as string)) {
+      // Validate MIME type against explicit allowlist
+      const ALLOWED_MENTOR_DOCUMENT_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] as const;
+      const mimeTypeStr = mimeType as string;
+      if (!ALLOWED_MENTOR_DOCUMENT_MIME_TYPES.includes(mimeTypeStr as typeof ALLOWED_MENTOR_DOCUMENT_MIME_TYPES[number])) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Unsupported file type.' } });
       }
 
       // Validate size (5MB)
-      if (Number(sizeBytes) > 5242880) {
+      const MAX_DOCUMENT_BYTES = 5242880;
+      if (Number(sizeBytes) > MAX_DOCUMENT_BYTES) {
         return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'File size exceeds 5MB limit.' } });
       }
 
-      // Generate storage path: userId/applicationId/documentType-timestamp-random.ext
-      const fileExt = (fileName as string).split('.').pop() || 'bin';
+      // Derive extension from validated MIME type, never from client filename
+      const extensionByMimeType: Record<string, string> = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/webp': 'webp',
+        'application/pdf': 'pdf',
+      };
+      const fileExt = extensionByMimeType[mimeTypeStr] ?? 'bin';
       const uniqueFilename = `${documentType}-${Date.now()}-${Math.random().toString(36).substring(2, 12)}.${fileExt}`;
       const storagePath = `${userId}/${applicationId}/${uniqueFilename}`;
 

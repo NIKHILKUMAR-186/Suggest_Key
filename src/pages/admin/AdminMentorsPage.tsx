@@ -81,9 +81,12 @@ export const AdminMentorsPage: React.FC = () => {
     enabled: true,
   });
 
-  const fetchMentors = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
+  // `usePaginatedQuery` performs the initial fetch itself and exposes `refetch`
+  // for manual refresh. A second `useEffect([fetchMentors])` here re-fired on
+  // every render because `useCallback` rebuilt the wrapper, creating a request
+  // loop that exhausted the shared API rate limit and left the page stuck on
+  // "Loading". `refetch` is the single refresh entry point.
+  const fetchMentors = refetch;
 
   // Derive the badge from the stored columns, exactly as the detail page does.
   const rows = useMemo(
@@ -164,9 +167,16 @@ export const AdminMentorsPage: React.FC = () => {
             <p className="mt-2 text-xs text-[var(--color-shell-text-muted)]">Loading mentors…</p>
           </div>
         ) : error ? (
-          <div className="p-6 text-center text-[var(--color-shell-error)]">
-            <AlertTriangle className="mx-auto mb-2 h-6 w-6" />
-            <p className="text-xs">{error.message}</p>
+          <div className="p-6 text-center">
+            <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-[var(--color-shell-text-subtle)]" />
+            <p className="text-xs text-[var(--color-shell-text-muted)]">
+              {toUserMessage(error, 'We could not load the mentor directory. Please try again.')}
+            </p>
+            <p className="mt-1 text-[11px] text-[var(--color-shell-text-subtle)]">
+              {error instanceof Error && error.name === 'RateLimitError'
+                ? 'Requests are paused. Wait for the banner to clear, then press Retry.'
+                : 'If this keeps happening, check the System Health page.'}
+            </p>
             <Button variant="outline" size="sm" onClick={fetchMentors} className="mt-2">
               Retry
             </Button>

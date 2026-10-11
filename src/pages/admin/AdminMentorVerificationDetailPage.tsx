@@ -15,6 +15,7 @@ import {
 import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { apiFetch } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useToast } from '@/src/context/ToastContext';
 import { mailtoHref } from '@/src/lib/contact';
@@ -84,7 +85,7 @@ export const AdminMentorVerificationDetailPage: React.FC = () => {
       setApplication(data.application);
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to load application'));
-      console.error('Failed to fetch application:', err);
+      console.error('Failed to fetch application:', logSanitizer.safeMessage(err));
     } finally {
       setLoading(false);
     }

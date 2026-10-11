@@ -109,13 +109,12 @@ export const AdminBookingsPage: React.FC = () => {
     enabled: true,
   });
 
-  const loadBookings = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    loadBookings();
-  }, [loadBookings]);
+  // `usePaginatedQuery` performs the initial fetch itself and exposes `refetch`
+  // for manual refresh. A second `useEffect([loadBookings])` here re-fired on
+  // every render because `useCallback` rebuilt the wrapper, creating a request
+  // loop that exhausted the shared API rate limit and left the page stuck on
+  // "Loading". `refetch` is the single refresh entry point.
+  const loadBookings = refetch;
 
   // Calculate overdue count when bookings change
   useEffect(() => {

@@ -8,3 +8,4 @@ export { SplitText } from './SplitText';
 export { TiltCard } from './TiltCard';
 export { landingMotion } from './tokens';
 export { useReducedMotion } from './useReducedMotion';
+export { useScrollProgress, type ScrollProgressConfig, type ScrollProgressResult } from './useScrollProgress';

@@ -35,6 +35,7 @@ import { addDaysToDateString, getDateStringInTimezone } from '@/src/lib/slotEngi
 import { formatShortDate } from '@/src/lib/seekerFormat';
 import { mentorListPath, parseAvailabilityDateParam } from '@/src/lib/mentorNav';
 import { DirectoryMentor, Segment } from '@/src/types/database';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { SegmentThemeProvider, useSegmentTheme } from '@/src/context/SegmentThemeContext';
 import { cn } from '@/src/lib/utils';
 
@@ -218,7 +219,7 @@ export const MentorDirectoryPage: React.FC = () => {
           });
         }
       } catch (err: any) {
-        console.error('Error loading segments:', err);
+        console.error('Error loading segments:', logSanitizer.safeMessage(err));
         if (isMounted) setError('Unable to load mentors right now.');
       } finally {
         if (isMounted) setIsLoadingSegments(false);
@@ -273,7 +274,7 @@ export const MentorDirectoryPage: React.FC = () => {
       setCursor(nextCursor);
       setHasMore(more);
     } catch (err: any) {
-      console.error('Error loading mentor directory:', err);
+      console.error('Error loading mentor directory:', logSanitizer.safeMessage(err));
       if (!isLoadMore) {
         setMentors([]);
       }
@@ -558,7 +559,7 @@ export const MentorDirectoryPage: React.FC = () => {
               <AlertCircle className="h-4 w-4" aria-hidden="true" />
               <span>{error}</span>
             </div>
-            <Button onClick={loadMentors} variant="outline" size="sm" className="mt-2 sm:mt-0">
+            <Button onClick={() => loadMentors()} variant="outline" size="sm" className="mt-2 sm:mt-0">
               Try Again
             </Button>
           </div>

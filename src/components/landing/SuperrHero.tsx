@@ -1,10 +1,11 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowRight } from 'lucide-react';
-import { motion, useScroll, useSpring, useTransform, type MotionValue } from 'motion/react';
-import { MagneticButton, Reveal, SplitText, landingMotion, useReducedMotion } from '@/src/components/landing/motion';
+import { motion, useMotionValue, useTransform, type MotionValue } from 'motion/react';
+import { MagneticButton, Reveal, SplitText, landingMotion, useReducedMotion, useScrollProgress } from '@/src/components/landing/motion';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { HandArrow, StickerBolt, StickerHeart, StickerSparkle } from '@/src/components/landing/SuperrStickers';
 import { mentorSegmentLabel, mentorSessionLabel } from '@/src/components/landing/mentorMeta';
+import { LANDING_SEGMENTS } from '@/src/components/landing/landingSegments';
 import type { MentorDirectoryItem } from '@/src/hooks/useMentorDirectory';
 
 /**
@@ -22,6 +23,16 @@ import type { MentorDirectoryItem } from '@/src/hooks/useMentorDirectory';
  * type is never animated word by word at the one moment it is being read for
  * the first time. With `prefers-reduced-motion` every step resolves to its
  * final state and the copy is simply present.
+ *
+ * NOTEBOOK.
+ * A single notebook artwork is measured between two hidden slots: a closed
+ * slot beside the hero copy and a pinned slot inside the tall opening stage
+ * below. Scroll progress — measured by `useScrollProgress` so it always starts
+ * at zero on a fresh load — flies the notebook from the hero slot to the
+ * pinned slot, swings the cover open around the spine, and reveals the three
+ * local mentorship segments on the pages. The pinned slot lives inside a
+ * `position: sticky` container, so once the book is open it stays centred in
+ * the viewport long enough to read before the stage scrolls it away.
  */
 
 export interface SuperrHeroProps {
@@ -31,16 +42,13 @@ export interface SuperrHeroProps {
   findMentorPath: string;
 }
 
-interface NotebookGeometry {
-  startWidth: number;
-  startHeight: number;
-  endWidth: number;
-  endHeight: number;
-  startX: number;
-  startY: number;
-  endX: number;
-  endY: number;
-}
+/**
+ * How many viewport heights above the pinned slot the transition begins.
+ * Two viewports keeps the closed book on screen for the whole fly-in on a
+ * normal-height hero, and `useScrollProgress` clamps the window to the
+ * document so progress is still exactly 0 at `scrollY === 0`.
+ */
+const NOTEBOOK_SCROLL_LEAD = 2;
 
 function NotebookIllustration({
   progress,
@@ -57,11 +65,12 @@ function NotebookIllustration({
   scaleX: MotionValue<number>;
   scaleY: MotionValue<number>;
   rotate: MotionValue<number>;
-  width: number;
+  width: MotionValue<number>;
 }) {
   const coverRotate = useTransform(progress, [0.08, 0.72], [0, -178]);
   const pageOpacity = useTransform(progress, [0.18, 0.62], [0, 1]);
   const coverOpacity = useTransform(progress, [0.58, 0.82], [1, 0]);
+  const contentOpacity = useTransform(progress, [0.62, 0.86], [0, 1]);
 
   return (
     <motion.div
@@ -83,14 +92,28 @@ function NotebookIllustration({
       </motion.div>
       <motion.div className="notebook-artwork__page notebook-artwork__page--left" style={{ opacity: pageOpacity }}>
         <span className="notebook-artwork__margin" />
-        <span className="notebook-artwork__scribble notebook-artwork__scribble--one" />
-        <span className="notebook-artwork__scribble notebook-artwork__scribble--two" />
+        <motion.div className="notebook-artwork__segments" style={{ opacity: contentOpacity }}>
+          {LANDING_SEGMENTS.slice(0, 2).map((segment, index) => (
+            <div key={segment.id} className="notebook-artwork__segment">
+              <span className="notebook-artwork__segment-index">0{index + 1}</span>
+              <strong className="notebook-artwork__segment-title">{segment.title}</strong>
+              <span className="notebook-artwork__segment-description">{segment.description}</span>
+            </div>
+          ))}
+        </motion.div>
         <span className="notebook-artwork__corner">suggest key</span>
       </motion.div>
       <motion.div className="notebook-artwork__page notebook-artwork__page--right" style={{ opacity: pageOpacity }}>
         <span className="notebook-artwork__margin" />
-        <span className="notebook-artwork__scribble notebook-artwork__scribble--three" />
-        <span className="notebook-artwork__scribble notebook-artwork__scribble--four" />
+        <motion.div className="notebook-artwork__segments" style={{ opacity: contentOpacity }}>
+          {LANDING_SEGMENTS.slice(2, 3).map((segment) => (
+            <div key={segment.id} className="notebook-artwork__segment">
+              <span className="notebook-artwork__segment-index">03</span>
+              <strong className="notebook-artwork__segment-title">{segment.title}</strong>
+              <span className="notebook-artwork__segment-description">{segment.description}</span>
+            </div>
+          ))}
+        </motion.div>
       </motion.div>
       <div className="notebook-artwork__spine" />
     </motion.div>
@@ -105,13 +128,29 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   const transitionRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
   const targetRef = useRef<HTMLDivElement>(null);
-  const openSectionRef = useRef<HTMLElement>(null);
-  const [geometry, setGeometry] = useState<NotebookGeometry | null>(null);
-  const { scrollYProgress } = useScroll({
-    target: openSectionRef,
-    offset: ['start 140%', 'start 0%'],
+  const pinRef = useRef<HTMLDivElement>(null);
+  const [isMeasured, setIsMeasured] = useState(false);
+
+  // Geometry lives in motion values, not state, so the scroll listener can
+  // re-measure the pinned slot on every tick without triggering a re-render.
+  const gStartX = useMotionValue(0);
+  const gStartY = useMotionValue(0);
+  const gEndX = useMotionValue(0);
+  const gEndY = useMotionValue(0);
+  const gStartWidth = useMotionValue(1);
+  const gStartHeight = useMotionValue(1);
+  const gEndWidth = useMotionValue(1);
+  const gEndHeight = useMotionValue(1);
+
+  // One authoritative scroll-progress source. `useScrollProgress` clamps the
+  // measurement window to the document, so a hard reload at the top always
+  // begins at the closed book (progress 0) instead of part-way open.
+  const { progress } = useScrollProgress({
+    targetRef: pinRef,
+    lead: NOTEBOOK_SCROLL_LEAD,
+    spring: landingMotion.spring,
   });
-  const progress = useSpring(scrollYProgress, landingMotion.spring);
+
   useLayoutEffect(() => {
     const mediaQuery = window.matchMedia('(max-width: 560px)');
     const update = () => setIsMobile(mediaQuery.matches);
@@ -123,46 +162,51 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   // Mobile and reduced-motion layouts resolve directly to the open notebook.
   // Only desktop/tablet with normal motion follows the scroll timeline.
   const animationProgress = useTransform(progress, (value) => (isMobile || reduceMotion) ? 1 : value);
-  const x = useTransform(animationProgress, (value) => geometry ? geometry.startX + (geometry.endX - geometry.startX) * value : 0);
-  const y = useTransform(animationProgress, (value) => geometry ? geometry.startY + (geometry.endY - geometry.startY) * value : 0);
-  const scaleX = useTransform(animationProgress, (value) => geometry ? 1 + ((geometry.endWidth / geometry.startWidth) - 1) * value : 1);
-  const scaleY = useTransform(animationProgress, (value) => geometry ? 1 + ((geometry.endHeight / geometry.startHeight) - 1) * value : 1);
+  const x = useTransform([animationProgress, gStartX, gEndX], ([p, sx, ex]: number[]) => sx + (ex - sx) * p);
+  const y = useTransform([animationProgress, gStartY, gEndY], ([p, sy, ey]: number[]) => sy + (ey - sy) * p);
+  const scaleX = useTransform([animationProgress, gStartWidth, gEndWidth], ([p, sw, ew]: number[]) => (sw > 0 ? 1 + (ew / sw - 1) * p : 1));
+  const scaleY = useTransform([animationProgress, gStartHeight, gEndHeight], ([p, sh, eh]: number[]) => (sh > 0 ? 1 + (eh / sh - 1) * p : 1));
   const rotate = useTransform(animationProgress, [0, 1], [7, 0]);
 
+  const measure = useCallback(() => {
+    const wrapper = transitionRef.current;
+    const source = sourceRef.current;
+    const target = targetRef.current;
+    if (!wrapper || !source || !target) return;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const sourceRect = source.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    gStartX.set(sourceRect.left - wrapperRect.left + sourceRect.width * 0.16);
+    gStartY.set(sourceRect.top - wrapperRect.top - sourceRect.height * 0.045);
+    gEndX.set(targetRect.left - wrapperRect.left);
+    gEndY.set(targetRect.top - wrapperRect.top);
+    gStartWidth.set(sourceRect.width);
+    gStartHeight.set(sourceRect.height);
+    gEndWidth.set(targetRect.width);
+    gEndHeight.set(targetRect.height);
+    setIsMeasured(true);
+  }, [gStartX, gStartY, gEndX, gEndY, gStartWidth, gStartHeight, gEndWidth, gEndHeight]);
+
   useLayoutEffect(() => {
-    const measure = () => {
-      const wrapper = transitionRef.current;
-      const source = sourceRef.current;
-      const target = targetRef.current;
-      if (!wrapper || !source || !target) return;
-      const wrapperRect = wrapper.getBoundingClientRect();
-      const sourceRect = source.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      setGeometry({
-        startWidth: sourceRect.width,
-        startHeight: sourceRect.height,
-        endWidth: targetRect.width,
-        endHeight: targetRect.height,
-        startX: sourceRect.left - wrapperRect.left + sourceRect.width * 0.16,
-        startY: sourceRect.top - wrapperRect.top - sourceRect.height * 0.045,
-        endX: targetRect.left - wrapperRect.left,
-        endY: targetRect.top - wrapperRect.top,
-      });
-    };
     measure();
     const observer = new ResizeObserver(measure);
     if (transitionRef.current) observer.observe(transitionRef.current);
     if (sourceRef.current) observer.observe(sourceRef.current);
     if (targetRef.current) observer.observe(targetRef.current);
     window.addEventListener('resize', measure);
+    // The pinned slot moves with `position: sticky`, so the geometry must be
+    // re-read on every scroll tick for the open book to stay centred.
+    window.addEventListener('scroll', measure, { passive: true });
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
     };
-  }, []);
+  }, [measure]);
 
   return (
     <div ref={transitionRef} className="notebook-transition">
+    <div data-debug-is-mobile={String(isMobile)} data-debug-reduce-motion={String(reduceMotion)} style={{ display: 'none' }} />
     <section className="landing-hero" aria-labelledby="hero-title">
       <div className="landing-wrap">
         <div className="landing-hero__head">
@@ -260,11 +304,14 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
         </Reveal>
       </div>
     </section>
-    <section ref={openSectionRef} className="notebook-open-section" aria-label="An open Suggest Key notebook">
-      <div ref={targetRef} className="notebook-open-section__notebook-slot" aria-hidden="true" />
+    <section className="notebook-open-section" aria-label="An open Suggest Key notebook">
+      <div className="notebook-open-section__lead" aria-hidden="true" />
+      <div ref={pinRef} className="notebook-open-section__pin">
+        <div ref={targetRef} className="notebook-open-section__notebook-slot" aria-hidden="true" />
+      </div>
     </section>
-    {geometry && (
-      <NotebookIllustration progress={animationProgress} x={x} y={y} scaleX={scaleX} scaleY={scaleY} rotate={rotate} width={geometry.startWidth} />
+    {isMeasured && (
+      <NotebookIllustration progress={animationProgress} x={x} y={y} scaleX={scaleX} scaleY={scaleY} rotate={rotate} width={gStartWidth} />
     )}
     </div>
   );

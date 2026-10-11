@@ -25,6 +25,19 @@ export const API_RATE_LIMIT = 120;
 /** Ceiling for expensive routes: auth, AI generation, row-locking writes. */
 export const EXPENSIVE_RATE_LIMIT = 10;
 
+/** Ceiling for upload URL issuance per user per minute. */
+export const UPLOAD_RATE_LIMIT = 20;
+
+/** Per-flow upload rate limit overrides (more restrictive for sensitive flows). */
+export const UPLOAD_RATE_LIMITS: Record<string, number> = {
+  'mentor/document/upload-url': 10,      // Mentor verification docs
+  'payment-proof': 10,                    // Payment proofs
+  'support/attachments/upload-url': 15,   // Support attachments
+  'segment/hero-upload-url': 5,           // Segment hero (admin only)
+  'platform-config/qr-upload-url': 5,     // Payment QR (admin only)
+  'profile-photo': 10,                    // Profile photos
+} as const;
+
 /** Minimal shape needed to identify an authenticated caller. */
 interface MaybeAuthenticatedRequest extends Request {
   auth?: { user?: { id?: string } };
@@ -46,6 +59,7 @@ export function clientRateLimitKey(req: Request, _res: Response): string {
 /**
  * Calculates the remaining seconds until the rate limit window resets.
  * Uses the standard draft-8 headers that express-rate-limit sets.
+ * Adds jitter (±10%) to prevent thundering herd.
  */
 function getRetryAfterSeconds(req: Request): number {
   // express-rate-limit sets `req.rateLimit` at runtime with `standardHeaders:
@@ -61,10 +75,17 @@ function getRetryAfterSeconds(req: Request): number {
         ? resetHeader
         : new Date(resetHeader).getTime();
     const remainingSec = Math.ceil((resetMs - Date.now()) / 1000);
-    return Math.max(1, remainingSec);
+    const base = Math.max(1, remainingSec);
+    // Add jitter ±10% to prevent thundering herd, then round to integer
+    const jitter = Math.floor(base * 0.1);
+    const withJitter = base + (Math.random() * 2 - 1) * jitter;
+    return Math.max(1, Math.round(withJitter));
   }
   // Fallback: estimate from window
-  return Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+  const base = Math.ceil(RATE_LIMIT_WINDOW_MS / 1000);
+  const jitter = Math.floor(base * 0.1);
+  const withJitter = base + (Math.random() * 2 - 1) * jitter;
+  return Math.max(1, Math.round(withJitter));
 }
 
 const buildLimiter = (limit: number) =>
@@ -91,8 +112,27 @@ const buildLimiter = (limit: number) =>
 /** Applied to every /api route. */
 export const apiRateLimiter = buildLimiter(API_RATE_LIMIT);
 
-/**
- * Applied to the expensive routes. Register it AFTER `requireAuth` so the
+/** Applied to the expensive routes. Register it AFTER `requireAuth` so the
  * limiter can key on the real user id instead of a shared IP.
  */
 export const expensiveRouteLimiter = buildLimiter(EXPENSIVE_RATE_LIMIT);
+
+/**
+ * Builds a rate limiter for upload URL issuance.
+ * Uses the same key generator (user ID when authenticated, IP otherwise).
+ */
+export function buildUploadRateLimiter(flowName: keyof typeof UPLOAD_RATE_LIMITS): ReturnType<typeof buildLimiter> {
+  const limit = UPLOAD_RATE_LIMITS[flowName] ?? UPLOAD_RATE_LIMIT;
+  return buildLimiter(limit);
+}
+
+/**
+ * Pre-built upload rate limiters for each flow.
+ * These should be applied AFTER `requireAuth` so they key on user ID.
+ */
+export const mentorDocumentUploadLimiter = buildUploadRateLimiter('mentor/document/upload-url');
+export const paymentProofUploadLimiter = buildUploadRateLimiter('payment-proof');
+export const supportAttachmentUploadLimiter = buildUploadRateLimiter('support/attachments/upload-url');
+export const segmentHeroUploadLimiter = buildUploadRateLimiter('segment/hero-upload-url');
+export const paymentQrUploadLimiter = buildUploadRateLimiter('platform-config/qr-upload-url');
+export const profilePhotoUploadLimiter = buildUploadRateLimiter('profile-photo');

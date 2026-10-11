@@ -23,6 +23,7 @@ import {
   markNotificationAsRead,
   markAllNotificationsAsRead,
 } from '@/src/lib/notificationService';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import type { Notification } from '@/src/types/database';
 
 export const MentorNotificationsPage: React.FC = () => {
@@ -46,7 +47,7 @@ export const MentorNotificationsPage: React.FC = () => {
       setNotifications(data);
       await refreshContext();
     } catch (err) {
-      console.error('Failed to load mentor notifications:', err);
+      console.error('Failed to load mentor notifications:', logSanitizer.safeMessage(err));
     } finally {
       setLoading(false);
     }

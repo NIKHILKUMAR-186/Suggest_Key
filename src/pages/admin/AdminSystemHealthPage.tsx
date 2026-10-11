@@ -23,6 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/src
 import { Skeleton, SkeletonText } from '@/src/components/ui/Skeleton';
 import { Modal } from '@/src/components/ui/Modal';
 import { apiFetch } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { ShortId } from '@/src/components/shared/ShortId';
@@ -348,7 +349,7 @@ export const AdminSystemHealthPage: React.FC = () => {
       const data = await res.json();
       if (data.success) setRetention(data.retention);
     } catch (err: any) {
-      console.error('Failed to fetch retention:', err);
+      console.error('Failed to fetch retention:', logSanitizer.safeMessage(err));
     }
   }, []);
 
@@ -407,7 +408,7 @@ export const AdminSystemHealthPage: React.FC = () => {
         setRequestDetail(data);
       }
     } catch (err: any) {
-      console.error('Failed to fetch request detail:', err);
+      console.error('Failed to fetch request detail:', logSanitizer.safeMessage(err));
     } finally {
       setDetailLoading(false);
     }

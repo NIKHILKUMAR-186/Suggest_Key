@@ -14,6 +14,7 @@ import {
 import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import {
   fetchActiveSegments,
   getHighestPriorityActiveSegment,
@@ -126,7 +127,7 @@ export const SeekerMentorListPage: React.FC = () => {
           }
       } catch (err: any) {
         if (isMounted) {
-          console.error('Error loading segments:', err);
+          console.error('Error loading segments:', logSanitizer.safeMessage(err));
           setError(toUserMessage(err, 'Failed to load segments'));
         }
       } finally {
@@ -163,7 +164,7 @@ export const SeekerMentorListPage: React.FC = () => {
         }
       } catch (err: any) {
         if (isMounted) {
-          console.error('Error loading mentors:', err);
+          console.error('Error loading mentors:', logSanitizer.safeMessage(err));
           setMentors([]);
           setNextCursor(null);
           setHasMore(false);
@@ -192,7 +193,7 @@ export const SeekerMentorListPage: React.FC = () => {
       setNextCursor(newCursor);
       setHasMore(newHasMore);
     } catch (err: any) {
-      console.error('Error loading more mentors:', err);
+      console.error('Error loading more mentors:', logSanitizer.safeMessage(err));
       setMentorError('Unable to load more mentors.');
     } finally {
       setIsLoadingMore(false);

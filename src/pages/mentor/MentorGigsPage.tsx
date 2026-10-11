@@ -12,6 +12,7 @@ import { useToast } from '@/src/context/ToastContext';
 import { toUserMessage } from '@/src/lib/errorMessages';
 import { formatInr } from '@/src/lib/seekerFormat';
 import { apiFetch } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import {
   fetchMentorGigTopics,
   fetchMentorTopics,
@@ -133,7 +134,7 @@ export const MentorGigsPage: React.FC = () => {
         setSegments(data.segments.map((s: any) => ({ id: s.id, name: s.name, slug: s.slug })));
       }
     } catch (err: any) {
-      console.error('Failed to fetch segments:', err);
+      console.error('Failed to fetch segments:', logSanitizer.safeMessage(err));
     }
   }, [user?.id]);
 
@@ -144,7 +145,7 @@ export const MentorGigsPage: React.FC = () => {
       const data = await res.json();
       if (data.success) return data.segments;
     } catch (err: any) {
-      console.error('Failed to fetch available segments:', err);
+      console.error('Failed to fetch available segments:', logSanitizer.safeMessage(err));
     }
     return [];
   }, [user?.id]);

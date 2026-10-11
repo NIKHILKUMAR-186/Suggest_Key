@@ -88,13 +88,12 @@ export const AdminCouponsPage: React.FC = () => {
     enabled: true,
   });
 
-  const load = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // `usePaginatedQuery` performs the initial fetch itself and exposes `refetch`
+  // for manual refresh. A second `useEffect([load])` here re-fired on every
+  // render because `useCallback` rebuilt the wrapper, creating a request loop
+  // that exhausted the shared API rate limit and left the page stuck on
+  // "Loading". `refetch` is the single refresh entry point.
+  const load = refetch;
 
   const filtered = useMemo(
     () => (filter === 'ALL' ? coupons : coupons.filter((c) => c.status === filter)),

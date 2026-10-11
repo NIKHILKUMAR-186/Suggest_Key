@@ -5,6 +5,7 @@ import { Badge } from '@/src/components/ui/Badge';
 import { Modal } from '@/src/components/ui/Modal';
 import { useAuth } from '@/src/context/AuthContext';
 import { apiFetch } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 
 interface Segment {
   id: string;
@@ -43,7 +44,7 @@ export const MentorSegmentsPage: React.FC = () => {
         setSegments(data.segments);
       }
     } catch (err: any) {
-      console.error('Failed to fetch segments:', err);
+      console.error('Failed to fetch segments:', logSanitizer.safeMessage(err));
     } finally {
       setLoading(false);
     }
@@ -61,7 +62,7 @@ export const MentorSegmentsPage: React.FC = () => {
         }
       }
     } catch (err: any) {
-      console.error('Failed to fetch available segments:', err);
+      console.error('Failed to fetch available segments:', logSanitizer.safeMessage(err));
     }
   }, [user?.id, selectedSegmentToApply]);
 

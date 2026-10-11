@@ -53,13 +53,14 @@ export const AdminUsersPage: React.FC = () => {
     enabled: true,
   });
 
-  const fetchUsers = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    fetchUsers();
-  }, [fetchUsers]);
+  // `usePaginatedQuery` already performs the initial fetch inside its own
+  // `useEffect` and exposes `refetch` for manual refresh. Wrapping that in a
+  // second `useEffect([fetchUsers])` here created an infinite loop: the hook
+  // rebuilt `fetchUsers` on every render, the wrapper fired again, the page
+  // re-rendered, and the request repeated until the shared API rate limit
+  // rejected the admin with 429. The loading state never settled because the
+  // request never stopped firing. `refetch` is the single entry point.
+  const fetchUsers = refetch;
 
   const filteredUsers = useMemo(() => 
     users.filter((u) => {
@@ -162,8 +163,15 @@ export const AdminUsersPage: React.FC = () => {
               <p className="mt-2 text-xs text-[var(--color-shell-text-muted)]">Loading users...</p>
             </div>
           ) : error ? (
-            <div className="p-6 text-center text-[var(--color-shell-error)]">
-              <p className="text-xs">{error.message}</p>
+            <div className="p-6 text-center">
+              <p className="text-xs text-[var(--color-shell-text-muted)]">
+                {toUserMessage(error, 'We could not load the user directory. Please try again.')}
+              </p>
+              <p className="mt-1 text-[11px] text-[var(--color-shell-text-subtle)]">
+                {error instanceof Error && error.name === 'RateLimitError'
+                  ? 'Requests are paused. Wait for the banner to clear, then press Retry.'
+                  : 'If this keeps happening, check the System Health page.'}
+              </p>
               <Button variant="outline" size="sm" onClick={fetchUsers} className="mt-2">
                 Retry
               </Button>

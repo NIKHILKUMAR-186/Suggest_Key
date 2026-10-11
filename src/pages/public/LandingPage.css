@@ -355,7 +355,9 @@
 .landing-page [id='mentors'] { scroll-margin-top: 5.5rem; }
 
 /* --- 7. Navigation ------------------------------------------------------- */
-/* Deep purple taken from the logo field, white links, yellow reserved for the
+/* Deep-purple glass: the bar lifts off the page with a translucent field and
+   a restrained backdrop blur. The field stays dark enough that white text
+   reads over both light and dark page sections; yellow is reserved for the
    active state and the single conversion anchor. Home is FIRST and always
    returns the visitor smoothly to the top. */
 
@@ -363,13 +365,48 @@
   position: sticky;
   top: 0;
   z-index: 60;
-  background: var(--brand-purple);
-  border-bottom: 1px solid var(--brand-on-purple-strong);
+  background: var(--glass-brand-surface);
+  border-bottom: 1px solid var(--glass-brand-border);
+  box-shadow: var(--glass-brand-shadow);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   transition: border-color 240ms var(--ease), box-shadow 240ms var(--ease);
 }
+/* Graceful fallback: when backdrop-filter is unsupported the field reads as
+   the solid deep purple the bar used to be, so nothing collapses to white. */
+.landing-nav::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--brand-purple);
+  z-index: -1;
+}
+@supports not (backdrop-filter: blur(14px)) {
+  .landing-nav {
+    background: var(--brand-purple);
+    border-bottom-color: var(--brand-on-purple-strong);
+  }
+  .landing-nav::after { display: none; }
+}
+/* A whisper of highlight along the top edge — the tell-tale sign of glass. */
+.landing-nav::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--glass-brand-highlight) 18%,
+    var(--glass-brand-highlight) 82%,
+    transparent
+  );
+  pointer-events: none;
+}
 .landing-nav[data-scrolled='true'] {
-  border-bottom-color: var(--brand-on-purple-strong);
-  box-shadow: 0 2px 18px rgba(31, 16, 55, 0.32);
+  background: var(--glass-brand-surface-deep);
+  border-bottom-color: var(--glass-brand-border);
+  box-shadow: 0 14px 40px -20px rgba(15, 6, 28, 0.7);
 }
 
 .landing-nav__inner {
@@ -407,7 +444,7 @@
   border: 0;
   padding: 0.35rem 0;
   cursor: pointer;
-  color: var(--brand-on-purple);
+  color: var(--glass-brand-text);
   position: relative;
   transition: color var(--fast) var(--ease);
 }
@@ -488,7 +525,7 @@
   position: relative;
   padding-top: clamp(2.5rem, 6vw, 5rem);
   padding-bottom: clamp(3rem, 6vw, 5rem);
-  overflow: visible;
+  overflow: hidden;
 }
 
 /* Headline block. `max-width` in ch keeps the stack to three lines at every
@@ -563,7 +600,7 @@
   position: relative;
   justify-self: end;
   width: 100%;
-  max-width: 42rem;
+  max-width: 27rem;
   padding: clamp(1rem, 3vw, 2.25rem);
 }
 
@@ -595,15 +632,46 @@
 }
 .landing-hero__media svg { display: block; width: 100%; height: 100%; }
 
-/* Static notebook studies: the hero uses the closed object and the next
-   section gives the open object its own uninterrupted stage. */
+/* Notebook slot for the animated transition — centered in the visual area. */
+.landing-hero__notebook-slot {
+  width: min(100%, 29rem);
+  aspect-ratio: 0.78 / 1;
+  margin-inline: auto;
+  visibility: hidden;
+}
+
+/* --- Notebook opening stage -------------------------------------------- */
+/* A single notebook artwork is measured between two hidden slots: a
+   closed slot beside the hero copy and a pinned slot inside this tall
+   stage. The pin is `position: sticky`, so the open book stays centred
+   in the viewport long enough to read before the stage scrolls it away.
+
+   `overflow` is deliberately left visible on the stage and its wrapper:
+   `overflow: hidden` would create a scroll container and silently break
+   the sticky pin, so the open book would scroll away instead of holding. */
+
 .notebook-open-section {
-  min-height: clamp(34rem, 70vw, 56rem);
+  position: relative;
+  min-height: 300vh;
+  background: var(--dew);
+}
+
+.notebook-open-section__lead {
+  height: 100vh;
+}
+
+.notebook-open-section__pin {
+  position: sticky;
+  top: 0;
+  height: 100vh;
   display: grid;
   place-items: center;
-  padding: clamp(4rem, 9vw, 8rem) var(--gutter);
-  overflow: hidden;
-  background: var(--dew);
+}
+
+.notebook-open-section__notebook-slot {
+  width: min(100%, 72rem);
+  aspect-ratio: 1.5 / 1;
+  visibility: hidden;
 }
 
 .notebook-transition {
@@ -620,19 +688,6 @@
   pointer-events: none;
   will-change: transform;
   aspect-ratio: 0.78 / 1;
-}
-
-.landing-hero__notebook-slot {
-  width: min(100%, 29rem);
-  aspect-ratio: 0.78 / 1;
-  margin-inline: auto;
-  visibility: hidden;
-}
-
-.notebook-open-section__notebook-slot {
-  width: min(100%, 72rem);
-  aspect-ratio: 1.5 / 1;
-  visibility: hidden;
 }
 
 .notebook-open-section .notebook-artwork {
@@ -768,22 +823,53 @@
   border-left: 1px solid rgba(206, 80, 10, 0.28);
 }
 
-.notebook-artwork__scribble {
+.notebook-artwork__segments {
   position: absolute;
-  height: 0.38rem;
-  border-radius: 1rem;
-  background: rgba(43, 26, 7, 0.28);
+  top: 9%;
+  bottom: 12%;
+  left: 17%;
+  right: 7%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.75rem, 2vw, 1.5rem);
+  pointer-events: none;
 }
 
-.notebook-artwork__scribble--one { top: 29%; left: 22%; width: 42%; }
-.notebook-artwork__scribble--two { top: 36%; left: 22%; width: 60%; }
-.notebook-artwork__scribble--three { top: 30%; left: 18%; width: 50%; }
-.notebook-artwork__scribble--four { top: 37%; left: 18%; width: 37%; }
+.notebook-artwork__segment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.notebook-artwork__segment-index {
+  font-family: var(--font-ui);
+  font-size: clamp(0.5rem, 1vw, 0.68rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--orange);
+}
+
+.notebook-artwork__segment-title {
+  font-family: var(--font-display);
+  font-size: clamp(0.85rem, 1.9vw, 1.35rem);
+  font-weight: var(--weight-semibold);
+  line-height: 1.15;
+  color: var(--cocoa);
+}
+
+.notebook-artwork__segment-description {
+  font-family: var(--font-ui);
+  font-size: clamp(0.55rem, 1.15vw, 0.82rem);
+  line-height: 1.45;
+  color: var(--ink);
+  opacity: 0.82;
+}
 
 .notebook-artwork__corner {
   position: absolute;
   left: 18%;
-  bottom: 10%;
+  bottom: 6%;
   color: var(--orange);
   font-family: var(--font-display);
   font-size: clamp(0.7rem, 1.5vw, 1rem);
@@ -803,7 +889,6 @@
   background: rgba(206, 80, 10, 0.18);
   transform: translateX(-50%);
 }
-
 
 /* Name Label Sticker — white card, 1px charcoal border, ruled fields. */
 .landing-hero__label {
@@ -884,7 +969,6 @@
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(4px); }
 }
-
 /* --- 9. Sections --------------------------------------------------------- */
 /* Remapped from the previous palette to the Superr system. Alternating
    paper / dew rhythm, with the orange footer band as the only saturated
@@ -980,18 +1064,24 @@
   padding: var(--section-space) 0;
 }
 .landing-journey__heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 2rem;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(1.5rem, 3vw, 2rem);
+  margin-bottom: clamp(2rem, 4vw, 3rem);
 }
-.landing-journey__heading h2 { font-size: var(--text-heading-lg); margin: 0; }
+.landing-journey__heading > * {
+  grid-column: 1 / -1;
+}
+.landing-journey__heading h2 {
+  font-size: var(--text-heading-lg);
+  margin: 0;
+  max-width: 32rem;
+}
 .landing-steps {
   position: relative;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: clamp(1.5rem, 3vw, 2rem);
-  margin-top: clamp(3rem, 6vw, 4.5rem);
 }
 .landing-steps__line,
 .landing-steps__progress {
@@ -1003,7 +1093,13 @@
   height: 1.5px;
 }
 .landing-steps__line { background: var(--hairline-strong); z-index: 0; }
-.landing-steps__progress { background: var(--orange); transform-origin: left center; z-index: 1; border-radius: 2px; }
+.landing-steps__progress {
+  background: var(--orange);
+  transform-origin: left center;
+  z-index: 1;
+  border-radius: 2px;
+  transform: scaleX(var(--progress, 0));
+}
 .landing-step { position: relative; z-index: 2; padding-top: 3.5rem; }
 .landing-step__number {
   font-family: var(--font-ui);
@@ -1014,7 +1110,8 @@
 .landing-step__dot {
   position: absolute;
   top: 0.65rem;
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
   width: 0.85rem;
   height: 0.85rem;
   border: 3px solid var(--charcoal);
@@ -1036,6 +1133,56 @@
   opacity: 0.8;
   max-width: 16rem;
   margin: 0;
+}
+.landing-step .landing-text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 1.25rem;
+  font-family: var(--font-display);
+  font-size: var(--text-body-sm);
+  font-weight: var(--weight-medium);
+  color: var(--cocoa);
+  border-bottom: 1.5px solid currentColor;
+  padding-bottom: 0.15rem;
+  transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.landing-step .landing-text-link:hover { color: var(--orange); }
+.landing-step .landing-text-link svg { transition: transform var(--fast) var(--ease); }
+.landing-step .landing-text-link:hover svg { transform: translateX(3px); }
+
+/* Step reveal animations */
+.landing-step[data-reveal-mode="lift"] {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity var(--reveal-duration, 0.62s) var(--ease),
+              transform var(--reveal-duration, 0.62s) var(--ease);
+}
+.landing-step[data-reveal-mode="lift"].is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Dot activation animation */
+.landing-step__dot {
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.landing-step.is-active .landing-step__dot {
+  border-color: var(--orange);
+  background: var(--orange);
+  box-shadow: 0 0 0 4px rgba(255, 111, 30, 0.15);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .landing-step[data-reveal-mode="lift"] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .landing-steps__progress {
+    transform: none !important;
+  }
 }
 
 /* Mentor showcase — every mentor identical. No featured card, no supporting
@@ -1340,8 +1487,8 @@
     align-items: stretch;
     gap: 0.25rem;
     padding: 1rem;
-    background: var(--brand-purple);
-    border: 1.5px solid var(--brand-yellow);
+    background: var(--paper);
+    border: 1.5px solid var(--charcoal);
     border-radius: var(--radius-cards);
     box-shadow: var(--shadow-lg);
     font-size: var(--text-body);
@@ -1360,7 +1507,7 @@
 
   .landing-hero__body { grid-template-columns: 1fr; gap: 2.5rem; }
   .landing-hero__copy { max-width: 40rem; }
-  .landing-hero__visual { justify-self: center; max-width: 42rem; }
+  .landing-hero__visual { justify-self: center; max-width: 24rem; }
 }
 
 @media (max-width: 860px) {
@@ -1368,16 +1515,17 @@
   .landing-faq,
   .landing-why__inner { grid-template-columns: 1fr; gap: 3rem; }
   .landing-why__inner > div:first-child { position: static; }
-  /* Three equal cards become a stack; nothing keeps its old tall-row privilege. */
-  .landing-segments { grid-template-columns: 1fr; }
-  .landing-segment > a { min-height: 0; }
+  .landing-segments { grid-template-columns: 1fr; grid-template-rows: auto; min-height: 0; }
+  .landing-segment--1 { grid-row: auto; min-height: 17rem; }
   .landing-journey__heading { display: block; }
   .landing-steps { grid-template-columns: 1fr 1fr; }
   .landing-steps__line, .landing-steps__progress { display: none; }
   .landing-step { padding-top: 0; }
   .landing-step__dot { display: none; }
   .landing-step h3 { margin-top: 0.75rem; }
-  .landing-mentor-grid { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); }
+  .landing-mentor-showcase { grid-template-columns: 1fr; }
+  .landing-featured-mentor { grid-template-columns: 1fr; min-height: 0; }
+  .landing-portrait--large { min-height: 18rem; }
   .landing-footer__links { grid-template-columns: 1fr 1fr; }
   .landing-footer__links div:first-child { grid-column: span 2; }
 }
@@ -1386,14 +1534,11 @@
   .landing-brand__name { display: none; }
   .landing-hero__scroll { display: none; }
   .landing-steps { grid-template-columns: 1fr; }
-  .landing-mentor-grid { grid-template-columns: 1fr; }
   .landing-footer__links { grid-template-columns: 1fr; }
   .landing-footer__links div:first-child { grid-column: auto; }
   .landing-footer__base { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
   .landing-hero__label { position: static; width: 100%; margin-top: 1rem; transform: none; }
-  .notebook-open-section { min-height: 28rem; padding-inline: 1rem; }
-  .notebook-open-section .notebook-artwork { width: 100%; aspect-ratio: 1.15 / 1; }
-  .notebook-artwork--closed { width: min(100%, 20rem); }
+  .landing-hero__frame { transform: none; }
   .landing-sticker--heart { right: -0.5rem; }
   .landing-sticker--sparkle { left: -0.5rem; }
 }

@@ -63,6 +63,10 @@ DECLARE
   v_booking public.bookings;
   v_url TEXT := trim(p_meeting_url);
 BEGIN
+  -- Containment: ensure 'anon' cannot execute this SECURITY DEFINER function
+  IF has_function_privilege('anon', 'public.confirm_booking(uuid, text, uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY DEFINER containment violated: anon has EXECUTE on confirm_booking';
+  END IF;
   IF p_mentor_id IS NULL OR NOT public.has_role(p_mentor_id, 'mentor')
      OR (auth.uid() IS NOT NULL AND auth.uid() <> p_mentor_id) THEN
     RAISE EXCEPTION 'Unauthorized (code: UNAUTHORIZED)';
@@ -162,6 +166,10 @@ DECLARE
   v_payment   public.payments;
   v_refund_reason TEXT := 'mentor_rejection';
 BEGIN
+  -- Containment: ensure 'anon' cannot execute this SECURITY DEFINER function
+  IF has_function_privilege('anon', 'public.cancel_overdue_mentor_bookings()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY DEFINER containment violated: anon has EXECUTE on cancel_overdue_mentor_bookings';
+  END IF;
   -- Reconcile every MENTOR_PENDING booking whose meeting-link deadline has
   -- elapsed with no link. ended_at/ended_by_role stay NULL: an auto-cancelled
   -- booking is not a manual end, and the ended_by_role check constraint permits

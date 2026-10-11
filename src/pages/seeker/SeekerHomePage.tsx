@@ -37,6 +37,7 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { useAuth } from '@/src/context/AuthContext';
 import { fetchActiveSegments, getHighestPriorityActiveSegment } from '@/src/lib/discoveryService';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import {
   ALL_TOPICS,
   buildExperienceQuery,
@@ -124,7 +125,7 @@ const SeekerHomeContent: React.FC<{
         setSegments(activeSegs);
       } catch (err: any) {
         if (!isMounted) return;
-        console.error('Error loading segments:', err);
+        console.error('Error loading segments:', logSanitizer.safeMessage(err));
         setError(toUserMessage(err, 'Failed to load mentorship segments'));
       } finally {
         if (isMounted) setIsLoadingSegments(false);

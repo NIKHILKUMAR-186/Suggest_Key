@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   ShieldAlert,
@@ -21,6 +21,7 @@ import {
   markAllNotificationsAsRead,
 } from '@/src/lib/notificationService';
 import { toUserMessage } from '@/src/lib/errorMessages';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import type { Notification } from '@/src/types/database';
 
 type StatusFilter = 'all' | 'unread' | 'read';
@@ -56,7 +57,7 @@ export const AdminNotificationsPage: React.FC = () => {
   // which reuses the same loader rather than duplicating the query.
   const [reloadToken, setReloadToken] = useState(0);
 
-  const {
+const {
     data: notifications = [],
     isLoading,
     isLoadingMore,
@@ -65,19 +66,27 @@ export const AdminNotificationsPage: React.FC = () => {
     loadMore,
     refetch,
   } = usePaginatedQuery<Notification>({
-    url: '/api/admin/notifications',
+    url: '/api/notifications',
     pageSize: 6,
     enabled: !!adminId,
     params: { status: statusFilter, type: scopeFilter },
   });
 
-  const loadNotifs = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
+  // `usePaginatedQuery` performs the initial fetch itself and re-fires when
+  // `statusFilter`/`scopeFilter` change (via `fetchParams`). This effect exists
+  // ONLY to translate `reloadToken` bumps (fired by the realtime channel in
+  // `useNotificationSync`) into a refetch. It deliberately skips the initial
+  // mount so it never double-fetches with the hook's own effect.
+  const loadNotifs = refetch;
+  const isFirstRender = useRef(true);
 
   useEffect(() => {
-    loadNotifs();
-  }, [loadNotifs, reloadToken]);
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    void loadNotifs();
+  }, [reloadToken]);
 
   // A new real notification is written straight to `notifications`, so the
   // realtime channel reloads the queue. The interval and focus revalidation cover
@@ -91,7 +100,7 @@ export const AdminNotificationsPage: React.FC = () => {
     try {
       await refreshContext();
     } catch (err) {
-      console.warn('Unable to refresh the notification badge:', err);
+      console.warn('Unable to refresh the notification badge:', logSanitizer.safeMessage(err));
     }
   }, [refreshContext]);
 
@@ -106,7 +115,7 @@ export const AdminNotificationsPage: React.FC = () => {
       await syncBadge();
       await refetch();
     } catch (err) {
-      console.error('Failed to mark notification as read:', err);
+      console.error('Failed to mark notification as read:', logSanitizer.safeMessage(err));
       // Error will be shown by the hook's error state
       await refetch();
     }
@@ -119,7 +128,7 @@ export const AdminNotificationsPage: React.FC = () => {
       await syncBadge();
       await refetch();
     } catch (err) {
-      console.error('Failed to mark all notifications as read:', err);
+      console.error('Failed to mark all notifications as read:', logSanitizer.safeMessage(err));
       await refetch();
     }
   };

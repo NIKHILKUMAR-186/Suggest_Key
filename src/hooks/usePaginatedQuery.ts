@@ -7,6 +7,7 @@ import type {
 } from '@/src/lib/pagination';
 import { DEFAULT_PAGE_SIZE, parsePaginationParams, encodeCursor, decodeCursor } from '@/src/lib/pagination';
 import { apiFetch } from '@/src/lib/apiClient';
+import { getSnapshot } from '@/src/lib/rateLimitManager';
 
 /**
  * Shallow equality for pagination params. Returns true when all own enumerable
@@ -93,6 +94,12 @@ export function usePaginatedQuery<T, TParams extends PaginationParams = Paginati
   const executeFetch = useCallback(
     async (fetchParams: ParsedPaginationParams & TParams, isLoadMore = false) => {
       if (!enabled) return;
+
+      // A 429 is a cooldown signal, not a transient blip: stop hammering the
+      // same endpoint and let the global banner/countdown tell the user when to
+      // retry. The server remains authoritative; this just keeps a hot loop from
+      // turning one 429 into hundreds.
+      if (getSnapshot().isRateLimited) return;
 
       if (isLoadMore) {
         setIsLoadingMore(true);

@@ -636,7 +636,7 @@ describe('K. every surface reads the same resolver', () => {
     assert.match(src, /const nowMs = Date\.now\(\)/);
     assert.match(
       src,
-      /reconcileAndAnnotateBookingRows\(\s*supabaseAdmin,\s*\[\.\.\.\(bookings \|\| \[\]\)\],\s*nowMs\s*\)/,
+      /reconcileAndAnnotateBookingRows\(\s*supabaseAdmin,\s*\[\.\.\.pageBookings\],\s*nowMs\s*\)/,
     );
   });
 

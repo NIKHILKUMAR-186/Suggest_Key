@@ -19,7 +19,7 @@ export function ProcessProgress({ target }: ProcessProgressProps) {
     <motion.span
       className="landing-steps__progress"
       aria-hidden="true"
-      style={{ scaleX: reduceMotion ? 0 : progress }}
+      style={{ '--progress': reduceMotion ? 1 : progress } as React.CSSProperties}
     />
   );
 }

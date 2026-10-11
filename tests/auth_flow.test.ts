@@ -100,7 +100,7 @@ describe('Auth flow role separation', () => {
   describe('Auth error mapping for signup flows', () => {
     it('maps invalid credentials errors', () => {
       assert.equal(mapAuthError(new Error('Invalid login credentials')), 'Email or password is incorrect.');
-      assert.equal(mapAuthError(new Error('User not found')), 'No account found with that email address.');
+      assert.equal(mapAuthError(new Error('User not found')), 'Email or password is incorrect.');
     });
 
     it('maps email confirmation errors', () => {

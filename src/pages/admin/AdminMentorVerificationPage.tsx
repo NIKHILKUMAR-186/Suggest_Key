@@ -4,6 +4,7 @@ import { Button } from '@/src/components/ui/Button';
 import { Badge } from '@/src/components/ui/Badge';
 import { EmptyState } from '@/src/components/shared/EmptyState';
 import { apiFetch, getLastResponseRequestId } from '@/src/lib/apiClient';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { mailtoHref } from '@/src/lib/contact';
 import { DEFAULT_MENTOR_APPLICATION_PAGE_SIZE } from '@/src/lib/mentorApplicationsQuery';
@@ -146,7 +147,7 @@ export const AdminMentorVerificationPage: React.FC = () => {
         // The API never returns database internals, so the UI fails generically.
         // The request id lets an admin locate the diagnostic entry in
         // Admin -> System Health.
-        console.error('Failed to fetch mentor applications:', err);
+        console.error('Failed to fetch mentor applications:', logSanitizer.safeMessage(err));
         setApplications([]);
         setCounts(EMPTY_COUNTS);
         setPagination(EMPTY_PAGINATION);

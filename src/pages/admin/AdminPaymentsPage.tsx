@@ -83,13 +83,12 @@ export const AdminPaymentsPage: React.FC = () => {
     enabled: true,
   });
 
-  const fetchPayments = useCallback(async () => {
-    await refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    fetchPayments();
-  }, [fetchPayments]);
+  // `usePaginatedQuery` performs the initial fetch itself and exposes `refetch`
+  // for manual refresh. A second `useEffect([fetchPayments])` here re-fired on
+  // every render because `useCallback` rebuilt the wrapper, creating a request
+  // loop that exhausted the shared API rate limit and left the page stuck on
+  // "Loading". `refetch` is the single refresh entry point.
+  const fetchPayments = refetch;
 
   // Open the referenced record once the real rows have arrived. Matching is by
   // id against the fetched payments, so the review modal can only ever show a

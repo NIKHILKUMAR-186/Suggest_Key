@@ -1,17 +1,21 @@
 /**
  * Maps raw Supabase Auth errors to friendly, user-facing messages.
  * Never exposes internal technical details to end users.
+ * Prevents account enumeration by returning the same generic message for
+ * "user not found" and "invalid credentials" scenarios.
  */
 export function mapAuthError(error: Error | null | undefined): string | null {
   if (!error) return null;
 
   const message = error.message || '';
 
-  // Invalid login credentials
+  // Invalid login credentials / User not found - SAME MESSAGE to prevent enumeration
   if (
     message.includes('Invalid login credentials') ||
     message.includes('invalid login credentials') ||
-    message.includes('Email or password is incorrect')
+    message.includes('Email or password is incorrect') ||
+    message.includes('User not found') ||
+    message.includes('user not found')
   ) {
     return 'Email or password is incorrect.';
   }
@@ -23,11 +27,6 @@ export function mapAuthError(error: Error | null | undefined): string | null {
     message.includes('confirm your email')
   ) {
     return 'Please confirm your email before signing in.';
-  }
-
-  // User not found
-  if (message.includes('User not found') || message.includes('user not found')) {
-    return 'No account found with that email address.';
   }
 
   // Too many requests / rate limit

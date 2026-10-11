@@ -23,6 +23,7 @@ import {
   type SessionLifecycleState,
 } from '@/src/lib/sessionState';
 import { MentorEmptyState } from '@/src/components/mentor/MentorEmptyState';
+import { logSanitizer } from '@/src/lib/logSanitizer';
 
 interface TabDescriptor {
   id: MentorBookingTab;
@@ -153,7 +154,7 @@ export const MentorBookingsPage: React.FC = () => {
       } catch (err) {
         const code = err instanceof Error ? err.message : '';
         if (options.silent) {
-          console.error('Background mentor booking revalidation failed:', err);
+          console.error('Background mentor booking revalidation failed:', logSanitizer.safeMessage(err));
           return;
         }
         setBookings([]);
@@ -166,7 +167,7 @@ export const MentorBookingsPage: React.FC = () => {
             ? 'The server did not return a confirmed lifecycle state for these bookings, so they cannot be grouped safely. Refresh to try again.'
             : 'We could not load your bookings from the server. Please refresh and try again.'
         );
-        console.error('Failed to load mentor bookings:', err);
+        console.error('Failed to load mentor bookings:', logSanitizer.safeMessage(err));
       } finally {
         if (!options.silent) setLoading(false);
       }

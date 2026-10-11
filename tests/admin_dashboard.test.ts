@@ -134,8 +134,8 @@ describe('Admin dashboard — meeting-link exception centre', () => {
     assert.equal(exceptions.length, 1);
     assert.equal(exceptions[0].kind, 'MEETING_LINK_OVERDUE');
     assert.equal(exceptions[0].severity, 'critical');
-    // The business rule is preserved: an exception never implies cancellation.
-    assert.match(exceptions[0].detail, /NOT auto-cancelled/);
+    // Phase 43: an overdue MENTOR_PENDING booking IS auto-cancelled.
+    assert.match(exceptions[0].detail, /is being auto-cancelled/);
   });
 
   it('does not flag a booking the old 2-hour rule would have caught', () => {

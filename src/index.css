@@ -13,6 +13,18 @@
   --glass-highlight: rgba(255, 255, 255, 0.62);
 
   /* ============================================================
+     GLASS BRAND TOKENS — the navbar surface is a translucent deep
+     purple, not a white frost. Backdrop blur lifts the page content
+     behind it; the field stays dark enough that white text reads.
+     ============================================================ */
+  --glass-brand-surface: rgba(31, 16, 55, 0.68);
+  --glass-brand-surface-deep: rgba(21, 10, 40, 0.82);
+  --glass-brand-text: rgba(252, 253, 254, 0.94);
+  --glass-brand-border: rgba(247, 210, 67, 0.22);
+  --glass-brand-highlight: rgba(255, 255, 255, 0.10);
+  --glass-brand-shadow: 0 10px 34px -14px rgba(15, 6, 28, 0.55);
+
+  /* ============================================================
      SUGGEST KEY — BRAND TOKENS
      Sampled from public/logo.png: deep purple field #1F1037,
      yellow accent #F7D243, white wordmark #FCFDFE.
@@ -37,6 +49,14 @@
   --glass-on-brand: rgba(15, 8, 28, 0.82);
   --glass-border: rgba(247, 210, 67, 0.2);
   --glass-highlight: rgba(255, 255, 255, 0.1);
+
+  /* Glass brand surface — deep purple, lifted over the dark canvas */
+  --glass-brand-surface: rgba(27, 18, 42, 0.78);
+  --glass-brand-surface-deep: rgba(15, 8, 28, 0.90);
+  --glass-brand-text: rgba(245, 241, 251, 0.96);
+  --glass-brand-border: rgba(247, 210, 67, 0.26);
+  --glass-brand-highlight: rgba(255, 255, 255, 0.06);
+  --glass-brand-shadow: 0 10px 34px -14px rgba(0, 0, 0, 0.65);
 }
 
 /* ============================================================
