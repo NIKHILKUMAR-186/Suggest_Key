@@ -4,7 +4,6 @@ import { useNavigation } from '@/src/context/NavigationContext';
 import { AuthLayout, AuthEyebrow, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
 import { BrandPanel } from '@/src/components/auth/BrandPanel';
 import { Button } from '@/src/components/ui/Button';
-import { Input } from '@/src/components/ui/Input';
 import { AlertCircle, UserCheck, ArrowRight, Info, ShieldCheck } from 'lucide-react';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,6 +20,7 @@ export const MentorSignupPage: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [bio, setBio] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -128,16 +128,11 @@ export const MentorSignupPage: React.FC = () => {
 
   return (
     <AuthLayout brandPanel={<BrandPanel />}>
-      <div className="auth-card space-y-6">
+      <div className="auth-form-card space-y-6">
         {/* Brand */}
-        <div className="text-center space-y-2">
-          <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
-              <UserCheck className="h-5 w-5" />
-            </div>
-            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
-              Suggest Key
-            </span>
+        <div className="auth-form-header">
+          <div className="auth-form-logo" aria-hidden="true">
+            <UserCheck className="h-6 w-6" />
           </div>
           <AuthEyebrow>Mentor Onboarding</AuthEyebrow>
           <AuthHeading>Create Your Mentor Account</AuthHeading>
@@ -148,71 +143,125 @@ export const MentorSignupPage: React.FC = () => {
         </div>
 
         {(displayError || error) && (
-          <div className="rounded-lg bg-[var(--color-shell-error-soft)] border border-[var(--color-shell-error)] p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2">
-            <AlertCircle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" />
+          <div className="auth-banner auth-banner--error" role="alert" aria-live="polite">
+            <AlertCircle className="auth-banner-icon h-5 w-5" aria-hidden="true" />
             <span>{displayError}</span>
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            ref={fullNameRef}
-            label="Full Name"
-            placeholder="e.g. Rahul Sharma"
-            value={fullName}
-            onChange={(e) => {
-              setFullName(e.target.value);
-              setFullNameError(null);
-              setFeedback(null);
-              clearError();
-            }}
-            onBlur={validateFullName}
-            error={fullNameError}
-            className="auth-input"
-          />
+        <form onSubmit={handleSubmit} className="auth-form">
+          <div className="auth-form-group">
+            <label htmlFor="fullName" className="auth-input-label">Full Name</label>
+            <div className="auth-input-wrapper">
+              <input
+                ref={fullNameRef}
+                id="fullName"
+                type="text"
+                placeholder="e.g. Rahul Sharma"
+                value={fullName}
+                onChange={(e) => {
+                  setFullName(e.target.value);
+                  setFullNameError(null);
+                  setFeedback(null);
+                  clearError();
+                }}
+                onBlur={validateFullName}
+                className="auth-input-field"
+                aria-invalid={!!fullNameError}
+                aria-describedby={fullNameError ? 'fullName-error' : undefined}
+                required
+                autoComplete="name"
+              />
+              {fullNameError && (
+                <p id="fullName-error" className="auth-input-error" role="alert">{fullNameError}</p>
+              )}
+            </div>
+          </div>
 
-          <Input
-            ref={emailRef}
-            label="Email Address"
-            type="email"
-            placeholder="e.g. mentor@example.com"
-            value={email}
-            onChange={(e) => {
-              setEmail(e.target.value);
-              setEmailError(null);
-              setFeedback(null);
-              clearError();
-            }}
-            onBlur={validateEmail}
-            error={emailError}
-            helperText={!emailError ? 'We will verify this email during onboarding.' : undefined}
-            autoComplete="email"
-            className="auth-input"
-          />
+          <div className="auth-form-group">
+            <label htmlFor="email" className="auth-input-label">Email Address</label>
+            <div className="auth-input-wrapper">
+              <input
+                ref={emailRef}
+                id="email"
+                type="email"
+                placeholder="e.g. mentor@example.com"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setEmailError(null);
+                  setFeedback(null);
+                  clearError();
+                }}
+                onBlur={validateEmail}
+                className="auth-input-field"
+                aria-invalid={!!emailError}
+                aria-describedby={emailError ? 'email-error' : 'email-helper'}
+                required
+                autoComplete="email"
+              />
+              {emailError && (
+                <p id="email-error" className="auth-input-error" role="alert">{emailError}</p>
+              )}
+              {!emailError && (
+                <p id="email-helper" className="auth-input-helper">We will verify this email during onboarding.</p>
+              )}
+            </div>
+          </div>
 
-          <Input
-            ref={passwordRef}
-            label="Password"
-            type="password"
-            placeholder="At least 6 characters"
-            value={password}
-            onChange={(e) => {
-              setPassword(e.target.value);
-              setPasswordError(null);
-              setFeedback(null);
-              clearError();
-            }}
-            onBlur={validatePassword}
-            error={passwordError}
-            autoComplete="new-password"
-            className="auth-input"
-          />
+          <div className="auth-form-group">
+            <label htmlFor="password" className="auth-input-label">Password</label>
+            <div className="auth-password-wrapper">
+              <input
+                ref={passwordRef}
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                placeholder="At least 6 characters"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setPasswordError(null);
+                  setFeedback(null);
+                  clearError();
+                }}
+                onBlur={validatePassword}
+                className="auth-input-field"
+                aria-invalid={!!passwordError}
+                aria-describedby={passwordError ? 'password-error' : undefined}
+                required
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                className="auth-password-toggle"
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? (
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+              {passwordError && (
+                <p id="password-error" className="auth-input-error" role="alert">{passwordError}</p>
+              )}
+            </div>
+          </div>
 
-          <div className="space-y-1.5">
-            <label className="block text-xs font-semibold text-[var(--color-shell-text-muted)]">Mentor Bio</label>
-            <div className="relative">
+          <div className="auth-form-group">
+            <label htmlFor="bio" className="auth-input-label">Mentor Bio</label>
+            <div className="auth-input-wrapper">
               <textarea
                 ref={bioRef}
+                id="bio"
                 value={bio}
                 onChange={(e) => {
                   setBio(e.target.value);
@@ -224,46 +273,55 @@ export const MentorSignupPage: React.FC = () => {
                 placeholder="Describe your background, expertise, and what you hope to mentor on..."
                 rows={4}
                 maxLength={500}
-                className="w-full rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-surface)] px-3 py-2 text-xs text-[var(--color-shell-text)] placeholder-[var(--color-shell-text-subtle)] focus:border-[var(--color-shell-primary)] focus:outline-hidden resize-y"
+                className="auth-input-field"
+                style={{ minHeight: '120px', resize: 'vertical', paddingTop: '12px', paddingBottom: '12px', fontFamily: 'var(--font-ui)', fontSize: 'var(--text-body-sm)' }}
+                aria-invalid={!!bioError}
+                aria-describedby={bioError ? 'bio-error' : 'bio-helper'}
               />
-              <Info className="absolute top-2 right-2 h-3.5 w-3.5 text-[var(--color-shell-text-subtle)]" />
+              {bioError && (
+                <p id="bio-error" className="auth-input-error" role="alert">{bioError}</p>
+              )}
+              {!bioError && (
+                <p id="bio-helper" className="auth-input-helper">This will be reviewed by Admin during verification. Minimum 20 characters.</p>
+              )}
             </div>
-            {bioError && <p className="text-[10px] text-[var(--color-shell-error)]">{bioError}</p>}
-            <p className="text-[10px] text-[var(--color-shell-text-subtle)]">
-              This will be reviewed by Admin during verification. Minimum 20 characters.
-            </p>
           </div>
 
           {displayError && !fullNameError && !emailError && !passwordError && !bioError && (
-            <p className="text-[10px] text-[var(--color-shell-error)] text-center">{displayError}</p>
+            <div className="auth-banner auth-banner--error" role="alert" aria-live="polite">
+              <AlertCircle className="auth-banner-icon h-5 w-5" aria-hidden="true" />
+              <span>{displayError}</span>
+            </div>
           )}
 
-          <Button
-            type="submit"
-            size="md"
-            disabled={isSubmitting}
-            className="w-full"
-          >
-            <span>{isSubmitting ? 'Creating Account...' : 'Create Account & Start Verification'}</span>
-          </Button>
+          <div className="auth-form-actions">
+            <Button
+              type="submit"
+              size="md"
+              disabled={isSubmitting}
+              className="auth-button auth-button--accent w-full"
+            >
+              <span>{isSubmitting ? 'Creating Account...' : 'Create Account & Start Verification'}</span>
+            </Button>
+          </div>
         </form>
 
-        <div className="rounded-lg border border-[var(--color-shell-border)] bg-[var(--color-shell-surface-elevated)]/50 p-3.5 text-xs text-[var(--color-shell-text-muted)] space-y-2">
+        <div className="auth-info-box">
           <div className="flex items-start gap-2">
-            <ShieldCheck className="h-4 w-4 text-[var(--color-shell-accent)] shrink-0 mt-0.5" />
+            <ShieldCheck className="h-5 w-5 text-[var(--orange)] shrink-0 mt-0.5" aria-hidden="true" />
             <div className="space-y-1">
-              <p className="font-medium text-[var(--color-shell-text)]">Verification Process</p>
-              <p>After email verification, you will submit required documents (ID, qualifications) for Admin review.</p>
+              <p className="auth-info-box-title">Verification Process</p>
+              <p className="auth-info-box-text">After email verification, you will submit required documents (ID, qualifications) for Admin review.</p>
             </div>
           </div>
         </div>
 
-        <div className="pt-2 text-center text-xs text-[var(--color-shell-text-subtle)]">
+        <div className="auth-footer-links">
           Already have an account?{' '}
           <button
             type="button"
             onClick={() => navigate('/auth/login')}
-            className="font-medium text-[var(--color-shell-text)] hover:text-[var(--color-shell-accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-accent)] rounded"
+            className="auth-button auth-button--ghost"
           >
             Sign In
           </button>

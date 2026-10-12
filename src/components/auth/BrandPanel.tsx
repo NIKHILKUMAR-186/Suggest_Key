@@ -7,115 +7,86 @@ interface BrandPanelProps {
 
 export const BrandPanel: React.FC<BrandPanelProps> = ({ className }) => {
   return (
-    <div className={cn('flex flex-col h-full', className)}>
-      {/* Logo */}
-      <div className="flex items-center gap-3 mb-16">
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-white shadow-sm">
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M11.9426 1.25H12.0574C14.3658 1.24999 16.1748 1.24998 17.5863 1.43975C19.031 1.63399 20.1711 2.03933 21.0659 2.93414C21.9607 3.82895 22.366 4.96897 22.5603 6.41371C22.75 7.82519 22.75 9.63423 22.75 11.9426V12.0574C22.75 14.3658 22.75 16.1748 22.5603 17.5863C22.366 19.031 21.9607 20.1711 21.0659 21.0659C20.1711 21.9607 19.031 22.366 17.5863 22.5603C16.1748 22.75 14.3658 22.75 12.0574 22.75H11.9426C9.63423 22.75 7.82519 22.75 6.41371 22.5603C4.96897 22.366 3.82895 21.9607 2.93414 21.0659C2.03933 20.1711 1.63399 19.031 1.43975 17.5863C1.24998 16.1748 1.24999 14.3658 1.25 12.0574V11.9426C1.24999 9.63423 1.24998 7.82519 1.43975 6.41371C1.63399 4.96897 2.03933 3.82895 2.93414 2.93414C3.82895 2.03933 4.96897 1.63399 6.41371 1.43975C7.82519 1.24998 9.63423 1.24999 11.9426 1.25ZM6.61358 2.92637C5.33517 3.09825 4.56445 3.42514 3.9948 3.9948C3.42514 4.56445 3.09825 5.33517 2.92637 6.61358C2.75159 7.91356 2.75 9.62177 2.75 12C2.75 14.3782 2.75159 16.0864 2.92637 17.3864C3.09825 18.6648 3.42514 19.4355 3.9948 20.0052C4.56445 20.5749 5.33517 20.9018 6.61358 21.0736C7.91356 21.2484 9.62177 21.25 12 21.25C14.3782 21.25 16.0864 21.2484 17.3864 21.0736C18.6648 20.9018 19.4355 20.5749 20.0052 20.0052C20.5749 19.4355 20.9018 18.6648 21.0736 17.3864C21.2484 16.0864 21.25 14.3782 21.25 12C21.25 9.62177 21.2484 7.91356 21.0736 6.61358C20.9018 5.33517 20.5749 4.56445 20.0052 3.9948C19.4355 3.42514 18.6648 3.09825 17.3864 2.92637C16.0864 2.75159 14.3782 2.75 12 2.75C9.62177 2.75 7.91356 2.75159 6.61358 2.92637ZM11.5303 8.46967C11.8232 8.76256 11.8232 9.23744 11.5303 9.53033L9.81066 11.25H16C16.4142 11.25 16.75 11.5858 16.75 12C16.75 12.4142 16.4142 12.75 16 12.75H9.81066L11.5303 14.4697C11.8232 14.7626 11.8232 15.2374 11.5303 15.5303C11.2374 15.8232 10.7626 15.8232 10.4697 15.5303L7.46967 12.5303C7.17678 12.2374 7.17678 11.7626 7.46967 11.4697L10.4697 8.46967C10.7626 8.17678 11.2374 8.17678 11.5303 8.46967Z" fill="currentColor"/></svg>
-          {/* <svg
-            className="h-6 w-6"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M12 2L2 7l10 5 10-5-10-5z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg> */}
-          
+    <div className={cn('auth-brand-content flex flex-col h-full', className)}>
+      {/* Mobile brand header — shown when stacked on mobile/tablet */}
+      <div className="auth-brand-mobile-header">
+        <div className="auth-brand-logo">
+          <div className="auth-brand-logo-mark" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M11.9426 1.25H12.0574C14.3658 1.24999 16.1748 1.24998 17.5863 1.43975C19.031 1.63399 20.1711 2.03933 21.0659 2.93414C21.9607 3.82895 22.366 4.96897 22.5603 6.41371C22.75 7.82519 22.75 9.63423 22.75 11.9426V12.0574C22.75 14.3658 22.75 16.1748 22.5603 17.5863C22.366 19.031 21.9607 20.1711 21.0659 21.0659C20.1711 21.9607 19.031 22.366 17.5863 22.5603C16.1748 22.75 14.3658 22.75 12.0574 22.75H11.9426C9.63423 22.75 7.82519 22.75 6.41371 22.5603C4.96897 22.366 3.82895 21.9607 2.93414 21.0659C2.03933 20.1711 1.63399 19.031 1.43975 17.5863C1.24998 16.1748 1.24999 14.3658 1.25 12.0574V11.9426C1.24999 9.63423 1.24998 7.82519 1.43975 6.41371C1.63399 4.96897 2.03933 3.82895 2.93414 2.93414C2.75159 2.75159 4.56063 2.75 6.41371 2.75H11.9426ZM6.61358 2.92637C5.33517 3.09825 4.56445 3.42514 3.9948 3.9948C3.42514 4.56445 3.09825 5.33517 2.92637 6.61358C2.75159 7.91356 2.75 9.62177 2.75 12C2.75 14.3782 2.75159 16.0864 2.92637 17.3864C3.09825 18.6648 3.42514 19.4355 3.9948 20.0052C4.56445 20.5749 5.33517 20.9018 6.61358 21.0736C7.91356 21.2484 9.62177 21.25 12 21.25C14.3782 21.25 16.0864 21.2484 17.3864 21.0736C18.6648 20.9018 19.4355 20.5749 20.0052 20.0052C20.5749 19.4355 20.9018 18.6648 21.0736 17.3864C21.2484 16.0864 21.25 14.3782 21.25 12C21.25 9.62177 21.2484 7.91356 21.0736 6.61358C20.9018 5.33517 20.5749 4.56445 20.0052 3.9948C19.4355 3.42514 18.6648 3.09825 17.3864 2.92637C16.0864 2.75159 14.3782 2.75 12 2.75C9.62177 2.75 7.91356 2.75159 6.61358 2.92637ZM11.5303 8.46967C11.8232 8.76256 11.8232 9.23744 11.5303 9.53033L9.81066 11.25H16C16.4142 11.25 16.75 11.5858 16.75 12C16.75 12.4142 16.4142 12.75 16 12.75H9.81066L11.5303 14.4697C11.8232 14.7626 11.8232 15.2374 11.5303 15.5303C11.2374 15.8232 10.7626 15.8232 10.4697 15.5303L7.46967 12.5303C7.17678 12.2374 7.17678 11.7626 7.46967 11.4697L10.4697 8.46967C10.7626 8.17678 11.2374 8.17678 11.5303 8.46967Z" fill="currentColor"/>
+            </svg>
+          </div>
+          <span className="auth-brand-logo-text">Suggest Key</span>
         </div>
-        <div>
-          <span
-            className="text-lg font-bold tracking-tight text-[var(--color-shell-text)] block leading-tight"
-            style={{ fontFamily: 'var(--font-aeonikpro)' }}
-          >
-            Suggest Key
-          </span>
-        </div>
-      </div>
-
-      {/* Headline + Body */}
-      <div className="space-y-6 mb-10">
-        <h2
-          className="brand-headline"
-          style={{ fontFamily: 'var(--font-aeonikpro)' }}
-        >
-          Guidance that moves you forward.
+        <h2 className="auth-brand-headline" style={{ fontSize: 'clamp(1.25rem, 1.1rem + 1vw, 1.75rem)', marginBottom: 'var(--space-12)' }}>
+          A little clarity can change your next step.
         </h2>
-        <p className="brand-body">
-          Connect with the right mentor for focused, one-to-one conversations that help you take your next step.
+        <p className="auth-brand-body" style={{ marginBottom: 'var(--space-20)', maxWidth: '420px' }}>
+          Connect with someone who understands your challenge, shares real experience, and helps you move forward with confidence.
         </p>
       </div>
 
-      {/* Feature list */}
-      <ul className="brand-feature-list space-y-4">
-        <li className="flex items-start gap-3">
-          <svg
-            className="h-5 w-5 text-[var(--color-shell-accent)] shrink-0 mt-0.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
-          <span>Personal mentorship tailored to your goals</span>
-        </li>
-        <li className="flex items-start gap-3">
-          <svg
-            className="h-5 w-5 text-[var(--color-shell-accent)] shrink-0 mt-0.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          <span>Focused 1:1 sessions at times that work for you</span>
-        </li>
-        <li className="flex items-start gap-3">
-          <svg
-            className="h-5 w-5 text-[var(--color-shell-accent)] shrink-0 mt-0.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-          </svg>
-          <span>Real human guidance from verified mentors</span>
-        </li>
-      </ul>
-
-      {/* Decorative abstract motif */}
-      <div className="mt-auto pt-10">
-        <div className="flex items-end gap-2 opacity-40" aria-hidden="true">
-          <div className="w-16 h-3 rounded-full bg-[var(--color-shell-accent)]/60" />
-          <div className="w-24 h-5 rounded-full bg-[var(--color-shell-accent)]/40" />
-          <div className="w-12 h-2 rounded-full bg-[var(--color-shell-accent)]/30" />
-          <div className="w-20 h-4 rounded-full bg-[var(--color-shell-accent)]/50" />
-          <div className="w-14 h-3 rounded-full bg-[var(--color-shell-accent)]/35" />
+      {/* Desktop brand content */}
+      <div className="flex-1 flex flex-col justify-center">
+        {/* Logo */}
+        <div className="auth-brand-logo">
+          <div className="auth-brand-logo-mark" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M11.9426 1.25H12.0574C14.3658 1.24999 16.1748 1.24998 17.5863 1.43975C19.031 1.63399 20.1711 2.03933 21.0659 2.93414C21.9607 3.82895 22.366 4.96897 22.5603 6.41371C22.75 7.82519 22.75 9.63423 22.75 11.9426V12.0574C22.75 14.3658 22.75 16.1748 22.5603 17.5863C22.366 19.031 21.9607 20.1711 21.0659 21.0659C20.1711 21.9607 19.031 22.366 17.5863 22.5603C16.1748 22.75 14.3658 22.75 12.0574 22.75H11.9426C9.63423 22.75 7.82519 22.75 6.41371 22.5603C4.96897 22.366 3.82895 21.9607 2.93414 21.0659C2.03933 20.1711 1.63399 19.031 1.43975 17.5863C1.24998 16.1748 1.24999 14.3658 1.25 12.0574V11.9426C1.24999 9.63423 1.24998 7.82519 1.43975 6.41371C1.63399 4.96897 2.03933 3.82895 2.93414 2.93414C2.75159 2.75159 4.56063 2.75 6.41371 2.75H11.9426ZM6.61358 2.92637C5.33517 3.09825 4.56445 3.42514 3.9948 3.9948C3.42514 4.56445 3.09825 5.33517 2.92637 6.61358C2.75159 7.91356 2.75 9.62177 2.75 12C2.75 14.3782 2.75159 16.0864 2.92637 17.3864C3.09825 18.6648 3.42514 19.4355 3.9948 20.0052C4.56445 20.5749 5.33517 20.9018 6.61358 21.0736C7.91356 21.2484 9.62177 21.25 12 21.25C14.3782 21.25 16.0864 21.2484 17.3864 21.0736C18.6648 20.9018 19.4355 20.5749 20.0052 20.0052C20.5749 19.4355 20.9018 18.6648 21.0736 17.3864C21.2484 16.0864 21.25 14.3782 21.25 12C21.25 9.62177 21.2484 7.91356 21.0736 6.61358C20.9018 5.33517 20.5749 4.56445 20.0052 3.9948C19.4355 3.42514 18.6648 3.09825 17.3864 2.92637C16.0864 2.75159 14.3782 2.75 12 2.75C9.62177 2.75 7.91356 2.75159 6.61358 2.92637ZM11.5303 8.46967C11.8232 8.76256 11.8232 9.23744 11.5303 9.53033L9.81066 11.25H16C16.4142 11.25 16.75 11.5858 16.75 12C16.75 12.4142 16.4142 12.75 16 12.75H9.81066L11.5303 14.4697C11.8232 14.7626 11.8232 15.2374 11.5303 15.5303C11.2374 15.8232 10.7626 15.8232 10.4697 15.5303L7.46967 12.5303C7.17678 12.2374 7.17678 11.7626 7.46967 11.4697L10.4697 8.46967C10.7626 8.17678 11.2374 8.17678 11.5303 8.46967Z" fill="currentColor"/>
+            </svg>
+          </div>
+          <span className="auth-brand-logo-text">Suggest Key</span>
         </div>
-        <p className="mt-3 text-[11px] text-[var(--color-shell-text-subtle)]">
-          Seeker → Mentor → Conversation → Growth
-        </p>
+
+        {/* Headline + Body */}
+        <div className="space-y-6 mb-10">
+          <h2 className="auth-brand-headline">
+            A little clarity can change your next step.
+          </h2>
+          <p className="auth-brand-body">
+            Connect with someone who understands your challenge, shares real experience, and helps you move forward with confidence.
+          </p>
+        </div>
+
+        {/* Feature list */}
+        <ul className="auth-brand-benefits">
+          <li className="auth-brand-benefit">
+            <svg className="auth-brand-benefit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            <span>Guidance shaped around your goals</span>
+          </li>
+          <li className="auth-brand-benefit">
+            <svg className="auth-brand-benefit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            <span>Focused, one-to-one conversations</span>
+          </li>
+          <li className="auth-brand-benefit">
+            <svg className="auth-brand-benefit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+            <span>Practical next steps from experienced mentors</span>
+          </li>
+        </ul>
+
+        {/* Mentorship journey indicator */}
+        <div className="auth-brand-journey">
+          <div className="auth-brand-journey-bar" aria-hidden="true">
+            <div className="auth-brand-journey-step" />
+            <div className="auth-brand-journey-step" />
+            <div className="auth-brand-journey-step" />
+            <div className="auth-brand-journey-step" />
+            <div className="auth-brand-journey-step" />
+          </div>
+          <p className="auth-brand-journey-label">
+            Seeker → Match → Conversation → Insight → Growth
+          </p>
+        </div>
       </div>
     </div>
   );

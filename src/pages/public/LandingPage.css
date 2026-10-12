@@ -684,7 +684,7 @@
 }
 
 .landing-hero__title {
-  font-size: var(--text-display);
+  font-size: clamp(2.3rem, 4.8vw, 4.5rem);
   line-height: var(--leading-display);
   font-weight: var(--weight-semibold);
   color: var(--cocoa);
@@ -707,17 +707,16 @@
   transform: rotate(4deg);
 }
 
-/* Body row. */
+/* The complete copy block and the notebook share one stable hero row. */
 .landing-hero__body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.78fr);
-  align-items: start;
-  gap: clamp(2.5rem, 6vw, 5rem);
-  margin-top: clamp(1rem, 2vw, 2rem);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  align-items: center;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
 }
 
 .landing-hero__copy {
-  max-width: 34rem;
+  max-width: 40rem;
 }
 
 .landing-hero__lede {
@@ -750,7 +749,7 @@
 /* Visual — the tilted label card, decorated like a peel-and-stick page. */
 .landing-hero__visual {
   position: relative;
-  justify-self: end;
+  justify-self: center;
   width: 100%;
   max-width: 27rem;
   padding: clamp(1rem, 3vw, 2.25rem);
@@ -792,10 +791,21 @@
 
 /* Notebook slot for the animated transition — centered in the visual area. */
 .landing-hero__notebook-slot {
-  width: min(100%, 29rem);
+  width: min(100%, clamp(15rem, 30vw, 23rem));
   aspect-ratio: 0.78 / 1;
   margin-inline: auto;
   visibility: hidden;
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .landing-hero__body {
+    gap: clamp(1rem, 2.5vw, 1.75rem);
+  }
+
+  .landing-hero__visual {
+    max-width: 25rem;
+    padding: clamp(0.5rem, 2vw, 1.25rem);
+  }
 }
 
 /* --- Notebook opening stage -------------------------------------------- */
@@ -1102,6 +1112,26 @@ justify-content: center;
 overflow: hidden;
 }
 
+/* .notebook-editorial__clickable {
+background: none;
+border: none;
+padding: 0;
+cursor: pointer;
+display: flex;
+align-items: center;
+justify-content: center;
+width: 100%;
+height: 100%;
+overflow: hidden;
+pointer-events: auto;
+}
+
+.notebook-editorial__clickable:focus-visible {
+outline: 3px solid var(--brand-purple-contrast);
+outline-offset: 3px;
+border-radius: 4px;
+} */
+
 .notebook-editorial__header-graphic img {
 display: block;
 width: 100%;
@@ -1131,9 +1161,7 @@ object-position: center;
 flex-shrink: 0;
 }
 
-
-
-* Minimal footer */
+/* Minimal footer */
 .notebook-editorial__footer {
   display: none;
 /* border-top: 1px solid rgba(202, 86, 35, 0.18);
@@ -2557,5 +2585,50 @@ padding-top: 4px;
   }
   .sk-motion-marquee[data-running="true"] .sk-motion-marquee__track {
     animation: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .notebook-open-section,
+  .notebook-artwork--transition,
+  .landing-hero__notebook-slot {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+
+  .landing-hero__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .landing-hero__visual {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .landing-discovery {
+    padding-top: 3rem;
+    padding-bottom: 3rem;
+  }
+  .landing-segments {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  .landing-segment {
+    padding: 1rem;
+  }
+  .landing-segment a {
+    gap: 0.875rem;
+  }
+  .landing-segment__body strong {
+    font-size: 1.125rem;
+  }
+  .landing-segment__body span {
+    font-size: 0.875rem;
+    line-height: 1.5;
   }
 }

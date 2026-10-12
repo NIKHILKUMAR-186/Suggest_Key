@@ -11,50 +11,45 @@ export const UnauthorizedPage: React.FC = () => {
 
   return (
     <AuthLayout>
-      <div className="auth-card space-y-6">
+      <div className="auth-form-card space-y-6">
         {/* Brand */}
-        <div className="text-center space-y-2">
-          <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
-              <ShieldAlert className="h-5 w-5" />
-            </div>
-            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
-              Suggest Key
-            </span>
+        <div className="auth-form-header">
+          <div className="auth-form-logo" aria-hidden="true">
+            <ShieldAlert className="h-6 w-6" />
           </div>
           <AuthEyebrow>Access Denied</AuthEyebrow>
           <AuthHeading>403 Forbidden</AuthHeading>
           <AuthBody>You don't have permission to access this resource</AuthBody>
         </div>
 
-        <div className="rounded-lg bg-[var(--color-shell-bg)] border border-[var(--color-shell-border-strong)] p-4 space-y-3">
-          <div className="flex justify-between items-center border-b border-[var(--color-shell-border-strong)] pb-2">
-            <span className="text-xs text-[var(--color-shell-text-subtle)]">Current User:</span>
-            <span className="font-mono font-medium text-[var(--color-shell-text)]">{user?.email || 'Anonymous'}</span>
+        <div className="rounded-lg bg-[var(--dew)] border border-[var(--hairline)] p-4 space-y-3">
+          <div className="flex justify-between items-center border-b border-[var(--hairline-strong)] pb-2">
+            <span className="auth-body-sm" style={{ color: 'var(--muted)' }}>Current User:</span>
+            <span className="auth-body-sm font-mono font-medium" style={{ color: 'var(--ink)' }}>{user?.email || 'Anonymous'}</span>
           </div>
-          <div className="flex justify-between items-center border-b border-[var(--color-shell-border-strong)] pb-2">
-            <span className="text-xs text-[var(--color-shell-text-subtle)]">Assigned Roles:</span>
-            <span className="font-mono font-medium text-[var(--color-shell-text)] uppercase">
+          <div className="flex justify-between items-center border-b border-[var(--hairline-strong)] pb-2">
+            <span className="auth-body-sm" style={{ color: 'var(--muted)' }}>Assigned Roles:</span>
+            <span className="auth-body-sm font-mono font-medium uppercase" style={{ color: 'var(--ink)' }}>
               {roles.join(', ') || 'NONE'}
             </span>
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-xs text-[var(--color-shell-text-subtle)]">Active Shell:</span>
-            <span className="font-mono font-medium text-[var(--color-shell-text)] capitalize">{activeRole}</span>
+            <span className="auth-body-sm" style={{ color: 'var(--muted)' }}>Active Shell:</span>
+            <span className="auth-body-sm font-mono font-medium capitalize" style={{ color: 'var(--ink)' }}>{activeRole}</span>
           </div>
         </div>
 
-        <div className="rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-3 text-left text-xs text-[var(--color-shell-text-muted)] space-y-1">
-          <span className="font-medium text-[var(--color-shell-text)] flex items-center gap-1">
-            <Lock className="h-3 w-3" />
+        <div className="rounded-lg border border-[var(--hairline-strong)] bg-[var(--dew)] p-3 text-left space-y-1">
+          <span className="auth-body-sm font-medium flex items-center gap-1" style={{ color: 'var(--ink)' }}>
+            <Lock className="h-4 w-4" />
             Server-Side & Database Security:
           </span>
-          <p>
+          <p className="auth-body-sm" style={{ color: 'var(--muted)' }}>
             Suggest Key enforces authorization at the database layer using Supabase Row Level Security (RLS). Even if the client route was bypassed, PostgreSQL rejects data access for non-matching role permissions.
           </p>
         </div>
 
-        <div className="pt-2 flex flex-col sm:flex-row gap-2 justify-center">
+        <div className="auth-form-actions flex flex-col sm:flex-row gap-2 justify-center">
           <Button
             variant="outline"
             size="md"
@@ -63,9 +58,9 @@ export const UnauthorizedPage: React.FC = () => {
               else if (roles.includes('mentor')) navigate('/mentor');
               else navigate('/seeker');
             }}
-            className="text-xs"
+            className="auth-button auth-button--outline"
           >
-            <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+            <ArrowLeft className="h-5 w-5 mr-1" aria-hidden="true" />
             Back to Authorized Area
           </Button>
 
@@ -75,9 +70,9 @@ export const UnauthorizedPage: React.FC = () => {
               await signOut();
               navigate('/auth/login');
             }}
-            className="text-xs"
+            className="auth-button auth-button--accent"
           >
-            <LogOut className="h-3.5 w-3.5 mr-1" />
+            <LogOut className="h-5 w-5 mr-1" aria-hidden="true" />
             Sign In with Different Account
           </Button>
         </div>

@@ -121,7 +121,7 @@ function NotebookIllustration({
 export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   const { navigate } = useNavigation();
   const reduceMotion = useReducedMotion();
-  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 560px)').matches);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches);
   const mentor = featured?.mentor ?? null;
   const transitionRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLDivElement>(null);
@@ -149,7 +149,7 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
   });
 
   useLayoutEffect(() => {
-    const mediaQuery = window.matchMedia('(max-width: 560px)');
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
     const update = () => setIsMobile(mediaQuery.matches);
     update();
     mediaQuery.addEventListener('change', update);
@@ -205,25 +205,25 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
     <div ref={transitionRef} className="notebook-transition">
     <section className="landing-hero" aria-labelledby="hero-title">
       <div className="landing-wrap">
-        <div className="landing-hero__head">
-          <Reveal className="landing-hero__caption" mode="lift" playOnMount delay={0.05}>
-            <span className="landing-handnote">figuring it out?</span>
-            <HandArrow />
-          </Reveal>
+      <div className="landing-hero__body">
+        <div className="landing-hero__copy">
+          <div className="landing-hero__head">
+            <Reveal className="landing-hero__caption" mode="lift" playOnMount delay={0.05}>
+              <span className="landing-handnote">figuring it out?</span>
+              <HandArrow />
+            </Reveal>
 
-          <h1
-            id="hero-title"
-            className="landing-hero__title"
-            aria-label="find a mentor for the thing you're stuck on."
-          >
-            <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero} text="find a mentor" />
-            <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero * 1.8} text="for the thing" />
-            <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero * 2.6} text="you&rsquo;re stuck on." />
-          </h1>
-        </div>
+            <h1
+              id="hero-title"
+              className="landing-hero__title"
+              aria-label="find a mentor for the thing you're stuck on."
+            >
+              <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero} text="find a mentor" />
+              <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero * 1.8} text="for the thing" />
+              <SplitText mode="line" playOnMount delay={landingMotion.stagger.hero * 2.6} text="you&rsquo;re stuck on." />
+            </h1>
+          </div>
 
-        <div className="landing-hero__body">
-          <div className="landing-hero__copy">
             <Reveal as="p" className="landing-hero__lede" mode="lift" playOnMount delay={0.44}>
               Suggest Key is a 1:1 mentorship marketplace. Bring the question, decision, or challenge you are
               sitting with, meet someone who has <span className="landing-em">lived</span> a version of it, and
@@ -263,7 +263,7 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
           <Reveal className="landing-hero__visual" mode="lift" playOnMount delay={0.3}>
             <div ref={sourceRef} className="landing-hero__notebook-slot" aria-hidden="true" />
 
-            <Reveal className="landing-hero__label" mode="lift" playOnMount delay={0.58}>
+            {/* <Reveal className="landing-hero__label" mode="lift" playOnMount delay={0.58}>
               <dl>
                 <div className="landing-hero__label-row">
                   <dt>Name</dt>
@@ -278,7 +278,7 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
                   <dd>{mentor && featured ? mentorSessionLabel(featured) : '1:1 conversation'}</dd>
                 </div>
               </dl>
-            </Reveal>
+            </Reveal> */}
 
             <Reveal as="span" className="landing-sticker landing-sticker--bolt" mode="settle" playOnMount delay={0.78}>
               <StickerBolt />
@@ -299,15 +299,28 @@ export function SuperrHero({ featured, findMentorPath }: SuperrHeroProps) {
           <ArrowDown size={15} aria-hidden="true" />
         </Reveal>
       </div>
-    </section>
-    <section className="notebook-open-section" aria-label="An open Suggest Key notebook">
-      <div className="notebook-open-section__lead" aria-hidden="true" />
-      <div ref={pinRef} className="notebook-open-section__pin">
-        <div ref={targetRef} className="notebook-open-section__notebook-slot" aria-hidden="true" />
-      </div>
-    </section>
-    {isMeasured && (
-      <NotebookIllustration progress={animationProgress} x={x} y={y} scaleX={scaleX} scaleY={scaleY} rotate={rotate} width={gStartWidth} />
+      </section>
+    {!isMobile && (
+      <>
+        <section className="notebook-open-section" aria-label="An open Suggest Key notebook">
+          <div className="notebook-open-section__lead" aria-hidden="true" />
+          <div ref={pinRef} className="notebook-open-section__pin">
+            <div ref={targetRef} className="notebook-open-section__notebook-slot" aria-hidden="true" />
+          </div>
+        </section>
+        {isMeasured && (
+          <NotebookIllustration
+            progress={animationProgress}
+            x={x}
+            y={y}
+            scaleX={scaleX}
+            scaleY={scaleY}
+            rotate={rotate}
+            width={gStartWidth}
+            onLoginClick={() => navigate('/auth/login')}
+          />
+        )}
+      </>
     )}
     </div>
   );

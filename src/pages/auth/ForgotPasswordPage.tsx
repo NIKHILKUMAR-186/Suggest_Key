@@ -3,7 +3,6 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useNavigation } from '@/src/context/NavigationContext';
 import { AuthLayout, AuthHeading, AuthBody } from '@/src/components/auth/AuthLayout';
 import { Button } from '@/src/components/ui/Button';
-import { Input } from '@/src/components/ui/Input';
 import { AlertCircle, ArrowLeft, CheckCircle2, Mail } from 'lucide-react';
 import mapAuthError from '@/src/lib/authErrors';
 
@@ -57,86 +56,94 @@ export const ForgotPasswordPage: React.FC = () => {
 
   return (
     <AuthLayout>
-      <div className="auth-card space-y-6">
-        <div className="text-center space-y-2">
-          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-sm">
-            <Mail className="h-5 w-5" aria-hidden="true" />
+      <div className="auth-form-card space-y-6">
+        {/* Header */}
+        <div className="auth-form-header">
+          <div className="auth-form-logo" aria-hidden="true">
+            <Mail className="h-6 w-6" />
           </div>
-          <div className="mt-4 space-y-2">
-            <AuthHeading className="mb-2">Reset your password</AuthHeading>
-            <AuthBody className="mb-0">We'll send a secure link to your inbox.</AuthBody>
-          </div>
+          <AuthHeading>Reset your password</AuthHeading>
+          <AuthBody>We'll send a secure link to your inbox.</AuthBody>
         </div>
 
         {isSuccess ? (
-          <div className="space-y-4" aria-live="polite">
-            <div className="rounded-lg bg-[var(--color-shell-bg)] border border-[var(--color-shell-border-strong)] p-4 text-center space-y-2">
-              <CheckCircle2 className="h-8 w-8 text-[var(--color-shell-primary)] mx-auto" aria-hidden="true" />
-              <p className="text-sm font-medium text-[var(--color-shell-text)]">Check your inbox</p>
-              <p className="text-xs text-[var(--color-shell-text-subtle)]">
-                If an account exists for this address, a reset link is on its way to:
-              </p>
-              <p className="text-xs font-mono text-[var(--color-shell-text-muted)] break-all">{email.trim()}</p>
+          <div className="auth-success-state" aria-live="polite">
+            <div className="auth-success-icon" aria-hidden="true">
+              <CheckCircle2 className="h-10 w-10" />
             </div>
+            <h2 className="auth-success-title">Check your inbox</h2>
+            <p className="auth-success-text">
+              If an account exists for this address, a reset link is on its way to:
+            </p>
+            <p className="auth-success-email">{email.trim()}</p>
             <Button
               size="md"
               onClick={() => navigate('/auth/login')}
-              className="w-full"
+              className="auth-button auth-button--accent w-full"
             >
-              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <ArrowLeft className="h-5 w-5" aria-hidden="true" />
               Back to Sign In
             </Button>
           </div>
         ) : (
           <>
             {displayError && (
-              <div
-                className="rounded-lg bg-[var(--color-shell-error-soft)] border border-[var(--color-shell-error)] p-3 text-xs text-[var(--color-shell-error)] flex items-start gap-2"
-                role="alert"
-                aria-live="polite"
-              >
-                <AlertCircle className="h-4 w-4 text-[var(--color-shell-error)] shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="auth-banner auth-banner--error" role="alert" aria-live="polite">
+                <AlertCircle className="auth-banner-icon h-5 w-5" aria-hidden="true" />
                 <span>{displayError}</span>
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-              <Input
-                label="Email Address"
-                type="email"
-                placeholder="e.g. yourname@example.com"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setEmailError(null);
-                  setFeedback(null);
-                  clearError();
-                }}
-                onBlur={validateEmail}
-                error={emailError}
-                helperText={!emailError ? 'Use the email associated with your account.' : undefined}
-                autoComplete="email"
-                className="auth-input"
-              />
+            <form onSubmit={handleSubmit} className="auth-form" noValidate>
+              <div className="auth-form-group">
+                <label htmlFor="email" className="auth-input-label">Email Address</label>
+                <div className="auth-input-wrapper">
+                  <input
+                    id="email"
+                    type="email"
+                    placeholder="e.g. yourname@example.com"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setEmailError(null);
+                      setFeedback(null);
+                      clearError();
+                    }}
+                    onBlur={validateEmail}
+                    className="auth-input-field"
+                    aria-invalid={!!emailError}
+                    aria-describedby={emailError ? 'email-error' : 'email-helper'}
+                    autoComplete="email"
+                  />
+                  {emailError && (
+                    <p id="email-error" className="auth-input-error" role="alert">{emailError}</p>
+                  )}
+                  {!emailError && (
+                    <p id="email-helper" className="auth-input-helper">Use the email associated with your account.</p>
+                  )}
+                </div>
+              </div>
 
-              <Button
-                type="submit"
-                size="md"
-                isLoading={isSubmitting}
-                loadingText="Sending..."
-                className="w-full"
-              >
-                <Mail className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Send Reset Link</span>
-              </Button>
+              <div className="auth-form-actions">
+                <Button
+                  type="submit"
+                  size="md"
+                  isLoading={isSubmitting}
+                  loadingText="Sending..."
+                  className="auth-button auth-button--accent w-full"
+                >
+                  <Mail className="h-5 w-5" aria-hidden="true" />
+                  <span>Send Reset Link</span>
+                </Button>
+              </div>
             </form>
 
-            <div className="pt-2 text-center text-xs text-[var(--color-shell-text-subtle)]">
+            <div className="auth-footer-links">
               Remember your password?{' '}
               <button
                 type="button"
                 onClick={() => navigate('/auth/login')}
-                className="font-medium text-[var(--color-shell-text)] hover:text-[var(--color-shell-accent)] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-shell-focus)] rounded"
+                className="auth-button auth-button--ghost"
               >
                 Sign In
               </button>

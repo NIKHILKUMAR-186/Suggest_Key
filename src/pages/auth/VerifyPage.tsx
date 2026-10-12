@@ -33,16 +33,11 @@ export const VerifyPage: React.FC = () => {
 
   return (
     <AuthLayout>
-      <div className="auth-card space-y-6">
-        {/* Brand */}
-        <div className="text-center space-y-2">
-          <div className="flex items-center justify-center gap-2.5 mb-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--color-shell-primary)] text-[var(--color-shell-surface)] shadow-xs">
-              <Mail className="h-5 w-5" />
-            </div>
-            <span className="text-base font-bold tracking-tight text-[var(--color-shell-text)]" style={{ fontFamily: 'var(--font-aeonikpro)' }}>
-              Suggest Key
-            </span>
+      <div className="auth-form-card space-y-6">
+        {/* Brand Header */}
+        <div className="auth-form-header">
+          <div className="auth-form-logo" aria-hidden="true">
+            <Mail className="h-6 w-6" />
           </div>
           <AuthEyebrow>Email Verification</AuthEyebrow>
           <AuthHeading>Check Your Inbox</AuthHeading>
@@ -50,56 +45,52 @@ export const VerifyPage: React.FC = () => {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-lg bg-[var(--color-shell-bg)] border border-[var(--color-shell-border-strong)] p-4 text-center space-y-2">
-            <CheckCircle2 className="h-8 w-8 text-[var(--color-shell-primary)] mx-auto" />
-            <p className="text-sm text-[var(--color-shell-text)]">Verification email sent</p>
-            <p className="text-xs text-[var(--color-shell-text-subtle)]">
+          <div className="rounded-lg bg-[var(--dew)] border border-[var(--hairline)] p-4 text-center space-y-2">
+            <CheckCircle2 className="h-10 w-10 text-[var(--orange)] mx-auto" aria-hidden="true" />
+            <p className="auth-body-sm font-medium">Verification email sent</p>
+            <p className="auth-body-sm" style={{ color: 'var(--muted)' }}>
               We've sent a verification link to:
             </p>
-            <p className="text-xs font-mono text-[var(--color-shell-text-muted)] break-all">
+            <p className="auth-body-sm" style={{ fontFamily: 'var(--font-ui)', color: 'var(--mist)' }}>
               {displayEmail || 'user@example.com'}
             </p>
           </div>
 
-          <div className="rounded-lg border border-[var(--color-shell-border-strong)] bg-[var(--color-shell-bg)] p-3 text-left text-xs text-[var(--color-shell-text-muted)] space-y-1">
-            <span className="font-medium text-[var(--color-shell-text)] block">What's next?</span>
-            <p>1. Open your email inbox</p>
-            <p>2. Click the verification link</p>
-            <p>3. Return here to continue</p>
+          <div className="rounded-lg border border-[var(--hairline-strong)] bg-[var(--dew)] p-3 text-left space-y-1">
+            <span className="auth-body-sm font-medium" style={{ color: 'var(--ink)' }}>What's next?</span>
+            <p className="auth-body-sm" style={{ color: 'var(--muted)' }}>1. Open your email inbox</p>
+            <p className="auth-body-sm" style={{ color: 'var(--muted)' }}>2. Click the verification link</p>
+            <p className="auth-body-sm" style={{ color: 'var(--muted)' }}>3. Return here to continue</p>
           </div>
 
           {resendFeedback && (
             <div
-              className={`rounded-lg border p-3 text-xs flex items-start gap-2 ${
-                resendFeedback.includes('resent')
-                  ? 'bg-[var(--color-success-soft)] border-[var(--color-success)] text-[var(--color-success)]'
-                  : 'bg-[var(--color-shell-error-soft)] border-[var(--color-shell-error)] text-[var(--color-shell-error)]'
-              }`}
+              className={`auth-banner ${resendFeedback.includes('resent') ? 'auth-banner--success' : 'auth-banner--error'}`}
               role="alert"
               aria-live="polite"
             >
-              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <AlertCircle className="auth-banner-icon h-5 w-5" aria-hidden="true" />
               <span>{resendFeedback}</span>
             </div>
           )}
 
-          <div className="flex flex-col gap-2">
+          <div className="auth-form-actions">
             <Button
               size="md"
               onClick={handleResend}
               disabled={isResending || !displayEmail}
-              className="w-full"
+              className="auth-button auth-button--accent w-full"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isResending ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-5 w-5 ${isResending ? 'animate-spin' : ''}`} aria-hidden="true" />
               <span>{isResending ? 'Resending…' : 'Resend Email'}</span>
             </Button>
             <Button
               variant="outline"
               size="md"
               onClick={() => navigate('/auth/login')}
-              className="w-full"
+              className="auth-button auth-button--outline w-full"
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
+              <ArrowLeft className="h-5 w-5" aria-hidden="true" />
               Back to Sign In
             </Button>
           </div>

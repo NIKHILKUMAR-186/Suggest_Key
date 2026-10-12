@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '@/src/lib/utils';
+import '../../pages/auth/AuthPages.css';
 
 interface AuthLayoutProps {
   children: React.ReactNode;
@@ -11,19 +12,30 @@ interface AuthLayoutProps {
 export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, className, variant = 'split', brandPanel }) => {
   const isSplit = variant === 'split' && !!brandPanel;
 
-  return (
-    <div className={cn('auth-background min-h-screen relative', className)}>
-      {isSplit && (
-        <div className="hidden lg:block lg:absolute lg:inset-y-0 lg:left-0 lg:w-1/2 lg:max-w-none lg:px-12 lg:py-16 lg:flex lg:items-center lg:z-0">
+  if (isSplit) {
+    return (
+      <div className={cn('auth-pages auth-background auth-split-layout', className)}>
+        <div className="auth-brand-panel" aria-hidden="true">
           {brandPanel}
         </div>
-      )}
+        <div className="auth-form-panel relative z-10">
+          <div className="auth-card-wrapper">
+            <div className="w-full">
+              {children}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn('auth-pages auth-background min-h-screen relative', className)}>
       <div className={cn(
-        'relative z-10 flex w-full min-h-screen flex-col',
-        isSplit ? 'lg:ml-[50%] lg:w-1/2' : ''
+        'auth-form-panel relative z-10 flex w-full min-h-screen flex-col',
       )}>
-        <div className={cn('flex-1 flex items-center justify-center px-4 py-6 sm:px-6', isSplit ? 'lg:w-full' : '')}>
-          <div className="w-full max-w-md">
+        <div className="flex-1 flex items-center justify-center w-full">
+          <div className="w-full">
             {children}
           </div>
         </div>
@@ -33,26 +45,21 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, className, var
 };
 
 export const AuthEyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="flex items-center justify-center gap-4 mb-6">
-    <div className="h-px flex-1 max-w-[80px] bg-gradient-to-r from-transparent to-[var(--color-shell-border-strong)]" />
-    <span className="text-[15px] font-normal tracking-[0.10em] text-[var(--color-shell-text-muted)] uppercase whitespace-nowrap" style={{ fontFamily: 'var(--font-dotdigital)' }}>
-      {children}
-    </span>
-    <div className="h-px flex-1 max-w-[80px] bg-gradient-to-l from-transparent to-[var(--color-shell-border-strong)]" />
-  </div>
+  <p className="auth-eyebrow">{children}</p>
 );
 
 export const AuthHeading: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
-  <h1 className={cn(
-    'text-[28px] sm:text-[32px] font-medium tracking-tight text-[var(--color-shell-text)] text-center leading-[1.14] mb-3',
-    className
-  )} style={{ fontFamily: 'var(--font-aeonikpro)' }}>
-    {children}
-  </h1>
+  <h1 className={cn('auth-heading', className)}>{children}</h1>
+);
+
+export const AuthHeadingSm: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
+  <h2 className={cn('auth-heading-sm', className)}>{children}</h2>
 );
 
 export const AuthBody: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
-  <p className={cn('text-[16px] text-[var(--color-shell-text-muted)] text-center leading-[1.5] mb-8', className)} style={{ fontFamily: 'var(--font-untitled-sans)' }}>
-    {children}
-  </p>
+  <p className={cn('auth-body', className)}>{children}</p>
+);
+
+export const AuthBodySm: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
+  <p className={cn('auth-body-sm', className)}>{children}</p>
 );
